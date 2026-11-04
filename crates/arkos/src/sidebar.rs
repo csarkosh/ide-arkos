@@ -794,12 +794,14 @@ pub fn row_path(row: &WtRow) -> PathBuf {
     }
 }
 
-/// Up or Down through the worktrees in `order`. With none selected, Down takes the first and Up
-/// the last; from a changed file, Down goes to the next worktree and Up to the file's own; at
-/// either end the selection stays. A selection in no listed worktree starts over as if none.
+/// Up or Down through the rows' paths in `order` (worktrees and the changes of expanded ones,
+/// as drawn). With none selected, Down takes the first and Up the last; at either end the
+/// selection stays. A selection no row has but one row's path holds (a change of a worktree
+/// collapsed since) counts as inside that row: Down goes past it and Up to it. A selection in
+/// no row starts over as if none.
 pub fn step_selection(order: &[&Path], selected: Option<&Path>, down: bool) -> Option<PathBuf> {
     let last = order.len().checked_sub(1)?;
-    let at = selected.and_then(|s| order.iter().position(|w| s.starts_with(w)).map(|i| (i, s == order[i])));
+    let at = selected.and_then(|s| order.iter().position(|w| s == *w).map(|i| (i, true)).or_else(|| order.iter().position(|w| s.starts_with(w)).map(|i| (i, false))));
     let i = match at {
         None if down => 0,
         None => last,
@@ -1258,7 +1260,7 @@ impl Root {
         let sel = self.worktrees.selected.clone();
         match ks.key.as_str() {
             "down" | "up" => {
-                let order: Vec<PathBuf> = self.worktrees.ordered().into_iter().map(|w| w.path.clone()).collect();
+                let order: Vec<PathBuf> = rows.iter().map(row_path).collect();
                 let order: Vec<&Path> = order.iter().map(PathBuf::as_path).collect();
                 match step_selection(&order, sel.as_deref(), ks.key == "down") {
                     Some(p) => self.worktrees.selected = Some(p),
@@ -1655,7 +1657,7 @@ mod tests {
     }
 
     #[test]
-    fn up_and_down_step_the_selected_path_through_the_worktrees() {
+    fn up_and_down_step_the_selected_path_through_every_row() {
         let order = [Path::new("/a"), Path::new("/b"), Path::new("/c")];
         let step = |sel: Option<&str>, down: bool| step_selection(&order, sel.map(Path::new), down);
         assert_eq!(step(None, true), Some("/a".into()), "none selected: Down takes the first");
@@ -1664,10 +1666,25 @@ mod tests {
         assert_eq!(step(Some("/c"), true), Some("/c".into()), "the end holds");
         assert_eq!(step(Some("/b"), false), Some("/a".into()));
         assert_eq!(step(Some("/a"), false), Some("/a".into()), "the start holds");
-        assert_eq!(step(Some("/b/src/x.rs"), true), Some("/c".into()), "from a changed file, Down goes to the next worktree");
-        assert_eq!(step(Some("/b/src/x.rs"), false), Some("/b".into()), "and Up to its own");
+        assert_eq!(step(Some("/b/src/x.rs"), true), Some("/c".into()), "from a change no longer drawn, Down goes past its worktree");
+        assert_eq!(step(Some("/b/src/x.rs"), false), Some("/b".into()), "and Up to its worktree");
         assert_eq!(step(Some("/gone"), true), Some("/a".into()), "a selection that went starts over");
         assert_eq!(step_selection(&[], Some(Path::new("/a")), true), None, "no worktrees, no selection");
+        // The keys walk every drawn row: an expanded worktree's changes are reachable.
+        use crate::gitstatus::Status;
+        use crate::worktrees::{Worktree, Worktrees};
+        let wt = |p: &str| Worktree { path: p.into(), repo: "/r".into(), head: "1".into(), branch: None, missing: false, bare: false, locked: false, admin: None };
+        let mut w = Worktrees::new(vec![]);
+        w.set_repo(Path::new("/r"), vec![wt("/r-a"), wt("/r-b")]);
+        assert!(w.toggle(Path::new("/r-a")));
+        w.mark_loading(Path::new("/r-a"));
+        w.set_changes(Path::new("/r-a"), Some(vec![(PathBuf::from("x.rs"), Status::Modified), (PathBuf::from("y.rs"), Status::Added)]));
+        let paths: Vec<PathBuf> = w.rows().iter().map(row_path).collect();
+        let rows: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+        assert_eq!(step_selection(&rows, Some(Path::new("/r-a")), true), Some("/r-a/x.rs".into()), "Down from the worktree lands on its first change");
+        assert_eq!(step_selection(&rows, Some(Path::new("/r-a/x.rs")), true), Some("/r-a/y.rs".into()));
+        assert_eq!(step_selection(&rows, Some(Path::new("/r-a/y.rs")), true), Some("/r-b".into()), "then the next worktree");
+        assert_eq!(step_selection(&rows, Some(Path::new("/r-a/x.rs")), false), Some("/r-a".into()), "Up from the change returns to the worktree");
     }
 
     #[test]

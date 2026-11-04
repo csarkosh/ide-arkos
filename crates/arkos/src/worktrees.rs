@@ -53,7 +53,7 @@ pub struct Stamp {
 
 /// The stamp of the admin folder `admin` (`<repo>/.git/worktrees/<name>`).
 // Temporary: only the tests call it until the watcher (a later task) does.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn stamp(admin: &Path) -> Stamp {
     let at = |name: &str| std::fs::metadata(admin.join(name)).and_then(|m| m.modified()).ok();
     Stamp { head: at("HEAD"), gitdir: at("gitdir"), locked: at("locked") }
