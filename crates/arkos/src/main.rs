@@ -313,9 +313,9 @@ pub struct Root {
     /// The stream's events until the drain task takes them; every stream sends on `wt_tx`.
     pub wt_events: Option<futures::channel::mpsc::UnboundedReceiver<fsevents::Event>>,
     pub wt_tx: futures::channel::mpsc::UnboundedSender<fsevents::Event>,
-    /// Bumped as each `git worktree list` starts (a full pass takes one for all its lists);
-    /// `wt_list_gen` keeps, per repository, the number of the list last applied, so an older
-    /// list landing after a newer one is dropped.
+    /// Bumped as each `git worktree list` or look for a repository starts (a full pass takes one
+    /// for all its lists); `wt_list_gen` keeps, per repository, the number of the list applied or
+    /// the drop made last, so an older list or error landing after it is dropped.
     pub wt_gen: u64,
     pub wt_list_gen: HashMap<PathBuf, u64>,
     /// The text size new terminals start at, and that panes without a terminal measure with.

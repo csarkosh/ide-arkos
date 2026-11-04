@@ -820,12 +820,26 @@ pub fn terminals_inside(tree: &Tree, dir: &Path) -> usize {
 
 /// A `git worktree list` read off the UI thread: the folder asked about, the side worktrees (or
 /// git's words) and each listed worktree's admin stamp.
-type Listed = (PathBuf, Result<Vec<Worktree>, String>, Vec<(PathBuf, crate::worktrees::Stamp)>);
+type Listed = (PathBuf, Listing, Vec<(PathBuf, crate::worktrees::Stamp)>);
+
+/// What `git worktree list` said about a folder.
+enum Listing {
+    Listed(Vec<Worktree>),
+    /// Git's words, for the section.
+    Failed(String),
+    /// It failed and the folder holds no `.git` any more: the repository went.
+    Gone,
+}
 
 fn list_with_stamps(asked: PathBuf) -> Listed {
-    let list = crate::worktrees::list_side(&asked);
-    let stamps = list.as_ref().map(|l| l.iter().filter_map(|w| w.admin.as_deref().map(|a| (w.path.clone(), crate::worktrees::stamp(a)))).collect()).unwrap_or_default();
-    (asked, list, stamps)
+    match crate::worktrees::list_side(&asked) {
+        Ok(list) => {
+            let stamps = list.iter().filter_map(|w| w.admin.as_deref().map(|a| (w.path.clone(), crate::worktrees::stamp(a)))).collect();
+            (asked, Listing::Listed(list), stamps)
+        }
+        Err(_) if std::fs::symlink_metadata(asked.join(".git")).is_err() => (asked, Listing::Gone, Vec::new()),
+        Err(e) => (asked, Listing::Failed(e), Vec::new()),
+    }
 }
 
 fn walk_age(path: PathBuf) -> (PathBuf, Option<crate::wt_scan::Newest>) {
@@ -1177,7 +1191,7 @@ impl Root {
                     return None;
                 }
                 for repo in &gone {
-                    root.forget_repo(repo);
+                    root.forget_repo(repo, gen);
                 }
                 root.after_worktree_lists(cx);
                 root.update_worktree_stream(cx);
@@ -1271,9 +1285,10 @@ impl Root {
                     // A pass in flight would fill the list again.
                     self.worktrees_seq += 1;
                     self.worktrees.watched = crate::worktrees::Watched::FolderGone;
+                    self.wt_gen += 1;
                     let repos: Vec<PathBuf> = self.worktrees.by_repo.keys().cloned().collect();
                     for repo in &repos {
-                        self.forget_repo(repo);
+                        self.forget_repo(repo, self.wt_gen);
                     }
                     self.worktrees.errors.clear();
                     self.after_worktree_lists(cx);
@@ -1430,7 +1445,7 @@ impl Root {
             let _ = this.update(cx, |root, cx| match seen {
                 Some(Some(listed)) => root.listed_one(gen, listed, cx),
                 Some(None) => {
-                    root.forget_repo(&dir);
+                    root.forget_repo(&dir, gen);
                     root.after_worktree_lists(cx);
                     root.update_worktree_stream(cx);
                 }
@@ -1441,13 +1456,15 @@ impl Root {
     }
 
     /// Files a list under its repository (the main checkout git printed, or the folder asked
-    /// about when it has no side worktrees) with its stamps, or git's words under the folder.
-    /// A list older than the one last applied to that repository is dropped. Returns the key.
+    /// about when it has no side worktrees) with its stamps, or git's words under the folder, or
+    /// drops the repository when it went. A result older than the last list or drop applied to
+    /// that repository is dropped. Returns the key.
     fn apply_worktree_list(&mut self, gen: u64, (asked, list, stamps): Listed) -> PathBuf {
+        let newer = |root: &Self, key: &Path| root.wt_list_gen.get(key).is_some_and(|g| *g > gen);
         match list {
-            Ok(list) => {
+            Listing::Listed(list) => {
                 let repo = list.first().map_or_else(|| asked.clone(), |w| w.repo.clone());
-                if self.wt_list_gen.get(&repo).is_some_and(|g| *g > gen) {
+                if newer(self, &repo) {
                     return repo;
                 }
                 self.wt_list_gen.insert(repo.clone(), gen);
@@ -1456,18 +1473,27 @@ impl Root {
                 self.worktrees.stamps.extend(stamps);
                 repo
             }
-            Err(e) => {
-                self.worktrees.errors.insert(asked.clone(), e);
+            Listing::Failed(e) => {
+                if !newer(self, &asked) {
+                    self.worktrees.errors.insert(asked.clone(), e);
+                }
+                asked
+            }
+            Listing::Gone => {
+                if !newer(self, &asked) {
+                    self.forget_repo(&asked, gen);
+                }
                 asked
             }
         }
     }
 
-    /// Drops a repository, its rows and its error.
-    fn forget_repo(&mut self, repo: &Path) {
+    /// Drops a repository, its rows and its error. `gen` is the number of the look that found
+    /// it gone, kept so a list started before it and landing after it is dropped.
+    fn forget_repo(&mut self, repo: &Path, gen: u64) {
         self.worktrees.remove_repo(repo);
         self.worktrees.errors.remove(repo);
-        self.wt_list_gen.remove(repo);
+        self.wt_list_gen.insert(repo.to_path_buf(), gen);
     }
 
     /// An age walk landed: the newest change found, keeping whether the stream covers it.
