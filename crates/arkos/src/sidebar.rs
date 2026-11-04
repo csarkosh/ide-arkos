@@ -134,6 +134,22 @@ fn reveal(fade: &mut Transient<()>, open: bool, now: Instant) -> f32 {
     fade.current(now).map_or(0.0, |(_, o)| o)
 }
 
+/// Heights for the Explorer and the Worktrees sections in a sidebar `total` tall, both headers
+/// included, from the Explorer's content height (its rows, without its header): open Worktrees
+/// take what the Explorer does not need, never less than a third of `total`; the Explorer never
+/// less than its header plus one row.
+pub fn sidebar_split(total: f32, explorer_rows_h: f32, explorer_open: bool, worktrees_open: bool) -> (f32, f32) {
+    match (explorer_open, worktrees_open) {
+        (true, true) => {
+            let explorer = (ROW_H + explorer_rows_h).min(total - total / 3.0).max(2.0 * ROW_H);
+            (explorer, (total - explorer).max(ROW_H))
+        }
+        (true, false) => ((total - ROW_H).max(2.0 * ROW_H), ROW_H),
+        (false, true) => (ROW_H, (total - ROW_H).max(ROW_H)),
+        (false, false) => (ROW_H, ROW_H),
+    }
+}
+
 /// The column: the Explorer and Worktrees sections, each under a header that opens and closes
 /// it, and the resize handle. `None` while collapsed, once its slide out has finished.
 pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> Option<Div> {
@@ -180,11 +196,16 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
             }),
         );
     let explorer_open = root.sidebar.explorer_open;
+    let worktrees_open = root.sidebar.worktrees_open;
+    // The New File prompt is a row of the tree while it is open or fading out.
+    let tree_rows = root.explorer.rows().len() + usize::from(root.new_file.current(root.frame_now).is_some());
+    let (explorer_h, worktrees_h) = sidebar_split(root.content.h, tree_rows as f32 * ROW_H, explorer_open, worktrees_open);
     let explorer = div()
         .flex()
         .flex_col()
+        .flex_none()
+        .h(px(explorer_h))
         .min_h_0()
-        .when(explorer_open, |d| d.flex_1())
         .key_context("Explorer")
         .track_focus(&root.sidebar.focus)
         .on_key_down(cx.listener(|root, ev: &KeyDownEvent, _window, cx| root.tree_key(&ev.keystroke, cx)))
@@ -213,9 +234,10 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
             cx.notify();
         })))
         .when(explorer_open, |d| d.child(render_rows(root, &theme, cx).opacity(explorer_o)));
-    let worktrees_open = root.sidebar.worktrees_open;
     let worktrees = div()
         .flex_none()
+        .h(px(worktrees_h))
+        .min_h_0()
         .flex()
         .flex_col()
         .border_t_1()
@@ -966,7 +988,8 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
         .id("worktree-rows")
         .flex()
         .flex_col()
-        .max_h(px(root.content.h * 0.4))
+        .flex_1()
+        .min_h_0()
         .overflow_y_scroll()
         .track_scroll(&root.sidebar.wt_scroll)
         // While the pointer is over the list its order holds, so a row does not move from under it.
@@ -2011,6 +2034,28 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn worktrees_take_what_the_explorer_does_not_need_and_never_less_than_a_third() {
+        let (e, w) = super::sidebar_split(900.0, 200.0, true, true);
+        assert_eq!((e, w), (200.0 + super::ROW_H, 900.0 - 200.0 - super::ROW_H));
+        assert_eq!(super::sidebar_split(900.0, 2000.0, true, true), (600.0, 300.0));
+    }
+
+    #[test]
+    fn a_closed_section_leaves_the_other_the_whole_sidebar() {
+        let h = super::ROW_H;
+        assert_eq!(super::sidebar_split(900.0, 200.0, true, false), (900.0 - h, h));
+        assert_eq!(super::sidebar_split(900.0, 200.0, false, true), (h, 900.0 - h));
+        assert_eq!(super::sidebar_split(900.0, 200.0, false, false), (h, h));
+    }
+
+    #[test]
+    fn a_short_sidebar_keeps_the_explorer_s_header() {
+        let (e, w) = super::sidebar_split(120.0, 2000.0, true, true);
+        assert!(e >= 2.0 * super::ROW_H);
+        assert_eq!(w, 120.0 - e);
+    }
+
     #[test]
     fn the_section_says_when_the_folder_is_not_watched() {
         use crate::worktrees::Watched;

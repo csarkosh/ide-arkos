@@ -712,7 +712,7 @@ Things only a person at the screen can check, in order of value:
   finger with no lag and keeps gliding when the fingers lift; a mouse wheel's notches still ease
 - in a repo with a change: the file's row is amber and its folders carry a dot; `git stash`
   clears them within ten seconds
-- Worktrees on `~/Projects`: one row per side worktree of every repo, newest first; touch a file
+- Worktrees on `~/Projects`: one row per side worktree of every repo, newest first; the section fills the sidebar under the tree and keeps a third of it under a long tree; touch a file
   in one: its age reads `now` within two seconds and it moves to the top (not while the pointer is
   over the list); `cargo build` in one: its age holds; `rm -rf` one: `missing` within two
   seconds; `git worktree add`: it appears; expand one: a shimmer, then its changed files; Remove

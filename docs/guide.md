@@ -81,7 +81,7 @@ runs `git status`). Click a changed file to read it in the viewer. Right click a
 terminal here, Remove worktree (refused while it has changes), Remove worktree, force.
 Ctrl+Shift+G puts the keyboard in the list. Claude can read the same list with `arkos
 worktrees`. The tree's rows carry git status in the theme's pastels (added, modified,
-untracked) and a folder with changes inside carries a dot.
+untracked) and a folder with changes inside carries a dot. While open, the section takes the sidebar's height below the Explorer, a third of it at least.
 
 The viewer shows a file with syntax colours from your theme's `[viewer]` section through
 syntect's TextMate grammars (bat's set of some two hundred: TOML, TypeScript and TSX, GLSL and
