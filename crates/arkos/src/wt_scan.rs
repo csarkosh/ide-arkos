@@ -1,6 +1,6 @@
 //! Finding the git repositories under the open folder, for the sidebar's Worktrees section.
 
-// Nothing calls this yet; the scan's later parts do, and this allowance goes with them.
+// Temporary: nothing calls this yet; the allowance is removed when Task 6 and Task 9 use the module.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -8,14 +8,18 @@ use std::path::{Path, PathBuf};
 /// Folders never entered: dependency, build and output folders that are large and hold no
 /// repositories the user works in.
 pub const SKIP_DIRS: &[&str] = &[
-    "node_modules", "target", "build", "dist", "vendor", "Pods", "venv", "__pycache__", "out",
+    "node_modules", "target", "build", "dist", ".build", "Pods", "DerivedData", "vendor", "__pycache__", ".venv",
+    "venv",
 ];
 
 /// Folders never entered when the open folder is the home folder.
 pub const HOME_SKIP_DIRS: &[&str] = &["Library", "Applications"];
 
 /// Hidden cache folders, never entered.
-pub const CACHE_DIRS: &[&str] = &[".cache", ".pytest_cache", ".mypy_cache", ".gradle", ".npm", ".cargo", ".rustup"];
+pub const CACHE_DIRS: &[&str] = &[
+    ".pytest_cache", ".mypy_cache", ".ruff_cache", ".next", ".nuxt", ".gradle", ".turbo", ".cache", ".parcel-cache",
+    ".svelte-kit",
+];
 
 /// How many folders deep below the open folder a repository is looked for.
 pub const DISCOVERY_DEPTH: usize = 4;
