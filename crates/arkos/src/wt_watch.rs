@@ -29,8 +29,9 @@ pub fn passes(path: &Path, open: &Path, home: bool) -> bool {
 }
 
 /// Whether `path` has a `.git`, skipped or cache folder anywhere below `root`. For a worktree
-/// outside the open folder, whose events reach the callback unfiltered by `passes`: a build writing
-/// into its `target` must not read as the worktree being touched. False when `path` is not under `root`.
+/// outside the open folder, which `passes` does not cover (`stream_filter` uses it): a build
+/// writing into its `target` must not read as the worktree being touched. False when `path` is
+/// not under `root`.
 pub fn skipped_below(root: &Path, path: &Path) -> bool {
     path.strip_prefix(root).is_ok_and(|rel| {
         rel.components().any(|c| {
@@ -130,22 +131,58 @@ pub fn collapse(rules: impl IntoIterator<Item = (Rule, PathBuf)>) -> Vec<(Rule, 
 
 /// How often the watcher's view is checked against a full pass, in case it missed events.
 pub const FULL_PASS_EVERY: Duration = Duration::from_secs(600);
-/// The most worktrees outside the open folder the stream watches besides it.
+/// The most paths the stream watches besides the open folder: outside repositories' `.git`
+/// folders and worktrees outside it.
 pub const EXTRA_PATHS: usize = 16;
 
-/// The stream's path set: the open folder plus up to `EXTRA_PATHS` worktrees outside it, sorted;
-/// and which worktrees were left out (they lag). A missing worktree is never a path.
+/// The stream's path set: the open folder, then up to `EXTRA_PATHS` others, the `.git` folders of
+/// known repositories whose `.git` is outside the open folder first (so a worktree added there
+/// shows at once), then worktrees outside it, each group sorted; and which worktrees were left
+/// out (they lag). A repository left out is not listed: the ten minute pass still lists it. A
+/// missing worktree is never a path.
 pub fn stream_paths(open: &Path, model: &Worktrees) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut gits: Vec<PathBuf> = model.by_repo.keys()
+        .map(|r| r.join(".git"))
+        .filter(|g| !g.starts_with(open))
+        .collect();
+    gits.sort();
+    gits.dedup();
+    gits.truncate(EXTRA_PATHS);
     let mut outside: Vec<PathBuf> = model.all()
         .filter(|w| !w.missing && !w.path.starts_with(open))
         .map(|w| w.path.clone())
         .collect();
     outside.sort();
     outside.dedup();
-    let left_out = outside.split_off(outside.len().min(EXTRA_PATHS));
+    let left_out = outside.split_off(outside.len().min(EXTRA_PATHS - gits.len()));
     let mut paths = vec![open.to_path_buf()];
+    paths.extend(gits);
     paths.extend(outside);
     (paths, left_out)
+}
+
+/// The test the stream's callback puts every changed folder to before sending it, so a flood
+/// (a build, `~/Library` in a home folder) is dropped on the stream's own thread. `outside` is
+/// the stream's paths besides `open`. The innermost of `open` and `outside` holding the path
+/// decides: under `open`, `passes`; under an outside repository's `.git`, only `.git/worktrees`
+/// and its immediate children; under an outside worktree, nothing `skipped_below` it. A path
+/// under none of them is sent, for `classify` to judge.
+pub fn stream_filter(open: PathBuf, home: bool, outside: Vec<PathBuf>) -> std::sync::Arc<dyn Fn(&Path) -> bool + Send + Sync> {
+    std::sync::Arc::new(move |path: &Path| {
+        let depth = |p: &Path| p.components().count();
+        let root = outside.iter().filter(|r| path.starts_with(r)).max_by_key(|r| depth(r));
+        match root {
+            Some(r) if !(path.starts_with(&open) && depth(&open) >= depth(r)) => {
+                if r.file_name().is_some_and(|n| n == ".git") {
+                    let rel: Vec<_> = path.strip_prefix(r).into_iter().flat_map(|p| p.components()).collect();
+                    rel.first().is_some_and(|c| c.as_os_str() == "worktrees") && rel.len() <= 2
+                } else {
+                    !skipped_below(r, path)
+                }
+            }
+            _ => passes(path, &open, home),
+        }
+    })
 }
 
 #[cfg(test)]
@@ -295,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn the_stream_covers_the_open_folder_and_up_to_sixteen_outside_worktrees() {
+    fn the_stream_covers_the_open_folder_and_up_to_sixteen_outside_paths() {
         let open = PathBuf::from("/o");
         let mut m = Worktrees::new(vec![]);
         let repo = PathBuf::from("/elsewhere/r");
@@ -306,10 +343,56 @@ mod tests {
         list.push(gone);
         m.set_repo(&repo, list);
         let (paths, left_out) = stream_paths(&open, &m);
-        assert_eq!(paths.len(), 17);
+        assert_eq!(paths.len(), 17, "the open folder and sixteen others");
         assert_eq!(paths[0], open);
-        assert_eq!(left_out.len(), 4);
+        assert_eq!(paths[1], repo.join(".git"), "the outside repository's .git comes before the worktrees");
+        assert_eq!(left_out.len(), 5);
         assert!(!paths.iter().chain(&left_out).any(|p| p.ends_with("gone") || p.ends_with("inside")));
-        assert_eq!(left_out[0], PathBuf::from("/elsewhere/w16"));
+        assert_eq!(left_out[0], PathBuf::from("/elsewhere/w15"));
+    }
+
+    #[test]
+    fn an_outside_repositorys_git_is_watched_and_an_inside_ones_is_not() {
+        let open = PathBuf::from("/o");
+        let mut m = Worktrees::new(vec![]);
+        let outside = PathBuf::from("/elsewhere/r");
+        let inside = open.join("a");
+        m.set_repo(&outside, vec![wt(&open.join("linked"), &outside)]);
+        m.set_repo(&inside, vec![wt(&inside.join(".worktrees/w"), &inside)]);
+        let (paths, left_out) = stream_paths(&open, &m);
+        assert_eq!(paths, vec![open.clone(), outside.join(".git")]);
+        assert!(left_out.is_empty());
+
+        let mut m = Worktrees::new(vec![]);
+        for i in 0..20 {
+            let r = PathBuf::from(format!("/elsewhere/r{i:02}"));
+            m.set_repo(&r, vec![wt(&PathBuf::from(format!("/far/w{i:02}")), &r)]);
+        }
+        let (paths, left_out) = stream_paths(&open, &m);
+        assert_eq!(paths.len(), 1 + EXTRA_PATHS, "repositories count against the cap");
+        assert!(paths[1..].iter().all(|p| p.ends_with(".git")), "repositories first");
+        assert_eq!(left_out.len(), 20, "every outside worktree lags; a repository left out is not listed");
+    }
+
+    #[test]
+    fn the_stream_filter_drops_noise_under_the_open_folder_and_under_outside_roots() {
+        let open = PathBuf::from("/o");
+        let w = PathBuf::from("/elsewhere/w");
+        let git = PathBuf::from("/elsewhere/r/.git");
+        let f = stream_filter(open.clone(), false, vec![w.clone(), git.clone()]);
+        assert!(!f(&open.join("ide-arkos/.worktrees/x/target/debug")));
+        assert!(!f(&open.join("a/node_modules/b")));
+        assert!(!f(&open.join("a/.pytest_cache")));
+        assert!(!f(&open.join("a/.git/objects/ab")));
+        assert!(f(&open.join("a/.git/worktrees")) && f(&open.join("a/.git/worktrees/x")));
+        assert!(!f(&open.join("a/.git/worktrees/x/logs")), "deeper than a worktree's own folder");
+        assert!(f(&open.join("a/.github/workflows")), "hidden but not a cache");
+        assert!(f(&open.join("Library/x")), "not the home folder");
+        assert!(!stream_filter(open.clone(), true, vec![])(&open.join("Library/x")), "the home folder skips Library");
+        assert!(!f(&w.join("target/debug")), "a build inside an outside worktree");
+        assert!(!f(&w.join(".git")));
+        assert!(f(&w.join("src")) && f(&w));
+        assert!(f(&git.join("worktrees")) && f(&git.join("worktrees/x")), "an outside repository's worktree list");
+        assert!(!f(&git.join("worktrees/x/logs")) && !f(&git.join("index")) && !f(&git), "the rest of an outside .git");
     }
 }

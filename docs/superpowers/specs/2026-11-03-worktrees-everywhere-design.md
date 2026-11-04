@@ -269,9 +269,13 @@ arkos worktrees [<folder>] [--stale <age>] [--json]
   succeeded, since a partial list is still an answer.
 - Text output: one line per worktree, newest first: age, name, branch when it differs, path.
 - `--stale <age>` keeps only those unchanged for at least that long (`7d`, `36h`, `2w`).
-- `--json`: an array of objects with `path`, `name`, `branch` (or null when detached),
-  `repository` (the main checkout's path), `changed` (seconds since the Unix epoch of the newest
-  file), `age_seconds`, `missing`, `locked`, and a flag for a budget-capped walk.
+- `--json`: one object, `{ "folder", "worktrees": [ { "path", "name", "branch" | null,
+  "repository", "changed" | null, "age_seconds" | null, "missing", "locked", "capped" } ],
+  "repositories": [ { "path", "error"? } ] }`: `folder` is the folder listed; each worktree has
+  its `branch` (null when detached), `repository` (the main checkout's path), `changed` (seconds
+  since the Unix epoch of the newest file, null with no files to date), `age_seconds` (null
+  likewise), `missing`, `locked` and `capped` (the walk stopped at its budget); each repository
+  has its path and an `error` when it could not be listed.
 - Exit 0 with an empty list when there are none; a folder that does not exist is an error with
   the agent CLI's usual exit code and wording.
 - It only reports. Removal is Claude's, with git, after the user agrees (Cyrus: "the user has

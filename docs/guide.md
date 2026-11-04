@@ -66,10 +66,11 @@ previews, Escape goes back to the pane.
 
 Under the Explorer, Worktrees lists the side worktrees of every git repository under the open
 folder, so a folder of repositories such as `~/Projects` works as well as one repository; a main
-checkout is not a row, and a worktree made outside the open folder is listed too, with its full
-path. Each row names the worktree's folder, its branch when that differs from the name, how long
-ago any file in it last changed (`4 min`, `2 d`), and under that, smaller, where it is: relative
-to the open folder, or from your home folder. The newest change is first, a worktree untouched
+checkout is not a row, and a worktree made outside the open folder is listed too, with its path
+from your home folder (`~/...`) when it is under it, else its full path. Each row names the
+worktree's folder, its branch when that differs from the name, how long ago any file in it last
+changed (`4 min`, `2 d`), and under that, smaller, where it is: relative to the open folder, else
+from your home folder, else the full path. The newest change is first, a worktree untouched
 for a week or more reads dimmer, and one whose folder is gone says `missing`. The list follows
 the disk within about a second: a new worktree appears, a removed one goes, and a touched one
 moves to the top, though not while the pointer is over the list. Builds and caches (`target`,

@@ -446,6 +446,21 @@ impl Worktrees {
     }
 }
 
+/// Whether a repository's list (or drop) from the look numbered `incoming_gen` applies, given the
+/// number of the last one applied to it: an older list never replaces a newer one, and one from
+/// the same look applies.
+pub fn list_applies(incoming_gen: u64, last_applied: Option<u64>) -> bool {
+    last_applied.is_none_or(|last| incoming_gen >= last)
+}
+
+/// Which of the repositories a full pass did not find it drops: those not under `open`, and
+/// those under it whose `.git` is gone. A repository still under `open` with a `.git` is kept,
+/// since the walk does not enter a repository and nested ones are registered by the stream.
+/// `has_git` touches the disk, so this runs off the UI thread.
+pub fn pass_drops(unseen: &[PathBuf], open: &Path, has_git: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+    unseen.iter().filter(|k| !(k.starts_with(open) && has_git(k))).cloned().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,6 +471,23 @@ mod tests {
     fn wt(path: &str, repo: &str) -> Worktree {
         let name = Path::new(path).file_name().unwrap().to_string_lossy().into_owned();
         Worktree { path: path.into(), repo: repo.into(), head: "1".into(), branch: Some(name), missing: false, bare: false, locked: false, admin: None }
+    }
+
+    #[test]
+    fn an_older_list_never_replaces_a_newer_one_and_an_equal_one_applies() {
+        assert!(list_applies(3, None), "the first list for a repository");
+        assert!(list_applies(5, Some(3)), "a newer list");
+        assert!(list_applies(3, Some(3)), "the same look's list, or a drop and a list from one look");
+        assert!(!list_applies(2, Some(3)), "a list started before the last one applied");
+    }
+
+    #[test]
+    fn a_full_pass_drops_repositories_outside_the_folder_or_without_a_git_and_keeps_nested_ones() {
+        let open = Path::new("/o");
+        let unseen = vec![PathBuf::from("/elsewhere/r"), PathBuf::from("/o/a"), PathBuf::from("/o/a/nested"), PathBuf::from("/o/gone")];
+        let has_git = |p: &Path| p != Path::new("/o/gone");
+        assert_eq!(pass_drops(&unseen, open, has_git), vec![PathBuf::from("/elsewhere/r"), PathBuf::from("/o/gone")]);
+        assert!(pass_drops(&[], open, |_| true).is_empty());
     }
 
     #[test]

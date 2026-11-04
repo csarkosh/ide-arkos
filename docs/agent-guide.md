@@ -269,6 +269,7 @@ named on stderr as `cannot list {repo}: {reason}`, and the others are still list
 - `--json`: one JSON value on stdout, below.
 
 It only reports. To prune, confirm with the user, then run `git worktree remove <path>` from that worktree's repository; `--force` for one with changes.
+The text line prints a path as it is, control characters included, so parse the `--json` form for the path before running `git worktree remove`.
 
 ### Times
 

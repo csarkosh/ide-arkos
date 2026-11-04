@@ -2,10 +2,11 @@
 //!
 //! The stream is per directory (the default flavour; `kFSEventStreamCreateFlagFileEvents` is not
 //! set), watches its roots (`kFSEventStreamCreateFlagWatchRoot`) and is scheduled on a private
-//! serial dispatch queue, so its callback runs on a libdispatch thread and hands each event to an
-//! unbounded channel for the UI. The callback's `info` is a boxed `UnboundedSender<Event>`; the
-//! box lives until `Drop` has stopped, invalidated and released the stream and then waited for the
-//! queue to drain, so no callback can reach a freed sender.
+//! serial dispatch queue, so its callback runs on a libdispatch thread, puts each changed folder
+//! to the stream's filter there and hands what passes to an unbounded channel for the UI. The
+//! callback's `info` is a boxed sender and filter; the box lives until `Drop` has stopped and
+//! invalidated the stream, waited for the queue to drain and released the stream, so no callback
+//! can reach a freed sender.
 
 use futures::channel::mpsc::UnboundedSender;
 use libc::{c_char, c_void};
@@ -13,9 +14,21 @@ use std::ffi::{CStr, CString, OsStr};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::sync::Arc;
 
 /// How long FSEvents gathers events before delivering them, in seconds.
 pub const LATENCY: f64 = 1.0;
+
+/// The test a changed folder must pass, on the stream's own thread, to be sent: a flood the
+/// caller has no use for is dropped before it reaches the channel. It should not panic; if it
+/// does, the folder is sent.
+pub type Filter = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
+
+/// What the callback's `info` points at.
+struct Info {
+    tx: UnboundedSender<Event>,
+    filter: Filter,
+}
 
 /// One thing the stream reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,7 +127,7 @@ extern "C" {
 pub struct Stream {
     stream: FSEventStreamRef,
     queue: DispatchQueue,
-    tx: *mut UnboundedSender<Event>,
+    info: *mut Info,
     /// The system's event id read just before the stream was made: a safe point to resume from
     /// while the stream has delivered nothing.
     created_at: u64,
@@ -123,16 +136,17 @@ pub struct Stream {
 }
 
 // SAFETY: the stream and queue handles may be used from whichever single thread owns `Stream`,
-// and the boxed sender is only read by the callback (through `&`, and `UnboundedSender` is
-// `Sync`) until `Drop` frees it after the queue has drained. `Stream` is deliberately not `Sync`:
+// and the boxed sender and filter are only read by the callback (through `&`; `UnboundedSender`
+// is `Sync` and the filter is `Send + Sync`) until `Drop` frees them after the queue has drained. `Stream` is deliberately not `Sync`:
 // FSEvents makes no thread-safety promise for calls on one stream from several threads at once,
 // so the raw pointer fields are left to keep the auto trait off.
 unsafe impl Send for Stream {}
 
 impl Stream {
     /// Starts a stream over `paths` with `kFSEventStreamCreateFlagWatchRoot`, delivering since
-    /// `since` (`None` for now) on `tx`. Err is the reason, for the section's notice.
-    pub fn start(paths: &[PathBuf], since: Option<u64>, tx: UnboundedSender<Event>) -> Result<Stream, String> {
+    /// `since` (`None` for now) on `tx` each changed folder `filter` accepts, and every
+    /// `MustScan` and `RootChanged`. Err is the reason, for the section's notice.
+    pub fn start(paths: &[PathBuf], since: Option<u64>, filter: Filter, tx: UnboundedSender<Event>) -> Result<Stream, String> {
         if paths.is_empty() {
             return Err("no folders to watch".into());
         }
@@ -170,7 +184,7 @@ impl Stream {
 
         // SAFETY: takes nothing and only reads the system's event counter.
         let created_at = unsafe { FSEventsGetCurrentEventId() };
-        let info = Box::into_raw(Box::new(tx));
+        let info = Box::into_raw(Box::new(Info { tx, filter }));
         let context = FSEventStreamContext {
             version: 0,
             info: info.cast(),
@@ -210,15 +224,15 @@ impl Stream {
             }
             return Err("could not make a dispatch queue".into());
         }
-        let mut s = Stream { stream, queue, tx: info, created_at, started: false };
+        let mut s = Stream { stream, queue, info, created_at, started: false };
         // SAFETY: `stream` and `queue` are live; the stream retains the queue.
         let started = unsafe {
             FSEventStreamSetDispatchQueue(s.stream, s.queue);
             FSEventStreamStart(s.stream)
         };
         if started == 0 {
-            // `Drop` skips Stop on a stream that never started, then invalidates, releases and
-            // frees, in that order.
+            // `Drop` skips Stop on a stream that never started, then invalidates, drains, releases
+            // and frees, in that order.
             drop(s);
             return Err("FSEvents could not start the stream".into());
         }
@@ -245,17 +259,19 @@ impl Drop for Stream {
         // SAFETY: the handles are live and dropped once; Stop is called only on a started stream,
         // and Invalidate is valid because the queue was set first. After Invalidate FSEvents queues
         // no new callback; the empty `dispatch_sync_f` waits out one already running or queued on
-        // the serial queue (this thread is never that queue's, so it cannot deadlock). Only then
-        // is the queue released and the sender freed, so no callback reads a freed `info`.
+        // the serial queue (this thread is never that queue's, so it cannot deadlock). The drain
+        // comes before Release because a callback still in flight is handed the stream itself,
+        // so the stream must outlive it; only once the queue is empty is the stream released,
+        // then the queue, and last the box, so no callback reads a freed stream or `info`.
         unsafe {
             if self.started {
                 FSEventStreamStop(self.stream);
             }
             FSEventStreamInvalidate(self.stream);
-            FSEventStreamRelease(self.stream);
             dispatch_sync_f(self.queue, ptr::null_mut(), drained);
+            FSEventStreamRelease(self.stream);
             dispatch_release(self.queue);
-            drop(Box::from_raw(self.tx));
+            drop(Box::from_raw(self.info));
         }
     }
 }
@@ -276,8 +292,9 @@ fn event_for(flags: u32, path: &[u8]) -> Option<Event> {
     }
 }
 
-/// The stream's callback, on the queue's thread. It never panics: a send to a dropped receiver is
-/// ignored, and null pointers deliver nothing.
+/// The stream's callback, on the queue's thread. A changed folder the filter rejects is never
+/// sent. It never unwinds: a send to a dropped receiver is ignored, a filter that panics lets the
+/// folder through, and null pointers deliver nothing.
 extern "C" fn callback(
     _stream: FSEventStreamRef,
     info: *mut c_void,
@@ -289,9 +306,9 @@ extern "C" fn callback(
     if info.is_null() || event_paths.is_null() || event_flags.is_null() {
         return;
     }
-    // SAFETY: `info` is the boxed sender `start` made, alive until `Drop` has drained the queue;
+    // SAFETY: `info` is the boxed `Info` `start` made, alive until `Drop` has drained the queue;
     // it is only read here.
-    let tx = unsafe { &*(info as *const UnboundedSender<Event>) };
+    let info = unsafe { &*(info as *const Info) };
     let paths = event_paths as *const *const c_char;
     for i in 0..num_events {
         // SAFETY: FSEvents passes `num_events` flags and `num_events` C string paths (the stream
@@ -303,8 +320,15 @@ extern "C" fn callback(
             // SAFETY: a non-null path from FSEvents is NUL terminated and lives for the call.
             unsafe { CStr::from_ptr(path) }.to_bytes()
         };
-        if let Some(e) = event_for(flags, bytes) {
-            let _ = tx.unbounded_send(e);
+        let send = match event_for(flags, bytes) {
+            Some(Event::Changed(p)) => {
+                let filter = &info.filter;
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| filter(&p))).unwrap_or(true).then_some(Event::Changed(p))
+            }
+            other => other,
+        };
+        if let Some(e) = send {
+            let _ = info.tx.unbounded_send(e);
         }
     }
 }
@@ -358,7 +382,7 @@ mod tests {
         let (tx, mut rx) = unbounded();
         // A CI runner may refuse a stream; the reason is printed and the test passes there, since
         // what it checks is the Mac's own delivery, not the runner's sandbox.
-        let s = match Stream::start(&[d.clone()], None, tx) {
+        let s = match Stream::start(&[d.clone()], None, Arc::new(|_: &Path| true), tx) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("FSEvents stream not available here: {e}");
@@ -378,11 +402,52 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_the_filter_rejects_is_never_reported_while_one_beside_it_is() {
+        let (_t, d) = canonical_tempdir();
+        std::fs::create_dir(d.join("skip")).unwrap();
+        std::fs::create_dir(d.join("keep")).unwrap();
+        let (tx, mut rx) = unbounded();
+        let filter: Filter = Arc::new(|p: &Path| !p.components().any(|c| c.as_os_str() == "skip"));
+        // As above: a runner that refuses a stream prints the reason and passes.
+        let s = match Stream::start(&[d.clone()], None, filter, tx) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("FSEvents stream not available here: {e}");
+                return;
+            }
+        };
+        std::fs::write(d.join("skip/file.txt"), b"hello").unwrap();
+        std::fs::write(d.join("keep/file.txt"), b"hello").unwrap();
+        let skipped = std::sync::Mutex::new(false);
+        let kept = wait_for(&mut rx, Duration::from_secs(10), |e| match e {
+            Event::Changed(p) => {
+                let p = p.canonicalize().unwrap_or_else(|_| p.clone());
+                if p.starts_with(d.join("skip")) {
+                    *skipped.lock().unwrap() = true;
+                }
+                p == d.join("keep")
+            }
+            _ => false,
+        });
+        assert!(kept, "no Changed event for keep within 10 seconds");
+        // The two writes were made together, so a skip event would have come in the same batch.
+        while let Ok(e) = rx.try_recv() {
+            if let Event::Changed(p) = e {
+                if p.starts_with(d.join("skip")) {
+                    *skipped.lock().unwrap() = true;
+                }
+            }
+        }
+        assert!(!*skipped.lock().unwrap(), "the filter let a write under skip through");
+        drop(s);
+    }
+
+    #[test]
     fn the_latest_event_id_moves_after_an_event() {
         let (_t, d) = canonical_tempdir();
         let (tx, mut rx) = unbounded();
         // As above: a runner that refuses a stream prints the reason and passes.
-        let s = match Stream::start(&[d.clone()], None, tx) {
+        let s = match Stream::start(&[d.clone()], None, Arc::new(|_: &Path| true), tx) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("FSEvents stream not available here: {e}");
@@ -401,7 +466,7 @@ mod tests {
         let (_t, d) = canonical_tempdir();
         let (tx, _rx) = unbounded();
         // As above: a runner that refuses a stream prints the reason and passes.
-        let s = match Stream::start(&[d.clone()], None, tx) {
+        let s = match Stream::start(&[d.clone()], None, Arc::new(|_: &Path| true), tx) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("FSEvents stream not available here: {e}");
@@ -412,7 +477,7 @@ mod tests {
         drop(s);
         std::fs::write(d.join("file.txt"), b"hello").unwrap();
         let (tx, mut rx) = unbounded();
-        let s = match Stream::start(&[d.clone()], Some(id), tx) {
+        let s = match Stream::start(&[d.clone()], Some(id), Arc::new(|_: &Path| true), tx) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("FSEvents stream not available here: {e}");

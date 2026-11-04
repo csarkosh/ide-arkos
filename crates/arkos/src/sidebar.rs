@@ -1275,7 +1275,7 @@ impl Root {
             }) else {
                 return;
             };
-            let gone = cx.background_executor().spawn(async move { unseen.into_iter().filter(|k| !(k.starts_with(&open) && k.join(".git").exists())).collect::<Vec<_>>() }).await;
+            let gone = cx.background_executor().spawn(async move { crate::worktrees::pass_drops(&unseen, &open, |k| k.join(".git").exists()) }).await;
             let Ok(Some(to_age)) = this.update(cx, |root, cx| {
                 if root.worktrees_seq != seq {
                     return None;
@@ -1334,7 +1334,8 @@ impl Root {
         }
         let (paths, left_out) = crate::wt_watch::stream_paths(&self.wt_open, &self.worktrees);
         let since = self.wt_stream.as_ref().map(|s| s.latest_event_id());
-        match crate::fsevents::Stream::start(&paths, since, self.wt_tx.clone()) {
+        let filter = crate::wt_watch::stream_filter(self.wt_open.clone(), self.wt_home, paths[1..].to_vec());
+        match crate::fsevents::Stream::start(&paths, since, filter, self.wt_tx.clone()) {
             Ok(stream) => {
                 // The old stream, if any, stops here, after the new one took over from its id.
                 self.wt_stream = Some(stream);
@@ -1365,9 +1366,9 @@ impl Root {
     }
 
     /// One batch from the stream: the open folder's own news first, then the changed folders,
-    /// filtered (`passes`, and `skipped_below` for a worktree outside the open folder, whose
-    /// events come unfiltered), classified and collapsed (`wt_watch::collapse`), so a burst of
-    /// thousands of folders is one action per worktree, repository or folder.
+    /// already filtered in the stream's callback (`wt_watch::stream_filter`), classified and
+    /// collapsed (`wt_watch::collapse`), so a burst of thousands of folders is one action per
+    /// worktree, repository or folder.
     fn worktree_batch(&mut self, batch: WtBatch, cx: &mut Context<Self>) {
         use crate::wt_watch::Rule;
         if batch.root_changed {
@@ -1391,15 +1392,9 @@ impl Root {
         } else if batch.must_scan {
             self.refresh_worktrees(cx);
         }
-        let (open, home) = (&self.wt_open, self.wt_home);
-        let rules = batch.changed.into_iter().filter(|p| crate::wt_watch::passes(p, open, home)).filter_map(|p| {
-            let rule = crate::wt_watch::classify(&p, open, &self.worktrees);
-            match &rule {
-                Rule::Touched(w) if crate::wt_watch::skipped_below(w, &p) => None,
-                _ => Some((rule, p)),
-            }
-        });
-        for (rule, dirs) in crate::wt_watch::collapse(rules.collect::<Vec<_>>()) {
+        let open = &self.wt_open;
+        let rules: Vec<_> = batch.changed.into_iter().map(|p| (crate::wt_watch::classify(&p, open, &self.worktrees), p)).collect();
+        for (rule, dirs) in crate::wt_watch::collapse(rules) {
             match rule {
                 Rule::RelistRepo(repo) => self.relist_repo(repo, cx),
                 Rule::CheckStamp { repo, name } => self.check_worktree_stamp(repo, &name, cx),
@@ -1569,7 +1564,7 @@ impl Root {
     /// drops the repository when it went. A result older than the last list or drop applied to
     /// that repository is dropped. Returns the key.
     fn apply_worktree_list(&mut self, gen: u64, (asked, list, stamps): Listed) -> PathBuf {
-        let newer = |root: &Self, key: &Path| root.wt_list_gen.get(key).is_some_and(|g| *g > gen);
+        let newer = |root: &Self, key: &Path| !crate::worktrees::list_applies(gen, root.wt_list_gen.get(key).copied());
         match list {
             Listing::Listed(list) => {
                 let repo = list.first().map_or_else(|| asked.clone(), |w| w.repo.clone());
@@ -1603,8 +1598,9 @@ impl Root {
         self.worktrees.remove_repo(repo);
         self.worktrees.errors.remove(repo);
         // Never lower a number an event's list already raised.
-        let last = self.wt_list_gen.entry(repo.to_path_buf()).or_insert(gen);
-        *last = (*last).max(gen);
+        if crate::worktrees::list_applies(gen, self.wt_list_gen.get(repo).copied()) {
+            self.wt_list_gen.insert(repo.to_path_buf(), gen);
+        }
     }
 
     /// An age walk landed: merged with the age held (`Worktrees::merge_age`), so a change the
