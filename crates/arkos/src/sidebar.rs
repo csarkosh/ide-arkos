@@ -1382,9 +1382,10 @@ impl Root {
     }
 
     /// Something changed in `dir` inside the worktree `wt`: its age becomes now, unless the folder
-    /// is gone (missing) or, after a minute's quiet, every newer entry in `dir` is noise
-    /// (`only_noise_newer`: `.DS_Store`, `.git`, a build or cache folder). The stat and the
-    /// `read_dir` run off the UI thread.
+    /// is gone (missing) or, after a minute's quiet, no entry in `dir` newer than the age is
+    /// anything but noise (`only_noise_newer`: `.DS_Store`, `.git`, a build or cache folder; a
+    /// deletion alone leaves nothing newer and does not count). The stat and the `read_dir` run
+    /// off the UI thread.
     fn touch_worktree(&mut self, wt: PathBuf, dir: PathBuf, cx: &mut Context<Self>) {
         // A worktree outside the open folder gets its events unfiltered: a build in its `target`
         // is not work in it.

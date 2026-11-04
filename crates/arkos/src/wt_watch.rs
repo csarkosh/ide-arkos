@@ -90,27 +90,19 @@ fn in_repo(path: &Path, repo: &Path) -> Rule {
 
 /// Whether every entry in `dir` newer than `since` is noise (one `read_dir`): `.DS_Store` (Finder
 /// looked at the folder), `.git` (git's own) or a folder `skipped_dir` accepts (a build's `target`,
-/// a cache), so a first build or a clean is not work in the worktree. True when at least one entry
-/// is newer and every newer one is noise. False when nothing is newer, so a caller never reads an
-/// event it cannot explain as noise.
+/// a cache), so a first build or a clean is not work in the worktree. False only when an entry
+/// that is not noise is newer. Nothing newer, or a folder that cannot be read (it was removed),
+/// is true too: a deletion alone does not count as work, so a worktree where only files were
+/// deleted may read older than it is.
 pub fn only_noise_newer(dir: &Path, since: SystemTime) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else { return false };
-    let mut any = false;
-    for e in entries.flatten() {
+    let Ok(entries) = std::fs::read_dir(dir) else { return true };
+    entries.flatten().all(|e| {
         let newer = e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t > since);
-        if !newer {
-            continue;
-        }
         let name = e.file_name();
         let name = name.to_string_lossy();
         let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
-        let noise = name == ".DS_Store" || name == ".git" || (is_dir && skipped_dir(&name, false));
-        if !noise {
-            return false;
-        }
-        any = true;
-    }
-    any
+        !newer || name == ".DS_Store" || name == ".git" || (is_dir && skipped_dir(&name, false))
+    })
 }
 
 /// How often the watcher's view is checked against a full pass, in case it missed events.
@@ -237,7 +229,7 @@ mod tests {
         set("a.rs", base);
         set(".DS_Store", base + Duration::from_secs(10));
         assert!(only_noise_newer(t.path(), base + Duration::from_secs(5)), "Finder looked at the folder");
-        assert!(!only_noise_newer(t.path(), base + Duration::from_secs(50)), "nothing newer: no proof the event was noise");
+        assert!(only_noise_newer(t.path(), base + Duration::from_secs(50)), "nothing newer: a clean or a deletion, which does not count");
         set_dir("target", base + Duration::from_secs(10));
         set(".git", base + Duration::from_secs(10));
         assert!(only_noise_newer(t.path(), base + Duration::from_secs(5)), "a first build made target; .git is git's own");
