@@ -200,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn the_outline_nests_headings_and_collapses_rows() {
+    fn the_outline_nests_headings_under_their_parents() {
         let (lines, blocks) = doc("# A\n\n## B\n\n### C\n\n## D\n\n# E");
         let h = headings(&blocks, &lines);
         let rows = outline(&h);
