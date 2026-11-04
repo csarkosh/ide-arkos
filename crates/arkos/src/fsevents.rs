@@ -7,9 +7,6 @@
 //! box lives until `Drop` has stopped, invalidated and released the stream and then waited for the
 //! queue to drain, so no callback can reach a freed sender.
 
-// Temporary: nothing calls this yet; the allowance is removed when Task 7 uses the module.
-#![allow(dead_code)]
-
 use futures::channel::mpsc::UnboundedSender;
 use libc::{c_char, c_void};
 use std::ffi::{CStr, CString, OsStr};

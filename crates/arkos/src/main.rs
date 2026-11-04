@@ -296,6 +296,28 @@ pub struct Root {
     pub wt_menu: Transient<(PathBuf, gpui::Point<gpui::Pixels>)>,
     /// The Worktrees section's focus handle.
     pub wt_focus: FocusHandle,
+    /// The pointer is over the Worktrees list (wired by the section's paint): the order holds.
+    pub wt_hovered: bool,
+    /// The open folder as the worktree model and the file-system watcher compare it: canonical,
+    /// computed once.
+    pub wt_open: PathBuf,
+    /// The open folder is the home folder, so `Library` and `Applications` are skipped too.
+    pub wt_home: bool,
+    /// The FSEvents stream behind the Worktrees section; `None` on a network volume, when it could
+    /// not start, and after the window closed.
+    pub wt_stream: Option<fsevents::Stream>,
+    /// The paths `wt_stream` watches, to tell when the set changed.
+    pub wt_stream_paths: Vec<PathBuf>,
+    /// When the last full pass (the first load or the safety net) started.
+    pub wt_pass_at: Instant,
+    /// The stream's events until the drain task takes them; every stream sends on `wt_tx`.
+    pub wt_events: Option<futures::channel::mpsc::UnboundedReceiver<fsevents::Event>>,
+    pub wt_tx: futures::channel::mpsc::UnboundedSender<fsevents::Event>,
+    /// Bumped as each `git worktree list` starts (a full pass takes one for all its lists);
+    /// `wt_list_gen` keeps, per repository, the number of the list last applied, so an older
+    /// list landing after a newer one is dropped.
+    pub wt_gen: u64,
+    pub wt_list_gen: HashMap<PathBuf, u64>,
     /// The text size new terminals start at, and that panes without a terminal measure with.
     /// Cmd+= and Cmd+- change the focused terminal's own size, not this.
     pub font_size: f32,
@@ -634,6 +656,8 @@ impl Root {
         let details_open = saved.as_ref().map(|w| w.details_open.clone()).unwrap_or_default();
         let folds = saved.as_ref().map(|w| w.folds.clone()).unwrap_or_default();
         let diagram_modes = saved.as_ref().map(|w| w.diagram_modes.clone()).unwrap_or_default();
+        let wt_open = wt_scan::canonical(&project);
+        let (wt_tx, wt_rx) = futures::channel::mpsc::unbounded();
         // The folder's own sidebar when it saved one, else the config's defaults.
         let (sidebar, explorer, worktrees) = match saved.as_ref().and_then(|w| w.sidebar.clone()) {
             Some(s) => (sidebar::Sidebar::new(s.width, s.collapsed, s.explorer_open, s.worktrees_open, s.outline_open, cx), explorer::Explorer::new(project.clone(), s.expanded, s.show_ignored), worktrees::Worktrees::new(s.worktrees_expanded)),
@@ -693,6 +717,16 @@ impl Root {
             wt_focused: false,
             wt_menu: Transient::Hidden,
             wt_focus: cx.focus_handle(),
+            wt_hovered: false,
+            wt_open: wt_open.clone(),
+            wt_home: std::env::var_os("HOME").map(|h| wt_scan::canonical(Path::new(&h))).is_some_and(|h| h == wt_open),
+            wt_stream: None,
+            wt_stream_paths: Vec::new(),
+            wt_pass_at: Instant::now(),
+            wt_events: Some(wt_rx),
+            wt_tx,
+            wt_gen: 0,
+            wt_list_gen: HashMap::new(),
             font_size: preset.size,
             line_height: preset.line_height,
             text_preset,
@@ -5084,6 +5118,7 @@ fn open_project_window(
             root.load_pending_dirs(cx);
             root.refresh_status(cx);
             root.refresh_worktrees(cx);
+            root.start_worktree_watch(cx);
             cx.notify();
         });
         // A Settings, About or Keybindings window opened from the chooser shows this window's
@@ -5134,6 +5169,11 @@ fn open_project_window(
             let left = cx.windows().len();
             let project_open = cx.windows().iter().any(|w| w.window_id() == project_window);
             let chooser = close_root.read(cx).chooser.filter(|h| cx.windows().iter().any(|w| w.window_id() == h.window_id()));
+            // The project window is gone: its file-system watcher stops now, not at the quit
+            // that follows (this closure keeps the `Root` alive until then).
+            if !project_open {
+                close_root.update(cx, |root, _| root.stop_worktree_watch());
+            }
             match after_window_closed(left, project_open, chooser.is_some() || aux::aux_open(cx) > 0) {
                 AfterClose::Quit => {
                     close_root.update(cx, |root, cx| if says_goodbye(root.user_closing, left) { root.leaving(cx) } else { root.flush_for_quit(false, cx) });

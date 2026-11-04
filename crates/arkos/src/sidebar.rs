@@ -17,10 +17,11 @@ use crate::Root;
 use gpui::{div, prelude::*, px, uniform_list, App, ClickEvent, Context, Div, FocusHandle, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, ScrollHandle, Stateful, UniformList, UniformListScrollHandle, Window};
 use protocol::SessionId;
 use crate::video::Fp;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use futures::StreamExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 pub const MIN_W: f32 = 160.0;
 pub const MAX_W: f32 = 600.0;
@@ -817,6 +818,58 @@ pub fn terminals_inside(tree: &Tree, dir: &Path) -> usize {
     tree.tabs().into_iter().filter(|(_, _, tab)| matches!(tab, Tab::Terminal { cwd: Some(c), .. } if c.starts_with(dir))).count()
 }
 
+/// A `git worktree list` read off the UI thread: the folder asked about, the side worktrees (or
+/// git's words) and each listed worktree's admin stamp.
+type Listed = (PathBuf, Result<Vec<Worktree>, String>, Vec<(PathBuf, crate::worktrees::Stamp)>);
+
+fn list_with_stamps(asked: PathBuf) -> Listed {
+    let list = crate::worktrees::list_side(&asked);
+    let stamps = list.as_ref().map(|l| l.iter().filter_map(|w| w.admin.as_deref().map(|a| (w.path.clone(), crate::worktrees::stamp(a)))).collect()).unwrap_or_default();
+    (asked, list, stamps)
+}
+
+fn walk_age(path: PathBuf) -> (PathBuf, Option<crate::wt_scan::Newest>) {
+    let newest = crate::wt_scan::newest_change(&path, crate::wt_scan::AGE_BUDGET);
+    (path, newest)
+}
+
+/// How many `git worktree list` runs or age walks run at once.
+const WT_PARALLEL: usize = 4;
+
+/// Runs `work` on each item on the background executor, `WT_PARALLEL` at a time, handing each
+/// result to `apply` on the UI thread as it lands. Stops when `apply` says so (a newer pass) and
+/// says false then, or when the window is gone.
+async fn in_parallel<I: Send + 'static, T: Send + 'static>(this: &gpui::WeakEntity<Root>, cx: &mut gpui::AsyncApp, items: Vec<I>, work: fn(I) -> T, mut apply: impl FnMut(&mut Root, T, &mut Context<Root>) -> bool) -> bool {
+    use futures::stream::FuturesUnordered;
+    let mut items = items.into_iter();
+    let mut running = FuturesUnordered::new();
+    loop {
+        while running.len() < WT_PARALLEL {
+            let Some(item) = items.next() else { break };
+            running.push(cx.background_executor().spawn(async move { work(item) }));
+        }
+        let Some(out) = running.next().await else { return true };
+        if !this.update(cx, |root, cx| apply(root, out, cx)).unwrap_or(false) {
+            return false;
+        }
+    }
+}
+
+/// The Worktrees section's line when the file-system watcher is not running: on a network volume,
+/// when it could not start, or when the open folder itself went away; `None` while watching.
+/// `status_off` (a refused filter config) is drawn as its own row and does not change the notice.
+// Task 8 draws it; until then only the tests call it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn watched_notice(w: &crate::worktrees::Watched, _status_off: Option<&str>) -> Option<&'static str> {
+    use crate::worktrees::Watched;
+    match w {
+        Watched::Watching => None,
+        Watched::NotLocal => Some("not watched: the folder is on a network volume"),
+        Watched::Failed(_) => Some("not watched: the file watcher could not start"),
+        Watched::FolderGone => Some("the folder is gone"),
+    }
+}
+
 /// The notice after a removal that left terminals open in the removed worktree.
 pub fn removed_notice(terminals: usize) -> String {
     if terminals == 1 {
@@ -856,6 +909,7 @@ pub fn worktree_menu_items(wt: &Worktree, dirty: Option<usize>) -> Vec<(&'static
 /// something moves and Reduce Motion is off.
 fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx: &mut Context<Root>) -> Stateful<Div> {
     let style = root.effect_style();
+    root.sync_worktree_hold();
     let rows = root.worktrees.rows();
     let selected = root.worktrees.selected.clone();
     let still = crate::motion::reduce_motion();
@@ -1084,37 +1138,373 @@ impl Root {
         .detach();
     }
 
-    /// Runs `git worktree list` for the open folder's repository on the background executor
-    /// and files the side worktrees under that repository, or git's error under the folder. A
-    /// result older than a newer run is dropped.
+    /// The first load and the safety-net pass: find repositories, list each, age each; rows show as
+    /// each stage lands; a result older than a newer pass is dropped (`worktrees_seq`). A
+    /// repository the pass no longer finds is dropped once every list has landed, unless it is
+    /// still a repository under the open folder (a nested one the stream registered, which the
+    /// walk does not enter). The current rows stay up meanwhile.
     pub fn refresh_worktrees(&mut self, cx: &mut Context<Self>) {
         self.worktrees_seq += 1;
         let seq = self.worktrees_seq;
-        let root = self.project.clone();
+        self.wt_pass_at = Instant::now();
+        self.wt_gen += 1;
+        let gen = self.wt_gen;
+        let open = self.wt_open.clone();
         cx.spawn(async move |this, cx| {
-            let list = cx.background_executor().spawn(async move { crate::worktrees::list_side(&root) }).await;
+            let o = open.clone();
+            let found = cx.background_executor().spawn(async move { crate::wt_scan::find_repos(&o, crate::wt_scan::DISCOVERY_BUDGET) }).await;
+            let mut seen: HashSet<PathBuf> = HashSet::new();
+            let listed = in_parallel(&this, cx, found.repos, list_with_stamps, |root, listed, cx| {
+                if root.worktrees_seq != seq {
+                    return false;
+                }
+                seen.insert(root.apply_worktree_list(gen, listed));
+                root.after_worktree_lists(cx);
+                true
+            })
+            .await;
+            if !listed {
+                return;
+            }
+            let Ok(Some(unseen)) = this.update(cx, |root, _| {
+                (root.worktrees_seq == seq).then(|| root.worktrees.by_repo.keys().chain(root.worktrees.errors.keys()).filter(|k| !seen.contains(*k)).cloned().collect::<Vec<_>>())
+            }) else {
+                return;
+            };
+            let gone = cx.background_executor().spawn(async move { unseen.into_iter().filter(|k| !(k.starts_with(&open) && k.join(".git").exists())).collect::<Vec<_>>() }).await;
+            let Ok(Some(to_age)) = this.update(cx, |root, cx| {
+                if root.worktrees_seq != seq {
+                    return None;
+                }
+                for repo in &gone {
+                    root.forget_repo(repo);
+                }
+                root.after_worktree_lists(cx);
+                root.update_worktree_stream(cx);
+                Some(root.worktrees.all().filter(|w| w.has_files()).map(|w| w.path.clone()).collect::<Vec<_>>())
+            }) else {
+                return;
+            };
+            in_parallel(&this, cx, to_age, walk_age, |root, (path, newest), cx| {
+                if root.worktrees_seq != seq {
+                    return false;
+                }
+                root.apply_age(&path, newest);
+                cx.notify();
+                true
+            })
+            .await;
+        })
+        .detach();
+    }
+
+    /// Creates the stream over `wt_watch::stream_paths` (recreating with `since` when the set
+    /// changes) and spawns the drain task; sets `worktrees.watched`. A folder on a network volume
+    /// gets no stream, and the ten minute pass alone keeps its list.
+    pub fn start_worktree_watch(&mut self, cx: &mut Context<Self>) {
+        if let Some(mut rx) = self.wt_events.take() {
+            cx.spawn(async move |this, cx| {
+                // One batch a second at most (`fsevents::LATENCY`): everything waiting is taken
+                // at once, repeats dropped, and handled in one update.
+                while let Some(first) = rx.next().await {
+                    let mut batch = vec![first];
+                    while let Ok(ev) = rx.try_recv() {
+                        if !batch.contains(&ev) {
+                            batch.push(ev);
+                        }
+                    }
+                    let handled = this.update(cx, |root, cx| {
+                        for ev in batch {
+                            root.worktree_event(ev, cx);
+                        }
+                    });
+                    if handled.is_err() {
+                        return;
+                    }
+                }
+            })
+            .detach();
+        }
+        if !crate::fsevents::local_volume(&self.wt_open) {
+            self.stop_worktree_watch();
+            self.worktrees.watched = crate::worktrees::Watched::NotLocal;
+            cx.notify();
+            return;
+        }
+        let (paths, left_out) = crate::wt_watch::stream_paths(&self.wt_open, &self.worktrees);
+        let since = self.wt_stream.as_ref().map(|s| s.latest_event_id());
+        match crate::fsevents::Stream::start(&paths, since, self.wt_tx.clone()) {
+            Ok(stream) => {
+                // The old stream, if any, stops here, after the new one took over from its id.
+                self.wt_stream = Some(stream);
+                self.wt_stream_paths = paths;
+                self.worktrees.watched = crate::worktrees::Watched::Watching;
+                self.mark_lagging(&left_out);
+            }
+            Err(e) => {
+                self.stop_worktree_watch();
+                self.worktrees.watched = crate::worktrees::Watched::Failed(e);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Releases the stream (the window closed).
+    pub fn stop_worktree_watch(&mut self) {
+        self.wt_stream = None;
+        self.wt_stream_paths.clear();
+    }
+
+    /// One event from the stream, by `wt_watch::classify`; git and walks run on the background executor.
+    pub fn worktree_event(&mut self, event: crate::fsevents::Event, cx: &mut Context<Self>) {
+        use crate::fsevents::Event;
+        use crate::wt_watch::Rule;
+        match event {
+            Event::MustScan => self.refresh_worktrees(cx),
+            Event::RootChanged => {
+                if self.wt_open.exists() {
+                    if self.worktrees.watched == crate::worktrees::Watched::FolderGone {
+                        self.start_worktree_watch(cx);
+                    }
+                    self.refresh_worktrees(cx);
+                } else {
+                    // A pass in flight would fill the list again.
+                    self.worktrees_seq += 1;
+                    self.worktrees.watched = crate::worktrees::Watched::FolderGone;
+                    let repos: Vec<PathBuf> = self.worktrees.by_repo.keys().cloned().collect();
+                    for repo in &repos {
+                        self.forget_repo(repo);
+                    }
+                    self.worktrees.errors.clear();
+                    self.after_worktree_lists(cx);
+                }
+            }
+            Event::Changed(path) => {
+                if !crate::wt_watch::passes(&path, &self.wt_open, self.wt_home) {
+                    return;
+                }
+                match crate::wt_watch::classify(&path, &self.wt_open, &self.worktrees) {
+                    Rule::RelistRepo(repo) => self.relist_repo(repo, cx),
+                    Rule::CheckStamp { repo, name } => self.check_worktree_stamp(repo, &name, cx),
+                    Rule::Touched(wt) => self.touch_worktree(wt, path, cx),
+                    Rule::Unknown(dir) => self.look_at_folder(dir, cx),
+                    Rule::Ignore => {}
+                }
+            }
+        }
+    }
+
+    /// Every 10 s from the slow tick: notify when the section is open and has rows (the age text
+    /// is computed at paint); on the 10 minute mark, `refresh_worktrees`.
+    pub fn tick_worktree_ages(&mut self, cx: &mut Context<Self>) {
+        if crate::explorer_watch::full_pass_due(self.wt_pass_at, Instant::now()) {
+            self.refresh_worktrees(cx);
+        }
+        if self.sidebar.worktrees_open && !self.sidebar.collapsed && self.worktrees.all().next().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// The order holds while the pointer is over the list, or while the keyboard is in the
+    /// section with a row selected.
+    pub fn sync_worktree_hold(&mut self) {
+        self.worktrees.hold_order = self.wt_hovered || (self.wt_focused && self.worktrees.selected.is_some());
+    }
+
+    /// `git worktree list` for one repository, with its stamps, off the UI thread; new worktrees
+    /// get their age walk.
+    fn relist_repo(&mut self, repo: PathBuf, cx: &mut Context<Self>) {
+        self.wt_gen += 1;
+        let gen = self.wt_gen;
+        cx.spawn(async move |this, cx| {
+            let listed = cx.background_executor().spawn(async move { list_with_stamps(repo) }).await;
+            let _ = this.update(cx, |root, cx| root.listed_one(gen, listed, cx));
+        })
+        .detach();
+    }
+
+    /// A list from an event landed: apply it, follow with the stream, age the worktrees that have
+    /// no age yet.
+    fn listed_one(&mut self, gen: u64, listed: Listed, cx: &mut Context<Self>) {
+        let repo = self.apply_worktree_list(gen, listed);
+        self.after_worktree_lists(cx);
+        self.update_worktree_stream(cx);
+        let unaged: Vec<PathBuf> = self.worktrees.by_repo.get(&repo).into_iter().flatten()
+            .filter(|w| w.has_files() && self.worktrees.ages.get(&w.path).and_then(|a| a.changed).is_none())
+            .map(|w| w.path.clone())
+            .collect();
+        if unaged.is_empty() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            in_parallel(&this, cx, unaged, walk_age, |root, (path, newest), cx| {
+                if root.worktrees.find(&path).is_some() {
+                    root.apply_age(&path, newest);
+                    cx.notify();
+                }
+                true
+            })
+            .await;
+        })
+        .detach();
+    }
+
+    /// `<repo>/.git/worktrees/<name>` changed: the admin folder's stamp is read off the UI thread
+    /// and the repository listed again only when it moved (a `git status` writing `index` moves
+    /// nothing).
+    fn check_worktree_stamp(&mut self, repo: PathBuf, name: &str, cx: &mut Context<Self>) {
+        let Some(wt) = self.worktrees.by_repo.get(&repo).into_iter().flatten().find(|w| w.admin.as_deref().and_then(Path::file_name).is_some_and(|n| n == std::ffi::OsStr::new(name))) else {
+            return;
+        };
+        let Some(admin) = wt.admin.clone() else { return };
+        let stored = self.worktrees.stamps.get(&wt.path).copied();
+        cx.spawn(async move |this, cx| {
+            let now = cx.background_executor().spawn(async move { crate::worktrees::stamp(&admin) }).await;
+            if stored != Some(now) {
+                let _ = this.update(cx, |root, cx| root.relist_repo(repo, cx));
+            }
+        })
+        .detach();
+    }
+
+    /// Something changed in `dir` inside the worktree `wt`: its age becomes now, unless the folder
+    /// is gone (missing) or, after a minute's quiet, Finder's `.DS_Store` is the only newer entry
+    /// in `dir`. The stat and the `read_dir` run off the UI thread.
+    fn touch_worktree(&mut self, wt: PathBuf, dir: PathBuf, cx: &mut Context<Self>) {
+        // A worktree outside the open folder gets its events unfiltered: a build in its `target`
+        // is not work in it.
+        if crate::wt_watch::skipped_below(&wt, &dir) {
+            return;
+        }
+        let at = SystemTime::now();
+        let since = match self.worktrees.ages.get(&wt).and_then(|a| a.changed) {
+            Some(c) if at.duration_since(c).is_ok_and(|d| d < Duration::from_secs(60)) => None,
+            c => Some(c.unwrap_or(SystemTime::UNIX_EPOCH)),
+        };
+        cx.spawn(async move |this, cx| {
+            let w = wt.clone();
+            let (gone, only_ds_store) = cx
+                .background_executor()
+                .spawn(async move {
+                    let gone = std::fs::symlink_metadata(&w).is_err();
+                    (gone, !gone && since.is_some_and(|s| crate::wt_watch::only_ds_store_newer(&dir, s)))
+                })
+                .await;
             let _ = this.update(cx, |root, cx| {
-                if seq == root.worktrees_seq {
-                    match list {
-                        Ok(list) => {
-                            let project = root.project.clone();
-                            let repo = list.first().map(|w| w.repo.clone()).unwrap_or_else(|| crate::wt_scan::canonical(&crate::wt_scan::enclosing_repo(&project).unwrap_or_else(|| project.clone())));
-                            root.worktrees.errors.remove(&project);
-                            root.worktrees.set_repo(&repo, list);
-                        }
-                        Err(e) => {
-                            root.worktrees.errors.insert(root.project.clone(), e);
-                        }
+                let Some(known) = root.worktrees.find(&wt) else { return };
+                if gone {
+                    if !known.missing {
+                        root.worktrees.mark_missing(&wt);
+                        root.after_worktree_lists(cx);
+                        root.update_worktree_stream(cx);
                     }
-                    if root.wt_menu.value().is_some_and(|m| root.worktrees.find(&m.0).is_none()) {
-                        root.wt_menu.hide(Instant::now());
-                    }
-                    root.load_pending_worktrees(cx);
+                } else if !only_ds_store {
+                    root.worktrees.touched(&wt, at);
                     cx.notify();
                 }
             });
         })
         .detach();
+    }
+
+    /// A folder outside every listed worktree changed: one look for `.git` off the UI thread. A
+    /// new one registers the repository (listed, stamped, aged); a known repository whose `.git`
+    /// is gone is dropped.
+    fn look_at_folder(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
+        let known = self.worktrees.by_repo.contains_key(&dir);
+        self.wt_gen += 1;
+        let gen = self.wt_gen;
+        cx.spawn(async move |this, cx| {
+            let d = dir.clone();
+            let seen = cx
+                .background_executor()
+                .spawn(async move {
+                    let has_git = std::fs::symlink_metadata(d.join(".git")).is_ok();
+                    match (has_git, known) {
+                        (true, false) => Some(Some(list_with_stamps(d))),
+                        (false, true) => Some(None),
+                        _ => None,
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |root, cx| match seen {
+                Some(Some(listed)) => root.listed_one(gen, listed, cx),
+                Some(None) => {
+                    root.forget_repo(&dir);
+                    root.after_worktree_lists(cx);
+                    root.update_worktree_stream(cx);
+                }
+                None => {}
+            });
+        })
+        .detach();
+    }
+
+    /// Files a list under its repository (the main checkout git printed, or the folder asked
+    /// about when it has no side worktrees) with its stamps, or git's words under the folder.
+    /// A list older than the one last applied to that repository is dropped. Returns the key.
+    fn apply_worktree_list(&mut self, gen: u64, (asked, list, stamps): Listed) -> PathBuf {
+        match list {
+            Ok(list) => {
+                let repo = list.first().map_or_else(|| asked.clone(), |w| w.repo.clone());
+                if self.wt_list_gen.get(&repo).is_some_and(|g| *g > gen) {
+                    return repo;
+                }
+                self.wt_list_gen.insert(repo.clone(), gen);
+                self.worktrees.errors.remove(&asked);
+                self.worktrees.set_repo(&repo, list);
+                self.worktrees.stamps.extend(stamps);
+                repo
+            }
+            Err(e) => {
+                self.worktrees.errors.insert(asked.clone(), e);
+                asked
+            }
+        }
+    }
+
+    /// Drops a repository, its rows and its error.
+    fn forget_repo(&mut self, repo: &Path) {
+        self.worktrees.remove_repo(repo);
+        self.worktrees.errors.remove(repo);
+        self.wt_list_gen.remove(repo);
+    }
+
+    /// An age walk landed: the newest change found, keeping whether the stream covers it.
+    fn apply_age(&mut self, path: &Path, newest: Option<crate::wt_scan::Newest>) {
+        let lagging = self.worktrees.ages.get(path).is_some_and(|a| a.lagging);
+        self.worktrees.set_age(path, crate::worktrees::Age { changed: newest.map(|n| n.at), capped: newest.is_some_and(|n| n.capped), lagging });
+    }
+
+    /// After the lists changed: a menu on a worktree that went closes, newly expanded worktrees
+    /// load, and the section redraws.
+    fn after_worktree_lists(&mut self, cx: &mut Context<Self>) {
+        if self.wt_menu.value().is_some_and(|m| self.worktrees.find(&m.0).is_none()) {
+            self.wt_menu.hide(Instant::now());
+        }
+        self.load_pending_worktrees(cx);
+        cx.notify();
+    }
+
+    /// The stream follows the lists: a changed path set recreates it from the old one's event id;
+    /// the worktrees left out of it are marked as lagging.
+    fn update_worktree_stream(&mut self, cx: &mut Context<Self>) {
+        let (paths, left_out) = crate::wt_watch::stream_paths(&self.wt_open, &self.worktrees);
+        if self.wt_stream.is_some() && paths != self.wt_stream_paths {
+            self.start_worktree_watch(cx);
+        } else {
+            self.mark_lagging(&left_out);
+        }
+    }
+
+    /// `lagging` on exactly the worktrees in `left_out`.
+    fn mark_lagging(&mut self, left_out: &[PathBuf]) {
+        for (path, age) in self.worktrees.ages.iter_mut() {
+            age.lagging = left_out.contains(path);
+        }
+        for path in left_out {
+            self.worktrees.ages.entry(path.clone()).or_default().lagging = true;
+        }
     }
 
     /// Runs `git status` for each expanded worktree whose changes are not loaded, off the UI
@@ -1232,7 +1622,8 @@ impl Root {
     /// `git worktree remove` off the UI thread; git's refusal (changes, the main checkout) is a
     /// notice, and so are terminals left open in a removed one (they keep running).
     pub fn remove_worktree(&mut self, path: PathBuf, force: bool, cx: &mut Context<Self>) {
-        let root = self.project.clone();
+        let repo = self.worktrees.repo_of(&path).map_or_else(|| self.project.clone(), Path::to_path_buf);
+        let root = repo.clone();
         let removed = path.clone();
         cx.spawn(async move |this, cx| {
             let result = cx.background_executor().spawn(async move { crate::worktrees::remove(&root, &path, force) }).await;
@@ -1244,7 +1635,7 @@ impl Root {
                         n => root.show_notice(removed_notice(n), cx),
                     },
                 }
-                root.refresh_worktrees(cx);
+                root.relist_repo(repo, cx);
             });
         })
         .detach();
@@ -1256,6 +1647,7 @@ impl Root {
         if ks.modifiers.platform || ks.modifiers.control || ks.modifiers.alt {
             return;
         }
+        self.sync_worktree_hold();
         let rows = self.worktrees.rows();
         let sel = self.worktrees.selected.clone();
         match ks.key.as_str() {
@@ -1511,6 +1903,18 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_section_says_when_the_folder_is_not_watched() {
+        use crate::worktrees::Watched;
+        use super::watched_notice;
+        assert_eq!(watched_notice(&Watched::Watching, None), None);
+        assert_eq!(watched_notice(&Watched::NotLocal, None), Some("not watched: the folder is on a network volume"));
+        assert_eq!(watched_notice(&Watched::Failed("FSEvents refused the stream".into()), None), Some("not watched: the file watcher could not start"));
+        assert_eq!(watched_notice(&Watched::FolderGone, None), Some("the folder is gone"));
+        assert_eq!(watched_notice(&Watched::NotLocal, Some(crate::explorer::STATUS_OFF)), Some("not watched: the folder is on a network volume"), "a refused filter config is its own row, not this notice");
+        assert_eq!(watched_notice(&Watched::Watching, Some(crate::explorer::STATUS_OFF)), None);
+    }
+
     use super::*;
     use crate::tree::{Side, Tree};
     use protocol::SessionId;

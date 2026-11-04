@@ -3,7 +3,7 @@
 //! again, a changed file reloaded. Each video view is handed its file's fingerprint every
 //! second, changed or not (`Root::tick_videos`). One stat per expanded directory per second. `git status`
 //! runs a second after the last change it has not seen, and every ten seconds regardless; the
-//! worktree list, the expanded worktrees' status and the viewers' diffs, every ten seconds.
+//! expanded worktrees' status, the worktree ages' redraw and the viewers' diffs, every ten seconds.
 use crate::config_watch::fingerprint;
 use crate::Root;
 use gpui::{App, Entity};
@@ -64,19 +64,25 @@ impl StatusRuns {
 }
 
 /// What the ten-second tick runs besides `git status` (which `status_due` runs every ten
-/// seconds regardless, so a `git init` is noticed).
+/// seconds regardless, so a `git init` is noticed), the expanded worktrees' changes and the
+/// worktree ages (which run whether or not the open folder is a repository, since the folder may
+/// hold many).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlowTick {
-    /// The worktree list and the expanded worktrees' changes.
-    pub worktrees: bool,
     /// The open viewers' diffs against HEAD.
     pub rediff: bool,
 }
 
-/// Outside a repository there is no worktree to list and no HEAD to diff against: the tick
-/// runs neither until a status finds a repository and clears `not_git`.
+/// Outside a repository there is no HEAD to diff against: the tick diffs nothing until a status
+/// finds a repository and clears `not_git`.
 pub fn slow_tick_plan(not_git: bool) -> SlowTick {
-    SlowTick { worktrees: !not_git, rediff: !not_git }
+    SlowTick { rediff: !not_git }
+}
+
+/// Whether the Worktrees section's safety-net pass is due: `FULL_PASS_EVERY` since the last one
+/// started at `last`.
+pub fn full_pass_due(last: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(last) >= crate::wt_watch::FULL_PASS_EVERY
 }
 
 /// The paths whose fingerprint changed since `last`. A path not in `last` is a baseline.
@@ -90,8 +96,7 @@ pub fn start(root: Entity<Root>, cx: &mut App) {
         // The window ran the first `git status` as it opened, just before this started.
         let mut last_run: Option<Instant> = Some(Instant::now());
         let mut changed_at: Option<Instant> = None;
-        // The window listed the worktrees as it opened, too.
-        let mut worktrees_run = Instant::now();
+        let mut slow_run = Instant::now();
         loop {
             cx.background_executor().timer(POLL).await;
             let Ok(paths) = root.update(cx, |root, cx| root.watched_paths(cx)) else { return };
@@ -120,18 +125,17 @@ pub fn start(root: Entity<Root>, cx: &mut App) {
                     return;
                 }
             }
-            // The worktree list, the expanded worktrees' changes and the viewers' diffs, on the
+            // The expanded worktrees' changes, the worktree ages and the viewers' diffs, on the
             // slow timer: the changes are marked stale and reloaded, their rows staying up until
-            // each lands.
-            if worktrees_run.elapsed() >= STATUS_EVERY {
-                worktrees_run = Instant::now();
+            // each lands. The worktree list itself follows FSEvents (`Root::worktree_event`), with
+            // the ten minute pass run from `tick_worktree_ages`.
+            if slow_run.elapsed() >= STATUS_EVERY {
+                slow_run = Instant::now();
                 let refreshed = root.update(cx, |root, cx| {
                     let plan = slow_tick_plan(root.explorer.not_git);
-                    if plan.worktrees {
-                        root.worktrees.mark_all_stale();
-                        root.load_pending_worktrees(cx);
-                        root.refresh_worktrees(cx);
-                    }
+                    root.worktrees.mark_all_stale();
+                    root.load_pending_worktrees(cx);
+                    root.tick_worktree_ages(cx);
                     // A commit or checkout changes HEAD with the files untouched: the viewers'
                     // diffs are computed again.
                     if plan.rediff {
@@ -194,9 +198,19 @@ mod tests {
     }
 
     #[test]
-    fn outside_a_repository_the_slow_tick_lists_no_worktrees_and_diffs_nothing() {
-        assert_eq!(slow_tick_plan(false), SlowTick { worktrees: true, rediff: true });
-        assert_eq!(slow_tick_plan(true), SlowTick { worktrees: false, rediff: false }, "status alone keeps running, on its own timer");
+    fn outside_a_repository_the_slow_tick_diffs_nothing() {
+        assert_eq!(slow_tick_plan(false), SlowTick { rediff: true });
+        assert_eq!(slow_tick_plan(true), SlowTick { rediff: false }, "status alone keeps running, on its own timer; the worktrees follow FSEvents");
+    }
+
+    #[test]
+    fn the_full_pass_runs_every_ten_minutes() {
+        let t0 = Instant::now();
+        assert!(!full_pass_due(t0, t0), "just ran");
+        assert!(!full_pass_due(t0, t0 + Duration::from_secs(599)), "not ten minutes yet");
+        assert!(full_pass_due(t0, t0 + Duration::from_secs(600)), "on the ten minute mark");
+        assert!(full_pass_due(t0, t0 + Duration::from_secs(3_600)), "and long after");
+        assert!(!full_pass_due(t0 + Duration::from_secs(5), t0), "a clock read before the pass is never due");
     }
 
     #[test]

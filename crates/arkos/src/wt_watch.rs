@@ -1,9 +1,6 @@
 //! What a changed folder means to the sidebar's Worktrees section: the rules that turn the
 //! file-system watcher's reports into work, and the set of paths the watcher covers.
 
-// Temporary: nothing calls this yet; the allowance is removed when Task 7 uses the module.
-#![allow(dead_code)]
-
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime};
 

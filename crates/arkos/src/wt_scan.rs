@@ -1,8 +1,5 @@
 //! Finding the git repositories under the open folder, for the sidebar's Worktrees section.
 
-// Temporary: nothing calls this yet; the allowance is removed when Task 6 and Task 9 use the module.
-#![allow(dead_code)]
-
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -144,6 +141,8 @@ pub fn newest_change(dir: &Path, budget: usize) -> Option<Newest> {
 }
 
 /// The short age: `now` under a minute, then `4 min`, `7 h`, `2 d`, `3 w`, `5 mo`, `2 y`.
+// Task 9 uses it; until then only the tests call it.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn age_text(age: Duration) -> String {
     let secs = age.as_secs();
     let days = secs / 86_400;
@@ -159,6 +158,8 @@ pub fn age_text(age: Duration) -> String {
 }
 
 /// `7d`, `36h`, `90m`, `2w` to a duration; `None` for anything else.
+// Task 9 uses it; until then only the tests call it.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn parse_age(text: &str) -> Option<Duration> {
     let unit = text.chars().last()?;
     let per = match unit {
