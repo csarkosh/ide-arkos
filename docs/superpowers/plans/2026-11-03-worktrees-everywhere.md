@@ -626,7 +626,7 @@ git commit -m "Worktree rows: name, age since any file changed, and place; newes
   ```
   Text line: `{age:>6}  {name}{branch}  {place}` where branch is ` ({branch})` only when it differs or `(detached)`, place as `wt_row_place` with `~` for home, `missing` appended to a missing one. Errors go to stderr as `cannot list {repo}: {reason}`. JSON: `{ "folder": open, "worktrees": [ { "path", "name", "branch" | null, "repository", "changed": secs | null, "age_seconds": secs | null, "missing", "locked", "capped" } ], "repositories": [ { "path", "error"? } ] }`. `--stale X` keeps worktrees with `age_seconds >= X` (no age: kept, since unknown is not fresh). Exit: 0 (also with an empty list); 1 when `<folder>` does not exist (`no such folder: {path}`); 2 usage (a bad `--stale`, an extra word, an unknown flag), the usage text on stderr ending `see: arkos guide`, and with `--json` an error is `{ "error", "exit" }` on stdout as the other commands do.
 
-- [ ] **Step 1: Write the failing tests** (git fixtures as in Task 3):
+- [ ] **Step 1: Write the failing tests** (git fixtures as in Task 4):
 
 ```rust
 #[test]
