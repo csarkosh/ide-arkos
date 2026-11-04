@@ -134,16 +134,23 @@ fi
 PERSONAS=$(for F in "$STORIES"/*.toml; do grep -q '^persona = false' "$F" || basename "$F" .toml; done | grep -vx multitasker | sort)
 for THEME in dark; do
   set --
+  BARE=""
   for SCENE in multitasker $PERSONAS; do
     STILL="$OUT/$SCENE-$THEME.png"
     [ -f "$STILL" ] || continue
     CAPTION=$(sed -n 's/^caption = "\(.*\)"$/\1/p' "$STORIES/$SCENE.toml")
     set -- "$@" "$STILL:$CAPTION"
+    BARE="$BARE $STILL:"
   done
   if [ $# -ge 2 ]; then
     python3 -I scripts/shoot/frame.py compose "$OUT/hero-$THEME.png" "$@"
-    # The tall one, for a place beside text (csarko.sh's card on a desktop).
-    python3 -I scripts/shoot/frame.py compose-portrait "$OUT/hero-portrait-$THEME.png" "$@"
+    # csarko.sh's project card: the tall one beside its text on a desktop, the wide one under its
+    # title on a phone, both without captions, since the card's frame is too small to spare them.
+    # The stills' paths hold no spaces (docs/images or a scratch folder), so BARE splits on them.
+    # shellcheck disable=SC2086
+    python3 -I scripts/shoot/frame.py compose-portrait "$OUT/hero-portrait-$THEME.png" $BARE
+    # shellcheck disable=SC2086
+    python3 -I scripts/shoot/frame.py compose "$OUT/hero-card-$THEME.png" $BARE
   else
     echo "hero-$THEME: fewer than two stills in $OUT; not composed"
   fi
