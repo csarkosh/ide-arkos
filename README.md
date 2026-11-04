@@ -7,13 +7,13 @@
 </picture>
 
 <p align="center">
-<b>Panes and tabs</b> for your sessions · <b>a daemon</b> that keeps them alive · <b>a web pane</b> · <b>a file tree</b> with git worktrees · <b>a markdown editor</b> · <b>a CSV and spreadsheet grid</b> · <b>a video pane</b>
+<b>Panes and tabs</b> for your sessions · <b>a daemon</b> that keeps them alive · <b>a web pane</b> · <b>a file tree</b> and <b>a live worktree list</b> across every repo · <b>a markdown editor</b> · <b>a CSV and spreadsheet grid</b> · <b>a video pane</b>
 </p>
 
 Arkos is a terminal layout manager built for Claude Code: a grid of terminal panes with tabs
 that say which session is working and which is waiting on you, a web page in a pane beside the
-code, a file tree and git worktree explorer, and a markdown editor for the
-documents the sessions write. Every session lives in a separate daemon, so a frozen window, an
+code, a file tree, a live list of every repository's worktrees with how long each has sat
+untouched, and a markdown editor for the documents the sessions write. Every session lives in a separate daemon, so a frozen window, an
 update or a restart never loses work: the window comes back and every tab is where you left
 it, with Claude Code resumed. Written in Rust with GPUI, it stays light on memory and scrolls
 smoothly with dozens of sessions open.
@@ -52,12 +52,22 @@ which session is working and which is waiting on you.
 </picture>
 
 **The web developer** keeps a feature branch in a worktree, Claude Code on it and on the main
-checkout, and the app's page in a web tab next to the code; the file tree and the worktree list
-show what changed. It is shot in Lavender Material: lavender's colours as near-white cards on a
+checkout, and the app's page in a web tab next to the code; the file tree shows what changed, and
+the Worktrees list shows each side worktree with how long since anything in it changed, so a
+stale one stands out; Claude finds those with `arkos worktrees --stale 7d` and prunes them once
+you agree. It is shot in Lavender Material: lavender's colours as near-white cards on a
 lavender frame, each pane's number on a chip of its own colour and its active tab underlined.
 
 <picture>
-  <img alt="An Arkos IDE window in Lavender Material, its panes as rounded near-white cards on a lavender frame: the file tree and git worktrees on the left, two Claude Code tabs in the middle pane, one working and one waiting, and a web tab showing the app's page the whole height of the window on the right" src="docs/images/web-developer-dark.png" width="760">
+  <img alt="An Arkos IDE window in Lavender Material, its panes as rounded near-white cards on a lavender frame: the file tree and the Worktrees list on the left, two Claude Code tabs in the middle pane, one working and one waiting, and a web tab showing the app's page the whole height of the window on the right" src="docs/images/web-developer-dark.png" width="760">
+</picture>
+
+Close up, the Worktrees list: the side worktrees of every repository under the open folder,
+newest change first, each with how long since any of its files changed; a spike untouched for
+three weeks reads dimmer.
+
+<picture>
+  <img alt="The Worktrees section of the sidebar in Lavender Material: rate-limit, changed now, with its two changed files under it, over old-spike, clean and untouched for three weeks, dimmed, each with its folder under .worktrees" src="docs/images/web-developer-dark-worktrees.png" width="380">
 </picture>
 
 **The blogger** lives in markdown: a launch plan rendered in the editor, with its status table

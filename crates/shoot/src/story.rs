@@ -284,6 +284,10 @@ pub struct Demo {
     pub repos: Vec<String>,
     #[serde(default)]
     pub worktrees: Vec<String>,
+    /// Days back to date a worktree's files, by its name: a worktree untouched that long, so the
+    /// Worktrees list shows its age (and dims it past a week). Unnamed ones are left as made.
+    #[serde(default)]
+    pub aged: BTreeMap<String, u64>,
     #[serde(default = "default_site")]
     pub site: String,
     /// Where the copy lives (`~` allowed): the window's title bar shows the path. Under
@@ -647,6 +651,9 @@ impl Story {
         if !self.demo.worktrees.is_empty() && !self.demo.repos.iter().any(|r| r == ".") {
             bail!("demo.worktrees needs the demo itself among demo.repos");
         }
+        if let Some(name) = self.demo.aged.keys().find(|n| !self.demo.worktrees.contains(n)) {
+            bail!("demo.aged names {name:?}, which is not one of demo.worktrees");
+        }
         if self.shots.is_empty() {
             bail!("no [[shot]]");
         }
@@ -873,6 +880,16 @@ theme = "light"
         assert_eq!(s.shots[0].crops[0].name, "tabs");
         assert_eq!(s.shots[1].theme, "light");
         assert_eq!(s.window.preset, "compact");
+    }
+
+    #[test]
+    fn an_aged_worktree_is_dated_back_and_must_be_one_of_the_demo_s_worktrees() {
+        let with = |aged: &str| STORY.replace("worktrees = [\"rate-limit\"]", &format!("worktrees = [\"rate-limit\", \"old\"]\naged = {{ {aged} }}"));
+        let s = Story::parse(&with("old = 21")).unwrap();
+        assert_eq!(s.demo.aged.get("old"), Some(&21));
+        assert!(s.demo.aged.get("rate-limit").is_none(), "unnamed worktrees are left as made");
+        let err = Story::parse(&with("missing = 3")).unwrap_err().to_string();
+        assert!(err.contains("missing"), "{err}");
     }
 
     #[test]
