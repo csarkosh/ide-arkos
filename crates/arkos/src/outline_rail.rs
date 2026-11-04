@@ -249,13 +249,15 @@ pub fn render(root: &mut Root, viewer: &Entity<Viewer>, pane: PaneId, tab: TabId
     let drawn = shape(width, o > 0.0, has_heads, presenting);
     let overlay = drawn == Shape::Overlay;
     // The overlay holds the keys while it is open in the focused pane; closed or wide, it lets go.
-    let holds = overlay && open && root.tree.focused == pane;
+    let holds = overlay && open && root.tree.focused == pane && height >= 12.0;
     match root.outline_cursor {
         Some((t, _)) if t == tab && !holds => root.outline_cursor = None,
         Some((t, _)) if t == tab => {}
         _ if holds => {
             let current = { let v = viewer.read(cx); md_fold::current(&v.heads, v.top_block()) };
             root.outline_cursor = Some((tab, current.unwrap_or(0)));
+            // Opened with the row in view lit and in sight.
+            root.outline_scroll.scroll_to_item(current.unwrap_or(0));
         }
         _ => {}
     }
@@ -270,9 +272,9 @@ pub fn render(root: &mut Root, viewer: &Entity<Viewer>, pane: PaneId, tab: TabId
         column = column.child(render_outline_rail(viewer, tab, theme, style, x, height, cx).opacity(if overlay { 1.0 } else { 1.0 - o }));
     }
     if !overlay && o > 0.0 {
-        column = column.child(render_outline_panel(root, viewer, pane, tab, theme, style, x, false, cx).opacity(o));
+        column = column.child(render_outline_panel(root, viewer, pane, tab, theme, style, x, false, false, cx).opacity(o));
     }
-    let over = overlay.then(|| render_outline_overlay(root, viewer, pane, tab, theme, style, x, o, open, cx));
+    let over = overlay.then(|| render_outline_overlay(root, viewer, pane, tab, theme, style, x, o, open, holds, cx));
     Painted { rail: Some(column), over }
 }
 
@@ -309,7 +311,7 @@ pub fn render_outline_rail(viewer: &Entity<Viewer>, tab: TabId, theme: &Theme, s
     let dots = dots(&heads, current, area, 0.0);
     let scroll = scroll_to(&dots, current, area);
     let line = c.text_dim.alpha(LINE_ALPHA);
-    let mut strip = div().absolute().top(px(DOTS_TOP)).left_0().w(px(RAIL_W)).h(px(area)).overflow_hidden();
+    let mut strip = div().id(("outline-dots", tab)).absolute().top(px(DOTS_TOP)).left_0().w(px(RAIL_W)).h(px(area)).overflow_hidden();
     // The line runs between the dots, never under them, so a hollow dot stays hollow on a paper
     // that lets the ground through.
     for pair in dots.windows(2) {
@@ -325,7 +327,7 @@ pub fn render_outline_rail(viewer: &Entity<Viewer>, tab: TabId, theme: &Theme, s
         let w_hover = cx.weak_entity();
         let v_click = viewer.clone();
         let hit = div()
-            .id(("outline-dot", tab * 4096 + head as u64))
+            .id(("outline-dot", head))
             .absolute()
             .left_0()
             .top(px(centre - 8.0))
@@ -385,7 +387,9 @@ fn unhover(root: &mut Root, tab: TabId, head: usize, cx: &mut Context<Root>) {
 /// A row under the pointer for half a second previews its section beside the panel; a click goes
 /// there, and in the overlay (`modal`) closes it. In the overlay the row the keys move is lit.
 #[allow(clippy::too_many_arguments)]
-pub fn render_outline_panel(root: &mut Root, viewer: &Entity<Viewer>, pane: PaneId, tab: TabId, theme: &Theme, style: Style, x: f32, modal: bool, cx: &mut Context<Root>) -> Div {
+/// Only the overlay that `holds` the keys tracks the overlay's scroll handle, so two overlays
+/// open in two panes never share it.
+pub fn render_outline_panel(root: &mut Root, viewer: &Entity<Viewer>, pane: PaneId, tab: TabId, theme: &Theme, style: Style, x: f32, modal: bool, holds: bool, cx: &mut Context<Root>) -> Div {
     let c = &theme.chrome;
     let (heads, current) = {
         let v = viewer.read(cx);
@@ -425,7 +429,7 @@ pub fn render_outline_panel(root: &mut Root, viewer: &Entity<Viewer>, pane: Pane
                 })),
         );
     let mut list = div().id(("outline-rows", tab)).flex_1().min_h_0().flex().flex_col().overflow_y_scroll().pb(px(8.0));
-    if modal {
+    if holds {
         list = list.track_scroll(&root.outline_scroll);
     }
     let line = c.text_dim.alpha(LINE_ALPHA);
@@ -442,7 +446,7 @@ pub fn render_outline_panel(root: &mut Root, viewer: &Entity<Viewer>, pane: Pane
         let (w_move, w_hover) = (cx.weak_entity(), cx.weak_entity());
         let v_click = viewer.clone();
         let mut row = div()
-            .id(("outline-row", tab * 4096 + head as u64))
+            .id(("outline-row", head))
             .flex_none()
             .relative()
             .h(px(ROW_H))
@@ -500,9 +504,9 @@ pub fn render_outline_panel(root: &mut Root, viewer: &Entity<Viewer>, pane: Pane
 /// to its heading and closes, Escape closes; a click on the scrim closes. Closing, it is drawn
 /// only, taking no clicks.
 #[allow(clippy::too_many_arguments)]
-pub fn render_outline_overlay(root: &mut Root, viewer: &Entity<Viewer>, pane: PaneId, tab: TabId, theme: &Theme, style: Style, x: f32, o: f32, open: bool, cx: &mut Context<Root>) -> Div {
+pub fn render_outline_overlay(root: &mut Root, viewer: &Entity<Viewer>, pane: PaneId, tab: TabId, theme: &Theme, style: Style, x: f32, o: f32, open: bool, holds: bool, cx: &mut Context<Root>) -> Div {
     let c = &theme.chrome;
-    let panel = render_outline_panel(root, viewer, pane, tab, theme, style, x, true, cx);
+    let panel = render_outline_panel(root, viewer, pane, tab, theme, style, x, true, holds, cx);
     let border = if style.ink_borders { c.border.alpha(0.0) } else { c.border.hsla() };
     let mut scrim = div().absolute().top_0().left_0().size_full().bg(gpui::black().opacity(SCRIM_ALPHA)).opacity(o);
     let mut sheet = div()
@@ -525,8 +529,13 @@ pub fn render_outline_overlay(root: &mut Root, viewer: &Entity<Viewer>, pane: Pa
                 root.focus_pane(pane, cx);
             }),
         );
+        sheet = sheet.occlude();
+    }
+    // Only the overlay holding the cursor tracks the one focus handle: another open in an
+    // unfocused pane would otherwise take the keys of the one in front.
+    if open && holds {
         let v_keys = viewer.clone();
-        sheet = sheet.occlude().track_focus(&root.outline_focus).on_key_down(cx.listener(move |root, ev: &KeyDownEvent, _window, cx| {
+        sheet = sheet.track_focus(&root.outline_focus).on_key_down(cx.listener(move |root, ev: &KeyDownEvent, _window, cx| {
             let m = &ev.keystroke.modifiers;
             if m.platform || m.control || m.alt {
                 return;
@@ -562,12 +571,15 @@ pub fn render_outline_overlay(root: &mut Root, viewer: &Entity<Viewer>, pane: Pa
 /// lines of its section, in the menu frame, at the pointer's height beside the rail or the panel.
 pub fn render_hover(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     let h = root.outline_hover?;
-    let now = root.frame_now;
-    if now < h.shows_at() {
+    // A hover whose tab left the screen is forgotten, or its card would come back at the old
+    // pointer when the tab is shown again.
+    let shown = root.tree.locate(h.tab).is_some_and(|(pane, idx)| root.tree.pane(pane).is_some_and(|p| p.active == idx));
+    if !shown {
+        root.outline_hover = None;
         return None;
     }
-    let (pane, idx) = root.tree.locate(h.tab)?;
-    if root.tree.pane(pane)?.active != idx {
+    let now = root.frame_now;
+    if now < h.shows_at() {
         return None;
     }
     let viewer = root.viewers.get(&h.tab)?.clone();

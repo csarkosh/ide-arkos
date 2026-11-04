@@ -1252,7 +1252,8 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 RawColors::opaque(theme.chrome.text, theme.chrome.text_dim, theme.tree.modified, theme.chrome.focus_ring),
             )
             .paper_alpha(style.document_paper_alpha)
-            .paper_radius(paper_radius(style));
+            .paper_radius(paper_radius(style))
+            .paper_left(!has_rail);
             div()
                 .size_full()
                 .flex()

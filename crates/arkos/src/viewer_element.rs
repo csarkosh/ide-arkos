@@ -478,11 +478,13 @@ pub struct ViewerElement {
     paper_alpha: f32,
     /// The radius of the paper's bottom corners (`pane_view::paper_radius`).
     paper_radius: f32,
+    /// Whether the bottom left corner is rounded too: not beside the outline rail, which takes it.
+    paper_left: bool,
 }
 
 impl ViewerElement {
     pub fn new(viewer: Entity<Viewer>, family: SharedString, bg: Rgb, gutter_fg: Rgb, text_fg: Rgb, find_match: Rgb, find_current: Rgb, marks: MarkColors, raw: RawColors) -> Self {
-        Self { viewer, family, bg, gutter_fg, text_fg, find_match, find_current, marks, raw, paper_alpha: 1.0, paper_radius: 0.0 }
+        Self { viewer, family, bg, gutter_fg, text_fg, find_match, find_current, marks, raw, paper_alpha: 1.0, paper_radius: 0.0, paper_left: true }
     }
 
     /// The paper painted with `alpha`, so an effect's wash shows faintly through it.
@@ -494,6 +496,12 @@ impl ViewerElement {
     /// Rounds the paper's bottom corners by `radius` points.
     pub fn paper_radius(mut self, radius: f32) -> Self {
         self.paper_radius = radius;
+        self
+    }
+
+    /// Leaves the paper's bottom left corner square, where the outline rail meets it.
+    pub fn paper_left(mut self, rounded: bool) -> Self {
+        self.paper_left = rounded;
         self
     }
 
@@ -604,7 +612,7 @@ impl Element for ViewerElement {
         let mut paper = hsla(self.bg);
         paper.a = self.paper_alpha;
         let r = px(self.paper_radius);
-        window.paint_quad(fill(bounds, paper).corner_radii(gpui::Corners { top_left: px(0.0), top_right: px(0.0), bottom_right: r, bottom_left: r }));
+        window.paint_quad(fill(bounds, paper).corner_radii(gpui::Corners { top_left: px(0.0), top_right: px(0.0), bottom_right: r, bottom_left: if self.paper_left { r } else { px(0.0) } }));
         let focused = self.viewer.read(cx).focus.is_focused(window);
         let frame = self.viewer.update(cx, |v, _| {
             let now = Instant::now();
