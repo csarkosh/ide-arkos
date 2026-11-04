@@ -284,6 +284,27 @@ impl Worktrees {
         age.changed = Some(age.changed.map_or(at, |c| c.max(at)));
     }
 
+    /// An age walk landed: the later of the age held and the walk's, since a change the stream
+    /// reported while the walk ran is newer than anything the walk saw. `capped` is the walk's;
+    /// `lagging` is the stream's to say and stays.
+    pub fn merge_age(&mut self, path: &Path, walk: Age) {
+        let age = self.ages.entry(path.to_path_buf()).or_insert(Age { lagging: walk.lagging, ..Age::default() });
+        age.changed = age.changed.max(walk.changed);
+        age.capped = walk.capped;
+    }
+
+    /// A worktree marked missing whose folder is there again: it shows as present. Whether it was
+    /// missing.
+    pub fn found_again(&mut self, path: &Path) -> bool {
+        match self.by_repo.values_mut().flatten().find(|w| w.path == path && w.missing) {
+            Some(wt) => {
+                wt.missing = false;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The worktree's folder went away: it shows as missing and collapses.
     pub fn mark_missing(&mut self, path: &Path) {
         if let Some(wt) = self.by_repo.values_mut().flatten().find(|w| w.path == path) {
@@ -576,6 +597,37 @@ worktree /r-c\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch refs/heads/
         w.set_changes(Path::new("/p-a"), Some(vec![(PathBuf::from("a"), Status::Added)]));
         assert_eq!(w.dirty_count(Path::new("/p-a")), None, "the late result is ignored");
         assert_eq!(w.rows().len(), 1);
+    }
+
+    #[test]
+    fn an_age_walk_never_moves_a_newer_change_back() {
+        let t = |s: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(s);
+        let p = Path::new("/p-a");
+        let mut w = Worktrees::new(vec![]);
+        w.merge_age(p, Age { changed: None, capped: false, lagging: false });
+        assert_eq!(w.ages[p].changed, None, "a walk that found nothing, on a worktree with no age");
+        w.merge_age(p, Age { changed: Some(t(100)), capped: true, lagging: false });
+        assert_eq!(w.ages[p], Age { changed: Some(t(100)), capped: true, lagging: false });
+        w.touched(p, t(300));
+        w.ages.get_mut(p).unwrap().lagging = true;
+        w.merge_age(p, Age { changed: Some(t(200)), capped: false, lagging: false });
+        assert_eq!(w.ages[p], Age { changed: Some(t(300)), capped: false, lagging: true }, "the touch that landed meanwhile is newer; lagging is the stream's to say");
+        w.merge_age(p, Age { changed: None, capped: false, lagging: false });
+        assert_eq!(w.ages[p].changed, Some(t(300)), "a walk that found nothing keeps the age");
+        w.merge_age(p, Age { changed: Some(t(400)), capped: false, lagging: false });
+        assert_eq!(w.ages[p].changed, Some(t(400)), "a newer walk moves it on");
+    }
+
+    #[test]
+    fn a_missing_worktree_whose_folder_came_back_is_found_again() {
+        let mut w = Worktrees::new(vec![]);
+        w.set_repo(Path::new("/p"), vec![wt("/p-a", "/p")]);
+        w.mark_missing(Path::new("/p-a"));
+        assert!(w.find(Path::new("/p-a")).unwrap().missing);
+        assert!(w.found_again(Path::new("/p-a")), "it was missing");
+        assert!(!w.find(Path::new("/p-a")).unwrap().missing);
+        assert!(!w.found_again(Path::new("/p-a")), "not missing: nothing to do");
+        assert!(!w.found_again(Path::new("/elsewhere")), "not listed");
     }
 
     #[test]

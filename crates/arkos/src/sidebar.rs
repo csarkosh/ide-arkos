@@ -847,6 +847,30 @@ fn walk_age(path: PathBuf) -> (PathBuf, Option<crate::wt_scan::Newest>) {
     (path, newest)
 }
 
+/// One batch of stream events, repeats dropped: whether the kernel dropped events, whether the
+/// open folder itself changed, and each changed folder once, in the order first seen.
+#[derive(Default)]
+struct WtBatch {
+    must_scan: bool,
+    root_changed: bool,
+    changed: Vec<PathBuf>,
+    seen: HashSet<PathBuf>,
+}
+
+impl WtBatch {
+    fn add(&mut self, ev: crate::fsevents::Event) {
+        match ev {
+            crate::fsevents::Event::MustScan => self.must_scan = true,
+            crate::fsevents::Event::RootChanged => self.root_changed = true,
+            crate::fsevents::Event::Changed(p) => {
+                if self.seen.insert(p.clone()) {
+                    self.changed.push(p);
+                }
+            }
+        }
+    }
+}
+
 /// How many `git worktree list` runs or age walks run at once.
 const WT_PARALLEL: usize = 4;
 
@@ -1218,19 +1242,15 @@ impl Root {
         if let Some(mut rx) = self.wt_events.take() {
             cx.spawn(async move |this, cx| {
                 // One batch a second at most (`fsevents::LATENCY`): everything waiting is taken
-                // at once, repeats dropped, and handled in one update.
+                // at once, repeats dropped (a set, since a burst can hold thousands of folders),
+                // and handled in one update.
                 while let Some(first) = rx.next().await {
-                    let mut batch = vec![first];
+                    let mut batch = WtBatch::default();
+                    batch.add(first);
                     while let Ok(ev) = rx.try_recv() {
-                        if !batch.contains(&ev) {
-                            batch.push(ev);
-                        }
+                        batch.add(ev);
                     }
-                    let handled = this.update(cx, |root, cx| {
-                        for ev in batch {
-                            root.worktree_event(ev, cx);
-                        }
-                    });
+                    let handled = this.update(cx, |root, cx| root.worktree_batch(batch, cx));
                     if handled.is_err() {
                         return;
                     }
@@ -1241,6 +1261,7 @@ impl Root {
         if !crate::fsevents::local_volume(&self.wt_open) {
             self.stop_worktree_watch();
             self.worktrees.watched = crate::worktrees::Watched::NotLocal;
+            self.mark_lagging(&[]);
             cx.notify();
             return;
         }
@@ -1257,6 +1278,7 @@ impl Root {
             Err(e) => {
                 self.stop_worktree_watch();
                 self.worktrees.watched = crate::worktrees::Watched::Failed(e);
+                self.mark_lagging(&[]);
             }
         }
         cx.notify();
@@ -1270,40 +1292,53 @@ impl Root {
 
     /// One event from the stream, by `wt_watch::classify`; git and walks run on the background executor.
     pub fn worktree_event(&mut self, event: crate::fsevents::Event, cx: &mut Context<Self>) {
-        use crate::fsevents::Event;
+        let mut batch = WtBatch::default();
+        batch.add(event);
+        self.worktree_batch(batch, cx);
+    }
+
+    /// One batch from the stream: the open folder's own news first, then the changed folders,
+    /// filtered (`passes`, and `skipped_below` for a worktree outside the open folder, whose
+    /// events come unfiltered), classified and collapsed (`wt_watch::collapse`), so a burst of
+    /// thousands of folders is one action per worktree, repository or folder.
+    fn worktree_batch(&mut self, batch: WtBatch, cx: &mut Context<Self>) {
         use crate::wt_watch::Rule;
-        match event {
-            Event::MustScan => self.refresh_worktrees(cx),
-            Event::RootChanged => {
-                if self.wt_open.exists() {
-                    if self.worktrees.watched == crate::worktrees::Watched::FolderGone {
-                        self.start_worktree_watch(cx);
-                    }
-                    self.refresh_worktrees(cx);
-                } else {
-                    // A pass in flight would fill the list again.
-                    self.worktrees_seq += 1;
-                    self.worktrees.watched = crate::worktrees::Watched::FolderGone;
-                    self.wt_gen += 1;
-                    let repos: Vec<PathBuf> = self.worktrees.by_repo.keys().cloned().collect();
-                    for repo in &repos {
-                        self.forget_repo(repo, self.wt_gen);
-                    }
-                    self.worktrees.errors.clear();
-                    self.after_worktree_lists(cx);
+        if batch.root_changed {
+            if self.wt_open.exists() {
+                if self.worktrees.watched == crate::worktrees::Watched::FolderGone {
+                    self.start_worktree_watch(cx);
                 }
+                self.refresh_worktrees(cx);
+            } else {
+                // A pass in flight would fill the list again.
+                self.worktrees_seq += 1;
+                self.worktrees.watched = crate::worktrees::Watched::FolderGone;
+                self.wt_gen += 1;
+                let repos: Vec<PathBuf> = self.worktrees.by_repo.keys().cloned().collect();
+                for repo in &repos {
+                    self.forget_repo(repo, self.wt_gen);
+                }
+                self.worktrees.errors.clear();
+                self.after_worktree_lists(cx);
             }
-            Event::Changed(path) => {
-                if !crate::wt_watch::passes(&path, &self.wt_open, self.wt_home) {
-                    return;
-                }
-                match crate::wt_watch::classify(&path, &self.wt_open, &self.worktrees) {
-                    Rule::RelistRepo(repo) => self.relist_repo(repo, cx),
-                    Rule::CheckStamp { repo, name } => self.check_worktree_stamp(repo, &name, cx),
-                    Rule::Touched(wt) => self.touch_worktree(wt, path, cx),
-                    Rule::Unknown(dir) => self.look_at_folder(dir, cx),
-                    Rule::Ignore => {}
-                }
+        } else if batch.must_scan {
+            self.refresh_worktrees(cx);
+        }
+        let (open, home) = (&self.wt_open, self.wt_home);
+        let rules = batch.changed.into_iter().filter(|p| crate::wt_watch::passes(p, open, home)).filter_map(|p| {
+            let rule = crate::wt_watch::classify(&p, open, &self.worktrees);
+            match &rule {
+                Rule::Touched(w) if crate::wt_watch::skipped_below(w, &p) => None,
+                _ => Some((rule, p)),
+            }
+        });
+        for (rule, dirs) in crate::wt_watch::collapse(rules.collect::<Vec<_>>()) {
+            match rule {
+                Rule::RelistRepo(repo) => self.relist_repo(repo, cx),
+                Rule::CheckStamp { repo, name } => self.check_worktree_stamp(repo, &name, cx),
+                Rule::Touched(wt) => self.touch_worktree(wt, dirs, cx),
+                Rule::Unknown(dir) => self.look_at_folder(dir, cx),
+                Rule::Ignore => {}
             }
         }
     }
@@ -1381,17 +1416,13 @@ impl Root {
         .detach();
     }
 
-    /// Something changed in `dir` inside the worktree `wt`: its age becomes now, unless the folder
-    /// is gone (missing) or, after a minute's quiet, no entry in `dir` newer than the age is
-    /// anything but noise (`only_noise_newer`: `.DS_Store`, `.git`, a build or cache folder; a
-    /// deletion alone leaves nothing newer and does not count). The stat and the `read_dir` run
-    /// off the UI thread.
-    fn touch_worktree(&mut self, wt: PathBuf, dir: PathBuf, cx: &mut Context<Self>) {
-        // A worktree outside the open folder gets its events unfiltered: a build in its `target`
-        // is not work in it.
-        if crate::wt_watch::skipped_below(&wt, &dir) {
-            return;
-        }
+    /// Something changed in `dirs` inside the worktree `wt`: its age becomes now, unless the
+    /// folder is gone (missing) or, after a minute's quiet, no entry in any of `dirs` newer than the
+    /// age is anything but noise (`only_noise_newer`: `.DS_Store`, `.git`, a build or cache
+    /// folder; a deletion alone leaves nothing newer and does not count). A worktree marked missing
+    /// whose folder is back is found again and its repository listed. The stat and the
+    /// `read_dir`s (stopping at the first folder with work in it) run off the UI thread.
+    fn touch_worktree(&mut self, wt: PathBuf, dirs: Vec<PathBuf>, cx: &mut Context<Self>) {
         let at = SystemTime::now();
         let since = match self.worktrees.ages.get(&wt).and_then(|a| a.changed) {
             Some(c) if at.duration_since(c).is_ok_and(|d| d < Duration::from_secs(60)) => None,
@@ -1403,21 +1434,31 @@ impl Root {
                 .background_executor()
                 .spawn(async move {
                     let gone = std::fs::symlink_metadata(&w).is_err();
-                    (gone, !gone && since.is_some_and(|s| crate::wt_watch::only_noise_newer(&dir, s)))
+                    (gone, !gone && since.is_some_and(|s| dirs.iter().all(|d| crate::wt_watch::only_noise_newer(d, s))))
                 })
                 .await;
             let _ = this.update(cx, |root, cx| {
                 let Some(known) = root.worktrees.find(&wt) else { return };
+                let was_missing = known.missing;
                 if gone {
-                    if !known.missing {
+                    if !was_missing {
                         root.worktrees.mark_missing(&wt);
                         root.after_worktree_lists(cx);
                         root.update_worktree_stream(cx);
                     }
-                } else if !only_noise {
-                    root.worktrees.touched(&wt, at);
-                    cx.notify();
+                    return;
                 }
+                if root.worktrees.found_again(&wt) {
+                    // Its admin folder and stamp come from git again.
+                    if let Some(repo) = root.worktrees.repo_of(&wt).map(Path::to_path_buf) {
+                        root.relist_repo(repo, cx);
+                    }
+                    root.update_worktree_stream(cx);
+                }
+                if !only_noise {
+                    root.worktrees.touched(&wt, at);
+                }
+                cx.notify();
             });
         })
         .detach();
@@ -1494,13 +1535,15 @@ impl Root {
     fn forget_repo(&mut self, repo: &Path, gen: u64) {
         self.worktrees.remove_repo(repo);
         self.worktrees.errors.remove(repo);
-        self.wt_list_gen.insert(repo.to_path_buf(), gen);
+        // Never lower a number an event's list already raised.
+        let last = self.wt_list_gen.entry(repo.to_path_buf()).or_insert(gen);
+        *last = (*last).max(gen);
     }
 
-    /// An age walk landed: the newest change found, keeping whether the stream covers it.
+    /// An age walk landed: merged with the age held (`Worktrees::merge_age`), so a change the
+    /// stream reported while it ran is never moved back.
     fn apply_age(&mut self, path: &Path, newest: Option<crate::wt_scan::Newest>) {
-        let lagging = self.worktrees.ages.get(path).is_some_and(|a| a.lagging);
-        self.worktrees.set_age(path, crate::worktrees::Age { changed: newest.map(|n| n.at), capped: newest.is_some_and(|n| n.capped), lagging });
+        self.worktrees.merge_age(path, crate::worktrees::Age { changed: newest.map(|n| n.at), capped: newest.is_some_and(|n| n.capped), lagging: false });
     }
 
     /// After the lists changed: a menu on a worktree that went closes, newly expanded worktrees
@@ -1514,13 +1557,14 @@ impl Root {
     }
 
     /// The stream follows the lists: a changed path set recreates it from the old one's event id;
-    /// the worktrees left out of it are marked as lagging.
+    /// the worktrees left out of it are marked as lagging, and none when there is no stream.
     fn update_worktree_stream(&mut self, cx: &mut Context<Self>) {
         let (paths, left_out) = crate::wt_watch::stream_paths(&self.wt_open, &self.worktrees);
-        if self.wt_stream.is_some() && paths != self.wt_stream_paths {
-            self.start_worktree_watch(cx);
-        } else {
-            self.mark_lagging(&left_out);
+        match &self.wt_stream {
+            Some(_) if paths != self.wt_stream_paths => self.start_worktree_watch(cx),
+            Some(_) => self.mark_lagging(&left_out),
+            // No stream: the section's notice says the folder is not watched, and no row lags.
+            None => self.mark_lagging(&[]),
         }
     }
 

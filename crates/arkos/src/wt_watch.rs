@@ -40,7 +40,7 @@ pub fn skipped_below(root: &Path, path: &Path) -> bool {
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Rule {
     /// `<repo>/.git/worktrees` itself: list that repository again.
     RelistRepo(PathBuf),
@@ -105,6 +105,29 @@ pub fn only_noise_newer(dir: &Path, since: SystemTime) -> bool {
     })
 }
 
+/// One batch's rules, each to act on once, in the order each first appeared: `Ignore` dropped, a
+/// repeated rule dropped, and a worktree's `Touched` once with every folder it came from (the
+/// noise check reads them until one is work). Other rules carry no folders.
+pub fn collapse(rules: impl IntoIterator<Item = (Rule, PathBuf)>) -> Vec<(Rule, Vec<PathBuf>)> {
+    let mut out: Vec<(Rule, Vec<PathBuf>)> = Vec::new();
+    let mut at: std::collections::HashMap<Rule, usize> = std::collections::HashMap::new();
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    for (rule, path) in rules {
+        if rule == Rule::Ignore {
+            continue;
+        }
+        let touched = matches!(rule, Rule::Touched(_));
+        let i = *at.entry(rule.clone()).or_insert_with(|| {
+            out.push((rule, Vec::new()));
+            out.len() - 1
+        });
+        if touched && seen.insert(path.clone()) {
+            out[i].1.push(path);
+        }
+    }
+    out
+}
+
 /// How often the watcher's view is checked against a full pass, in case it missed events.
 pub const FULL_PASS_EVERY: Duration = Duration::from_secs(600);
 /// The most worktrees outside the open folder the stream watches besides it.
@@ -131,6 +154,37 @@ mod tests {
     use crate::worktrees::Worktree;
     use crate::wt_scan::canonical;
     use std::time::Duration;
+
+    #[test]
+    fn a_batch_acts_once_per_worktree_repository_and_folder() {
+        fn p(s: &str) -> PathBuf {
+            PathBuf::from(s)
+        }
+        let touched = |w: &str| Rule::Touched(p(w));
+        let rules = vec![
+            (touched("/w"), p("/w/src")),
+            (Rule::RelistRepo(p("/r")), p("/r/.git/worktrees")),
+            (touched("/w"), p("/w/docs")),
+            (Rule::Ignore, p("/far/away")),
+            (Rule::CheckStamp { repo: p("/r"), name: "a".into() }, p("/r/.git/worktrees/a")),
+            (Rule::RelistRepo(p("/r")), p("/r/.git/worktrees")),
+            (Rule::CheckStamp { repo: p("/r"), name: "b".into() }, p("/r/.git/worktrees/b")),
+            (Rule::CheckStamp { repo: p("/r"), name: "a".into() }, p("/r/.git/worktrees/a")),
+            (Rule::Unknown(p("/o/x")), p("/o/x")),
+            (touched("/v"), p("/v")),
+            (Rule::Unknown(p("/o/x")), p("/o/x")),
+            (touched("/w"), p("/w/src")),
+        ];
+        let got = collapse(rules);
+        assert_eq!(got, vec![
+            (touched("/w"), vec![p("/w/src"), p("/w/docs")]),
+            (Rule::RelistRepo(p("/r")), vec![]),
+            (Rule::CheckStamp { repo: p("/r"), name: "a".into() }, vec![]),
+            (Rule::CheckStamp { repo: p("/r"), name: "b".into() }, vec![]),
+            (Rule::Unknown(p("/o/x")), vec![]),
+            (touched("/v"), vec![p("/v")]),
+        ], "first appearance order, Ignore dropped, a worktree's folders kept for the noise check, each once");
+    }
 
     fn wt(path: &Path, repo: &Path) -> Worktree {
         Worktree {
