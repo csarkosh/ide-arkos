@@ -1,10 +1,18 @@
-//! The outline rail of a markdown tab (outline rail spec, section 2): the layout rules under its
-//! paint. The collapsed rail is a stepper of dots at the tab's left edge, the expanded panel a
-//! labelled list beside the document, or over it in a narrow tab. Everything here is pure: the
-//! headings in, the dots, the shape and the panel's rows out.
-#![allow(dead_code)] // Task 6 of the outline rail paints it.
+//! The outline rail of a markdown tab (outline rail spec, section 2). The collapsed rail is a
+//! stepper of dots at the tab's left edge, the expanded panel a labelled list beside the
+//! document, or over it in a narrow tab. The layout rules come first and are pure (the headings
+//! in, the dots, the shape and the panel's rows out); the paint follows them, every colour read
+//! from the theme it is handed.
 
+use crate::effects::active::Style;
 use crate::md_fold::{self, Head};
+use crate::motion;
+use crate::theme::Theme;
+use crate::tree::{PaneId, TabId};
+use crate::viewer::Viewer;
+use crate::Root;
+use gpui::{div, point, prelude::*, px, ClickEvent, Context, Div, Entity, FontWeight, KeyDownEvent, MouseMoveEvent};
+use std::time::Instant;
 
 /// The collapsed rail's width.
 pub const RAIL_W: f32 = 26.0;
@@ -93,6 +101,12 @@ pub fn scroll_to(dots: &[Dot], current: Option<usize>, height: f32) -> f32 {
     (cur.y - first.y - (height - TOP_SIZE) / 2.0).clamp(0.0, overflow)
 }
 
+/// The rail's width `progress` of the way (0 to 1, the open transition's opacity) from the
+/// collapsed rail to the open panel.
+pub fn rail_width(progress: f32) -> f32 {
+    RAIL_W + (PANEL_W - RAIL_W) * progress.clamp(0.0, 1.0)
+}
+
 /// What the tab's left edge shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
@@ -143,6 +157,450 @@ pub fn panel_rows(heads: &[Head], current: Option<usize>) -> Vec<PanelRow> {
             PanelRow { head: r.head, depth: r.depth, state }
         })
         .collect()
+}
+
+/// The ☰ glyph's strip at the rail's top; the dots start below it.
+const GLYPH_H: f32 = 26.0;
+/// Where the first dot's slot starts, and the room kept under the last.
+const DOTS_TOP: f32 = 34.0;
+const DOTS_BOTTOM: f32 = 10.0;
+/// The stepper's line runs down the rail's middle, in the panel as in the rail.
+const LINE_X: f32 = RAIL_W / 2.0;
+/// The panel's header ("OUTLINE" and «) and its rows.
+const HEADER_H: f32 = 28.0;
+const ROW_H: f32 = 26.0;
+/// How far a deeper heading's label moves in.
+const INDENT: f32 = 14.0;
+/// Where a label starts, right of the line and its dots.
+const LABEL_X: f32 = 28.0;
+/// The faint line's alpha: it joins the dots and means nothing itself.
+const LINE_ALPHA: f32 = 0.5;
+/// The current row's pill, and the tint of a row under the pointer or the overlay's keys: the
+/// accent faintly over the paper (`tab_active` and `tab_inactive` are the paper itself in most
+/// built-in themes, so they would tint nothing).
+pub const PILL_ALPHA: f32 = 0.14;
+pub const HOVER_ALPHA: f32 = 0.07;
+/// The overlay's scrim over the rest of the tab: Material's scrim, black at 32 %, the same on a
+/// light theme and a dark one (the paper's own colour over the paper would dim nothing).
+const SCRIM_ALPHA: f32 = 0.32;
+
+/// The rail's dot or the panel's row under the pointer: its tab and heading, where its card goes
+/// (window points, left and the pointer's height), since when, and whether it shows the section's
+/// preview (a panel row) or the heading alone (a dot's tooltip).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Hover {
+    pub tab: TabId,
+    pub head: usize,
+    pub x: f32,
+    pub y: f32,
+    pub since: Instant,
+    pub preview: bool,
+}
+
+impl Hover {
+    /// When the card shows: after the app's tooltip delay.
+    fn shows_at(&self) -> Instant {
+        self.since + crate::grid_view::TIP_DELAY
+    }
+
+    /// Whether the card is fading in at `now`.
+    pub fn animating(&self, now: Instant) -> bool {
+        !motion::reduce_motion() && now >= self.shows_at() && now.saturating_duration_since(self.shows_at()) < motion::ENTER
+    }
+}
+
+/// How open `tab`'s rail is at `now`, 0 (the dots) to 1 (the panel). A tab drawn for the first time
+/// with its panel open (a relaunch, a tab shown again) starts open, with no transition; one whose
+/// panel was closed some other way than the toggle closes.
+pub fn openness(root: &mut Root, tab: TabId, open: bool, now: Instant) -> f32 {
+    // A closed rail with nothing fading keeps no entry (`Root::settle` drops a finished one).
+    if !open && !root.outline_anim.contains_key(&tab) {
+        return 0.0;
+    }
+    let anim = root.outline_anim.entry(tab).or_insert_with(|| if open { motion::Transient::shown(true, now) } else { motion::Transient::Hidden });
+    match (open, anim.value().is_some()) {
+        (true, false) => anim.show(true, now),
+        (false, true) => {
+            anim.hide(now);
+        }
+        _ => {}
+    }
+    anim.current(now).map_or(0.0, |(_, o)| o)
+}
+
+/// What the tab's left edge draws for `viewer`: `rail` the column beside the document (`None`:
+/// nothing, the document takes the width), `over` the overlay's scrim and panel laid over the
+/// whole body. `x` is the pane's left edge in window points, `width` and `height` the body's.
+pub struct Painted {
+    pub rail: Option<Div>,
+    pub over: Option<Div>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn render(root: &mut Root, viewer: &Entity<Viewer>, pane: PaneId, tab: TabId, theme: &Theme, style: Style, x: f32, width: f32, height: f32, cx: &mut Context<Root>) -> Painted {
+    let (open, has_heads, presenting) = {
+        let v = viewer.read(cx);
+        (v.outline, !v.heads.is_empty(), v.presenting)
+    };
+    let now = root.frame_now;
+    let o = openness(root, tab, open, now);
+    // The panel is drawn while it opens, stays or closes: the shape of an open rail, at any
+    // opacity above none.
+    let drawn = shape(width, o > 0.0, has_heads, presenting);
+    let overlay = drawn == Shape::Overlay;
+    // The overlay holds the keys while it is open in the focused pane; closed or wide, it lets go.
+    let holds = overlay && open && root.tree.focused == pane;
+    match root.outline_cursor {
+        Some((t, _)) if t == tab && !holds => root.outline_cursor = None,
+        Some((t, _)) if t == tab => {}
+        _ if holds => {
+            let current = { let v = viewer.read(cx); md_fold::current(&v.heads, v.top_block()) };
+            root.outline_cursor = Some((tab, current.unwrap_or(0)));
+        }
+        _ => {}
+    }
+    if drawn == Shape::None || height < 12.0 {
+        return Painted { rail: None, over: None };
+    }
+    let paper = theme.chrome.window_bg.alpha(style.document_paper_alpha);
+    let border = if style.ink_borders { theme.chrome.border.alpha(0.0) } else { theme.chrome.border.hsla() };
+    let w = if overlay { RAIL_W } else { rail_width(o) };
+    let mut column = div().flex_none().relative().h_full().w(px(w)).overflow_hidden().bg(paper).border_r_1().border_color(border);
+    if overlay || o < 1.0 {
+        column = column.child(render_outline_rail(viewer, tab, theme, style, x, height, cx).opacity(if overlay { 1.0 } else { 1.0 - o }));
+    }
+    if !overlay && o > 0.0 {
+        column = column.child(render_outline_panel(root, viewer, pane, tab, theme, style, x, false, cx).opacity(o));
+    }
+    let over = overlay.then(|| render_outline_overlay(root, viewer, pane, tab, theme, style, x, o, open, cx));
+    Painted { rail: Some(column), over }
+}
+
+/// The collapsed rail: the ☰ glyph, then the stepper's dots for the top two levels, the section
+/// in view filled in the accent, those above in the dim text colour, those below hollow. A dot
+/// under the pointer shows its heading after the tooltip delay; a click goes there.
+#[allow(clippy::too_many_arguments)]
+pub fn render_outline_rail(viewer: &Entity<Viewer>, tab: TabId, theme: &Theme, style: Style, x: f32, height: f32, cx: &mut Context<Root>) -> Div {
+    let c = &theme.chrome;
+    let (heads, current) = {
+        let v = viewer.read(cx);
+        (v.heads.clone(), md_fold::current(&v.heads, v.top_block()))
+    };
+    let glyph = div()
+        .id(("outline-open", tab))
+        .absolute()
+        .top_0()
+        .left_0()
+        .w(px(RAIL_W))
+        .h(px(GLYPH_H))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_color(c.text_dim.hsla())
+        .text_size(px(style.ui(13.0)))
+        .cursor_pointer()
+        .child("\u{2630}")
+        .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.toggle_outline_for(tab, cx)));
+    let rail = div().absolute().top_0().left_0().w(px(RAIL_W)).h_full().child(glyph);
+    let area = height - DOTS_TOP - DOTS_BOTTOM;
+    if area < 12.0 {
+        return rail;
+    }
+    let dots = dots(&heads, current, area, 0.0);
+    let scroll = scroll_to(&dots, current, area);
+    let line = c.text_dim.alpha(LINE_ALPHA);
+    let mut strip = div().absolute().top(px(DOTS_TOP)).left_0().w(px(RAIL_W)).h(px(area)).overflow_hidden();
+    // The line runs between the dots, never under them, so a hollow dot stays hollow on a paper
+    // that lets the ground through.
+    for pair in dots.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let (from, to) = (a.y + 6.0 + a.size / 2.0 + 2.0, b.y + 6.0 - b.size / 2.0 - 2.0);
+        if to > from {
+            strip = strip.child(div().absolute().left(px(LINE_X - 1.0)).top(px(from - scroll)).w(px(2.0)).h(px(to - from)).rounded(px(1.0)).bg(line));
+        }
+    }
+    for d in &dots {
+        let (head, centre) = (d.head, d.y + 6.0 - scroll);
+        let w_move = cx.weak_entity();
+        let w_hover = cx.weak_entity();
+        let v_click = viewer.clone();
+        let hit = div()
+            .id(("outline-dot", tab * 4096 + head as u64))
+            .absolute()
+            .left_0()
+            .top(px(centre - 8.0))
+            .w(px(RAIL_W))
+            .h(px(16.0))
+            .cursor_pointer()
+            .child(mark(d.state, d.size, LINE_X, 8.0, theme))
+            .on_click(move |_ev: &ClickEvent, _window, cx| v_click.update(cx, |v, cx| v.reveal_heading(head, cx)))
+            .on_mouse_move(move |ev: &MouseMoveEvent, _window, cx| {
+                let y = f32::from(ev.position.y);
+                let _ = w_move.update(cx, |root, cx| hover(root, Hover { tab, head, x: x + RAIL_W + 6.0, y, since: Instant::now(), preview: false }, cx));
+            })
+            .on_hover(move |over: &bool, _window, cx| {
+                if !over {
+                    let _ = w_hover.update(cx, |root, cx| unhover(root, tab, head, cx));
+                }
+            });
+        strip = strip.child(hit);
+    }
+    rail.child(strip)
+}
+
+/// One dot `size` across, centred at (`cx`, `cy`) in its box: filled in the accent for the
+/// section in view, in the dim text colour for one read, a ring in that colour for one ahead.
+fn mark(state: DotState, size: f32, cx: f32, cy: f32, theme: &Theme) -> Div {
+    let c = &theme.chrome;
+    let d = div().absolute().left(px(cx - size / 2.0)).top(px(cy - size / 2.0)).size(px(size)).rounded_full();
+    match state {
+        DotState::Current => d.bg(c.focus_ring.hsla()),
+        DotState::Read => d.bg(c.text_dim.hsla()),
+        DotState::Ahead => d.border(px(if size >= 12.0 { 2.0 } else { 1.5 })).border_color(c.text_dim.hsla()),
+    }
+}
+
+/// A dot's or a row's hover begins: its card shows once the delay is up, drawn again then.
+fn hover(root: &mut Root, h: Hover, cx: &mut Context<Root>) {
+    if root.outline_hover.is_some_and(|o| o.tab == h.tab && o.head == h.head && o.preview == h.preview) {
+        return;
+    }
+    root.outline_hover = Some(h);
+    cx.spawn(async move |root, cx| {
+        cx.background_executor().timer(crate::grid_view::TIP_DELAY).await;
+        let _ = root.update(cx, |_, cx| cx.notify());
+    })
+    .detach();
+}
+
+fn unhover(root: &mut Root, tab: TabId, head: usize, cx: &mut Context<Root>) {
+    if root.outline_hover.is_some_and(|h| h.tab == tab && h.head == head) {
+        root.outline_hover = None;
+        cx.notify();
+    }
+}
+
+/// The expanded panel, `PANEL_W` wide: "OUTLINE" and « at its top, then a row per heading on
+/// the same stepper, indented by level, the section in view on a tinted pill in the text colour.
+/// A row under the pointer for half a second previews its section beside the panel; a click goes
+/// there, and in the overlay (`modal`) closes it. In the overlay the row the keys move is lit.
+#[allow(clippy::too_many_arguments)]
+pub fn render_outline_panel(root: &mut Root, viewer: &Entity<Viewer>, pane: PaneId, tab: TabId, theme: &Theme, style: Style, x: f32, modal: bool, cx: &mut Context<Root>) -> Div {
+    let c = &theme.chrome;
+    let (heads, current) = {
+        let v = viewer.read(cx);
+        (v.heads.clone(), md_fold::current(&v.heads, v.top_block()))
+    };
+    let rows = panel_rows(&heads, current);
+    let lit = root.outline_cursor.filter(|(t, _)| modal && *t == tab).map(|(_, h)| h);
+    let family = root.ui_family();
+    let header = div()
+        .flex_none()
+        .h(px(HEADER_H))
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .pl(px(12.0))
+        .pr(px(4.0))
+        .text_color(c.text_dim.hsla())
+        .text_size(px(style.ui(10.5)))
+        .child("OUTLINE")
+        .child(
+            div()
+                .id(("outline-close", tab))
+                .w(px(22.0))
+                .h(px(20.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.0))
+                .text_size(px(style.ui(13.0)))
+                .cursor_pointer()
+                .hover(|s| s.bg(c.focus_ring.alpha(HOVER_ALPHA)))
+                .child("\u{00ab}")
+                .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
+                    root.toggle_outline_for(tab, cx);
+                    root.focus_pane(pane, cx);
+                })),
+        );
+    let mut list = div().id(("outline-rows", tab)).flex_1().min_h_0().flex().flex_col().overflow_y_scroll().pb(px(8.0));
+    if modal {
+        list = list.track_scroll(&root.outline_scroll);
+    }
+    let line = c.text_dim.alpha(LINE_ALPHA);
+    let last = rows.len().saturating_sub(1);
+    for (k, r) in rows.iter().enumerate() {
+        let head = r.head;
+        let size = match r.depth {
+            0 => 12.0,
+            1 => 8.0,
+            _ => 6.0,
+        };
+        let here = r.state == DotState::Current;
+        let mid = ROW_H / 2.0;
+        let (w_move, w_hover) = (cx.weak_entity(), cx.weak_entity());
+        let v_click = viewer.clone();
+        let mut row = div()
+            .id(("outline-row", tab * 4096 + head as u64))
+            .flex_none()
+            .relative()
+            .h(px(ROW_H))
+            .flex()
+            .flex_row()
+            .items_center()
+            .mr(px(8.0))
+            .rounded_r(px(ROW_H / 2.0))
+            .cursor_pointer()
+            .when(here, |d| d.bg(c.focus_ring.alpha(PILL_ALPHA)))
+            .when(!here && lit == Some(head), |d| d.bg(c.focus_ring.alpha(HOVER_ALPHA)))
+            .when(!here, |d| d.hover(|s| s.bg(c.focus_ring.alpha(HOVER_ALPHA))));
+        // The line, above and below the dot, joining the rows.
+        if k > 0 {
+            row = row.child(div().absolute().left(px(LINE_X - 1.0)).top_0().w(px(2.0)).h(px(mid - size / 2.0 - 2.0)).bg(line));
+        }
+        if k < last {
+            row = row.child(div().absolute().left(px(LINE_X - 1.0)).top(px(mid + size / 2.0 + 2.0)).w(px(2.0)).h(px(mid - size / 2.0 - 2.0)).bg(line));
+        }
+        // A width of its own: gpui cuts a line with its ellipsis only where the width is known
+        // when the text is measured.
+        let indent = LABEL_X + INDENT * r.depth as f32;
+        let label = div().flex_none().ml(px(indent)).w(px((PANEL_W - 16.0 - indent).max(0.0))).overflow_hidden().whitespace_nowrap().text_ellipsis().child(heads[head].text.clone());
+        row = row
+            .child(mark(r.state, size, LINE_X, mid, theme))
+            .child(
+                label
+                    .text_color(if here { c.text.hsla() } else { c.text_dim.hsla() })
+                    .text_size(px(style.ui(if r.depth == 0 { 12.5 } else { 12.0 })))
+                    .when(here, |d| d.font_weight(FontWeight::SEMIBOLD)),
+            )
+            .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
+                v_click.update(cx, |v, cx| v.reveal_heading(head, cx));
+                if modal {
+                    root.toggle_outline_for(tab, cx);
+                    root.focus_pane(pane, cx);
+                }
+            }))
+            .on_mouse_move(move |ev: &MouseMoveEvent, _window, cx| {
+                let y = f32::from(ev.position.y);
+                let _ = w_move.update(cx, |root, cx| hover(root, Hover { tab, head, x: x + PANEL_W + 6.0, y, since: Instant::now(), preview: true }, cx));
+            })
+            .on_hover(move |over: &bool, _window, cx| {
+                if !over {
+                    let _ = w_hover.update(cx, |root, cx| unhover(root, tab, head, cx));
+                }
+            });
+        list = list.child(row);
+    }
+    div().absolute().top_0().left_0().w(px(PANEL_W)).h_full().flex().flex_col().font_family(family).child(header).child(list)
+}
+
+/// The panel over the document in a narrow tab, sliding in from the left edge with a scrim over
+/// the rest that fades with it. Open, it holds the keys: Up and Down move the lit row, Enter goes
+/// to its heading and closes, Escape closes; a click on the scrim closes. Closing, it is drawn
+/// only, taking no clicks.
+#[allow(clippy::too_many_arguments)]
+pub fn render_outline_overlay(root: &mut Root, viewer: &Entity<Viewer>, pane: PaneId, tab: TabId, theme: &Theme, style: Style, x: f32, o: f32, open: bool, cx: &mut Context<Root>) -> Div {
+    let c = &theme.chrome;
+    let panel = render_outline_panel(root, viewer, pane, tab, theme, style, x, true, cx);
+    let border = if style.ink_borders { c.border.alpha(0.0) } else { c.border.hsla() };
+    let mut scrim = div().absolute().top_0().left_0().size_full().bg(gpui::black().opacity(SCRIM_ALPHA)).opacity(o);
+    let mut sheet = div()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left(px(-PANEL_W * (1.0 - o)))
+        .w(px(PANEL_W))
+        .bg(c.window_bg.hsla())
+        .border_r_1()
+        .border_color(border)
+        .shadow(vec![gpui::BoxShadow { color: gpui::black().opacity(0.18 * o), offset: point(px(4.0), px(0.0)), blur_radius: px(18.0), spread_radius: px(0.0) }])
+        .child(panel);
+    if open {
+        scrim = scrim.occlude().on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |root, _ev: &gpui::MouseDownEvent, _window, cx| {
+                cx.stop_propagation();
+                root.toggle_outline_for(tab, cx);
+                root.focus_pane(pane, cx);
+            }),
+        );
+        let v_keys = viewer.clone();
+        sheet = sheet.occlude().track_focus(&root.outline_focus).on_key_down(cx.listener(move |root, ev: &KeyDownEvent, _window, cx| {
+            let m = &ev.keystroke.modifiers;
+            if m.platform || m.control || m.alt {
+                return;
+            }
+            cx.stop_propagation();
+            let Some((t, lit)) = root.outline_cursor.filter(|(t, _)| *t == tab) else { return };
+            let heads = v_keys.read(cx).heads.len();
+            match ev.keystroke.key.as_str() {
+                "up" | "down" if heads > 0 => {
+                    let next = if ev.keystroke.key == "up" { lit.saturating_sub(1) } else { (lit + 1).min(heads - 1) };
+                    root.outline_cursor = Some((t, next));
+                    root.outline_scroll.scroll_to_item(next);
+                    cx.notify();
+                }
+                "enter" => {
+                    v_keys.update(cx, |v, cx| v.reveal_heading(lit, cx));
+                    root.toggle_outline_for(tab, cx);
+                    root.focus_pane(pane, cx);
+                }
+                "escape" => {
+                    root.toggle_outline_for(tab, cx);
+                    root.focus_pane(pane, cx);
+                }
+                _ => {}
+            }
+        }));
+    }
+    div().absolute().top_0().left_0().size_full().child(scrim).child(sheet)
+}
+
+/// The tooltip of the dot under the pointer, or the preview of the panel row under it, once the
+/// delay is up, while its tab is on screen: the heading alone, or the heading and the first six
+/// lines of its section, in the menu frame, at the pointer's height beside the rail or the panel.
+pub fn render_hover(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
+    let h = root.outline_hover?;
+    let now = root.frame_now;
+    if now < h.shows_at() {
+        return None;
+    }
+    let (pane, idx) = root.tree.locate(h.tab)?;
+    if root.tree.pane(pane)?.active != idx {
+        return None;
+    }
+    let viewer = root.viewers.get(&h.tab)?.clone();
+    let v = viewer.read(cx);
+    if v.outline != h.preview {
+        return None;
+    }
+    let head = v.heads.get(h.head)?;
+    let lines = if h.preview { md_fold::preview(&v.heads, h.head, &v.blocks, v.doc.as_ref()?.lines(), 6) } else { vec![head.text.clone()] };
+    let o = motion::enter_progress(h.shows_at(), now, motion::ENTER);
+    let style = root.effect_style();
+    let theme = root.theme.clone();
+    let c = &theme.chrome;
+    let mut card = div()
+        .absolute()
+        .left(px(h.x))
+        .top(px(h.y - 12.0 - motion::lift(o, motion::MENU_LIFT)))
+        .max_w(px(360.0))
+        .opacity(o)
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .px(px(if h.preview { 10.0 } else { 8.0 }))
+        .py(px(if h.preview { 8.0 } else { 3.0 }))
+        .rounded(px(6.0))
+        .map(|d| crate::chrome::menu_frame(d, &theme, &style))
+        .font_family(root.ui_family())
+        .text_size(px(root.ui_size(12.0)))
+        .text_color(c.text_dim.hsla());
+    for (i, l) in lines.into_iter().enumerate() {
+        card = card.child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().when(i == 0, |d| d.text_color(c.text.hsla()).when(h.preview, |d| d.font_weight(FontWeight::SEMIBOLD))).child(l));
+    }
+    Some(card)
 }
 
 #[cfg(test)]
@@ -211,6 +669,16 @@ mod tests {
     #[test]
     fn a_very_narrow_tab_shows_no_rail() {
         assert_eq!(shape(160.0, false, true, false), Shape::None);
+    }
+
+    #[test]
+    fn the_rail_s_width_eases_between_closed_and_open() {
+        assert_eq!(rail_width(0.0), RAIL_W);
+        assert_eq!(rail_width(1.0), PANEL_W);
+        let steps: Vec<f32> = (0..=20).map(|i| rail_width(i as f32 / 20.0)).collect();
+        assert!(steps.windows(2).all(|w| w[1] >= w[0]), "monotonic: {steps:?}");
+        assert_eq!(rail_width(-1.0), RAIL_W, "clamped below");
+        assert_eq!(rail_width(2.0), PANEL_W, "and above");
     }
 
     #[test]

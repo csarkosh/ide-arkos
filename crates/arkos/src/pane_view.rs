@@ -457,7 +457,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
             None => render_busy(root, pane, p.ids.get(p.active).copied(), cx),
         },
         Some(Tab::Viewer { path, .. }) => match p.ids.get(p.active).copied() {
-            Some(tab) => render_viewer(root, pane, tab, path, cx),
+            Some(tab) => render_viewer(root, pane, tab, path, Rect { h: rect.h - body_top, ..rect }, cx),
             None => div(),
         },
         Some(Tab::Browser { url }) => match p.ids.get(p.active).copied() {
@@ -1170,7 +1170,9 @@ enum Kind {
 /// switches between the two; a code document shows raw with its syntax colours. A delimited file
 /// shows its grid in Rendered mode, with the same pill, and a workbook its grid always, with no
 /// pill; while a grid shows, the keys scroll it.
-fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Path, cx: &mut Context<Root>) -> Div {
+/// `area` is the body's: the pane's left edge and width in window points, the height under the
+/// tab bar.
+fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Path, area: Rect, cx: &mut Context<Root>) -> Div {
     let style = root.effect_style();
     let viewer = root.viewer_for(tab, path, cx);
     let theme = root.theme.clone();
@@ -1201,6 +1203,16 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     // A notice wraps to the pane's width, centred, so a long reason reads whole in a narrow pane.
     let notice = |text: String| div().size_full().flex().items_center().justify_center().px(px(16.0)).text_color(dim).font_family(family.clone()).text_size(px(font_size)).child(div().max_w_full().text_center().child(text));
     let kind_is_text = matches!(kind, Kind::Text { .. });
+    // A markdown document's outline rail, under the banners at the body's left edge, the
+    // document to its right; in a narrow tab its open panel lies over the document.
+    let outline = if markdown && has_doc && kind_is_text {
+        let banners = usize::from(conflict) + usize::from(save_error.is_some()) + usize::from(read_only.is_some());
+        let height = area.h - banners as f32 * (8.0 + style.ui(12.0) * 1.3);
+        crate::outline_rail::render(root, &viewer, pane, tab, &theme, style, area.x, area.w, height, cx)
+    } else {
+        crate::outline_rail::Painted { rail: None, over: None }
+    };
+    let has_rail = outline.rail.is_some();
     let (kind_is_grid, grid_banner) = match &kind {
         Kind::Grid { banner } => (true, banner.clone()),
         _ => (false, None),
@@ -1219,7 +1231,13 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         }
         Kind::Text { .. } if rendered => {
             let element = md_view::render(&viewer, &theme, root.prose_family(), family.clone(), font_size, root.highlighter.clone(), root.config.viewer.highlight_limit_bytes, root.config.viewer.wide_tables, root.config.viewer.page_width, style, cx.weak_entity(), cx);
-            div().size_full().rounded_b(px(paper_radius(style))).bg(theme.chrome.window_bg.alpha(style.document_paper_alpha)).child(element)
+            // Beside the rail the paper's bottom left corner is the rail's.
+            div()
+                .size_full()
+                .rounded_br(px(paper_radius(style)))
+                .when(!has_rail, |d| d.rounded_bl(px(paper_radius(style))))
+                .bg(theme.chrome.window_bg.alpha(style.document_paper_alpha))
+                .child(element)
         }
         Kind::Text { plain } => {
             let element = ViewerElement::new(
@@ -1246,6 +1264,17 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         Kind::TooLarge(n) => notice(format!("{} MB, too large to show", n / (1024 * 1024))),
         Kind::Binary => notice("a binary file; nothing to show".into()),
         Kind::Unreadable(e) => notice(format!("cannot read this file: {e}")),
+    };
+    let body = match outline {
+        crate::outline_rail::Painted { rail: Some(rail), over } => div()
+            .size_full()
+            .relative()
+            .flex()
+            .flex_row()
+            .child(rail.rounded_bl(px(paper_radius(style))))
+            .child(div().flex_1().min_w_0().h_full().child(body))
+            .children(over),
+        _ => body,
     };
     // The banners above a text body: the file changed under unsaved edits, a save failed, or the
     // file is shown read-only. They share the plain-file banner's style; the buttons are text.

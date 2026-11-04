@@ -227,7 +227,17 @@ and says "Copied". A click on the header elsewhere selects the whole block, so D
 A Mermaid block shows its diagram until you click it, then its code the same way (see
 Diagrams for its Code and Split modes).
 
-The outline lives inside the markdown tab; see Editing markdown.
+Every markdown tab with headings, rendered or raw, has an outline rail down its left edge (not in
+presentation mode, which shows the document alone). Closed, it is a thin line with a dot for each
+heading of the document's top two levels, a smaller dot for the second: the section in view has a
+filled dot in the theme's accent, the sections above it filled grey dots (read), the ones below
+hollow dots. Rest the pointer on a dot to see its heading; click it to go there (a folded section
+unfolds). Click the ☰ at the rail's top, or press Option+Cmd+O, to open the outline beside the
+text: every heading by level, the one in view on a tinted pill, « at the top to close it again.
+Rest the pointer on a row for half a second to see a preview of its section; click it to go there.
+In a pane under 520 points wide the outline slides over the text instead, with the rest of the
+tab dimmed: Up and Down move between headings, Enter goes to one, and Escape or a click on the
+dimmed text closes it. Each tab remembers whether its outline was open, across a relaunch.
 
 Arkos saves a second after you stop typing, and Cmd+S saves at once. The tab shows " •" until the
 file is written. Line endings (`\n` or `\r\n`) and a byte order mark are kept as the file had
@@ -587,6 +597,7 @@ The VS Code map, in a terminal-friendly form.
 | Shift+Enter | in a rendered markdown paragraph or item: a line break; in a quote: out of the quote; on a code block's last line: out of the block |
 | Cmd+K Cmd+0, Cmd+K Cmd+J | in a markdown document: fold all headings, unfold them all |
 | Alt+Cmd+P | in a markdown document: presentation mode on or off |
+| Option+Cmd+O | in a markdown document: the outline open or closed (Up, Down, Enter and Escape while it lies over the text) |
 | / | in a rendered markdown document, at a line's start or after a space: the slash menu (Up, Down, Enter or Tab, Right and Left for a submenu, Escape) |
 | Escape | in a markdown file: collapse the selection, leave the active block, or close find |
 | Space | in a video tab: play or pause |

@@ -1727,6 +1727,7 @@ impl Root {
                     // render makes the new one.
                     if let Some(id) = self.tree.tab_id(pane, idx) {
                         self.viewers.remove(&id);
+                        self.forget_outline(id);
                         // As in `close_tab`: paused first, so the sound and the display token end
                         // now even while something still holds the view.
                         if let Some(v) = self.videos.remove(&id) {

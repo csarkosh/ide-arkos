@@ -114,14 +114,12 @@ pub fn visible_rows(rows: &[OutlineRow], collapsed: &BTreeSet<usize>) -> Vec<Out
 }
 
 /// The heading whose section the view's top block is in: the last heading at or above it.
-#[cfg_attr(not(test), allow(dead_code))] // Task 6 of the outline rail uses it.
 pub fn current(heads: &[Head], top_block: usize) -> Option<usize> {
     heads.iter().rposition(|h| h.block <= top_block)
 }
 
 /// A section's preview: the heading, then up to `max` lines of the section's text, each trimmed,
 /// blank lines and fences left out.
-#[cfg_attr(not(test), allow(dead_code))] // Task 6 of the outline rail uses it.
 pub fn preview(heads: &[Head], i: usize, blocks: &[Block], lines: &[String], max: usize) -> Vec<String> {
     let mut out = vec![heads[i].text.clone()];
     let blocks_in = section(heads, i, blocks.len());

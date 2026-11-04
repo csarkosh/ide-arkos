@@ -5751,6 +5751,17 @@ impl Root {
         }
         let on = !outline;
         self.tree.set_viewer_outline(pane, idx, on);
+        let now = Instant::now();
+        let anim = self.outline_anim.entry(tab).or_default();
+        if on {
+            anim.show(true, now);
+        } else {
+            anim.hide(now);
+            self.outline_hover = None;
+            if self.outline_cursor.is_some_and(|(t, _)| t == tab) {
+                self.outline_cursor = None;
+            }
+        }
         if let Some(v) = self.viewers.get(&tab).cloned() {
             v.update(cx, |v, cx| {
                 v.outline = on;

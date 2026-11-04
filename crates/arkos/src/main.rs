@@ -261,6 +261,17 @@ pub struct Root {
     pub link_menu: Transient<link_menu::LinkMenu>,
     /// A markdown document's right-click menu while it is open, and while it fades out.
     pub md_menu: Transient<md_menu::MdMenu>,
+    /// Each markdown tab's outline rail opening and closing (`outline_rail`): shown while the
+    /// panel is open, its opacity easing the rail's width and the overlay's slide and scrim.
+    pub outline_anim: HashMap<TabId, Transient<bool>>,
+    /// The rail's dot or the panel's row under the pointer, for its tooltip or its section's
+    /// preview after half a second.
+    pub outline_hover: Option<outline_rail::Hover>,
+    /// The row highlighted in an open overlay, which holds the keys while it is open.
+    pub outline_cursor: Option<(TabId, usize)>,
+    pub outline_focus: FocusHandle,
+    /// The open overlay's rows, scrolled to keep the highlighted row in view.
+    pub outline_scroll: gpui::ScrollHandle,
     /// What the bell shows.
     pub notices: notices::Notices,
     /// The doctor's table as last probed.
@@ -697,6 +708,11 @@ impl Root {
             new_file_focus: cx.focus_handle(),
             link_menu: Transient::Hidden,
             md_menu: Transient::Hidden,
+            outline_anim: HashMap::new(),
+            outline_hover: None,
+            outline_cursor: None,
+            outline_focus: cx.focus_handle(),
+            outline_scroll: gpui::ScrollHandle::new(),
             notices: Default::default(),
             doctor_states: Vec::new(),
             doctor_busy: None,
@@ -1258,12 +1274,25 @@ impl Root {
         Some(card)
     }
 
+    /// Forgets a closed tab's outline rail: its transition, its hover and its overlay's row.
+    pub fn forget_outline(&mut self, tab: TabId) {
+        self.outline_anim.remove(&tab);
+        if self.outline_hover.as_ref().is_some_and(|h| h.tab == tab) {
+            self.outline_hover = None;
+        }
+        if self.outline_cursor.is_some_and(|(t, _)| t == tab) {
+            self.outline_cursor = None;
+        }
+    }
+
     /// Whether any transition is under way at `now`, so the next frame looks different.
     pub fn any_motion(&self, now: Instant) -> bool {
         self.context_menu.animating(now)
             || self.new_file.animating(now)
             || self.link_menu.animating(now)
             || self.md_menu.animating(now)
+            || self.outline_anim.values().any(|t| t.animating(now))
+            || self.outline_hover.as_ref().is_some_and(|h| h.animating(now))
             || self.popover.animating(now)
             || self.wt_menu.animating(now)
             || self.palette.animating(now)
@@ -1296,6 +1325,10 @@ impl Root {
         self.new_file.settle(now);
         self.link_menu.settle(now);
         self.md_menu.settle(now);
+        self.outline_anim.retain(|_, t| {
+            t.settle(now);
+            !t.is_hidden()
+        });
         self.popover.settle(now);
         self.wt_menu.settle(now);
         self.palette.settle(now);
@@ -1858,6 +1891,7 @@ impl Root {
         telemetry::pane_close(&tab);
         self.preview_tab = after_close(self.preview_tab, id);
         self.viewers.remove(&id);
+        self.forget_outline(id);
         // The only strong hold on the view: dropping it releases the player (`AvPlayer::drop`).
         self.videos.remove(&id);
         // The only strong hold on the web view: dropping it removes the WKWebView from the window.
@@ -4260,6 +4294,8 @@ impl Render for Root {
                     let t = t.read(cx);
                     Some(t.find.as_ref().map_or_else(|| t.focus.clone(), |f| f.focus.clone()))
                 }
+                // An open outline overlay holds its tab's keys until it closes.
+                (None, Some(_), _) if self.outline_cursor.is_some_and(|(t, _)| Some(t) == self.tree.pane(self.tree.focused).and_then(|p| p.ids.get(p.active).copied())) => Some(self.outline_focus.clone()),
                 (None, Some(v), _) => {
                     let v = v.read(cx);
                     Some(v.find.as_ref().map_or_else(|| v.focus.clone(), |f| f.focus.clone()))
@@ -4440,6 +4476,7 @@ impl Render for Root {
             .children(sidebar::render_context_menu(self, cx))
             .children(link_menu::render_link_menu(self, cx))
             .children(md_menu::render_md_menu(self, cx))
+            .children(outline_rail::render_hover(self, cx))
             .children(slash_menu::render_slash_menu(self, cx))
             .children(lang_menu::render_lang_menu(self, cx))
             .children(self.render_popover(window, cx))

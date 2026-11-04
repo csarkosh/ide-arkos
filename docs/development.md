@@ -799,6 +799,11 @@ Things only a person at the screen can check, in order of value:
 - structure: hover a heading: its chevron shows; click it: the section hides and the heading ends
   with "…"; Cmd+K Cmd+0 folds all, Cmd+K Cmd+J unfolds all; the folds survive a relaunch; Down from
   a folded heading lands after its section
+- outline rail: the rail's dots move with the scroll; hover a dot: its heading; click: the document
+  goes there; ☰ (or Option+Cmd+O): the panel eases open beside the text, a row's preview after half
+  a second, « eases it closed; narrow the pane under 520 px: it slides over the text with a scrim,
+  Up, Down and Enter go to a heading and Escape closes it, the keys back in the document after;
+  relaunch: the tab remembers; under each effect the rail sits on the tab's paper
 - reading: the five alerts show their icons and colours, `> [!TIP] Shortcut` reads "Shortcut";
   footnote references are raised numbers by first reference, hovering one shows its note, the
   notes are numbered with a `↩` back; front matter shows its title, date and a faint label;

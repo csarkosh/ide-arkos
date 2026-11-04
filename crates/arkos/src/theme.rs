@@ -922,6 +922,33 @@ mod tests {
     }
 
     #[test]
+    fn the_outline_rail_s_marks_and_labels_clear_their_floors_on_every_builtin() {
+        // The stepper's line is drawn fainter and is not checked: it joins the dots and carries
+        // nothing of its own. A hollow dot's ring is full `text_dim` so it holds 3:1.
+        use crate::outline_rail::{HOVER_ALPHA, PILL_ALPHA};
+        let over = |fg: Rgb, bg: Rgb, a: f32| crate::contrast::Drawn { color: fg, alpha: a, moved: false }.over(bg);
+        let mut fails = Vec::new();
+        for (name, _) in BUILTIN {
+            let c = builtin(name).unwrap().chrome;
+            let (pill, tint) = (over(c.focus_ring, c.window_bg, PILL_ALPHA), over(c.focus_ring, c.window_bg, HOVER_ALPHA));
+            let pairs = [
+                ("the current dot (chrome.focus_ring) on window_bg", contrast(c.focus_ring, c.window_bg), 3.0),
+                ("a read dot or a hollow dot's ring (chrome.text_dim) on window_bg", contrast(c.text_dim, c.window_bg), 3.0),
+                ("the current row's label (chrome.text) on its pill (focus_ring faint on window_bg)", contrast(c.text, pill), 4.5),
+                ("the current dot (chrome.focus_ring) on its pill", contrast(c.focus_ring, pill), 3.0),
+                ("a lit row's label (chrome.text_dim) on its tint", contrast(c.text_dim, tint), 4.5),
+                ("a dot (chrome.text_dim) on a lit row's tint", contrast(c.text_dim, tint), 3.0),
+            ];
+            for (what, ratio, needs) in pairs {
+                if ratio < needs {
+                    fails.push(format!("{name}: {what} is {ratio:.2}:1, needs {needs}"));
+                }
+            }
+        }
+        assert!(fails.is_empty(), "{}", fails.join("\n"));
+    }
+
+    #[test]
     fn the_schema_names_the_surfaces_the_contrast_check_uses() {
         let doc = |key: &str| {
             let (table, key) = key.split_once('.').unwrap();
