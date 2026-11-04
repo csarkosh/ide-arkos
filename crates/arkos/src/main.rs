@@ -67,6 +67,7 @@ mod motion;
 mod mouse;
 mod notices;
 mod open_cli;
+mod outline_rail;
 mod palette;
 mod pane_view;
 mod paths;
@@ -2833,6 +2834,11 @@ impl Root {
                     v.update(cx, |v, cx| v.save_command(cx));
                 }
             }
+            ToggleOutline => {
+                if let Some(t) = self.active_viewer_tab() {
+                    self.toggle_outline_for(t, cx);
+                }
+            }
             TogglePresentation => {
                 if let Some(t) = self.active_viewer_tab() {
                     self.toggle_presentation_for(t, cx);
@@ -5409,7 +5415,7 @@ mod tests {
         let mut tree = Tree::new(Tab::Terminal { session: SessionId(5), cwd: None });
         let root = tree.panes()[0];
         assert_eq!(focused_session_of(&tree), Some(SessionId(5)));
-        tree.add_tab(root, Tab::Viewer { path: "/f".into(), mode: crate::tree::ViewMode::default(), presenting: false });
+        tree.add_tab(root, Tab::Viewer { path: "/f".into(), mode: crate::tree::ViewMode::default(), presenting: false, outline: false });
         tree.activate(root, 1);
         assert_eq!(focused_session_of(&tree), None);
     }

@@ -20,7 +20,7 @@ actions!(
         MoveTabLeft, MoveTabRight,
         NewTerminal, ClearToStart, FontBigger, FontSmaller,
         About, OpenSettings, Keybindings, Documentation, OpenConfig, CommandPalette, Find, CopyAsShown, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks, InstallAgentGuide,
-        ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, Bold, Italic, FoldAll, UnfoldAll, TogglePresentation, NextSheet, PreviousSheet, OpenFolder, NewWindow,
+        ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, Bold, Italic, FoldAll, UnfoldAll, ToggleOutline, TogglePresentation, NextSheet, PreviousSheet, OpenFolder, NewWindow,
         NewBrowserTab, Quit,
         OpenFileInPane,
         VideoPlayPause, VideoBack, VideoForward, VideoBackFine, VideoForwardFine, VideoStepBack, VideoStepForward,
@@ -115,6 +115,8 @@ pub enum Command {
     FoldAll,
     /// Unfold them all.
     UnfoldAll,
+    /// Expand or collapse the focused markdown tab's outline rail (outline rail spec, section 2).
+    ToggleOutline,
     /// Presentation mode on or off in the focused markdown document (reading spec, section 4).
     TogglePresentation,
     /// The next sheet of the focused workbook, wrapping from the last to the first.
@@ -273,6 +275,8 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec { name: "italic", keys: "cmd-i", context: Some("Markdown"), section: Section::Markdown },
     ActionSpec { name: "fold all", keys: "cmd-k cmd-0", context: Some("Markdown"), section: Section::Markdown },
     ActionSpec { name: "unfold all", keys: "cmd-k cmd-j", context: Some("Markdown"), section: Section::Markdown },
+    // Either view of a markdown document has an outline; another viewer ignores it.
+    ActionSpec { name: "toggle outline", keys: "alt-cmd-o", context: Some("Viewer"), section: Section::Markdown },
     ActionSpec { name: "toggle presentation mode", keys: "alt-cmd-p", context: Some("Markdown"), section: Section::Markdown },
     // A workbook of more than one sheet only: the context is set by no other tab.
     ActionSpec { name: "next sheet", keys: "alt-cmd-]", context: Some("Sheets"), section: Section::Markdown },
@@ -405,6 +409,7 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "italic" => KeyBinding::new(keys, Italic, context),
         "fold all" => KeyBinding::new(keys, FoldAll, context),
         "unfold all" => KeyBinding::new(keys, UnfoldAll, context),
+        "toggle outline" => KeyBinding::new(keys, ToggleOutline, context),
         "toggle presentation mode" => KeyBinding::new(keys, TogglePresentation, context),
         "next sheet" => KeyBinding::new(keys, NextSheet, context),
         "previous sheet" => KeyBinding::new(keys, PreviousSheet, context),
@@ -732,6 +737,7 @@ pub fn command_for(name: &str) -> Option<Command> {
         "italic" => Command::Italic,
         "fold all" => Command::FoldAll,
         "unfold all" => Command::UnfoldAll,
+        "toggle outline" => Command::ToggleOutline,
         "toggle presentation mode" => Command::TogglePresentation,
         "next sheet" => Command::NextSheet,
         "previous sheet" => Command::PreviousSheet,
@@ -803,7 +809,7 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         UpdateNow => Command::UpdateNow, CheckForUpdates => Command::CheckForUpdates, Notifications => Command::Notifications, Doctor => Command::Doctor, RetryUpdate => Command::RetryUpdate, StartAtLogin => Command::StartAtLogin, InstallHooks => Command::InstallHooks, InstallAgentGuide => Command::InstallAgentGuide,
         ToggleSidebar => Command::ToggleSidebar, FocusFileTree => Command::FocusFileTree, ShowIgnoredFiles => Command::ShowIgnoredFiles,
         FocusWorktrees => Command::FocusWorktrees, ToggleInlineDiff => Command::ToggleInlineDiff,
-        ToggleMarkdownView => Command::ToggleMarkdownView, SaveFile => Command::SaveFile, Bold => Command::Bold, Italic => Command::Italic, FoldAll => Command::FoldAll, UnfoldAll => Command::UnfoldAll, TogglePresentation => Command::TogglePresentation,
+        ToggleMarkdownView => Command::ToggleMarkdownView, SaveFile => Command::SaveFile, Bold => Command::Bold, Italic => Command::Italic, FoldAll => Command::FoldAll, UnfoldAll => Command::UnfoldAll, ToggleOutline => Command::ToggleOutline, TogglePresentation => Command::TogglePresentation,
         NextSheet => Command::NextSheet, PreviousSheet => Command::PreviousSheet,
         OpenFolder => Command::OpenFolder, NewWindow => Command::NewWindow,
         NewBrowserTab => Command::NewBrowserTab,
@@ -872,6 +878,7 @@ mod tests {
         ("cmd-i", "italic", "Italic"),
         ("cmd-k cmd-0", "fold all", "FoldAll"),
         ("cmd-k cmd-j", "unfold all", "UnfoldAll"),
+        ("alt-cmd-o", "toggle outline", "ToggleOutline"),
         ("alt-cmd-p", "toggle presentation mode", "TogglePresentation"),
         ("alt-cmd-]", "next sheet", "NextSheet"),
         ("alt-cmd-[", "previous sheet", "PreviousSheet"),
@@ -929,6 +936,8 @@ mod tests {
         for name in ["bold", "italic", "fold all", "unfold all", "toggle presentation mode"] {
             assert_eq!(ACTIONS.iter().find(|a| a.name == name).unwrap().context, Some("Markdown"), "{name} acts on a markdown document only, so Cmd+B still toggles the sidebar elsewhere");
         }
+        let outline = ACTIONS.iter().find(|a| a.name == "toggle outline").map(|a| (a.context, a.section));
+        assert_eq!(outline, Some((Some("Viewer"), Section::Markdown)), "the outline toggles in the focused viewer, in either view");
         let copy = ACTIONS.iter().find(|a| a.name == "copy as shown").map(|a| (a.context, a.section));
         assert_eq!(copy, Some((Some("Terminal"), Section::Terminal)), "Shift+Cmd+C copies the focused terminal's selection only");
     }
@@ -1103,11 +1112,11 @@ mod tests {
         let maint = &g.iter().find(|(s, _)| *s == Section::Maintenance).unwrap().1;
         assert!(maint.iter().any(|r| r.label == "Doctor" && r.keys.is_none()));
         let md = &g.iter().find(|(s, _)| *s == Section::Markdown).unwrap().1;
-        let viewer: Vec<&str> = md[..10].iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(viewer, ["Toggle inline diff", "Toggle markdown view", "Save file", "Bold", "Italic", "Fold all", "Unfold all", "Toggle presentation mode", "Next sheet", "Previous sheet"], "the viewer's actions come first");
-        assert_eq!(md.len(), 10 + MARKDOWN_KEYS.len());
-        assert_eq!(md[10], KeyRow { label: "Leave the block".into(), keys: Some("Escape".into()) });
-        assert!(md[10..].iter().zip(MARKDOWN_KEYS).all(|(r, (label, keys))| r.label == *label && r.keys.as_deref() == Some(*keys)));
+        let viewer: Vec<&str> = md[..11].iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(viewer, ["Toggle inline diff", "Toggle markdown view", "Save file", "Bold", "Italic", "Fold all", "Unfold all", "Toggle outline", "Toggle presentation mode", "Next sheet", "Previous sheet"], "the viewer's actions come first");
+        assert_eq!(md.len(), 11 + MARKDOWN_KEYS.len());
+        assert_eq!(md[11], KeyRow { label: "Leave the block".into(), keys: Some("Escape".into()) });
+        assert!(md[11..].iter().zip(MARKDOWN_KEYS).all(|(r, (label, keys))| r.label == *label && r.keys.as_deref() == Some(*keys)));
         let table: Vec<(&str, &str)> = MARKDOWN_KEYS.iter().copied().filter(|(label, _)| label.ends_with("(in a table)")).collect();
         assert_eq!(
             table,

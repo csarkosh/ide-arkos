@@ -69,7 +69,6 @@ pub fn hiding(heads: &[Head], folded: &BTreeSet<FoldKey>, block: usize, block_co
 
 /// One row of the outline: its heading (an index into the headings), how deep it sits under the
 /// headings above it, and whether headings sit under it.
-#[cfg_attr(not(test), allow(dead_code))] // Task 5 of the outline rail uses it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutlineRow {
     pub head: usize,
@@ -78,7 +77,6 @@ pub struct OutlineRow {
 }
 
 /// The outline: each heading under the nearest heading above it of a lower level.
-#[cfg_attr(not(test), allow(dead_code))] // Task 5 of the outline rail uses it.
 pub fn outline(heads: &[Head]) -> Vec<OutlineRow> {
     let mut stack: Vec<u8> = Vec::new();
     let mut rows: Vec<OutlineRow> = Vec::new();
@@ -96,7 +94,7 @@ pub fn outline(heads: &[Head]) -> Vec<OutlineRow> {
 }
 
 /// The outline rows shown when the rows in `collapsed` (by heading index) hide their children.
-#[cfg_attr(not(test), allow(dead_code))] // Task 5 of the outline rail uses it.
+#[cfg_attr(not(test), allow(dead_code))] // Task 6 of the outline rail uses it.
 pub fn visible_rows(rows: &[OutlineRow], collapsed: &BTreeSet<usize>) -> Vec<OutlineRow> {
     let mut out = Vec::new();
     let mut hide_below: Option<usize> = None;
@@ -116,14 +114,14 @@ pub fn visible_rows(rows: &[OutlineRow], collapsed: &BTreeSet<usize>) -> Vec<Out
 }
 
 /// The heading whose section the view's top block is in: the last heading at or above it.
-#[cfg_attr(not(test), allow(dead_code))] // Task 5 of the outline rail uses it.
+#[cfg_attr(not(test), allow(dead_code))] // Task 6 of the outline rail uses it.
 pub fn current(heads: &[Head], top_block: usize) -> Option<usize> {
     heads.iter().rposition(|h| h.block <= top_block)
 }
 
 /// A section's preview: the heading, then up to `max` lines of the section's text, each trimmed,
 /// blank lines and fences left out.
-#[cfg_attr(not(test), allow(dead_code))] // Task 5 of the outline rail uses it.
+#[cfg_attr(not(test), allow(dead_code))] // Task 6 of the outline rail uses it.
 pub fn preview(heads: &[Head], i: usize, blocks: &[Block], lines: &[String], max: usize) -> Vec<String> {
     let mut out = vec![heads[i].text.clone()];
     let blocks_in = section(heads, i, blocks.len());

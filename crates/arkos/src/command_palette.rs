@@ -303,6 +303,8 @@ mod tests {
         assert_eq!((markdown.detail.as_str(), &markdown.command), ("Shift+Cmd+M", &Command::ToggleMarkdownView));
         let save = items.iter().find(|i| i.label == "Save file").unwrap();
         assert_eq!((save.detail.as_str(), &save.command), ("Cmd+S", &Command::SaveFile));
+        let outline = items.iter().find(|i| i.label == "Toggle outline").unwrap();
+        assert_eq!((outline.detail.as_str(), &outline.command), ("Option+Cmd+O", &Command::ToggleOutline));
         let open_file = items.iter().find(|i| i.label == "Open file in pane\u{2026}").unwrap();
         assert_eq!((open_file.detail.as_str(), &open_file.command), ("", &Command::OpenFileInPane), "no key: the palette asks for a path");
         for a in crate::keymap::ACTIONS.iter().filter(|a| a.name.starts_with("video ")) {

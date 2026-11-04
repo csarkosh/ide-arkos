@@ -956,6 +956,8 @@ pub struct Viewer {
     pub notes: Rc<md_blocks::Notes>,
     /// Presentation mode: read-only, no caret and no reveal, a single click follows a link.
     pub presenting: bool,
+    /// The outline rail is expanded into its panel (`outline_rail`), kept with the tab.
+    pub outline: bool,
     /// The diagrams shown as code or split, by their index among the document's diagrams.
     pub diagram_modes: std::collections::BTreeMap<usize, workspace::DiagramMode>,
     /// Each diagram's zoom and pan, by its index, for this view only (`md_diagram`).
@@ -1181,6 +1183,7 @@ impl Viewer {
             pending_anchor: None,
             notes: Rc::new(md_blocks::Notes::default()),
             presenting: false,
+            outline: false,
             diagram_modes: Default::default(),
             diagram_zoom: HashMap::new(),
             diagram_drag: None,
@@ -3000,6 +3003,30 @@ impl Viewer {
         cx.notify();
     }
 
+    /// The block at the top of the view: the rendered view's first visible block, or the block
+    /// holding the raw view's first visible line. The outline rail's section in view is
+    /// `md_fold::current` of it.
+    pub fn top_block(&self) -> usize {
+        if self.rendered() {
+            return self.list_state.logical_scroll_top().item_ix.min(self.blocks.len().saturating_sub(1));
+        }
+        raw_top_block(&self.blocks, self.scroll.current, self.diff.as_ref(), self.inline_diff, self.line_count())
+    }
+
+    /// Scrolls to heading `i` from the outline rail: the rendered view unfolds and shows its
+    /// block at the top; the raw view puts the heading's line at the top, as the find bar
+    /// scrolls to a hit.
+    pub fn reveal_heading(&mut self, i: usize, cx: &mut Context<Self>) {
+        let Some(block) = self.heads.get(i).map(|h| h.block) else { return };
+        if self.rendered() {
+            self.reveal_block(block, cx);
+            return;
+        }
+        let Some(line) = self.blocks.get(block).map(|b| b.lines.start) else { return };
+        self.scroll.target = raw_scroll_for_line(line, self.diff.as_ref(), self.inline_diff).min(self.max_scroll().max(0.0));
+        cx.notify();
+    }
+
     /// Moves block `from` to before block `to` (`md_fold::move_block`), as one undoable edit, the
     /// caret at the moved block's start.
     pub fn move_block(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
@@ -4352,6 +4379,29 @@ pub fn list_rows(blocks: usize) -> usize {
     }
 }
 
+/// The line at the top of the raw view scrolled to row `scroll` (rows are lines, or with the
+/// inline diff on lines and deleted lines between them): a row partly scrolled off still counts.
+fn raw_top_line(scroll: f32, diff: Option<&DiffMarks>, inline_diff: bool, line_count: usize) -> usize {
+    let row = scroll.floor().max(0.0) as usize;
+    match diff {
+        Some(d) if inline_diff => diff::line_at_row(d, &diff::display_rows(line_count, d, true), row),
+        _ => row,
+    }
+}
+
+/// The block holding the raw view's top line (`raw_top_line`).
+fn raw_top_block(blocks: &[md_blocks::Block], scroll: f32, diff: Option<&DiffMarks>, inline_diff: bool, line_count: usize) -> usize {
+    md_blocks::block_at(blocks, raw_top_line(scroll, diff, inline_diff, line_count))
+}
+
+/// The raw view's scroll that puts `line` at the top.
+fn raw_scroll_for_line(line: usize, diff: Option<&DiffMarks>, inline_diff: bool) -> f32 {
+    match diff {
+        Some(d) if inline_diff => diff::row_of_line(d, line) as f32,
+        _ => line as f32,
+    }
+}
+
 /// The block holding line `line` with its text and tree, when an active block there is drawn
 /// revealed (`md_reveal::reveals`).
 fn revealed_block<'a>(lines: &[String], blocks: &'a [md_blocks::Block], line: usize) -> Option<(&'a md_blocks::Block, String, md_reveal::BlockTree)> {
@@ -5304,9 +5354,9 @@ impl Root {
             return v.clone();
         }
         let (font_size, line_height) = (self.font_size, self.line_height);
-        let (mode, presenting) = match self.tree.locate(tab).and_then(|(pane, idx)| self.tree.pane(pane)?.tabs.get(idx)) {
-            Some(Tab::Viewer { mode, presenting, .. }) => (*mode, *presenting && *mode == ViewMode::Rendered),
-            _ => (ViewMode::default(), false),
+        let (mode, presenting, outline) = match self.tree.locate(tab).and_then(|(pane, idx)| self.tree.pane(pane)?.tabs.get(idx)) {
+            Some(Tab::Viewer { mode, presenting, outline, .. }) => (*mode, *presenting && *mode == ViewMode::Rendered, *outline),
+            _ => (ViewMode::default(), false, false),
         };
         let open_details = self.details_open.get(path).map(|saved| sections_from(saved)).unwrap_or_default();
         let anchor = self.pending_anchors.remove(path);
@@ -5321,6 +5371,8 @@ impl Root {
             v.mode = mode;
             // Presentation mode comes back with the tab.
             v.presenting = presenting;
+            // So does an expanded outline.
+            v.outline = outline;
             v.open_details = open_details;
             v.folded = folded;
             v
@@ -5673,7 +5725,7 @@ impl Root {
     /// viewer: from Raw it shows Rendered too, since only the rendered view presents.
     pub fn toggle_presentation_for(&mut self, tab: TabId, cx: &mut Context<Self>) {
         let Some((pane, idx)) = self.tree.locate(tab) else { return };
-        let Some(Tab::Viewer { path, mode, presenting }) = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).cloned() else { return };
+        let Some(Tab::Viewer { path, mode, presenting, .. }) = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).cloned() else { return };
         if !is_markdown(&path) {
             return;
         }
@@ -5684,6 +5736,26 @@ impl Root {
         self.tree.set_viewer_presenting(pane, idx, on);
         if let Some(v) = self.viewers.get(&tab).cloned() {
             v.update(cx, |v, cx| v.set_presenting(on, cx));
+        }
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// Expands or collapses a markdown tab's outline rail, in the layout (saved with the tab) and
+    /// in its viewer. Any other tab is left alone.
+    pub fn toggle_outline_for(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        let Some((pane, idx)) = self.tree.locate(tab) else { return };
+        let Some(Tab::Viewer { path, outline, .. }) = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).cloned() else { return };
+        if !is_markdown(&path) {
+            return;
+        }
+        let on = !outline;
+        self.tree.set_viewer_outline(pane, idx, on);
+        if let Some(v) = self.viewers.get(&tab).cloned() {
+            v.update(cx, |v, cx| {
+                v.outline = on;
+                cx.notify();
+            });
         }
         self.save(cx);
         cx.notify();
@@ -6409,6 +6481,21 @@ mod tests {
         let doc = edit::Document::from_text(text);
         let blocks = md_blocks::split(doc.lines());
         (doc, blocks)
+    }
+
+    #[test]
+    fn the_top_block_follows_the_raw_view_s_first_line() {
+        let (doc, blocks) = md_doc("# One\ntext\n\n# Two\nmore\n\n# Three\nend");
+        let heads = md_fold::headings(&blocks, doc.lines());
+        assert_eq!(heads.len(), 3);
+        let second = blocks[heads[1].block].lines.start;
+        assert_eq!(second, 3);
+        let n = doc.lines().len();
+        assert_eq!(raw_top_block(&blocks, second as f32, None, false, n), heads[1].block, "scrolled to the second heading's line");
+        assert_eq!(raw_top_block(&blocks, second as f32 + 0.6, None, false, n), heads[1].block, "a row partly scrolled off is still the top one");
+        assert_eq!(md_fold::current(&heads, raw_top_block(&blocks, 4.0, None, false, n)), Some(1), "inside the second section");
+        assert_eq!(raw_top_block(&blocks, 0.0, None, false, n), heads[0].block);
+        assert_eq!(raw_scroll_for_line(second, None, false), second as f32, "revealing a heading puts its line at the top");
     }
 
     #[test]
