@@ -105,6 +105,7 @@ mod workbook;
 mod workspace;
 mod worktrees;
 mod wt_scan;
+mod wt_watch;
 
 use futures::channel::oneshot;
 use gpui::{
