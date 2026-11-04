@@ -953,9 +953,6 @@ pub enum WtMenuAction {
     RemoveForce(PathBuf),
 }
 
-/// How long after the last change seen in a worktree its `git status` runs.
-const WT_STATUS_DEBOUNCE: Duration = Duration::from_secs(1);
-
 /// The count a worktree row shows: its changes once its status has loaded, and nothing for a
 /// clean one or one not loaded yet (the word "clean" is never written).
 pub fn wt_count_text(dirty: Option<usize>) -> Option<String> {
@@ -1673,14 +1670,15 @@ impl Root {
         }
     }
 
-    /// The watcher saw a change in the worktree `path`: its status is due one second from now,
-    /// a later change moving the time (`Worktrees::status_due_at`), and a task a second from now
-    /// runs whatever is due by then. Several such tasks are harmless, since `due_now` hands each
-    /// worktree out once.
+    /// The watcher saw a change in the worktree `path`: its status is due a debounce from now, a
+    /// later change moving the time up to the cap (`Worktrees::status_due_at`), and a task at that
+    /// time runs whatever is due by then. Several such tasks are harmless, since `due_now` hands
+    /// each worktree out once.
     fn schedule_worktree_status(&mut self, path: &Path, cx: &mut Context<Self>) {
-        self.worktrees.status_due_at(path, Instant::now() + WT_STATUS_DEBOUNCE);
+        let now = Instant::now();
+        let due = self.worktrees.status_due_at(path, now + crate::worktrees::STATUS_DEBOUNCE);
         cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(WT_STATUS_DEBOUNCE).await;
+            cx.background_executor().timer(due.saturating_duration_since(now)).await;
             let _ = this.update(cx, |root, cx| {
                 root.worktrees.due_now(Instant::now());
                 root.load_pending_worktrees(cx);

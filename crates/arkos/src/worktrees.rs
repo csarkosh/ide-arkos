@@ -12,7 +12,13 @@ use crate::wt_scan::{canonical, STALE_AFTER};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
+
+/// How long after the last change seen in a worktree its `git status` runs.
+pub const STATUS_DEBOUNCE: Duration = Duration::from_secs(1);
+/// The longest a run of changes less than a debounce apart (a long build, Claude writing) holds
+/// the status back: it runs no later than this after the first change not yet answered.
+pub const STATUS_CAP: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Worktree {
@@ -247,6 +253,9 @@ pub struct Worktrees {
     pub loading_since: HashMap<PathBuf, Instant>,
     /// A change seen in each worktree, by when its status is due (the debounce).
     due: HashMap<PathBuf, Instant>,
+    /// The first due time asked for in each worktree's current run of changes, a debounce after
+    /// its first change: the cap counts from there.
+    first_due: HashMap<PathBuf, Instant>,
     /// Worktrees whose due time passed (`due_now`) and whose status has not started since; their
     /// rows stay up meanwhile.
     rerun: HashSet<PathBuf>,
@@ -271,6 +280,7 @@ impl Worktrees {
             loading: HashSet::new(),
             loading_since: HashMap::new(),
             due: HashMap::new(),
+            first_due: HashMap::new(),
             rerun: HashSet::new(),
             opened_at: HashMap::new(),
             selected: None,
@@ -284,6 +294,7 @@ impl Worktrees {
         self.loading.remove(path);
         self.loading_since.remove(path);
         self.due.remove(path);
+        self.first_due.remove(path);
         self.rerun.remove(path);
         self.opened_at.remove(path);
     }
@@ -452,10 +463,15 @@ impl Worktrees {
             .collect()
     }
 
-    /// A change seen in the worktree: its status is due at `at` (the caller passes a second from
-    /// now, the debounce; a later call moves the time).
-    pub fn status_due_at(&mut self, path: &Path, at: Instant) {
-        self.due.insert(path.to_path_buf(), at);
+    /// A change seen in the worktree: its status is due at `at` (the caller passes a debounce from
+    /// now; a later call moves the time), but never later than `STATUS_CAP` after the first
+    /// change of the run, so a worktree that never goes quiet still gets its status. Returns the
+    /// time stored.
+    pub fn status_due_at(&mut self, path: &Path, at: Instant) -> Instant {
+        let first = *self.first_due.entry(path.to_path_buf()).or_insert(at);
+        let due = at.min(first + STATUS_CAP.saturating_sub(STATUS_DEBOUNCE));
+        self.due.insert(path.to_path_buf(), due);
+        due
     }
 
     /// Worktrees whose due time has passed, taken off the list; `to_load` then has each of them
@@ -465,6 +481,7 @@ impl Worktrees {
         passed.sort();
         for p in &passed {
             self.due.remove(p);
+            self.first_due.remove(p);
             self.rerun.insert(p.clone());
         }
         passed
@@ -538,7 +555,7 @@ pub fn pass_drops(unseen: &[PathBuf], open: &Path, has_git: impl Fn(&Path) -> bo
 mod tests {
     use super::*;
     use crate::gitstatus::run_status;
-    use std::time::{Duration, SystemTime};
+    use std::time::SystemTime;
 
     /// A side worktree of `repo` at `path`, on a branch named after it.
     fn wt(path: &str, repo: &str) -> Worktree {
@@ -703,6 +720,30 @@ worktree /r-c\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch refs/heads/
         w.mark_loading(p);
         w.set_changes(p, Some(vec![(PathBuf::from("x"), Status::Added)]));
         assert!(w.to_load().is_empty(), "and then quiet");
+    }
+
+    #[test]
+    fn a_worktree_that_never_goes_quiet_still_gets_its_status_within_the_cap() {
+        let t0 = Instant::now();
+        let s = Duration::from_millis;
+        let p = Path::new("/p-a");
+        let mut w = Worktrees::new(vec![]);
+        w.set_repo(Path::new("/p"), vec![wt("/p-a", "/p")]);
+        // A change every 0.8 s, each asking for the status a second later.
+        for k in 0..=6 {
+            let t = t0 + s(800 * k);
+            assert!(w.due_now(t).is_empty(), "nothing due at {k}");
+            let due = w.status_due_at(p, t + STATUS_DEBOUNCE);
+            assert_eq!(due, (t + STATUS_DEBOUNCE).min(t0 + STATUS_CAP), "the debounce, never past the cap");
+        }
+        assert!(w.due_now(t0 + s(4900)).is_empty(), "not yet five seconds since the first change");
+        assert_eq!(w.due_now(t0 + s(5100)), vec![p.to_path_buf()], "five seconds into the run of changes");
+        assert!(w.due_now(t0 + s(5200)).is_empty(), "once");
+        // The next change starts a new window.
+        assert_eq!(w.status_due_at(p, t0 + s(5600) + STATUS_DEBOUNCE), t0 + s(6600));
+        assert_eq!(w.status_due_at(p, t0 + s(6400) + STATUS_DEBOUNCE), t0 + s(7400), "the cap counts from 5.6 s now");
+        assert!(w.due_now(t0 + s(7000)).is_empty());
+        assert_eq!(w.due_now(t0 + s(7500)), vec![p.to_path_buf()]);
     }
 
     #[test]

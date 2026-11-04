@@ -78,7 +78,8 @@ moves to the top, though not while the pointer is over the list. Builds and cach
 once and refreshed every ten minutes, and the section says it is not watched. Each row shows its
 changes at a glance (`1 change`, `3 changes`) in the theme's modified colour; a clean row says
 nothing and does not expand. Arkos runs a worktree's `git status` when the list loads and then
-only when something changes in that worktree, a commit included, never on a timer. Expand a
+only when something changes in that worktree, a commit included: a second after a worktree's
+last change, or five seconds into a run of changes; never on a timer. Expand a
 worktree with changes for its changed files in the status colours. Click a changed file to read
 it in the viewer. Right click a worktree: Open
 terminal here, Remove worktree (refused while it has changes), Remove worktree, force.
