@@ -118,12 +118,18 @@ pub struct Stream {
     stream: FSEventStreamRef,
     queue: DispatchQueue,
     tx: *mut UnboundedSender<Event>,
+    /// The system's event id read just before the stream was made: a safe point to resume from
+    /// while the stream has delivered nothing.
+    created_at: u64,
+    /// Whether `FSEventStreamStart` succeeded, so `Drop` stops only a started stream.
+    started: bool,
 }
 
-// SAFETY: the stream and queue handles are thread-safe CoreServices and libdispatch objects, and
-// the boxed sender is only read by the callback (through `&`, and `UnboundedSender` is `Sync`)
-// until `Drop` frees it after the queue has drained. `Stream` is not `Sync`: its raw pointers
-// keep the auto trait off, so `Drop` and `latest_event_id` never race each other.
+// SAFETY: the stream and queue handles may be used from whichever single thread owns `Stream`,
+// and the boxed sender is only read by the callback (through `&`, and `UnboundedSender` is
+// `Sync`) until `Drop` frees it after the queue has drained. `Stream` is deliberately not `Sync`:
+// FSEvents makes no thread-safety promise for calls on one stream from several threads at once,
+// so the raw pointer fields are left to keep the auto trait off.
 unsafe impl Send for Stream {}
 
 impl Stream {
@@ -165,6 +171,8 @@ impl Stream {
             return Err("could not make the list of folders".into());
         }
 
+        // SAFETY: takes nothing and only reads the system's event counter.
+        let created_at = unsafe { FSEventsGetCurrentEventId() };
         let info = Box::into_raw(Box::new(tx));
         let context = FSEventStreamContext {
             version: 0,
@@ -205,43 +213,47 @@ impl Stream {
             }
             return Err("could not make a dispatch queue".into());
         }
-        let s = Stream { stream, queue, tx: info };
+        let mut s = Stream { stream, queue, tx: info, created_at, started: false };
         // SAFETY: `stream` and `queue` are live; the stream retains the queue.
         let started = unsafe {
             FSEventStreamSetDispatchQueue(s.stream, s.queue);
             FSEventStreamStart(s.stream)
         };
         if started == 0 {
-            // `Drop` stops (a no-op on a stream that never started), invalidates, releases and
+            // `Drop` skips Stop on a stream that never started, then invalidates, releases and
             // frees, in that order.
             drop(s);
             return Err("FSEvents could not start the stream".into());
         }
+        s.started = true;
         Ok(s)
     }
 
     /// The id of the newest event the stream has seen, to resume from with `start`'s `since`.
     /// Before a stream started "since now" has delivered anything FSEvents answers with the
-    /// "since now" marker itself, so the system's current event id is given instead.
+    /// "since now" marker itself, so the system's event id read just before the stream was made
+    /// is given instead: events still waiting out the latency come after it, so a resume from it
+    /// loses none of them.
     pub fn latest_event_id(&self) -> u64 {
-        // SAFETY: `self.stream` is live until `Drop`; `FSEventsGetCurrentEventId` takes nothing.
-        unsafe {
-            match FSEventStreamGetLatestEventId(self.stream) {
-                K_FS_EVENT_STREAM_EVENT_ID_SINCE_NOW => FSEventsGetCurrentEventId(),
-                id => id,
-            }
+        // SAFETY: `self.stream` is live until `Drop`.
+        match unsafe { FSEventStreamGetLatestEventId(self.stream) } {
+            K_FS_EVENT_STREAM_EVENT_ID_SINCE_NOW => self.created_at,
+            id => id,
         }
     }
 }
 
 impl Drop for Stream {
     fn drop(&mut self) {
-        // SAFETY: the handles are live and dropped once. After Stop and Invalidate FSEvents queues
+        // SAFETY: the handles are live and dropped once; Stop is called only on a started stream,
+        // and Invalidate is valid because the queue was set first. After Invalidate FSEvents queues
         // no new callback; the empty `dispatch_sync_f` waits out one already running or queued on
         // the serial queue (this thread is never that queue's, so it cannot deadlock). Only then
         // is the queue released and the sender freed, so no callback reads a freed `info`.
         unsafe {
-            FSEventStreamStop(self.stream);
+            if self.started {
+                FSEventStreamStop(self.stream);
+            }
             FSEventStreamInvalidate(self.stream);
             FSEventStreamRelease(self.stream);
             dispatch_sync_f(self.queue, ptr::null_mut(), drained);
@@ -385,6 +397,37 @@ mod tests {
         assert!(wait_for(&mut rx, Duration::from_secs(10), |e| matches!(e, Event::Changed(_))));
         let after = s.latest_event_id();
         assert!(after > before, "latest event id {after} is not past {before}");
+    }
+
+    #[test]
+    fn a_stream_resumed_from_a_saved_id_delivers_what_happened_in_between() {
+        let (_t, d) = canonical_tempdir();
+        let (tx, _rx) = unbounded();
+        // As above: a runner that refuses a stream prints the reason and passes.
+        let s = match Stream::start(&[d.clone()], None, tx) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("FSEvents stream not available here: {e}");
+                return;
+            }
+        };
+        let id = s.latest_event_id();
+        drop(s);
+        std::fs::write(d.join("file.txt"), b"hello").unwrap();
+        let (tx, mut rx) = unbounded();
+        let s = match Stream::start(&[d.clone()], Some(id), tx) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("FSEvents stream not available here: {e}");
+                return;
+            }
+        };
+        let seen = wait_for(&mut rx, Duration::from_secs(10), |e| match e {
+            Event::Changed(p) => p.canonicalize().unwrap_or_else(|_| p.clone()) == d,
+            _ => false,
+        });
+        assert!(seen, "the resumed stream did not report the write in {}", d.display());
+        drop(s);
     }
 
     #[test]
