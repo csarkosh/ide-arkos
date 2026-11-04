@@ -126,9 +126,9 @@ pub fn cadence(frame_rate: u32, moving: bool) -> Duration {
 /// the wash comes back soon after the window does.
 pub const REST: Duration = Duration::from_millis(500);
 
-/// Whether a window's effects are paused: when the setting "Use more battery to run effects while
-/// using other apps" (`[effect] run_unfocused`) is off and the window is not `focused` (neither it
-/// nor this process's Settings window is the key window). A paused effect holds its last frame.
+/// Whether a window's effects are paused: when `[effect] run_unfocused` is off and the window is
+/// not `focused` (neither it nor this process's Settings window is the key window). A paused
+/// effect holds its last frame.
 pub fn paused(run_unfocused: bool, focused: bool) -> bool {
     !run_unfocused && !focused
 }

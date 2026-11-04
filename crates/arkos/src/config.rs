@@ -218,9 +218,9 @@ impl<'de> Deserialize<'de> for EffectChoice {
 pub struct EffectConfig {
     pub name: EffectChoice,
     pub intensity: f32,
-    /// Settings' "Use more battery to run effects while using other apps": true (the default)
-    /// keeps the effects moving in a window that is not in focus; false pauses them there, on
-    /// their last frame.
+    /// Whether the effects run while using other apps: true (the default) keeps the effects
+    /// moving in a window that is not in focus; false pauses them there, on their last frame.
+    /// Set in this file only; Settings has no switch for it.
     pub run_unfocused: bool,
 }
 
@@ -782,9 +782,9 @@ light = "peach-watercolor"
 # (invisible) to 1.0 (as designed).
 name = "theme"
 intensity = 1.0
-# Settings' "Use more battery to run effects while using other apps". false pauses the effect,
-# the moving text and the empty pane's dots in a window that is not in focus, holding their last
-# frame until you come back; true keeps them moving.
+# Whether the effects run while you use other apps, at some cost in battery. false pauses the
+# effect, the moving text and the empty pane's dots in a window that is not in focus, holding
+# their last frame until you come back; true keeps them moving.
 run_unfocused = true
 
 [appearance]

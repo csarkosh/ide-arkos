@@ -12,6 +12,8 @@ use gpui::{
     Stateful, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
 };
 use std::path::{Path, PathBuf};
+use objc2::rc::Retained;
+use objc2_app_kit::NSWindow;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
@@ -35,9 +37,6 @@ const SIZE_RANGE: (f64, f64) = (10.0, 32.0);
 const LINE_RANGE: (f64, f64) = (1.2, 2.0);
 const SIZE_STEP: f64 = 1.0;
 const LINE_STEP: f64 = 0.1;
-/// The effect's Intensity stepper: 0.0 to 1.0 by a tenth.
-const INTENSITY_RANGE: (f64, f64) = (0.0, 1.0);
-const INTENSITY_STEP: f64 = 0.1;
 
 /// Families that pass the advance check but draw symbols, and the font macOS draws missing glyphs
 /// with: never offered as a text font.
@@ -224,40 +223,34 @@ pub struct EffectRow {
     pub current: bool,
 }
 
-/// The Effect list: "Theme's choice" first, naming what the theme recommends, then "None", then
-/// a configured effect that is not installed, then every effect `listed`, an invalid one shown
-/// but not clickable.
+/// The effect Settings offers besides none and the theme's choice.
+const MATERIAL: &str = "material";
+
+/// The Effect list: "None", "Theme's choice" naming what the theme recommends, then "Material".
+/// Any other effect is chosen in the config file or with `arkos effect use`; when one is, it is
+/// listed after the three as the current choice (not installed or invalid said so), so the list
+/// always shows what is in force. A `material` folder that does not load shadows the built-in
+/// and is shown as invalid, not choosable.
 pub fn effect_rows(choice: &EffectChoice, recommended: Option<&str>, listed: &[(String, effects::manifest::Source)]) -> Vec<EffectRow> {
     let row = |label: String, value: Option<&str>, current: bool| EffectRow { label, value: value.map(str::to_string), current };
+    let invalid = |name: &str| listed.iter().any(|(n, source)| n == name && matches!(source, effects::manifest::Source::Invalid(_)));
+    let is_material = *choice == EffectChoice::Named(MATERIAL.into());
     let mut rows = vec![
-        row(format!("Theme's choice ({})", recommended.unwrap_or("none")), Some("theme"), *choice == EffectChoice::Theme),
         row("None".into(), Some("none"), *choice == EffectChoice::None),
+        row(format!("Theme's choice ({})", recommended.unwrap_or("none")), Some("theme"), *choice == EffectChoice::Theme),
+        if invalid(MATERIAL) { row("Material (invalid)".into(), None, is_material) } else { row("Material".into(), Some(MATERIAL), is_material) },
     ];
     if let EffectChoice::Named(name) = choice {
-        let names: Vec<String> = listed.iter().map(|(n, _)| n.clone()).collect();
-        rows.extend(not_installed(name, &names).map(|label| row(label, None, true)));
-    }
-    for (name, source) in listed {
-        rows.push(match source {
-            effects::manifest::Source::Invalid(_) => row(format!("{name} (invalid)"), None, false),
-            _ => row(name.clone(), Some(name), *choice == EffectChoice::Named(name.clone())),
-        });
+        if name != MATERIAL {
+            let names: Vec<String> = listed.iter().map(|(n, _)| n.clone()).collect();
+            rows.push(match not_installed(name, &names) {
+                Some(label) => row(label, None, true),
+                None if invalid(name) => row(format!("{name} (invalid)"), None, true),
+                None => row(name.clone(), Some(name), true),
+            });
+        }
     }
     rows
-}
-
-/// The edit for the Intensity stepper.
-fn intensity_edit(value: f64) -> Edit {
-    edit(&["effect", "intensity"], value)
-}
-
-/// The switch under Intensity, in Cyrus's words: on (the default) the effects keep moving while
-/// another app is in front; off, a window not in focus pauses them on their last frame.
-const RUN_UNFOCUSED_ROW: &str = "Use more battery to run effects while using other apps";
-
-/// The edit for the `RUN_UNFOCUSED_ROW` switch: `effect.run_unfocused`.
-fn run_unfocused_edit(on: bool) -> Edit {
-    edit(&["effect", "run_unfocused"], on)
 }
 
 /// Which `[theme]` key an imported theme is selected under: the mode's, or with the mode System,
@@ -315,10 +308,10 @@ pub struct SettingsWindow {
     privacy: PrivacyCache,
 }
 
-/// Opens the Settings window centred on the main display and gives it the keyboard. `fonts` is
-/// the list shown until the advance check has run. `None` when gpui could not open it, which the
-/// log records.
-pub fn open(cx: &mut App, shown: Shown, theme: Theme, fonts: Vec<String>, on_change: OnChange, on_update: OnUpdate) -> Option<WindowHandle<SettingsWindow>> {
+/// Opens the Settings window centred on the IDE window `over` (on the main display when there
+/// is none yet, from the chooser) and gives it the keyboard. `fonts` is the list shown until the
+/// advance check has run. `None` when gpui could not open it, which the log records.
+pub fn open(cx: &mut App, over: Option<Retained<NSWindow>>, shown: Shown, theme: Theme, fonts: Vec<String>, on_change: OnChange, on_update: OnUpdate) -> Option<WindowHandle<SettingsWindow>> {
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(WIDTH), px(HEIGHT)), cx))),
         // The window draws the IDE's own title bar in the native one's place.
@@ -329,6 +322,7 @@ pub fn open(cx: &mut App, shown: Shown, theme: Theme, fonts: Vec<String>, on_cha
         ..Default::default()
     };
     let opened = cx.open_window(options, move |window, cx| {
+        centre_over(window, over.as_deref());
         let view = cx.new(|cx| {
             // Foreground time in Settings counts while its window is the key window, and stops
             // when it closes.
@@ -400,6 +394,14 @@ pub fn open(cx: &mut App, shown: Shown, theme: Theme, fonts: Vec<String>, on_cha
             eprintln!("arkos: the Settings window did not open: {e:#}");
             None
         }
+    }
+}
+
+/// Moves a window that has just opened (Settings or Keybindings) to the centre of the IDE window
+/// `over`. It has not drawn yet, so it is first seen there.
+pub fn centre_over(window: &Window, over: Option<&NSWindow>) {
+    if let (Some(over), Some(own)) = (over, crate::screen::ns_window_of(window)) {
+        crate::screen::centre_on(&own, over);
     }
 }
 
@@ -689,12 +691,13 @@ impl SettingsWindow {
             modes = modes.child(p);
         }
         out.push(modes.into_any_element());
+        // The dark and the light lists side by side, each half the width.
+        let mut columns = div().flex().gap(px(16.0));
         for (key, slot, title, list_id, current) in [
             ("dark", theme::Appearance::Dark, "Dark theme", "theme-dark", &cfg.theme.dark),
             ("light", theme::Appearance::Light, "Light theme", "theme-light", &cfg.theme.light),
         ] {
-            out.push(heading(title, c).into_any_element());
-            let mut list = div().flex().flex_col();
+            let mut list = div().flex_1().min_w_0().flex().flex_col().child(heading(title, c));
             let names: Vec<String> = self.themes.iter().map(|(n, _, _)| n.clone()).collect();
             if let Some(missing) = not_installed(current, &names) {
                 list = list.child(list_row((list_id, usize::MAX), missing, true, enabled, c));
@@ -716,8 +719,9 @@ impl SettingsWindow {
                 };
                 list = list.child(row);
             }
-            out.push(list.into_any_element());
+            columns = columns.child(list);
         }
+        out.push(columns.into_any_element());
         let mut add = pill("add-theme", "Add theme…", false, enabled && !self.picking, c);
         if enabled && !self.picking {
             add = add.on_click(cx.listener(|w, _, window, cx| w.add_theme(theme::is_dark(window.appearance()), cx)));
@@ -752,8 +756,9 @@ impl SettingsWindow {
         out
     }
 
-    /// The Appearance section's effect controls, under the themes: the Effect list, the
-    /// Intensity stepper, the `RUN_UNFOCUSED_ROW` switch and "Show effects folder".
+    /// The Appearance section's effect controls, under the themes: the Effect list and "Show
+    /// effects folder". An effect's intensity and whether it runs while another app is in front
+    /// are set in the config file (`effect.intensity`, `effect.run_unfocused`).
     fn effect_controls(&self, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let cfg = &self.shown.config.effect;
         let mut out = vec![heading("Effect", c).into_any_element()];
@@ -767,20 +772,6 @@ impl SettingsWindow {
             list = list.child(row);
         }
         out.push(list.into_any_element());
-        out.push(heading("Intensity", c).into_any_element());
-        let value = f64::from(cfg.intensity);
-        let press = |ix: usize, sign: &'static str, delta: f64| {
-            let mut p = pill(("intensity-step", ix), sign, false, enabled, c);
-            if enabled {
-                p = p.on_click(cx.listener(move |w, _, _, cx| w.change(vec![intensity_edit(step(value, delta, INTENSITY_RANGE))], cx)));
-            }
-            p
-        };
-        let (minus, plus) = (press(0, "−", -INTENSITY_STEP), press(1, "+", INTENSITY_STEP));
-        let shown = div().min_w(px(28.0)).flex().justify_center().child(number(value));
-        out.push(div().flex().items_center().gap(px(8.0)).child(minus).child(shown).child(plus).into_any_element());
-        out.push(heading(RUN_UNFOCUSED_ROW, c).into_any_element());
-        out.push(self.switch("run-unfocused", Some(cfg.run_unfocused), enabled, c, cx, run_unfocused_edit));
         let mut folder = pill("effects-folder", "Show effects folder", false, enabled, c);
         if enabled {
             folder = folder.on_click(|_, _, cx| {
@@ -1127,48 +1118,36 @@ mod tests {
     }
 
     #[test]
-    fn the_effect_list_offers_the_theme_s_choice_none_and_each_effect_and_marks_the_current_one() {
+    fn the_effect_list_offers_none_the_theme_s_choice_and_material_in_that_order() {
         use crate::config::EffectChoice;
         use crate::effects::manifest::Source;
         let listed = vec![
             ("watercolor".to_string(), Source::BuiltIn),
+            ("material".to_string(), Source::BuiltIn),
             ("neon".to_string(), Source::Folder("/e/neon".into())),
             ("broken".to_string(), Source::Invalid("scale must be 0.1 to 1.0".into())),
         ];
-        let rows = |choice: &EffectChoice, recommended: Option<&str>| -> Vec<(String, Option<String>, bool)> {
-            effect_rows(choice, recommended, &listed).into_iter().map(|r| (r.label, r.value, r.current)).collect()
+        let rows = |choice: &EffectChoice, recommended: Option<&str>, listed: &[(String, Source)]| -> Vec<(String, Option<String>, bool)> {
+            effect_rows(choice, recommended, listed).into_iter().map(|r| (r.label, r.value, r.current)).collect()
         };
         let row = |label: &str, value: Option<&str>, current: bool| (label.to_string(), value.map(str::to_string), current);
+        // The default choice is the theme's, and no other installed effect is offered.
+        assert_eq!(EffectChoice::default(), EffectChoice::Theme);
         assert_eq!(
-            rows(&EffectChoice::Theme, Some("watercolor")),
-            vec![
-                row("Theme's choice (watercolor)", Some("theme"), true),
-                row("None", Some("none"), false),
-                row("watercolor", Some("watercolor"), false),
-                row("neon", Some("neon"), false),
-                row("broken (invalid)", None, false),
-            ]
+            rows(&EffectChoice::Theme, Some("watercolor"), &listed),
+            vec![row("None", Some("none"), false), row("Theme's choice (watercolor)", Some("theme"), true), row("Material", Some("material"), false)]
         );
-        let named = rows(&EffectChoice::Named("neon".into()), None);
-        assert_eq!(named[0], row("Theme's choice (none)", Some("theme"), false));
-        assert_eq!(named[3], row("neon", Some("neon"), true));
-        assert_eq!(rows(&EffectChoice::None, None)[1], row("None", Some("none"), true));
-        // A configured effect that is not installed is listed after None, current and not
-        // clickable.
-        let gone = rows(&EffectChoice::Named("gone".into()), None);
-        assert_eq!(gone[2], row("gone (not installed)", None, true));
-        assert_eq!(gone.len(), 6);
-    }
-
-    #[test]
-    fn the_intensity_stepper_moves_by_a_tenth_within_zero_and_one() {
-        assert_eq!(step(1.0, INTENSITY_STEP, INTENSITY_RANGE), 1.0);
-        assert_eq!(step(f64::from(0.7f32), -INTENSITY_STEP, INTENSITY_RANGE), 0.6);
-        assert_eq!(step(0.0, -INTENSITY_STEP, INTENSITY_RANGE), 0.0);
-        assert_eq!(step(f64::from(0.25f32), INTENSITY_STEP, INTENSITY_RANGE), 0.4, "rounded to a tenth");
-        let (keys, value) = intensity_edit(0.6);
-        assert_eq!(keys, vec!["effect".to_string(), "intensity".to_string()]);
-        assert_eq!(value.as_float(), Some(0.6));
+        assert_eq!(rows(&EffectChoice::None, None, &listed)[0], row("None", Some("none"), true));
+        assert_eq!(rows(&EffectChoice::Theme, None, &listed)[1], row("Theme's choice (none)", Some("theme"), true));
+        assert_eq!(rows(&EffectChoice::Named("material".into()), None, &listed)[2], row("Material", Some("material"), true));
+        // An effect chosen in the config file stays visible as the current one, after the three.
+        assert_eq!(rows(&EffectChoice::Named("neon".into()), None, &listed)[3], row("neon", Some("neon"), true));
+        assert_eq!(rows(&EffectChoice::Named("gone".into()), None, &listed)[3], row("gone (not installed)", None, true));
+        assert_eq!(rows(&EffectChoice::Named("broken".into()), None, &listed)[3], row("broken (invalid)", None, true));
+        assert_eq!(rows(&EffectChoice::Named("neon".into()), None, &listed).len(), 4);
+        // A material folder that does not load shadows the built-in: shown, not choosable.
+        let shadowed = vec![("material".to_string(), Source::Invalid("bad".into()))];
+        assert_eq!(rows(&EffectChoice::Theme, None, &shadowed)[2], row("Material (invalid)", None, false));
     }
 
     #[test]
@@ -1262,20 +1241,6 @@ mod tests {
         let page = include_str!("../../../docs/telemetry.md").split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(page.contains(&format!("in the {} section: {USAGE_ROW} and {CRASHES_ROW}", Section::Privacy.label())), "the page's list of switches");
         assert!(page.contains(&format!("Settings > {} > **{LAST_REPORT_ROW}**", Section::Privacy.label())), "the page's way to read the last report");
-    }
-
-    /// Like the Wide tables row: each choice writes its key as the config spells it, and the
-    /// edited default file reads back as that choice.
-    #[test]
-    fn the_effect_switch_says_it_uses_more_battery_and_writes_run_unfocused() {
-        assert_eq!(RUN_UNFOCUSED_ROW, "Use more battery to run effects while using other apps");
-        for on in [true, false] {
-            let (keys, value) = run_unfocused_edit(on);
-            assert_eq!(keys, vec!["effect".to_string(), "run_unfocused".to_string()]);
-            assert_eq!(value.as_bool(), Some(on));
-            let text = config::apply_edits(DEFAULT_CONFIG, &[(&["effect", "run_unfocused"], value)]).unwrap();
-            assert_eq!(config::parse(&text).unwrap().effect.run_unfocused, on);
-        }
     }
 
     #[test]

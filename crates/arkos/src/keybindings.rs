@@ -6,6 +6,8 @@ use crate::chrome::{self, TITLE_BAR_H, UI_FONT};
 use crate::keymap::{self, KeyRow, Section};
 use crate::settings::{self, Colors};
 use crate::theme::Theme;
+use objc2::rc::Retained;
+use objc2_app_kit::NSWindow;
 use gpui::{
     div, prelude::*, px, size, App, Bounds, Context, FocusHandle, FontWeight, KeyDownEvent, SharedString, TitlebarOptions, Window, WindowBounds,
     WindowHandle, WindowOptions,
@@ -56,9 +58,10 @@ impl KeybindingsWindow {
     }
 }
 
-/// Opens the Keybindings window centred on the main display and gives it the keyboard. `None`
-/// when gpui could not open it, which the log records.
-pub fn open(cx: &mut App, rows: Vec<(Section, Vec<KeyRow>)>, theme: Theme, mono: SharedString) -> Option<WindowHandle<KeybindingsWindow>> {
+/// Opens the Keybindings window centred on the IDE window `over` (on the main display when there
+/// is none yet) and gives it the keyboard. `None` when gpui could not open it, which the log
+/// records.
+pub fn open(cx: &mut App, over: Option<Retained<NSWindow>>, rows: Vec<(Section, Vec<KeyRow>)>, theme: Theme, mono: SharedString) -> Option<WindowHandle<KeybindingsWindow>> {
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(WIDTH), px(HEIGHT)), cx))),
         // The window draws the IDE's own title bar in the native one's place.
@@ -69,6 +72,7 @@ pub fn open(cx: &mut App, rows: Vec<(Section, Vec<KeyRow>)>, theme: Theme, mono:
         ..Default::default()
     };
     let opened = cx.open_window(options, move |window, cx| {
+        settings::centre_over(window, over.as_deref());
         let view = cx.new(|cx| KeybindingsWindow { rows, theme, mono, focus: cx.focus_handle() });
         window.focus(&view.read(cx).focus);
         view

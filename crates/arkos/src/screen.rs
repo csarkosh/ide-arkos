@@ -26,6 +26,20 @@ pub fn appkit_frame(bounds: (f64, f64, f64, f64), bar_h: f64, content_h: f64, fl
     Frame { x, y, w: w.max(0.0), h }
 }
 
+/// Where a window `size` (width, height) opens so that its centre is the IDE window's, in
+/// AppKit's screen coordinates (origin bottom-left, y up), as an origin: `parent` is the IDE
+/// window's frame and `visible` its screen's visible frame. A window that would cross the
+/// screen's edge is moved back onto it; one taller than the screen keeps its top on it, where
+/// its title bar is.
+pub fn centred_on(parent: Frame, size: (f64, f64), visible: Frame) -> (f64, f64) {
+    let (w, h) = size;
+    let x = parent.x + (parent.w - w) / 2.0;
+    let y = parent.y + (parent.h - h) / 2.0;
+    let x = x.min(visible.x + visible.w - w).max(visible.x);
+    let y = y.max(visible.y).min(visible.y + visible.h - h);
+    (x, y)
+}
+
 /// Who holds the window's keyboard (its first responder) when a key arrives: gpui's view or a
 /// view inside it; a page (a view inside a `WKWebView`); or nobody Arkos knows. The last is the
 /// window itself, which AppKit makes the first responder when the view that had the keys is
@@ -67,7 +81,7 @@ pub use mac::*;
 
 #[cfg(target_os = "macos")]
 mod mac {
-    use super::{keys_return, Frame, KeysHolder};
+    use super::{centred_on, keys_return, Frame, KeysHolder};
     use objc2::rc::Retained;
     use objc2::runtime::AnyObject;
     use objc2::{MainThreadMarker, Message};
@@ -162,6 +176,16 @@ mod mac {
         }
     }
 
+    /// Moves `window` so that its centre is `parent`'s, kept on `parent`'s screen
+    /// (`centred_on`). For Settings and Keybindings, which open over the IDE window.
+    pub fn centre_on(window: &NSWindow, parent: &NSWindow) {
+        let frame = |r: NSRect| Frame { x: r.origin.x, y: r.origin.y, w: r.size.width, h: r.size.height };
+        let (p, own) = (parent.frame(), window.frame());
+        let visible = parent.screen().map(|s| s.visibleFrame()).unwrap_or(p);
+        let (x, y) = centred_on(frame(p), (own.size.width, own.size.height), frame(visible));
+        window.setFrameOrigin(NSPoint::new(x, y));
+    }
+
     /// The `NSWindow` behind a gpui window, from its AppKit window handle (the content view).
     pub fn ns_window_of(window: &impl raw_window_handle::HasWindowHandle) -> Option<Retained<NSWindow>> {
         let handle = window.window_handle().ok()?;
@@ -250,5 +274,22 @@ mod tests {
         assert_eq!((f.w, f.h), (100.0, 0.0));
         assert_eq!(f.y, 600.0 - 28.0, "the (empty) page sits where it would start");
         assert_eq!(appkit_frame((0.0, 0.0, -5.0, 50.0), 28.0, 600.0, false).w, 0.0);
+    }
+
+    #[test]
+    fn a_window_opens_centred_on_the_ide_window_and_inside_its_screen() {
+        let screen = Frame { x: 0.0, y: 0.0, w: 1440.0, h: 875.0 };
+        // A 1000 by 700 IDE window at (100, 50): a 560 by 508 window's centre is the IDE's.
+        let ide = Frame { x: 100.0, y: 50.0, w: 1000.0, h: 700.0 };
+        assert_eq!(centred_on(ide, (560.0, 508.0), screen), (320.0, 146.0));
+        // A second screen to the left, with negative coordinates, is the same arithmetic.
+        let left = Frame { x: -1920.0, y: 0.0, w: 1920.0, h: 1080.0 };
+        assert_eq!(centred_on(Frame { x: -1500.0, y: 200.0, w: 800.0, h: 600.0 }, (560.0, 508.0), left), (-1380.0, 246.0));
+        // An IDE window half off its screen leaves the new window wholly on it.
+        let off = Frame { x: 1200.0, y: -300.0, w: 800.0, h: 600.0 };
+        assert_eq!(centred_on(off, (560.0, 508.0), screen), (880.0, 0.0));
+        // A window taller than the screen keeps its title bar (its top, as AppKit's y points up)
+        // on the screen.
+        assert_eq!(centred_on(ide, (560.0, 1000.0), screen), (320.0, -125.0));
     }
 }

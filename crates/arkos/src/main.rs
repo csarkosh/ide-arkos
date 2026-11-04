@@ -533,8 +533,8 @@ pub struct Root {
     /// Whether this is the key window, read each frame; the pulse ticks only while it is.
     pub window_active: bool,
     /// Whether the window's effects and other decorative motion are paused, holding their last
-    /// frame: "Use more battery to run effects while using other apps" is off and neither this
-    /// window nor Settings is the key window (`sync_pause`). Reduce Motion is separate and wins.
+    /// frame: `[effect] run_unfocused` is off and neither this window nor Settings is the key
+    /// window (`sync_pause`). Reduce Motion is separate and wins.
     pub effects_paused: bool,
     /// The breath of the working glyphs, the focus glow and the icon dots (`pulse::Breath`):
     /// at rest unless something shown is working.

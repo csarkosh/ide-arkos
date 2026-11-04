@@ -453,7 +453,7 @@ Things only a person at the screen can check, in order of value:
 - effects: a window wholly behind another app's window, or minimized, shows the process idle in
   Activity Monitor (no wash frames, a few wake-ups a second at most), and its wash moves again
   within half a second of coming back into view
-- effects: with "Use more battery to run effects while using other apps" off, switching to another
+- effects: with `[effect] run_unfocused = false`, switching to another
   app freezes the effect on its last frame (Activity Monitor shows the window idle) and coming
   back resumes it with no jump; on (the default), it keeps moving; Settings in front keeps the
   preview moving; an empty pane's dots pause too
@@ -467,11 +467,14 @@ Things only a person at the screen can check, in order of value:
   the About, Settings and Keybindings windows and the chooser keep gpui's plain glyphs
 - effects: a `glyphs.metal` in the effects folder that fails to compile shows a notice
   `effect <name>: glyphs.metal: …`, and the wash stays on with plain glyphs
-- effects: Settings, Appearance lists Effect under the themes ("Theme's choice (watercolor)"
-  under Lavender Watercolor, None, watercolor, an invalid folder dimmed as "(invalid)"; no `space`, which
-  is hidden); a click switches
-  the window with a fade, the Intensity stepper moves the wash's strength by a tenth, and "Show
-  effects folder" creates and reveals the folder
+- effects: Settings, Appearance lists Effect under the themes as None, "Theme's choice
+  (watercolor)" under Lavender Watercolor, and Material, with no Intensity stepper or battery
+  switch; an effect set with `arkos effect use runic` shows after them, ticked; a click switches
+  the window with a fade, and "Show effects folder" creates and reveals the folder
+- settings: Appearance shows the dark and light theme lists side by side, each readable at the
+  window's narrowest; Settings and Keybindings (Cmd+, and Cmd+/) open centred on the IDE window,
+  also with that window on a second display or half off its screen (then wholly on the screen),
+  and are not first seen anywhere else
 - effects: with a window open, `arkos effect current` names its effect and a cost in
   milliseconds after a few seconds, and `arkos effect bench watercolor` benches at the window's
   size and theme

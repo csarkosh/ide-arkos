@@ -129,7 +129,7 @@ pub fn open_settings(cx: &mut App) {
             }
         }
         let fonts = settings::monospace_families(&cx.text_system().all_font_names());
-        let handle = settings::open(cx, shown, theme, fonts, Rc::new(apply_settings_edits), Rc::new(settings_update_now));
+        let handle = settings::open(cx, ide_window(cx), shown, theme, fonts, Rc::new(apply_settings_edits), Rc::new(settings_update_now));
         cx.global_mut::<Aux>().settings = handle;
     });
 }
@@ -172,7 +172,7 @@ pub fn open_keybindings(cx: &mut App) {
                 return;
             }
         }
-        let handle = keybindings::open(cx, rows, theme, mono);
+        let handle = keybindings::open(cx, ide_window(cx), rows, theme, mono);
         cx.global_mut::<Aux>().keybindings = handle;
     });
 }
@@ -420,6 +420,12 @@ pub fn poke_root(cx: &mut App) {
 }
 
 /// The project window's Root while it lives.
+/// The IDE window's `NSWindow`, that Settings and Keybindings open over. `None` before the
+/// project window exists.
+fn ide_window(cx: &App) -> Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> {
+    root(cx)?.read(cx).ns_window.clone()
+}
+
 fn root(cx: &App) -> Option<gpui::Entity<Root>> {
     cx.try_global::<Aux>()?.root.as_ref()?.upgrade()
 }

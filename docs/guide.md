@@ -516,16 +516,16 @@ graphite grain, no bleed), with new terminal text written in by a ballpoint as w
 writes it. Under an effect a web tab's address
 bar is clear over the wash and the page is outlined; on a light theme a page that sets no
 background of its own sits on the paper with the wash through it, as a document does. Any theme can
-carry any effect, since an effect reads the theme's colours. Pick one in Settings, Appearance (or
-`arkos effect use <name>`); "Theme's choice" follows the theme's own recommendation: `watercolor`
+carry any effect, since an effect reads the theme's colours. Settings, Appearance offers None,
+"Theme's choice" and Material; any other effect is chosen with `arkos effect use <name>` or
+`[effect] name` in the config file. "Theme's choice" follows the theme's own recommendation: `watercolor`
 for Peach Watercolor and Lavender Watercolor, `runic` for Matrix and Navy Runic, `material` for Material and Lavender Material, `notebook` for Composition Notebook, and none for Navy (the default) and Timo
 Purple.
 Effects stay out of About, Settings, Keybindings and the chooser, which keep their plain look.
 Under Reduce Motion the wash holds still and draws only when something changes, no letter
 glitches, a changed cell settles at once, and a hidden,
 covered or occluded window (one wholly behind other windows) draws none.
-With "Use more battery to run effects while using other apps" turned off in Settings, Appearance
-(`[effect] run_unfocused = false`), a window you are not using pauses its effect, its moving
+With `[effect] run_unfocused = false` in the config file, a window you are not using pauses its effect, its moving
 text and an empty pane's dots, holding their last frame, and picks up where it left off when you
 come back to it; with Settings in front the window keeps moving, so you can watch a change. It is
 on by default, so the effects keep moving while another app is in front.
@@ -717,21 +717,21 @@ About again refreshes the rows. "Copy details" puts "Arkos IDE {version}" and on
 line per row on the clipboard. Below are "Made by Cyrus Sarkosh" (a link to his GitHub) and "Buy me
 tokens" after a small pixel heart, which opens Arkos IDE's tip page, donate.csarko.sh/arkos.
 
-Settings (menu or Cmd+,) has the shared title bar and six sections.
+Settings (menu or Cmd+,) has the shared title bar and six sections. It opens centred on the IDE
+window, as Keybindings (Cmd+/) does.
 
-- Appearance: Mode (System, Dark, Light), the dark and light theme, "Add theme…" and "Show themes
-  folder". "Add theme…" takes a `.toml` file (anything else is refused), names the copy after
+- Appearance: Mode (System, Dark, Light), the dark and light theme lists side by side, "Add
+  theme…" and "Show themes folder". "Add theme…" takes a `.toml` file (anything else is refused), names the copy after
   the file's own `name`, shows the error under the button for a bad file, and asks "Replace the
   existing {name}?" before overwriting a theme file or shadowing a built-in of that name. A new
   theme is set as the dark or light theme by the mode in force. "Show themes folder" creates the
   folder, then reveals it. A configured theme that is neither built in nor a file is listed
-  first as "(not installed)". Under the themes: Effect, a list of "Theme's choice" (the theme's
-  recommendation, named, as in "Theme's choice (watercolor)"), "None", then every installed
-  effect (a configured one that is missing is listed after None as "(not installed)", and a
-  broken one as "(invalid)", not choosable); an Intensity stepper from 0.0 to 1.0 by a tenth;
-  "Use more battery to run effects while using other apps", On (the default) or Off, where Off
-  pauses the effects of a window not in focus on their last frame; and "Show effects folder",
-  which creates the folder, then reveals it. A change fades in or out
+  first as "(not installed)". Under the themes: Effect, a list of "None", "Theme's choice" (the
+  default: the theme's recommendation, named, as in "Theme's choice (watercolor)") and
+  "Material". An effect chosen in the config file or with `arkos effect use` is listed after
+  them as the current one ("(not installed)" when it is missing, "(invalid)" when it is broken).
+  The effect's intensity and `run_unfocused` are set in the config file only. Then "Show effects
+  folder", which creates the folder, then reveals it. A change fades in or out
   over a fifth of a second, or cuts under Reduce Motion.
 - Text: the font family (installed monospace families; a configured family that is missing is
   listed first as "(not installed)"), the text preset, and Size and Line height steppers that
