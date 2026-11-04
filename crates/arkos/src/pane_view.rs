@@ -1856,7 +1856,7 @@ mod tests {
 
 
     #[test]
-    fn the_tab_bar_offers_no_overflow_button_at_any_tab_count() {
+    fn the_tab_bar_offers_only_the_new_tab_button() {
         assert_eq!(bar_items(), vec!["+"], "the bar's items do not depend on how many tabs it holds");
     }
 }

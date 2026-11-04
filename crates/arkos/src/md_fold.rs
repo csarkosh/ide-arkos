@@ -93,26 +93,6 @@ pub fn outline(heads: &[Head]) -> Vec<OutlineRow> {
     rows
 }
 
-/// The outline rows shown when the rows in `collapsed` (by heading index) hide their children.
-#[cfg_attr(not(test), allow(dead_code))] // Task 6 of the outline rail uses it.
-pub fn visible_rows(rows: &[OutlineRow], collapsed: &BTreeSet<usize>) -> Vec<OutlineRow> {
-    let mut out = Vec::new();
-    let mut hide_below: Option<usize> = None;
-    for r in rows {
-        if let Some(d) = hide_below {
-            if r.depth > d {
-                continue;
-            }
-            hide_below = None;
-        }
-        out.push(*r);
-        if collapsed.contains(&r.head) {
-            hide_below = Some(r.depth);
-        }
-    }
-    out
-}
-
 /// The heading whose section the view's top block is in: the last heading at or above it.
 pub fn current(heads: &[Head], top_block: usize) -> Option<usize> {
     heads.iter().rposition(|h| h.block <= top_block)
@@ -225,8 +205,6 @@ mod tests {
         let h = headings(&blocks, &lines);
         let rows = outline(&h);
         assert_eq!(rows.iter().map(|r| (r.depth, r.has_children)).collect::<Vec<_>>(), vec![(0, true), (1, true), (2, false), (1, false), (0, false)]);
-        let shown = visible_rows(&rows, &[1].into());
-        assert_eq!(shown.iter().map(|r| r.head).collect::<Vec<_>>(), vec![0, 1, 3, 4], "B collapsed hides C");
         assert_eq!(current(&h, 0), Some(0));
         assert_eq!(current(&h, 2), Some(2));
         assert_eq!(current(&h, 3), Some(3), "a heading is its own section's first block");

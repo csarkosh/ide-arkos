@@ -386,9 +386,9 @@ fn unhover(root: &mut Root, tab: TabId, head: usize, cx: &mut Context<Root>) {
 /// the same stepper, indented by level, the section in view on a tinted pill in the text colour.
 /// A row under the pointer for half a second previews its section beside the panel; a click goes
 /// there, and in the overlay (`modal`) closes it. In the overlay the row the keys move is lit.
-#[allow(clippy::too_many_arguments)]
 /// Only the overlay that `holds` the keys tracks the overlay's scroll handle, so two overlays
 /// open in two panes never share it.
+#[allow(clippy::too_many_arguments)]
 pub fn render_outline_panel(root: &mut Root, viewer: &Entity<Viewer>, pane: PaneId, tab: TabId, theme: &Theme, style: Style, x: f32, modal: bool, holds: bool, cx: &mut Context<Root>) -> Div {
     let c = &theme.chrome;
     let (heads, current) = {
@@ -525,6 +525,9 @@ pub fn render_outline_overlay(root: &mut Root, viewer: &Entity<Viewer>, pane: Pa
             gpui::MouseButton::Left,
             cx.listener(move |root, _ev: &gpui::MouseDownEvent, _window, cx| {
                 cx.stop_propagation();
+                let now = std::time::Instant::now();
+                root.view_menu.hide(now);
+                root.md_menu.hide(now);
                 root.toggle_outline_for(tab, cx);
                 root.focus_pane(pane, cx);
             }),

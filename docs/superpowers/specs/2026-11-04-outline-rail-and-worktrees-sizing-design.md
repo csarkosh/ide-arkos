@@ -112,7 +112,9 @@ view at the heading's line (my call).
 - Expanding and collapsing follow the Motion rule: the width eases between 26 and 220 px over a
   Material duration token with the emphasized decelerate curve entering and accelerate leaving
   (a little quicker), the labels fading in after the width; the overlay slides in from the left
-  with its scrim fading in. Reduce Motion makes them instant. Each adds itself to
+  with its scrim fading in. The build uses the app's shared `Transient` curves (standard
+  decelerate in, standard accelerate out) so the rail moves like the app's other panels. Reduce
+  Motion makes them instant. Each adds itself to
   `Root::any_motion`.
 - Under the effects (watercolor, space, matrix, notebook and the rest) the rail and panel sit on
   the tab's own surface as the document does; the hand checks below include them.

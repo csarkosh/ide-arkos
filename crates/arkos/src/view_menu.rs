@@ -54,8 +54,8 @@ pub fn stays_open(tab: TabId, tree: &Tree) -> bool {
 }
 
 /// The menu's rows for a tab's state: the mode item only when `editable`, the diff item only with
-/// `has_changes`, present always, outline only when the document `has_heads` (where the rail
-/// shows); the words name what a click turns to.
+/// `has_changes`, present always, outline only when the document `has_heads` and it is not presenting (where the
+/// rail shows); the words name what a click turns to.
 #[allow(clippy::too_many_arguments)]
 pub fn items(mode: ViewMode, delimited: bool, editable: bool, has_changes: bool, inline: bool, presenting: bool, outline: bool, has_heads: bool) -> Vec<MenuItem> {
     let mut m = Vec::new();
@@ -71,7 +71,7 @@ pub fn items(mode: ViewMode, delimited: bool, editable: bool, has_changes: bool,
         m.push(MenuItem { label: "Inline diff", keys: "⇧⌘D", checked: inline, action: ViewAction::ToggleInlineDiff });
     }
     m.push(MenuItem { label: if presenting { "Edit" } else { "Present" }, keys: "⌥⌘P", checked: presenting, action: ViewAction::TogglePresent });
-    if has_heads {
+    if has_heads && !presenting {
         m.push(MenuItem { label: "Outline", keys: "⌥⌘O", checked: outline, action: ViewAction::ToggleOutline });
     }
     m
@@ -244,7 +244,13 @@ mod tests {
         let m = items(ViewMode::Rendered, false, true, true, false, true, false, true);
         let present = m.iter().find(|i| i.action == ViewAction::TogglePresent).unwrap();
         assert!(present.checked);
-        assert_eq!(m.iter().map(|i| i.action.clone()).collect::<Vec<_>>(), vec![ViewAction::ToggleMode, ViewAction::ToggleInlineDiff, ViewAction::TogglePresent, ViewAction::ToggleOutline]);
+        assert_eq!(m.iter().map(|i| i.action.clone()).collect::<Vec<_>>(), vec![ViewAction::ToggleMode, ViewAction::ToggleInlineDiff, ViewAction::TogglePresent]);
+    }
+
+    #[test]
+    fn presenting_has_no_outline_row_because_the_rail_is_hidden() {
+        let m = items(ViewMode::Rendered, false, true, true, false, true, false, true);
+        assert!(m.iter().all(|i| i.action != ViewAction::ToggleOutline));
     }
 
     #[test]

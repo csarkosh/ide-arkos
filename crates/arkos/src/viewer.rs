@@ -3024,7 +3024,7 @@ impl Viewer {
             return;
         }
         let Some(line) = self.blocks.get(block).map(|b| b.lines.start) else { return };
-        self.scroll.target = raw_scroll_for_line(line, self.diff.as_ref(), self.inline_diff).min(self.max_scroll().max(0.0));
+        self.scroll.target = (self.row_of_line(line) as f32).min(self.max_scroll().max(0.0));
         cx.notify();
     }
 
@@ -4393,14 +4393,6 @@ fn raw_top_line(scroll: f32, diff: Option<&DiffMarks>, inline_diff: bool, line_c
 /// The block holding the raw view's top line (`raw_top_line`).
 fn raw_top_block(blocks: &[md_blocks::Block], scroll: f32, diff: Option<&DiffMarks>, inline_diff: bool, line_count: usize) -> usize {
     md_blocks::block_at(blocks, raw_top_line(scroll, diff, inline_diff, line_count))
-}
-
-/// The raw view's scroll that puts `line` at the top.
-fn raw_scroll_for_line(line: usize, diff: Option<&DiffMarks>, inline_diff: bool) -> f32 {
-    match diff {
-        Some(d) if inline_diff => diff::row_of_line(d, line) as f32,
-        _ => line as f32,
-    }
 }
 
 /// The block holding line `line` with its text and tree, when an active block there is drawn
@@ -6507,7 +6499,6 @@ mod tests {
         assert_eq!(raw_top_block(&blocks, second as f32 + 0.6, None, false, n), heads[1].block, "a row partly scrolled off is still the top one");
         assert_eq!(md_fold::current(&heads, raw_top_block(&blocks, 4.0, None, false, n)), Some(1), "inside the second section");
         assert_eq!(raw_top_block(&blocks, 0.0, None, false, n), heads[0].block);
-        assert_eq!(raw_scroll_for_line(second, None, false), second as f32, "revealing a heading puts its line at the top");
     }
 
     #[test]
