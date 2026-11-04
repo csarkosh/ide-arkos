@@ -198,7 +198,10 @@ pub fn remove(root: &Path, path: &Path, force: bool) -> Result<(), String> {
         match read_filter_args(path) {
             Ok(more) => args.extend(more),
             Err(NoRead::Refused) => return Err(STATUS_OFF.to_string()),
-            // A folder git no longer reads as a worktree: only the repository's config applies.
+            // A folder with a `.git` entry whose config git cannot read: what it names is
+            // unknown, so the removal is refused rather than trusting the repository's alone.
+            Err(NoRead::NotRepo) if path.join(".git").exists() => return Err(format!("cannot read the git config of {}", path.display())),
+            // No `.git` there: a plain folder, with no config of its own.
             Err(NoRead::NotRepo) => {}
         }
     }
@@ -940,6 +943,38 @@ worktree /r-c\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch refs/heads/
         ok(&["config", "--worktree", "filter.a b.clean", "cat"]);
         let err = remove(&root, &wt, false).unwrap_err();
         assert_eq!(err, crate::explorer::STATUS_OFF);
+        assert!(wt.exists(), "nothing was removed");
+    }
+
+    #[test]
+    fn a_worktree_whose_own_config_cannot_be_read_is_never_asked_to_remove() {
+        let _lock = crate::client::fork_lock();
+        let (_dir, root) = repo();
+        let wt = root.parent().unwrap().join(format!("{}-bad-config", root.file_name().unwrap().to_string_lossy()));
+        create(&root, "bad-config", &wt).unwrap();
+        // A config.worktree git cannot parse: the guard cannot tell what it names, so it refuses
+        // rather than trusting the main checkout's config alone.
+        assert!(crate::explorer::fixture_git(&wt).args(["config", "extensions.worktreeConfig", "true"]).status().unwrap().success());
+        let admin = admin_dir(&wt).expect("the worktree's admin folder");
+        std::fs::write(admin.join("config.worktree"), "[filter \"x\"\n\tclean = cat\n").unwrap();
+        assert!(remove(&root, &wt, true).is_err(), "refused");
+        assert!(wt.exists(), "nothing was removed");
+    }
+
+    #[test]
+    fn a_worktree_without_its_git_file_is_never_removed() {
+        let _lock = crate::client::fork_lock();
+        let (_dir, root) = repo();
+        let wt = root.join(".worktrees/no-git-file");
+        create(&root, "no-git-file", &wt).unwrap();
+        assert!(crate::explorer::fixture_git(&wt).args(["config", "extensions.worktreeConfig", "true"]).status().unwrap().success());
+        assert!(crate::explorer::fixture_git(&wt).args(["config", "--worktree", "filter.a b.clean", "cat"]).status().unwrap().success());
+        // Read from the folder, the guard's config read now lands on the repository around it and
+        // misses the worktree's own config. Git itself refuses to remove a worktree whose `.git`
+        // file is gone or points elsewhere, even forced, before its check reads any config, so
+        // the mismatch never reaches a filter; this pins that nothing is removed either way.
+        std::fs::remove_file(wt.join(".git")).unwrap();
+        assert!(remove(&root, &wt, true).is_err(), "refused");
         assert!(wt.exists(), "nothing was removed");
     }
 
