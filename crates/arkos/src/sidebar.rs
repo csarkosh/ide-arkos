@@ -871,10 +871,9 @@ async fn in_parallel<I: Send + 'static, T: Send + 'static>(this: &gpui::WeakEnti
 
 /// The Worktrees section's line when the file-system watcher is not running: on a network volume,
 /// when it could not start, or when the open folder itself went away; `None` while watching.
-/// `status_off` (a refused filter config) is drawn as its own row and does not change the notice.
 // Task 8 draws it; until then only the tests call it.
 #[cfg_attr(not(test), allow(dead_code))]
-pub fn watched_notice(w: &crate::worktrees::Watched, _status_off: Option<&str>) -> Option<&'static str> {
+pub fn watched_notice(w: &crate::worktrees::Watched) -> Option<&'static str> {
     use crate::worktrees::Watched;
     match w {
         Watched::Watching => None,
@@ -1383,8 +1382,9 @@ impl Root {
     }
 
     /// Something changed in `dir` inside the worktree `wt`: its age becomes now, unless the folder
-    /// is gone (missing) or, after a minute's quiet, Finder's `.DS_Store` is the only newer entry
-    /// in `dir`. The stat and the `read_dir` run off the UI thread.
+    /// is gone (missing) or, after a minute's quiet, every newer entry in `dir` is noise
+    /// (`only_noise_newer`: `.DS_Store`, `.git`, a build or cache folder). The stat and the
+    /// `read_dir` run off the UI thread.
     fn touch_worktree(&mut self, wt: PathBuf, dir: PathBuf, cx: &mut Context<Self>) {
         // A worktree outside the open folder gets its events unfiltered: a build in its `target`
         // is not work in it.
@@ -1398,11 +1398,11 @@ impl Root {
         };
         cx.spawn(async move |this, cx| {
             let w = wt.clone();
-            let (gone, only_ds_store) = cx
+            let (gone, only_noise) = cx
                 .background_executor()
                 .spawn(async move {
                     let gone = std::fs::symlink_metadata(&w).is_err();
-                    (gone, !gone && since.is_some_and(|s| crate::wt_watch::only_ds_store_newer(&dir, s)))
+                    (gone, !gone && since.is_some_and(|s| crate::wt_watch::only_noise_newer(&dir, s)))
                 })
                 .await;
             let _ = this.update(cx, |root, cx| {
@@ -1413,7 +1413,7 @@ impl Root {
                         root.after_worktree_lists(cx);
                         root.update_worktree_stream(cx);
                     }
-                } else if !only_ds_store {
+                } else if !only_noise {
                     root.worktrees.touched(&wt, at);
                     cx.notify();
                 }
@@ -1933,12 +1933,10 @@ mod tests {
     fn the_section_says_when_the_folder_is_not_watched() {
         use crate::worktrees::Watched;
         use super::watched_notice;
-        assert_eq!(watched_notice(&Watched::Watching, None), None);
-        assert_eq!(watched_notice(&Watched::NotLocal, None), Some("not watched: the folder is on a network volume"));
-        assert_eq!(watched_notice(&Watched::Failed("FSEvents refused the stream".into()), None), Some("not watched: the file watcher could not start"));
-        assert_eq!(watched_notice(&Watched::FolderGone, None), Some("the folder is gone"));
-        assert_eq!(watched_notice(&Watched::NotLocal, Some(crate::explorer::STATUS_OFF)), Some("not watched: the folder is on a network volume"), "a refused filter config is its own row, not this notice");
-        assert_eq!(watched_notice(&Watched::Watching, Some(crate::explorer::STATUS_OFF)), None);
+        assert_eq!(watched_notice(&Watched::Watching), None);
+        assert_eq!(watched_notice(&Watched::NotLocal), Some("not watched: the folder is on a network volume"));
+        assert_eq!(watched_notice(&Watched::Failed("FSEvents refused the stream".into())), Some("not watched: the file watcher could not start"));
+        assert_eq!(watched_notice(&Watched::FolderGone), Some("the folder is gone"));
     }
 
     use super::*;

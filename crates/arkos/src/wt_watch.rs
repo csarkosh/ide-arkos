@@ -46,7 +46,7 @@ pub enum Rule {
     RelistRepo(PathBuf),
     /// `<repo>/.git/worktrees/<name>`: compare the stamp; relist only if it moved.
     CheckStamp { repo: PathBuf, name: String },
-    /// Inside a listed worktree: it changed now (after the `.DS_Store` check).
+    /// Inside a listed worktree: it changed now (after the noise check, `only_noise_newer`).
     Touched(PathBuf),
     /// Read that folder once: a `.git` there registers a repository (one not known yet below the
     /// open folder within the discovery depth, or one nested in a known repository's own files,
@@ -88,20 +88,27 @@ fn in_repo(path: &Path, repo: &Path) -> Rule {
     }
 }
 
-/// Whether the only entries in `dir` newer than `since` are `.DS_Store` (one `read_dir`): true when
-/// at least one entry is newer and every newer one is named `.DS_Store`. False when nothing is
-/// newer, so a caller never resets an age on an event that changed nothing.
-pub fn only_ds_store_newer(dir: &Path, since: SystemTime) -> bool {
+/// Whether every entry in `dir` newer than `since` is noise (one `read_dir`): `.DS_Store` (Finder
+/// looked at the folder), `.git` (git's own) or a folder `skipped_dir` accepts (a build's `target`,
+/// a cache), so a first build or a clean is not work in the worktree. True when at least one entry
+/// is newer and every newer one is noise. False when nothing is newer, so a caller never reads an
+/// event it cannot explain as noise.
+pub fn only_noise_newer(dir: &Path, since: SystemTime) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else { return false };
     let mut any = false;
     for e in entries.flatten() {
         let newer = e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t > since);
-        if newer {
-            if e.file_name() != ".DS_Store" {
-                return false;
-            }
-            any = true;
+        if !newer {
+            continue;
         }
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
+        let noise = name == ".DS_Store" || name == ".git" || (is_dir && skipped_dir(&name, false));
+        if !noise {
+            return false;
+        }
+        any = true;
     }
     any
 }
@@ -216,19 +223,29 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_whose_only_newer_entry_is_ds_store_does_not_count() {
+    fn a_folder_whose_only_newer_entries_are_noise_does_not_count() {
         let t = tempfile::tempdir().unwrap();
         let base = SystemTime::now() - Duration::from_secs(1000);
         let set = |name: &str, at: SystemTime| {
             let f = std::fs::File::create(t.path().join(name)).unwrap();
             f.set_modified(at).unwrap();
         };
+        let set_dir = |name: &str, at: SystemTime| {
+            std::fs::create_dir(t.path().join(name)).unwrap();
+            std::fs::File::open(t.path().join(name)).unwrap().set_modified(at).unwrap();
+        };
         set("a.rs", base);
         set(".DS_Store", base + Duration::from_secs(10));
-        assert!(only_ds_store_newer(t.path(), base + Duration::from_secs(5)));
-        assert!(!only_ds_store_newer(t.path(), base + Duration::from_secs(50)), "nothing newer");
+        assert!(only_noise_newer(t.path(), base + Duration::from_secs(5)), "Finder looked at the folder");
+        assert!(!only_noise_newer(t.path(), base + Duration::from_secs(50)), "nothing newer: no proof the event was noise");
+        set_dir("target", base + Duration::from_secs(10));
+        set(".git", base + Duration::from_secs(10));
+        assert!(only_noise_newer(t.path(), base + Duration::from_secs(5)), "a first build made target; .git is git's own");
+        set("target-notes.md", base + Duration::from_secs(10));
+        assert!(!only_noise_newer(t.path(), base + Duration::from_secs(5)), "a file named like a skipped folder is work");
+        std::fs::remove_file(t.path().join("target-notes.md")).unwrap();
         set("b.rs", base + Duration::from_secs(10));
-        assert!(!only_ds_store_newer(t.path(), base + Duration::from_secs(5)));
+        assert!(!only_noise_newer(t.path(), base + Duration::from_secs(5)), "a source file touched beside the new target");
     }
 
     #[test]
