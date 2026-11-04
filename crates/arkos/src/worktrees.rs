@@ -3,7 +3,9 @@
 //! `git status` runs only once it is expanded, on the background executor; collapsing drops the
 //! result. Pure apart from the functions that run git or read the file system.
 
-use crate::explorer::{git, git_read};
+use crate::explorer::{git_read, git_with, read_filter_args, NoRead, STATUS_OFF};
+#[cfg(test)]
+use crate::explorer::git;
 use crate::gitstatus::Status;
 use crate::wt_scan::{canonical, STALE_AFTER};
 use std::cell::RefCell;
@@ -156,6 +158,7 @@ pub fn list_side(path: &Path) -> Result<Vec<Worktree>, String> {
     Ok(list)
 }
 
+#[cfg(test)]
 fn run(root: &Path, args: &[&str]) -> Result<(), String> {
     let out = git(root).args(args).stdin(std::process::Stdio::null()).output().map_err(|e| format!("cannot run git: {e}"))?;
     if out.status.success() {
@@ -180,12 +183,27 @@ pub fn create(root: &Path, branch: &str, path: &Path) -> Result<(), String> {
 
 /// `git worktree remove [--force] <path>`. Without force git refuses a worktree with changes;
 /// the error is git's own text.
+/// The repository may be any one under the open folder, so it gets the reads' guard: the filter
+/// drivers its config names are emptied, and one whose name an override might miss refuses the
+/// removal (`explorer::STATUS_OFF`) before git starts.
 pub fn remove(root: &Path, path: &Path, force: bool) -> Result<(), String> {
+    let args = match read_filter_args(root) {
+        Ok(args) => args,
+        Err(NoRead::Refused) => return Err(STATUS_OFF.to_string()),
+        Err(NoRead::NotRepo) => return Err(format!("{} is not a git repository", root.display())),
+    };
     let path = path.to_string_lossy();
+    let mut cmd = git_with(root, &args);
     if force {
-        run(root, &["worktree", "remove", "--force", "--", &path])
+        cmd.args(["worktree", "remove", "--force", "--", &path]);
     } else {
-        run(root, &["worktree", "remove", "--", &path])
+        cmd.args(["worktree", "remove", "--", &path]);
+    }
+    let out = cmd.stdin(std::process::Stdio::null()).output().map_err(|e| format!("cannot run git: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
     }
 }
 
@@ -882,6 +900,21 @@ worktree /r-c\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch refs/heads/
         // An existing branch is checked out rather than created.
         create(&root, "feat", &wt).expect("the branch feat still exists");
         remove(&root, &wt, true).unwrap();
+    }
+
+    #[test]
+    fn a_repository_whose_config_names_an_unusual_filter_driver_is_never_asked_to_remove() {
+        let _lock = crate::client::fork_lock();
+        let (_dir, root) = repo();
+        let wt = root.parent().unwrap().join(format!("{}-guarded", root.file_name().unwrap().to_string_lossy()));
+        create(&root, "guarded", &wt).unwrap();
+        // A driver whose name an override might miss: removal would run git with the repository's
+        // own filter programs, so it is refused before git starts, as every read is.
+        let mut config = std::fs::OpenOptions::new().append(true).open(root.join(".git/config")).unwrap();
+        std::io::Write::write_all(&mut config, b"[filter \"a b\"]\n\tclean = cat\n").unwrap();
+        let err = remove(&root, &wt, true).unwrap_err();
+        assert_eq!(err, crate::explorer::STATUS_OFF);
+        assert!(wt.exists(), "nothing was removed");
     }
 
     #[test]
