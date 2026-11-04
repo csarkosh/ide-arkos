@@ -75,9 +75,12 @@ for a week or more reads dimmer, and one whose folder is gone says `missing`. Th
 the disk within about a second: a new worktree appears, a removed one goes, and a touched one
 moves to the top, though not while the pointer is over the list. Builds and caches (`target`,
 `node_modules` and the like) never count toward the age. A folder on a network volume is listed
-once and refreshed every ten minutes, and the section says it is not watched. Expand a worktree
-for its changed files in the status colours with a count in the row (a collapsed worktree never
-runs `git status`). Click a changed file to read it in the viewer. Right click a worktree: Open
+once and refreshed every ten minutes, and the section says it is not watched. Each row shows its
+changes at a glance (`1 change`, `3 changes`) in the theme's modified colour; a clean row says
+nothing and does not expand. Arkos runs a worktree's `git status` when the list loads and then
+only when something changes in that worktree, a commit included, never on a timer. Expand a
+worktree with changes for its changed files in the status colours. Click a changed file to read
+it in the viewer. Right click a worktree: Open
 terminal here, Remove worktree (refused while it has changes), Remove worktree, force.
 Ctrl+Shift+G puts the keyboard in the list. Claude can read the same list with `arkos
 worktrees`. The tree's rows carry git status in the theme's pastels (added, modified,

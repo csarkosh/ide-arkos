@@ -715,9 +715,12 @@ Things only a person at the screen can check, in order of value:
 - Worktrees on `~/Projects`: one row per side worktree of every repo, newest first; the section fills the sidebar under the tree and keeps a third of it under a long tree; touch a file
   in one: its age reads `now` within two seconds and it moves to the top (not while the pointer is
   over the list); `cargo build` in one: its age holds; `rm -rf` one: `missing` within two
-  seconds; `git worktree add`: it appears; expand one: a shimmer, then its changed files; Remove
-  on a dirty one is refused with git's words, force removes it; open `~`: the sidebar does not
-  stall; Activity Monitor: Arkos idle while nothing changes
+  seconds; `git worktree add`: it appears; every row shows its count on load, a clean one shows
+  none and no chevron; expand a dirty one: its changed files; a change in a worktree shows
+  '1 change' within about two seconds and a commit clears it; `ps` shows no git while nothing
+  changes (the Explorer's own status of the open folder aside); Remove on a dirty one is refused
+  with git's words, force removes it; open `~`: the sidebar does not stall; Activity Monitor:
+  Arkos idle while nothing changes
 - Ctrl+Shift+G, Down, Enter: a worktree expands from the keyboard
 - a worktree with 40 changes lists them readably, one per row, and the list scrolls
 - edit a tracked file in another app while the viewer shows it: the gutter bars appear within a

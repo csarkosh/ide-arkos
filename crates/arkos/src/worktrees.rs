@@ -1,7 +1,8 @@
 //! The worktree explorer's model: the side worktrees (never the main checkouts) of each
-//! repository, with the time since any of their files changed, newest first. A worktree's
-//! `git status` runs only once it is expanded, on the background executor; collapsing drops the
-//! result. Pure apart from the functions that run git or read the file system.
+//! repository, with the time since any of their files changed, newest first. Every side
+//! worktree's `git status` runs once when it is listed, on the background executor, and again
+//! only a second after the watcher sees a change in it, never on a timer, so each row can show its
+//! count. Pure apart from the functions that run git or read the file system.
 
 use crate::explorer::{git_read, git_with, read_filter_args, NoRead, STATUS_OFF};
 #[cfg(test)]
@@ -244,8 +245,11 @@ pub struct Worktrees {
     loading: HashSet<PathBuf>,
     /// When each loading worktree's `git status` started, for the shimmer's phase.
     pub loading_since: HashMap<PathBuf, Instant>,
-    /// Expanded worktrees whose loaded changes are due a reload; their rows stay up meanwhile.
-    stale: HashSet<PathBuf>,
+    /// A change seen in each worktree, by when its status is due (the debounce).
+    due: HashMap<PathBuf, Instant>,
+    /// Worktrees whose due time passed (`due_now`) and whose status has not started since; their
+    /// rows stay up meanwhile.
+    rerun: HashSet<PathBuf>,
     /// When each expanded worktree's changes landed, for the ease-in.
     pub opened_at: HashMap<PathBuf, Instant>,
     /// The keyboard's row: a worktree's path, or a changed file's full path.
@@ -266,7 +270,8 @@ impl Worktrees {
             changes: HashMap::new(),
             loading: HashSet::new(),
             loading_since: HashMap::new(),
-            stale: HashSet::new(),
+            due: HashMap::new(),
+            rerun: HashSet::new(),
             opened_at: HashMap::new(),
             selected: None,
         }
@@ -278,7 +283,8 @@ impl Worktrees {
         self.changes.remove(path);
         self.loading.remove(path);
         self.loading_since.remove(path);
-        self.stale.remove(path);
+        self.due.remove(path);
+        self.rerun.remove(path);
         self.opened_at.remove(path);
     }
 
@@ -415,52 +421,80 @@ impl Worktrees {
         self.ages.get(path).and_then(|a| a.changed).is_some_and(|c| now.duration_since(c).is_ok_and(|d| d >= STALE_AFTER))
     }
 
-    /// Expands or collapses; a path the list does not have, a missing worktree and a bare one
-    /// stay collapsed. Collapsing drops its changes.
+    /// Expands or collapses; a path the list does not have, a missing worktree, a bare one and a
+    /// clean one (its status loaded with no changes) stay collapsed. One not loaded yet expands and
+    /// shows its shimmer until the status lands. Collapsing keeps its changes, since the row shows
+    /// their count.
     pub fn toggle(&mut self, path: &Path) -> bool {
-        if self.expanded.contains(path) {
-            self.collapse_state(path);
+        if self.expanded.remove(path) {
+            self.opened_at.remove(path);
             return false;
         }
-        if !self.find(path).is_some_and(Worktree::has_files) {
+        if !self.find(path).is_some_and(Worktree::has_files) || self.dirty_count(path) == Some(0) {
             return false;
         }
         self.expanded.insert(path.to_path_buf());
+        if self.changes.contains_key(path) {
+            self.opened_at.insert(path.to_path_buf(), Instant::now());
+        }
         true
     }
 
-    /// Expanded worktrees the list has with files, not loaded yet or stale, and not already
-    /// loading.
+    /// Side worktrees with files whose status is not loaded or is due, and not loading: every
+    /// listed one, expanded or not.
     pub fn to_load(&self) -> Vec<PathBuf> {
-        self.expanded
-            .iter()
-            .filter(|p| self.find(p).is_some_and(Worktree::has_files) && (!self.changes.contains_key(*p) || self.stale.contains(*p)) && !self.loading.contains(*p))
+        let mut seen = HashSet::new();
+        self.all()
+            .filter(|w| w.has_files() && seen.insert(w.path.as_path()))
+            .map(|w| &w.path)
+            .filter(|p| (!self.changes.contains_key(*p) || self.rerun.contains(*p)) && !self.loading.contains(*p))
             .cloned()
             .collect()
     }
 
-    /// The slow timer: every expanded worktree with changes loaded reloads them, keeping its
-    /// rows until the new result lands.
-    pub fn mark_all_stale(&mut self) {
-        self.stale.extend(self.expanded.iter().filter(|p| self.changes.contains_key(*p)).cloned());
+    /// A change seen in the worktree: its status is due at `at` (the caller passes a second from
+    /// now, the debounce; a later call moves the time).
+    pub fn status_due_at(&mut self, path: &Path, at: Instant) {
+        self.due.insert(path.to_path_buf(), at);
     }
 
+    /// Worktrees whose due time has passed, taken off the list; `to_load` then has each of them
+    /// until its next status starts.
+    pub fn due_now(&mut self, now: Instant) -> Vec<PathBuf> {
+        let mut passed: Vec<PathBuf> = self.due.iter().filter(|(_, at)| **at <= now).map(|(p, _)| p.clone()).collect();
+        passed.sort();
+        for p in &passed {
+            self.due.remove(p);
+            self.rerun.insert(p.clone());
+        }
+        passed
+    }
+
+    /// A status run starts: it answers every change seen before it.
     pub fn mark_loading(&mut self, path: &Path) {
         self.loading.insert(path.to_path_buf());
+        self.rerun.remove(path);
         self.loading_since.entry(path.to_path_buf()).or_insert_with(Instant::now);
     }
 
-    /// The status result for an expanded worktree; `None` when git failed (shown as no changes).
+    /// A status result; `None` when git failed (shown as no changes). One for a worktree no longer
+    /// listed with files is dropped. An expanded worktree whose result is empty collapses; one
+    /// whose first result lands while expanded eases its rows in, and a reload replaces them
+    /// without a second ease-in.
     pub fn set_changes(&mut self, path: &Path, changes: Option<Changes>) {
         self.loading.remove(path);
         self.loading_since.remove(path);
-        self.stale.remove(path);
-        if !self.expanded.contains(path) {
+        if !self.find(path).is_some_and(Worktree::has_files) {
             return;
         }
-        // A reload replaces the rows without a second ease-in.
-        if self.changes.insert(path.to_path_buf(), changes.unwrap_or_default()).is_none() {
-            self.opened_at.insert(path.to_path_buf(), Instant::now());
+        let changes = changes.unwrap_or_default();
+        let clean = changes.is_empty();
+        self.changes.insert(path.to_path_buf(), changes);
+        if clean {
+            self.expanded.remove(path);
+            self.opened_at.remove(path);
+        } else if self.expanded.contains(path) {
+            self.opened_at.entry(path.to_path_buf()).or_insert_with(Instant::now);
         }
     }
 
@@ -581,13 +615,13 @@ worktree /r-c\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch refs/heads/
         assert!(w.by_repo.is_empty() && w.errors.is_empty(), "no repositories and no errors");
         w.set_repo(Path::new("/p"), vec![a.clone(), f.clone()]);
         assert!(!w.by_repo.is_empty());
-        assert_eq!(w.to_load(), Vec::<PathBuf>::new(), "collapsed worktrees never run status");
+        assert_eq!(w.to_load(), vec![PathBuf::from("/p-a"), PathBuf::from("/p-f")], "every listed worktree runs status, collapsed or not");
         assert!(w.toggle(Path::new("/p-f")));
-        assert_eq!(w.to_load(), vec![PathBuf::from("/p-f")]);
+        assert_eq!(w.to_load(), vec![PathBuf::from("/p-a"), PathBuf::from("/p-f")]);
         let rows = w.rows();
         assert!(matches!(&rows[1], WtRow::Worktree { expanded: true, loading: true, dirty: None, age: None, .. }), "expanded and loading");
         w.mark_loading(Path::new("/p-f"));
-        assert!(w.to_load().is_empty());
+        assert_eq!(w.to_load(), vec![PathBuf::from("/p-a")]);
         w.set_changes(Path::new("/p-f"), Some(vec![(PathBuf::from("a.rs"), Status::Modified), (PathBuf::from("b.rs"), Status::Untracked)]));
         let rows = w.rows();
         assert_eq!(rows.len(), 4);
@@ -596,22 +630,29 @@ worktree /r-c\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch refs/heads/
         assert_eq!(w.dirty_count(Path::new("/p-f")), Some(2));
         assert_eq!(w.dirty_count(Path::new("/p-a")), None, "not loaded: no count");
         let opened = w.opened_at[Path::new("/p-f")];
-        w.mark_all_stale();
-        assert_eq!(w.to_load(), vec![PathBuf::from("/p-f")], "the slow timer reloads it");
+        let now = Instant::now();
+        w.status_due_at(Path::new("/p-f"), now);
+        w.due_now(now);
+        assert_eq!(w.to_load(), vec![PathBuf::from("/p-a"), PathBuf::from("/p-f")], "a change seen reloads it");
         let rows = w.rows();
-        assert_eq!(rows.len(), 4, "the old changes stay up while stale");
+        assert_eq!(rows.len(), 4, "the old changes stay up while it reloads");
         assert!(matches!(&rows[1], WtRow::Worktree { dirty: Some(2), loading: false, .. }), "no shimmer on a refresh");
         w.mark_loading(Path::new("/p-f"));
-        assert!(w.to_load().is_empty(), "already loading");
+        assert_eq!(w.to_load(), vec![PathBuf::from("/p-a")], "already loading");
         w.set_changes(Path::new("/p-f"), Some(vec![(PathBuf::from("c.rs"), Status::Added)]));
         let rows = w.rows();
         assert_eq!(rows.len(), 3, "the new list replaces the old");
         assert!(matches!(&rows[2], WtRow::Change { rel, status: Status::Added, .. } if rel == Path::new("c.rs")));
         assert_eq!(w.opened_at[Path::new("/p-f")], opened, "no second ease-in");
-        assert!(w.to_load().is_empty(), "fresh again");
+        assert_eq!(w.to_load(), vec![PathBuf::from("/p-a")], "fresh again");
         assert!(!w.toggle(Path::new("/p-f")), "collapsed");
         assert_eq!(w.rows().len(), 2);
-        assert_eq!(w.dirty_count(Path::new("/p-f")), None, "collapsing drops the result");
+        assert_eq!(w.dirty_count(Path::new("/p-f")), Some(1), "collapsing keeps the count, which the row shows");
+        assert!(!w.opened_at.contains_key(Path::new("/p-f")));
+        assert!(w.toggle(Path::new("/p-f")), "a dirty one expands again");
+        assert!(w.opened_at.contains_key(Path::new("/p-f")), "its loaded rows ease in from the click");
+        assert_eq!(w.rows().len(), 3);
+        assert!(!w.toggle(Path::new("/p-f")));
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         w.set_age(Path::new("/p-f"), Age { changed: Some(at), capped: true, lagging: false });
         assert!(matches!(&w.rows()[0], WtRow::Worktree { wt, age: Some(Age { changed: Some(c), capped: true, .. }), .. } if wt.path == Path::new("/p-f") && *c == at), "a row carries its age");
@@ -619,6 +660,93 @@ worktree /r-c\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch refs/heads/
         assert!(w.by_repo.is_empty());
         assert!(w.rows().is_empty());
         assert!(w.ages.is_empty(), "the repository's state goes with it");
+    }
+
+    #[test]
+    fn every_listed_worktree_loads_its_status_once_expanded_or_not() {
+        let mut w = Worktrees::new(vec![]);
+        w.set_repo(Path::new("/p"), vec![wt("/p-a", "/p"), wt("/p-b", "/p"), Worktree { missing: true, ..wt("/p-gone", "/p") }]);
+        assert_eq!(w.to_load(), vec![PathBuf::from("/p-a"), PathBuf::from("/p-b")], "every listed one with files, none expanded; never a missing one");
+        w.mark_loading(Path::new("/p-a"));
+        w.set_changes(Path::new("/p-a"), Some(vec![(PathBuf::from("x"), Status::Modified)]));
+        assert_eq!(w.to_load(), vec![PathBuf::from("/p-b")], "the loaded one is done");
+        assert_eq!(w.dirty_count(Path::new("/p-a")), Some(1), "kept though the row is collapsed");
+        w.mark_loading(Path::new("/p-b"));
+        assert!(w.to_load().is_empty(), "loading");
+        w.set_changes(Path::new("/p-b"), Some(vec![]));
+        assert!(w.to_load().is_empty(), "each ran once and nothing asks again");
+    }
+
+    #[test]
+    fn a_change_seen_runs_status_a_second_later_and_a_second_change_moves_it() {
+        let t0 = Instant::now();
+        let s = Duration::from_millis;
+        let p = Path::new("/p-a");
+        let mut w = Worktrees::new(vec![]);
+        w.set_repo(Path::new("/p"), vec![wt("/p-a", "/p")]);
+        w.mark_loading(p);
+        w.set_changes(p, Some(vec![]));
+        assert!(w.to_load().is_empty());
+        w.status_due_at(p, t0 + s(1000));
+        w.status_due_at(p, t0 + s(1500));
+        assert!(w.due_now(t0 + s(1200)).is_empty(), "the second change moved the time");
+        assert!(w.to_load().is_empty(), "not due yet");
+        assert_eq!(w.due_now(t0 + s(1600)), vec![p.to_path_buf()]);
+        assert!(w.due_now(t0 + s(1700)).is_empty(), "handed out once");
+        assert_eq!(w.to_load(), vec![p.to_path_buf()], "due: it runs again");
+        w.mark_loading(p);
+        assert!(w.to_load().is_empty());
+        w.status_due_at(p, t0 + s(2000));
+        assert_eq!(w.due_now(t0 + s(2100)), vec![p.to_path_buf()], "a change while git runs");
+        w.set_changes(p, Some(vec![(PathBuf::from("x"), Status::Added)]));
+        assert_eq!(w.to_load(), vec![p.to_path_buf()], "the run that was in flight may have missed it: one more");
+        w.mark_loading(p);
+        w.set_changes(p, Some(vec![(PathBuf::from("x"), Status::Added)]));
+        assert!(w.to_load().is_empty(), "and then quiet");
+    }
+
+    #[test]
+    fn a_clean_worktree_has_no_chevron_and_does_not_expand() {
+        let (a, b) = (Path::new("/p-a"), Path::new("/p-b"));
+        let mut w = Worktrees::new(vec![PathBuf::from("/p-b")]);
+        w.set_repo(Path::new("/p"), vec![wt("/p-a", "/p"), wt("/p-b", "/p")]);
+        w.mark_loading(a);
+        w.set_changes(a, Some(vec![]));
+        assert!(!w.toggle(a), "a clean worktree does not expand");
+        assert!(!w.expanded.contains(a));
+        assert!(w.rows().iter().any(|r| matches!(r, WtRow::Worktree { wt, dirty: Some(0), expanded: false, .. } if wt.path == a)));
+        w.mark_loading(b);
+        w.set_changes(b, Some(vec![(PathBuf::from("x"), Status::Modified)]));
+        assert!(w.expanded.contains(b) && w.opened_at.contains_key(b), "a saved expansion with changes opens");
+        w.status_due_at(b, Instant::now());
+        w.due_now(Instant::now() + Duration::from_millis(1));
+        w.mark_loading(b);
+        w.set_changes(b, Some(vec![]));
+        assert!(!w.expanded.contains(b) && !w.opened_at.contains_key(b), "an expanded worktree that turned clean collapses");
+        assert_eq!(w.dirty_count(b), Some(0));
+        assert!(!w.toggle(b));
+        assert!(!w.toggle(Path::new("/p-c")), "not listed");
+        w.set_repo(Path::new("/p"), vec![wt("/p-a", "/p"), wt("/p-b", "/p"), wt("/p-c", "/p")]);
+        assert!(w.toggle(Path::new("/p-c")), "an unloaded one still expands, and shows its shimmer");
+    }
+
+    #[test]
+    fn a_large_count_is_one_status_run() {
+        let _lock = crate::client::fork_lock();
+        let (_dir, root) = repo();
+        let side = root.parent().unwrap().join("side");
+        create(&root, "side", &side).unwrap();
+        for i in 0..500 {
+            std::fs::write(side.join(format!("f{i:03}.txt")), "x\n").unwrap();
+        }
+        let side = side.canonicalize().unwrap();
+        let mut w = Worktrees::new(vec![]);
+        w.set_repo(&root, list_side(&root).unwrap());
+        assert_eq!(w.to_load(), vec![side.clone()]);
+        w.mark_loading(&side);
+        w.set_changes(&side, run_status(&side));
+        assert_eq!(w.dirty_count(&side), Some(500), "every untracked file is one entry, from the one call");
+        assert!(w.to_load().is_empty(), "nothing runs again");
     }
 
     #[test]
@@ -651,30 +779,37 @@ worktree /r-c\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch refs/heads/
         assert!(w.errors.is_empty(), "a listing clears the repository's error");
         assert_eq!(w.to_load(), vec![PathBuf::from("/p-f")]);
         w.mark_loading(Path::new("/p-f"));
-        w.set_changes(Path::new("/p-f"), Some(vec![]));
-        w.mark_all_stale();
+        w.set_changes(Path::new("/p-f"), Some(vec![(PathBuf::from("a"), Status::Added)]));
+        let now = Instant::now();
+        w.status_due_at(Path::new("/p-f"), now);
+        w.due_now(now);
         w.set_repo(Path::new("/p"), vec![Worktree { missing: true, ..feat }]);
         assert!(w.to_load().is_empty(), "an expanded worktree that went prunable gets no status");
         assert!(w.expanded.is_empty() && w.changes.is_empty() && w.opened_at.is_empty(), "and drops its state");
     }
 
     #[test]
-    fn a_vanished_worktree_drops_its_state_and_a_late_status_for_a_collapsed_one_is_ignored() {
+    fn a_vanished_worktree_drops_its_state_and_a_status_landing_after_it_went_is_ignored() {
         let a = wt("/p-a", "/p");
         let f = wt("/p-f", "/p");
         let mut w = Worktrees::new(vec![PathBuf::from("/p-f")]);
         w.set_repo(Path::new("/p"), vec![a.clone(), f]);
         w.mark_loading(Path::new("/p-f"));
-        w.set_changes(Path::new("/p-f"), Some(vec![]));
+        w.set_changes(Path::new("/p-f"), Some(vec![(PathBuf::from("a"), Status::Added)]));
         assert!(w.opened_at.contains_key(Path::new("/p-f")));
+        w.status_due_at(Path::new("/p-f"), Instant::now());
+        w.mark_loading(Path::new("/p-f"));
         w.set_repo(Path::new("/p"), vec![a.clone()]);
         assert!(w.expanded.is_empty() && w.changes.is_empty() && w.opened_at.is_empty(), "the gone worktree's state goes with it");
+        assert!(w.due_now(Instant::now() + Duration::from_secs(1)).is_empty(), "its due status too");
+        w.set_changes(Path::new("/p-f"), Some(vec![(PathBuf::from("a"), Status::Added)]));
+        assert!(w.changes.is_empty(), "a status landing after it went is ignored");
         assert!(w.toggle(Path::new("/p-a")));
         w.mark_loading(Path::new("/p-a"));
         assert!(!w.toggle(Path::new("/p-a")), "collapsed while git ran");
         w.set_changes(Path::new("/p-a"), Some(vec![(PathBuf::from("a"), Status::Added)]));
-        assert_eq!(w.dirty_count(Path::new("/p-a")), None, "the late result is ignored");
-        assert_eq!(w.rows().len(), 1);
+        assert_eq!(w.dirty_count(Path::new("/p-a")), Some(1), "the result still gives the row its count");
+        assert_eq!(w.rows().len(), 1, "and the collapsed row lists nothing");
     }
 
     #[test]

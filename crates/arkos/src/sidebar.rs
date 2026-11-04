@@ -953,6 +953,19 @@ pub enum WtMenuAction {
     RemoveForce(PathBuf),
 }
 
+/// How long after the last change seen in a worktree its `git status` runs.
+const WT_STATUS_DEBOUNCE: Duration = Duration::from_secs(1);
+
+/// The count a worktree row shows: its changes once its status has loaded, and nothing for a
+/// clean one or one not loaded yet (the word "clean" is never written).
+pub fn wt_count_text(dirty: Option<usize>) -> Option<String> {
+    match dirty? {
+        0 => None,
+        1 => Some("1 change".to_string()),
+        n => Some(format!("{n} changes")),
+    }
+}
+
 /// The right-click menu of a worktree row (every row is a side worktree, so every row offers
 /// removal). A dirty or unloaded worktree offers force as well, since the plain removal will be
 /// refused. One with no files (missing, or bare) has nothing to open a terminal in, and only
@@ -971,9 +984,9 @@ pub fn worktree_menu_items(wt: &Worktree, dirty: Option<usize>) -> Vec<(&'static
     v
 }
 
-/// The Worktrees rows: each worktree (a shimmer while its first `git status` runs) and, once
-/// expanded and loaded, its changed files easing in. Requests the next frame only while
-/// something moves and Reduce Motion is off.
+/// The Worktrees rows: each worktree with its count of changes (a shimmer while an expanded
+/// one's first `git status` runs) and, once expanded and loaded, its changed files easing in.
+/// Requests the next frame only while something moves and Reduce Motion is off.
 fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx: &mut Context<Root>) -> Stateful<Div> {
     let style = root.effect_style();
     root.sync_worktree_hold();
@@ -1037,7 +1050,8 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
                     };
                     div().absolute().top_0().h_full().w(px(0.3 * width)).left(px(phase * 1.3 * width - 0.3 * width)).bg(c.tab_inactive.alpha(0.6))
                 });
-                let chevron = if !wt.has_files() {
+                // Only a row with changes expands, so only it has a chevron.
+                let chevron = if !wt.has_files() || !dirty.is_some_and(|n| n > 0) {
                     ""
                 } else if expanded {
                     "\u{25be}"
@@ -1048,11 +1062,7 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
                 let name_color = if root.worktrees.is_stale(&wt.path, wall) { dim } else { c.text.hsla() };
                 let age_text = wt_row_age(age.as_ref(), wall);
                 let place = wt_row_place(&wt.path, &open, home);
-                let count = dirty.map(|n| match n {
-                    0 => ("clean".to_string(), dim),
-                    1 => ("1 change".to_string(), theme.tree.modified.hsla()),
-                    n => (format!("{n} changes"), theme.tree.modified.hsla()),
-                });
+                let count = wt_count_text(dirty);
                 let (p_click, p_menu) = (wt.path.clone(), wt.path.clone());
                 let has_menu = !worktree_menu_items(&wt, dirty).is_empty();
                 base.pl(px(10.0))
@@ -1073,7 +1083,7 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
                                     .child(div().flex_none().max_w(px(width * 0.6)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(name_color).child(name))
                                     .child(div().min_w_0().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(dim).children(branch))
                                     .when(wt.missing, |d| d.child(div().flex_none().text_color(theme.tree.deleted.hsla()).child("missing")))
-                                    .children(count.map(|(text, color)| div().flex_none().text_size(px(style.ui(11.0))).text_color(color).child(text)))
+                                    .children(count.map(|text| div().flex_none().text_size(px(style.ui(11.0))).text_color(theme.tree.modified.hsla()).child(text)))
                                     .when(!age_text.is_empty(), |d| d.child(div().flex_none().text_size(px(style.ui(12.0))).text_color(dim).child(age_text))),
                             )
                             // Under the name: past the chevron's 12 and the gap's 6. Set tight
@@ -1458,15 +1468,18 @@ impl Root {
         .detach();
     }
 
-    /// `<repo>/.git/worktrees/<name>` changed: the admin folder's stamp is read off the UI thread
-    /// and the repository listed again only when it moved (a `git status` writing `index` moves
-    /// nothing).
+    /// `<repo>/.git/worktrees/<name>` changed: the worktree's status is due a second from now
+    /// whatever the stamp says, since a commit rewrites the index there without touching `HEAD`,
+    /// `gitdir` or `locked`. The admin folder's stamp is read off the UI thread and the repository
+    /// listed again only when it moved (a `git status` writing `index` moves nothing).
     fn check_worktree_stamp(&mut self, repo: PathBuf, name: &str, cx: &mut Context<Self>) {
         let Some(wt) = self.worktrees.by_repo.get(&repo).into_iter().flatten().find(|w| w.admin.as_deref().and_then(Path::file_name).is_some_and(|n| n == std::ffi::OsStr::new(name))) else {
             return;
         };
         let Some(admin) = wt.admin.clone() else { return };
         let stored = self.worktrees.stamps.get(&wt.path).copied();
+        let path = wt.path.clone();
+        self.schedule_worktree_status(&path, cx);
         cx.spawn(async move |this, cx| {
             let now = cx.background_executor().spawn(async move { crate::worktrees::stamp(&admin) }).await;
             if stored != Some(now) {
@@ -1481,7 +1494,8 @@ impl Root {
     /// age is anything but noise (`only_noise_newer`: `.DS_Store`, `.git`, a build or cache
     /// folder; a deletion alone leaves nothing newer and does not count). A worktree marked missing
     /// whose folder is back is found again and its repository listed. The stat and the
-    /// `read_dir`s (stopping at the first folder with work in it) run off the UI thread.
+    /// `read_dir`s (stopping at the first folder with work in it) run off the UI thread. A
+    /// worktree still there has its status due a second later, whether or not its age moved.
     fn touch_worktree(&mut self, wt: PathBuf, dirs: Vec<PathBuf>, cx: &mut Context<Self>) {
         let at = SystemTime::now();
         let since = match self.worktrees.ages.get(&wt).and_then(|a| a.changed) {
@@ -1518,6 +1532,7 @@ impl Root {
                 if !only_noise {
                     root.worktrees.touched(&wt, at);
                 }
+                root.schedule_worktree_status(&wt, cx);
                 cx.notify();
             });
         })
@@ -1607,8 +1622,8 @@ impl Root {
         self.worktrees.merge_age(path, crate::worktrees::Age { changed: newest.map(|n| n.at), capped: newest.is_some_and(|n| n.capped), lagging: false });
     }
 
-    /// After the lists changed: a menu on a worktree that went closes, newly expanded worktrees
-    /// load, and the section redraws.
+    /// After the lists changed: a menu on a worktree that went closes, newly listed worktrees
+    /// get their status, and the section redraws.
     fn after_worktree_lists(&mut self, cx: &mut Context<Self>) {
         if self.wt_menu.value().is_some_and(|m| self.worktrees.find(&m.0).is_none()) {
             self.wt_menu.hide(Instant::now());
@@ -1639,8 +1654,9 @@ impl Root {
         }
     }
 
-    /// Runs `git status` for each expanded worktree whose changes are not loaded, off the UI
-    /// thread, and applies each result as it lands.
+    /// Runs `git status` for each worktree `Worktrees::to_load` names (not loaded yet, or due
+    /// after a change), off the UI thread, and applies each result as it lands. A change seen
+    /// while a run was in flight is picked up when it lands.
     pub fn load_pending_worktrees(&mut self, cx: &mut Context<Self>) {
         for path in self.worktrees.to_load() {
             self.worktrees.mark_loading(&path);
@@ -1649,11 +1665,28 @@ impl Root {
                 let changes = cx.background_executor().spawn(async move { crate::gitstatus::run_status(&p) }).await;
                 let _ = this.update(cx, |root, cx| {
                     root.worktrees.set_changes(&path, changes);
+                    root.load_pending_worktrees(cx);
                     cx.notify();
                 });
             })
             .detach();
         }
+    }
+
+    /// The watcher saw a change in the worktree `path`: its status is due one second from now,
+    /// a later change moving the time (`Worktrees::status_due_at`), and a task a second from now
+    /// runs whatever is due by then. Several such tasks are harmless, since `due_now` hands each
+    /// worktree out once.
+    fn schedule_worktree_status(&mut self, path: &Path, cx: &mut Context<Self>) {
+        self.worktrees.status_due_at(path, Instant::now() + WT_STATUS_DEBOUNCE);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(WT_STATUS_DEBOUNCE).await;
+            let _ = this.update(cx, |root, cx| {
+                root.worktrees.due_now(Instant::now());
+                root.load_pending_worktrees(cx);
+            });
+        })
+        .detach();
     }
 
     /// Opens `path` in the focused pane as a preview (single click) or pinned (double click,
@@ -2194,6 +2227,14 @@ mod tests {
         assert_eq!(labels(worktree_menu_items(&bare, None)), ["Remove worktree, force"], "a bare one: no files to open a terminal in, only force removes it");
         assert_eq!(worktree_menu_items(&feat, Some(0))[0].1, WtMenuAction::OpenTerminal("/p-f".into()));
         assert_eq!(worktree_menu_items(&feat, None)[2].1, WtMenuAction::RemoveForce("/p-f".into()));
+    }
+
+    #[test]
+    fn the_row_text_names_the_count_and_never_clean() {
+        assert_eq!(wt_count_text(None), None, "not loaded yet: nothing");
+        assert_eq!(wt_count_text(Some(0)), None, "clean: nothing, never the word clean");
+        assert_eq!(wt_count_text(Some(1)), Some("1 change".to_string()));
+        assert_eq!(wt_count_text(Some(3)), Some("3 changes".to_string()));
     }
 
     #[test]

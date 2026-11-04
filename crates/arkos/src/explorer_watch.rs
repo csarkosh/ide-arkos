@@ -125,16 +125,13 @@ pub fn start(root: Entity<Root>, cx: &mut App) {
                     return;
                 }
             }
-            // The expanded worktrees' changes, the worktree ages and the viewers' diffs, on the
-            // slow timer: the changes are marked stale and reloaded, their rows staying up until
-            // each lands. The worktree list itself follows FSEvents (`Root::worktree_event`), with
-            // the ten minute pass run from `tick_worktree_ages`.
+            // The worktree ages and the viewers' diffs, on the slow timer. A worktree's status
+            // never runs on a timer: it follows FSEvents (`Root::worktree_event`), as does the
+            // worktree list, with the ten minute pass run from `tick_worktree_ages`.
             if slow_run.elapsed() >= STATUS_EVERY {
                 slow_run = Instant::now();
                 let refreshed = root.update(cx, |root, cx| {
                     let plan = slow_tick_plan(root.explorer.not_git);
-                    root.worktrees.mark_all_stale();
-                    root.load_pending_worktrees(cx);
                     root.tick_worktree_ages(cx);
                     // A commit or checkout changes HEAD with the files untouched: the viewers'
                     // diffs are computed again.
