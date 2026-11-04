@@ -22,6 +22,12 @@ glance:
    minimum height; whichever is longer."
 4. "I don't like the information that clicking the worktree gives. It's almost always 'clean'
    which is something I'd prefer to know by glancing at the list instead of clicking."
+5. "I also want the toggle buttons ("show raw", "present", etc) that appear in the top right of
+   the markdown tab to be more compact and occupy less space on the tab." From the mockups
+   (`docs/superpowers/brainstorm/7688-1793801419/content/tab-controls.html`) Cyrus chose one
+   button that opens a menu, Material's overflow menu, over a row of icon toggles.
+6. "drop the `...` button from the tab headers too": the tab bar's overflow button and its menu
+   of the pane's tabs.
 
 ## 1. The sidebar Outline section goes
 
@@ -146,11 +152,45 @@ view at the heading's line (my call).
 - A missing worktree shows `missing` as now and runs no status.
 - `arkos worktrees` is unchanged (it reports ages, not status).
 
+## 5. The markdown tab's controls become one menu
+
+- The three floating controls at a markdown tab's top right (the "inline diff" chip, the mode
+  pill "show raw" / "show rendered", and the "present" / "edit" pill under it) are replaced by one
+  round 26 px icon button, `⋯`, at the top right of the tab, below the find bar when that is open
+  as the pill is today. It shows on a markdown tab in both views and in presentation mode (where
+  it is the way out of presenting); never on a CSV's grid, whose pill stays in the strip above the
+  grid as it is.
+- A click opens a menu under the button, drawn like the app's other menus (`chrome::menu_frame`,
+  so an effect's `menus` setting applies), listing the tab's own toggles, each with its shortcut
+  at the right and a check mark when it is on:
+  - Show raw / Show rendered (⇧⌘M; the words name what a click turns to, as the pill does)
+  - Inline diff (⇧⌘D; only while the file has changes against git, as the chip is today; checked
+    when on)
+  - Present / Edit (⌥⌘P)
+  - Outline (⌥⌘O, section 2; checked when expanded)
+- Choosing an item does it and closes the menu. Escape, a click outside and a click on the button
+  close it. The menu opens and closes with the app's existing menu motion; it adds nothing to
+  `Root::any_motion` beyond what the other menus use. Keyboard users keep the shortcuts, which
+  are unchanged.
+- The CSV grid's strip, the terminal's "jump to bottom" pill and the code viewer's controls are
+  not part of this change.
+
+## 6. The tab bar's overflow button goes
+
+- The `⋯` at the right end of every pane's tab bar, and the menu of the pane's tabs it opens, are
+  removed (`show_overflow`, `menu_rows`, `Root::tab_menu`, `toggle_tab_menu`, `close_tab_menu`,
+  the menu's drawing and its `any_motion` term). A pane's tabs stay reachable by a click, by the
+  bar scrolling to the active tab, and by the keyboard's next and previous tab. `+` stays.
+- The effect notes that list the menus an effect's `menus` setting draws drop the tab overflow
+  menu from the list.
+
 ## Docs and checks
 
 - `docs/guide.md`: the Outline paragraph becomes the rail's (where it shows, the dots, expanding,
   the shortcut, narrow tabs, remembered per tab); the Worktrees paragraph says the section fills the
-  sidebar and each row shows its changes at a glance.
+  sidebar and each row shows its changes at a glance; every mention of the mode pill, the "present"
+  pill and the "inline diff" chip becomes the `⋯` menu; the tab bar's description loses its
+  overflow menu.
 - `docs/development.md` Status: replace the Outline row with the rail's checks (dots move with the
   scroll, a dot's tooltip and click, expand and collapse with motion, the overlay in a narrow pane,
   a relaunch keeps a tab's choice, under each effect); update the Worktrees row (the section fills
@@ -160,7 +200,10 @@ view at the heading's line (my call).
   dots exist), the dot states, the narrow threshold choosing overlay or side panel, the tab's saved
   `outline` field round-tripping and defaulting, the toggle command's binding, the Worktrees
   height rule as a pure function of the sidebar height and the Explorer's content height, the
-  status debounce and which events schedule a status run, and the clean row having no chevron.
+  status debounce and which events schedule a status run, the clean row having no chevron, the
+  menu's items for each tab state (raw or rendered, with or without changes, presenting, outline
+  open) with their labels and check marks, and the tab bar no longer offering an overflow button
+  at any tab count.
 
 ## Left to the builder
 
@@ -180,6 +223,9 @@ worktrees work, `sidebar.rs`, or a small pure helper beside it).
   collapse chevrons do not come back.
 - Worktrees keeps at least a third of the sidebar; "clean" is no longer written; a clean row does
   not expand.
+- The `⋯` menu also holds the Outline toggle, so every per-tab view toggle is in one place; the
+  menu words name what a click turns to (Show raw, Present), as the pills did.
+- The `⋯` button shows in presentation mode too, as the way out.
 - In the raw view the current heading follows the editor's top line, and a click puts the editor
   at the heading.
 - The narrow overlay takes the keyboard while open (arrows, Enter, Escape).
