@@ -4229,7 +4229,7 @@ impl Render for Root {
         let side_col = sidebar::render(self, window, cx);
         // Focus follows the tree: the focused pane's terminal or viewer (its find bar while that
         // is open), or the pane's own handle. The palette holds it while it is open; then the
-        // URL prompt (over the focused pane, until Enter or Escape), the worktree prompt, the worktree list (Ctrl+Shift+G) and the file tree (Shift+Cmd+E)
+        // URL prompt (over the focused pane, until Enter or Escape), the worktree list (Ctrl+Shift+G) and the file tree (Shift+Cmd+E)
         // while they hold the keys. An open prompt holds them only while the list does, so a
         // click on a pane takes them back without losing what was typed.
         let wanted = if let Some(f) = self.palette.value().and_then(|p| p.focus.clone()) {

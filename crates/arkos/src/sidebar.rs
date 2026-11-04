@@ -786,9 +786,28 @@ pub fn ease_in(elapsed: Duration) -> f32 {
     if t >= 1.0 { 1.0 } else if t <= 0.0 { 0.0 } else { crate::motion::cubic_bezier(crate::motion::STANDARD_DECELERATE, t) }
 }
 
-/// The keyboard's row after the rows changed: still on a row, or none when there are none.
-pub fn clamp_selection(selected: Option<usize>, rows: usize) -> Option<usize> {
-    selected.filter(|_| rows > 0).map(|i| i.min(rows - 1))
+/// The path the Worktrees selection holds for a row: the worktree's, or the changed file's.
+pub fn row_path(row: &WtRow) -> PathBuf {
+    match row {
+        WtRow::Worktree { wt, .. } => wt.path.clone(),
+        WtRow::Change { worktree, rel, .. } => worktree.join(rel),
+    }
+}
+
+/// Up or Down through the worktrees in `order`. With none selected, Down takes the first and Up
+/// the last; from a changed file, Down goes to the next worktree and Up to the file's own; at
+/// either end the selection stays. A selection in no listed worktree starts over as if none.
+pub fn step_selection(order: &[&Path], selected: Option<&Path>, down: bool) -> Option<PathBuf> {
+    let last = order.len().checked_sub(1)?;
+    let at = selected.and_then(|s| order.iter().position(|w| s.starts_with(w)).map(|i| (i, s == order[i])));
+    let i = match at {
+        None if down => 0,
+        None => last,
+        Some((i, _)) if down => (i + 1).min(last),
+        Some((i, true)) => i.saturating_sub(1),
+        Some((i, false)) => i,
+    };
+    Some(order[i].to_path_buf())
 }
 
 /// How many terminal tabs were opened in `dir` or a folder inside it.
@@ -812,17 +831,14 @@ pub enum WtMenuAction {
     RemoveForce(PathBuf),
 }
 
-/// The right-click menu of a worktree row. The main checkout is never removed; a dirty or
-/// unloaded worktree offers force as well, since the plain removal will be refused. One with
-/// no files (missing, or a bare main checkout) has nothing to open a terminal in, and only
+/// The right-click menu of a worktree row (every row is a side worktree, so every row offers
+/// removal). A dirty or unloaded worktree offers force as well, since the plain removal will be
+/// refused. One with no files (missing, or bare) has nothing to open a terminal in, and only
 /// force removes it.
 pub fn worktree_menu_items(wt: &Worktree, dirty: Option<usize>) -> Vec<(&'static str, WtMenuAction)> {
     let mut v = Vec::new();
     if wt.has_files() {
         v.push(("Open terminal here", WtMenuAction::OpenTerminal(wt.path.clone())));
-    }
-    if wt.is_main {
-        return v;
     }
     if wt.has_files() {
         v.push(("Remove worktree", WtMenuAction::Remove(wt.path.clone())));
@@ -839,8 +855,7 @@ pub fn worktree_menu_items(wt: &Worktree, dirty: Option<usize>) -> Vec<(&'static
 fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx: &mut Context<Root>) -> Stateful<Div> {
     let style = root.effect_style();
     let rows = root.worktrees.rows();
-    root.worktrees.selected = clamp_selection(root.worktrees.selected, rows.len());
-    let selected = root.worktrees.selected;
+    let selected = root.worktrees.selected.clone();
     let still = crate::motion::reduce_motion();
     let now = Instant::now();
     let width = root.sidebar.width;
@@ -854,7 +869,7 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
         .max_h(px(root.content.h * 0.4))
         .overflow_y_scroll()
         .track_scroll(&root.sidebar.wt_scroll);
-    if root.worktrees.not_git {
+    if root.worktrees.not_git() {
         // A repository whose filter config turned git status off says that instead.
         let why = root.explorer.status_off.unwrap_or("not a git repository");
         list = list.child(div().flex_none().h(px(ROW_H)).px(px(10.0)).flex().items_center().text_color(dim).child(why));
@@ -862,6 +877,7 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
     for (i, row) in rows.into_iter().enumerate() {
         // `flex_none`, or the capped column shrinks every row to fit and the rows overprint
         // each other; the list scrolls instead.
+        let is_selected = selected.as_deref() == Some(row_path(&row).as_path());
         let base = div()
             .id(("worktree-row", i))
             .relative()
@@ -873,11 +889,11 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
             .flex()
             .items_center()
             .gap(px(6.0))
-            .when(selected == Some(i), |d| d.bg(selected_bg))
+            .when(is_selected, |d| d.bg(selected_bg))
             .hover(|s| s.bg(hover_bg))
             .cursor_pointer();
         let el = match row {
-            WtRow::Worktree { wt, expanded, loading, dirty } => {
+            WtRow::Worktree { wt, age: _, expanded, loading, dirty } => {
                 let band = loading.then(|| {
                     let phase = if still {
                         0.5
@@ -915,7 +931,7 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
                     .when(wt.missing, |d| d.child(div().flex_none().text_color(theme.tree.deleted.hsla()).child("missing")))
                     .children(count.map(|(text, color)| div().flex_none().text_size(px(style.ui(11.0))).text_color(color).child(text)))
                     .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
-                        root.worktrees.selected = Some(i);
+                        root.worktrees.selected = Some(p_click.clone());
                         root.worktrees.toggle(&p_click);
                         root.load_pending_worktrees(cx);
                         root.save(cx);
@@ -950,12 +966,16 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
                     .text_color(row_color(Some(status), false, theme).hsla())
                     .child(div().min_w_0().truncate().child(rel.to_string_lossy().into_owned()))
                     .on_click(cx.listener(move |root, ev: &ClickEvent, _window, cx| {
-                        root.worktrees.selected = Some(i);
+                        root.worktrees.selected = Some(path.clone());
                         root.open_viewer(&path, ev.click_count() >= 2, cx);
                     }))
             }
         };
         list = list.child(el);
+    }
+    // After the rows, so a row's child index stays its index in `rows()` for the scroll.
+    for why in root.worktrees.errors.values() {
+        list = list.child(div().flex_none().h(px(ROW_H)).px(px(10.0)).flex().items_center().text_color(dim).truncate().child(why.clone()));
     }
     if moving {
         window.request_animation_frame();
@@ -1062,17 +1082,28 @@ impl Root {
         .detach();
     }
 
-    /// Runs `git worktree list` on the background executor. A result older than a newer run
-    /// is dropped.
+    /// Runs `git worktree list` for the open folder's repository on the background executor
+    /// and files the side worktrees under that repository, or git's error under the folder. A
+    /// result older than a newer run is dropped.
     pub fn refresh_worktrees(&mut self, cx: &mut Context<Self>) {
         self.worktrees_seq += 1;
         let seq = self.worktrees_seq;
         let root = self.project.clone();
         cx.spawn(async move |this, cx| {
-            let list = cx.background_executor().spawn(async move { crate::worktrees::list(&root) }).await;
+            let list = cx.background_executor().spawn(async move { crate::worktrees::list_side(&root) }).await;
             let _ = this.update(cx, |root, cx| {
                 if seq == root.worktrees_seq {
-                    root.worktrees.set_list(list);
+                    match list {
+                        Ok(list) => {
+                            let project = root.project.clone();
+                            let repo = list.first().map(|w| w.repo.clone()).unwrap_or_else(|| crate::wt_scan::canonical(&crate::wt_scan::enclosing_repo(&project).unwrap_or_else(|| project.clone())));
+                            root.worktrees.errors.remove(&project);
+                            root.worktrees.set_repo(&repo, list);
+                        }
+                        Err(e) => {
+                            root.worktrees.errors.insert(root.project.clone(), e);
+                        }
+                    }
                     if root.wt_menu.value().is_some_and(|m| root.worktrees.find(&m.0).is_none()) {
                         root.wt_menu.hide(Instant::now());
                     }
@@ -1218,19 +1249,24 @@ impl Root {
     }
 
     /// Keys in the Worktrees section: Up/Down move, Enter or Right expands a worktree or opens a
-    /// change pinned, Space previews it, Left collapses, Escape returns to the pane; with the
-    /// prompt open, the .
+    /// change pinned, Space previews it, Left collapses, Escape returns to the pane.
     pub fn wt_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
         if ks.modifiers.platform || ks.modifiers.control || ks.modifiers.alt {
             return;
         }
         let rows = self.worktrees.rows();
-        let sel = clamp_selection(self.worktrees.selected, rows.len());
+        let sel = self.worktrees.selected.clone();
         match ks.key.as_str() {
-            "down" if !rows.is_empty() => self.worktrees.selected = Some(sel.map_or(0, |i| (i + 1).min(rows.len() - 1))),
-            "up" if !rows.is_empty() => self.worktrees.selected = Some(sel.map_or(0, |i| i.saturating_sub(1))),
+            "down" | "up" => {
+                let order: Vec<PathBuf> = self.worktrees.ordered().into_iter().map(|w| w.path.clone()).collect();
+                let order: Vec<&Path> = order.iter().map(PathBuf::as_path).collect();
+                match step_selection(&order, sel.as_deref(), ks.key == "down") {
+                    Some(p) => self.worktrees.selected = Some(p),
+                    None => return,
+                }
+            }
             "enter" | "right" | "left" | "space" => {
-                if let Some(row) = sel.and_then(|i| rows.get(i)) {
+                if let Some(row) = sel.as_deref().and_then(|s| rows.iter().find(|r| row_path(r) == s)) {
                     match row {
                         WtRow::Worktree { wt, expanded, .. } => {
                             let want_open = ks.key != "left";
@@ -1256,7 +1292,8 @@ impl Root {
             "escape" => self.wt_focused = false,
             _ => return,
         }
-        if let Some(i) = self.worktrees.selected {
+        let rows = self.worktrees.rows();
+        if let Some(i) = self.worktrees.selected.as_deref().and_then(|s| rows.iter().position(|r| row_path(r) == s)) {
             self.sidebar.wt_scroll.scroll_to_item(i);
         }
         cx.notify();
@@ -1587,19 +1624,17 @@ mod tests {
     }
 
     #[test]
-    fn the_worktree_menu_offers_a_terminal_and_removal_but_never_for_the_main_checkout() {
+    fn the_worktree_menu_offers_a_terminal_and_removal_for_every_row() {
         use crate::worktrees::Worktree;
-        let main = Worktree { path: "/p".into(), head: "1".into(), branch: Some("main".into()), is_main: true, missing: false, bare: false };
-        let feat = Worktree { path: "/p-f".into(), head: "2".into(), branch: Some("f".into()), is_main: false, missing: false, bare: false };
+        let feat = Worktree { path: "/p-f".into(), repo: "/p".into(), head: "2".into(), branch: Some("f".into()), missing: false, bare: false, locked: false, admin: None };
         let labels = |items: Vec<(&'static str, WtMenuAction)>| items.into_iter().map(|(l, _)| l).collect::<Vec<_>>();
-        assert_eq!(labels(worktree_menu_items(&main, Some(0))), ["Open terminal here"]);
         assert_eq!(labels(worktree_menu_items(&feat, Some(0))), ["Open terminal here", "Remove worktree"]);
         assert_eq!(labels(worktree_menu_items(&feat, Some(3))), ["Open terminal here", "Remove worktree", "Remove worktree, force"], "dirty: the plain remove will be refused, so force is offered");
         assert_eq!(labels(worktree_menu_items(&feat, None)), ["Open terminal here", "Remove worktree", "Remove worktree, force"], "not loaded: cannot tell, offer both");
         let gone = Worktree { missing: true, ..feat.clone() };
         assert_eq!(labels(worktree_menu_items(&gone, None)), ["Remove worktree, force"], "nothing to open; only force removes a missing one");
-        let bare = Worktree { bare: true, branch: None, head: String::new(), ..main.clone() };
-        assert!(worktree_menu_items(&bare, None).is_empty(), "a bare main checkout: no files to open a terminal in, and never removed");
+        let bare = Worktree { bare: true, branch: None, head: String::new(), ..feat.clone() };
+        assert_eq!(labels(worktree_menu_items(&bare, None)), ["Remove worktree, force"], "a bare one: no files to open a terminal in, only force removes it");
         assert_eq!(worktree_menu_items(&feat, Some(0))[0].1, WtMenuAction::OpenTerminal("/p-f".into()));
         assert_eq!(worktree_menu_items(&feat, None)[2].1, WtMenuAction::RemoveForce("/p-f".into()));
     }
@@ -1620,11 +1655,19 @@ mod tests {
     }
 
     #[test]
-    fn the_worktrees_selection_stays_on_a_row() {
-        assert_eq!(clamp_selection(Some(5), 3), Some(2), "rows went away under it");
-        assert_eq!(clamp_selection(Some(1), 3), Some(1));
-        assert_eq!(clamp_selection(Some(0), 0), None, "no rows, no selection");
-        assert_eq!(clamp_selection(None, 3), None);
+    fn up_and_down_step_the_selected_path_through_the_worktrees() {
+        let order = [Path::new("/a"), Path::new("/b"), Path::new("/c")];
+        let step = |sel: Option<&str>, down: bool| step_selection(&order, sel.map(Path::new), down);
+        assert_eq!(step(None, true), Some("/a".into()), "none selected: Down takes the first");
+        assert_eq!(step(None, false), Some("/c".into()), "and Up the last");
+        assert_eq!(step(Some("/a"), true), Some("/b".into()));
+        assert_eq!(step(Some("/c"), true), Some("/c".into()), "the end holds");
+        assert_eq!(step(Some("/b"), false), Some("/a".into()));
+        assert_eq!(step(Some("/a"), false), Some("/a".into()), "the start holds");
+        assert_eq!(step(Some("/b/src/x.rs"), true), Some("/c".into()), "from a changed file, Down goes to the next worktree");
+        assert_eq!(step(Some("/b/src/x.rs"), false), Some("/b".into()), "and Up to its own");
+        assert_eq!(step(Some("/gone"), true), Some("/a".into()), "a selection that went starts over");
+        assert_eq!(step_selection(&[], Some(Path::new("/a")), true), None, "no worktrees, no selection");
     }
 
     #[test]
