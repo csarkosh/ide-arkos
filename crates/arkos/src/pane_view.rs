@@ -154,7 +154,7 @@ fn tab_id(kind: &str, pane: PaneId, idx: usize) -> ElementId {
 
 /// The bar's fixed children after the tabs, by name. Only the + button: tabs are reached by
 /// clicking them, by the bar scrolling to the active one, and by the keyboard.
-pub fn bar_items(_tabs: usize) -> Vec<&'static str> {
+pub fn bar_items() -> Vec<&'static str> {
     vec!["+"]
 }
 
@@ -828,7 +828,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
         strip = strip.child(div().flex_none().h_full().w(px(gaps[p.tabs.len()])));
     }
     bar = bar.child(strip);
-    for item in bar_items(p.tabs.len()) {
+    for item in bar_items() {
         bar = match item {
             "+" => bar.child(
                 div()
@@ -840,7 +840,8 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
                     .child("+")
                     .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.new_terminal_tab(pane, cx))),
             ),
-            other => unreachable!("bar_items names {other}, which the bar does not draw"),
+            // `bar_items` names only "+": a name the bar does not draw adds nothing.
+            _ => bar,
         };
     }
     bar
@@ -870,6 +871,7 @@ fn open_link_menu(root: &mut Root, terminal: &Entity<Terminal>, ev: &MouseDownEv
     root.last_input = now;
     root.context_menu.hide(now);
     root.wt_menu.hide(now);
+    root.view_menu.hide(now);
     root.close_popovers(now);
     root.url_prompt.hide(now);
     root.commit_tab_rename(cx);
@@ -1042,9 +1044,9 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
         .children(find::render(&terminal, pane, theme, style, family, find_bars, now, cx))
 }
 
-/// The width of a markdown tab's mode pill: fixed, so the inline-diff chip can sit beside it.
+/// The width of a delimited file's mode pill: fixed, so the inline-diff chip can sit beside it.
 pub const PILL_W: f32 = 104.0;
-/// The width of the inline-diff chip: fixed, so a markdown tab's banners can keep clear of it.
+/// The width of the inline-diff chip: fixed, so a tab's banners can keep clear of it.
 pub const CHIP_W: f32 = 100.0;
 
 /// The strip above a grid: the caps' banner at its left and the mode pill at its right.
@@ -1107,9 +1109,13 @@ pub fn grid_strip(delimited: bool, banner: Option<String>) -> Option<Strip> {
     (delimited || banner.is_some()).then_some(Strip { banner, pill: delimited })
 }
 
-/// How far from the pane's right edge a markdown tab's banners keep their text, clear of the mode
-/// pill (`pill`) and the inline-diff chip (`chip`) drawn over the top right.
-pub fn banner_right_pad(pill: bool, chip: bool) -> f32 {
+/// How far from the pane's right edge a viewer tab's banners keep their text, clear of what is
+/// drawn over the top right: a markdown tab's view button (`button`), or a raw CSV's mode pill
+/// (`pill`) and another file's inline-diff chip (`chip`), the chip left of the pill.
+pub fn banner_right_pad(button: bool, pill: bool, chip: bool) -> f32 {
+    if button {
+        return crate::view_menu::BUTTON + 8.0 + 14.0;
+    }
     match (pill, chip) {
         (true, true) => 14.0 + PILL_W + 8.0 + CHIP_W + 8.0,
         (true, false) => 14.0 + PILL_W + 8.0,
@@ -1118,7 +1124,7 @@ pub fn banner_right_pad(pill: bool, chip: bool) -> f32 {
     }
 }
 
-/// The overlay pills ("jump to bottom", "show raw") float over text: a translucent banner
+/// The overlay pills ("jump to bottom", a markdown tab's `⋯`) float over text: a translucent banner
 /// colour with a faint edge, so what lies under them still shows through. (gpui 0.2 blurs only
 /// a whole window's backdrop, not an element's, so this is transparency alone.)
 fn pill_bg(theme: &Theme) -> gpui::Hsla {
@@ -1131,24 +1137,6 @@ fn pill_border(theme: &Theme) -> gpui::Hsla {
     let mut c = theme.chrome.border.hsla();
     c.a = 0.6;
     c
-}
-
-/// The mode pill's text: it names the mode a click switches to, the grid for a delimited file.
-pub fn pill_label_for(mode: ViewMode, delimited: bool) -> &'static str {
-    match mode {
-        ViewMode::Rendered => "show raw",
-        ViewMode::Raw if delimited => "show grid",
-        ViewMode::Raw => "show rendered",
-    }
-}
-
-/// The presentation pill's text: what a click turns to.
-pub fn present_label(presenting: bool) -> &'static str {
-    if presenting {
-        "edit"
-    } else {
-        "present"
-    }
 }
 
 /// What a viewer tab shows under its find bar.
@@ -1166,10 +1154,11 @@ enum Kind {
 /// A document (markdown, or any text file the user may write) takes the editing keys
 /// (`Viewer::key`) and nothing else scrolls on a key; in a read-only file the arrows, Page Up and
 /// Down, Space, Home and End scroll. The wheel scrolls smoothly. A markdown document shows
-/// rendered (`md_view`, a list that scrolls itself) or raw, with a pill at the top right that
-/// switches between the two; a code document shows raw with its syntax colours. A delimited file
-/// shows its grid in Rendered mode, with the same pill, and a workbook its grid always, with no
-/// pill; while a grid shows, the keys scroll it.
+/// rendered (`md_view`, a list that scrolls itself) or raw, with a `⋯` button at the top right
+/// whose menu (`view_menu`) switches between the two and holds its other view toggles; a code
+/// document shows raw with its syntax colours. A delimited file shows its grid in Rendered mode,
+/// with a pill in the strip above it that switches to its text, and a workbook its grid always,
+/// with no pill; while a grid shows, the keys scroll it.
 /// `area` is the body's: the pane's left edge and width in window points, the height under the
 /// tab bar.
 fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Path, area: Rect, cx: &mut Context<Root>) -> Div {
@@ -1179,7 +1168,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     let family = root.family();
     let presenting = viewer.read(cx).presenting;
     let markdown = viewer::is_markdown(path);
-    let (focus, kind, font_size, has_changes, inline, find_open, mode, editable, has_doc, conflict, save_error, read_only, pill_shown, delimited, sheet_count) = {
+    let (focus, kind, font_size, has_changes, inline, find_open, mode, editable, has_doc, conflict, save_error, read_only, pill_shown, delimited, sheet_count, outline_on, has_heads) = {
         let v = viewer.read(cx);
         let kind = match &v.content {
             _ if !v.loaded => Kind::Loading,
@@ -1194,7 +1183,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         let editable = v.doc.is_some() && v.read_only.is_none();
         let pill_shown = viewer::pill_shown(path, editable, v.book.as_ref());
         let delimited = v.book.as_ref().is_some_and(|b| matches!(b.source, crate::grid::Source::Delimited(_)));
-        (v.focus.clone(), kind, v.font_size, v.diff.as_ref().is_some_and(|d| d.has_changes()), v.inline_diff, v.find.is_some(), v.mode, editable, v.doc.is_some(), v.conflict, v.save_error.clone(), v.read_only, pill_shown, delimited, v.sheet_count())
+        (v.focus.clone(), kind, v.font_size, v.diff.as_ref().is_some_and(|d| d.has_changes()), v.inline_diff, v.find.is_some(), v.mode, editable, v.doc.is_some(), v.conflict, v.save_error.clone(), v.read_only, pill_shown, delimited, v.sheet_count(), v.outline, !v.heads.is_empty())
     };
     // The rendered page and presentation are markdown's; a delimited file's pill switches to its
     // grid instead.
@@ -1289,8 +1278,14 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             .child(label)
             .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| v.update(cx, |v, cx| on_click(v, cx))))
     };
-    // While the grid shows, nothing floats over it: its pill sits in the strip above it.
-    let right_pad = banner_right_pad(pill_shown && !kind_is_grid, has_changes && !kind_is_grid);
+    // A markdown document's view toggles sit behind one button at the top right, in both views
+    // and presenting (it is the way out); another file with changes has its inline-diff chip
+    // there. While the grid shows, nothing floats over it: its pill sits in the strip above it.
+    let view_button = markdown && has_doc && kind_is_text;
+    let chip_shown = has_changes && !kind_is_grid && !view_button;
+    // A delimited file's pill: in the strip over its grid, floating at the top right over its text.
+    let csv_pill = pill_shown && !view_button;
+    let right_pad = banner_right_pad(view_button, csv_pill && !kind_is_grid, chip_shown);
     let banner_row = || div().flex_none().flex().flex_row().gap(px(10.0)).pl(px(12.0)).pr(px(right_pad)).py(px(4.0)).text_color(dim).font_family(family.clone()).text_size(px(style.ui(12.0)));
     let mut banners: Vec<Div> = Vec::new();
     // A delimited document's grid shows the conflict and a failed save as its text does.
@@ -1317,13 +1312,13 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             banners.push(banner_row().child(text));
         }
     }
-    // The mode pill's top: where the find bar opens, below it when open.
-    let pill_top = if find_open { 44.0 } else { 10.0 };
-    // The inline diff's switch, at the top right where the find bar opens, below it when open; on
-    // a markdown document, left of the mode pill at its top.
-    let chip = (has_changes && !kind_is_grid).then(|| {
+    // The pill's top: where the find bar opens, below it when open.
+    let pill_top = crate::view_menu::button_top(find_open);
+    // A non-markdown file's inline diff switch, at the top right where the find bar opens, below
+    // it when open; on a raw CSV, left of its pill at its top.
+    let chip = chip_shown.then(|| {
         let v_chip = viewer.clone();
-        let (top, right) = if pill_shown { (pill_top, 14.0 + PILL_W + 8.0) } else { (if find_open { 44.0 } else { 6.0 }, 14.0) };
+        let (top, right) = if csv_pill { (pill_top, 14.0 + PILL_W + 8.0) } else { (if find_open { 44.0 } else { 6.0 }, 14.0) };
         div()
             .id(("viewer-inline-diff", viewer.entity_id()))
             .absolute()
@@ -1353,8 +1348,8 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             )
             .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| v_chip.update(cx, |v, cx| v.toggle_inline_diff(cx))))
     });
-    // The mode pill, drawn like the terminal's "jump to bottom" pill.
-    let pill = pill_shown.then(|| {
+    // A delimited file's mode pill, drawn like the terminal's "jump to bottom" pill.
+    let pill = csv_pill.then(|| {
         div()
             .id(("viewer-mode-pill", viewer.entity_id()))
             .w(px(PILL_W))
@@ -1369,8 +1364,8 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             .font_family(family.clone())
             .text_size(px(style.ui(12.0)))
             .cursor_pointer()
-            .child(pill_label_for(mode, delimited))
-            // A press on the pill is not a click in the text below; stopping it also stops the
+            .child(crate::view_menu::pill_label_for(mode, delimited))
+            // A press on the pill is not a click in the grid below; stopping it also stops the
             // pane's, so the pill focuses the pane itself.
             .on_mouse_down(
                 MouseButton::Left,
@@ -1382,43 +1377,23 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.toggle_markdown_view_for(tab, cx)))
     });
     // Over a grid the pill goes in the strip above it, with the caps' banner at the strip's left
-    // cut with an ellipsis before the pill (`grid_strip`); elsewhere it floats at the top right.
+    // cut with an ellipsis before the pill (`grid_strip`); over its text it floats at the top right.
     let (pill, strip_pill) = if kind_is_grid { (None, pill) } else { (pill.map(|p| p.absolute().top(px(pill_top)).right(px(14.0))), None) };
     if let Some(strip) = kind_is_grid.then(|| grid_strip(strip_pill.is_some(), grid_banner)).flatten() {
         let text = div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().children(strip.banner);
         banners.push(banner_row().items_center().bg(theme.chrome.banner.alpha(style.chrome_alpha)).child(text).children(strip_pill.map(|p| p.flex_none())));
     }
     let body = if banners.is_empty() { body } else { div().size_full().flex().flex_col().children(banners).child(div().flex_1().min_h_0().child(body)) };
-    // Presentation mode's switch, under the mode pill in the rendered view: it names what a click
-    // turns to.
-    let present = rendered.then(|| {
-        div()
-            .id(("viewer-present-pill", viewer.entity_id()))
-            .absolute()
-            .top(px(pill_top + 30.0))
-            .right(px(14.0))
-            .w(px(PILL_W))
-            .flex()
-            .justify_center()
-            .py(px(3.0))
-            .rounded(px(10.0))
-            .bg(pill_bg(&theme))
-            .border_1()
-            .border_color(if presenting { theme.chrome.focus_ring.hsla() } else { pill_border(&theme) })
-            .text_color(if presenting { theme.chrome.text.hsla() } else { theme.chrome.text_dim.hsla() })
-            .font_family(family.clone())
-            .text_size(px(style.ui(11.0)))
-            .cursor_pointer()
-            .child(present_label(presenting))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
-                    root.focus_pane(pane, cx);
-                    cx.stop_propagation();
-                }),
-            )
-            .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.toggle_presentation_for(tab, cx)))
-    });
+    // The `⋯` button and its menu; the outline row only for a document with headings, which is
+    // where the rail shows.
+    let view_button_el = view_button.then(|| crate::view_menu::render_view_button(root, pane, tab, find_open, pill_bg(&theme), pill_border(&theme), cx));
+    let view_menu_el = if view_button {
+        let mut rows = crate::view_menu::items(mode, delimited, editable, has_changes, inline, presenting, outline_on);
+        rows.retain(|i| has_heads || i.action != crate::view_menu::ViewAction::ToggleOutline);
+        crate::view_menu::render_view_menu(root, tab, &rows, find_open, cx)
+    } else {
+        None
+    };
     let (v_keys, v_wheel, v_menu) = (viewer.clone(), viewer.clone(), viewer.downgrade());
     div()
         .size_full()
@@ -1516,7 +1491,8 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 root.last_input = now;
                 root.context_menu.hide(now);
                 root.wt_menu.hide(now);
-                            root.link_menu.hide(now);
+                root.link_menu.hide(now);
+                root.view_menu.hide(now);
                 root.close_popovers(now);
                 let grid = v.read(cx).grid_shown();
                 let selection = if grid { v.read(cx).grid_sel.is_some() } else { v.read(cx).has_selection() };
@@ -1528,8 +1504,9 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         .child(body)
         .children(chip)
         .children(pill)
-        .children(present)
+        .children(view_button_el)
         .children(viewer::find_bar(&viewer, pane, &theme, family, &mut root.find_bars, root.frame_now, cx))
+        .children(view_menu_el)
 }
 
 /// A video tab: the picture, the control strip and the video keys (`video_element`), its view
@@ -1711,13 +1688,6 @@ mod tests {
     }
 
     #[test]
-    fn the_pill_names_the_other_mode() {
-        assert_eq!(pill_label_for(ViewMode::Rendered, false), "show raw");
-        assert_eq!(pill_label_for(ViewMode::Raw, false), "show rendered");
-        assert_eq!((present_label(false), present_label(true)), ("present", "edit"), "the presentation pill names what a click turns to");
-    }
-
-    #[test]
     fn a_grid_s_strip_holds_the_pill_for_a_csv_and_the_banner_when_rows_were_dropped() {
         let dropped = || Some("first 200,000 rows shown, 5 more in the file".to_string());
         assert_eq!(grid_strip(true, None), Some(Strip { banner: None, pill: true }), "a csv always has its pill");
@@ -1727,11 +1697,12 @@ mod tests {
     }
 
     #[test]
-    fn a_markdown_tab_s_banners_keep_clear_of_the_pill_and_the_chip() {
-        assert_eq!(banner_right_pad(true, false), PILL_W + 8.0 + 14.0);
-        assert_eq!(banner_right_pad(true, true), PILL_W + 8.0 + 14.0 + CHIP_W + 8.0, "the chip sits left of the pill");
-        assert_eq!(banner_right_pad(false, true), CHIP_W + 8.0 + 14.0, "a read-only tab has the chip alone");
-        assert_eq!(banner_right_pad(false, false), 12.0, "nothing drawn over the banners: their usual padding");
+    fn a_markdown_tab_s_banners_keep_clear_of_the_view_button() {
+        assert_eq!(banner_right_pad(true, false, false), crate::view_menu::BUTTON + 8.0 + 14.0);
+        assert_eq!(banner_right_pad(false, false, true), CHIP_W + 8.0 + 14.0, "a code file with changes keeps its chip");
+        assert_eq!(banner_right_pad(false, true, false), PILL_W + 8.0 + 14.0, "a raw csv keeps its pill");
+        assert_eq!(banner_right_pad(false, true, true), PILL_W + 8.0 + 14.0 + CHIP_W + 8.0, "the chip sits left of a raw csv's pill");
+        assert_eq!(banner_right_pad(false, false, false), 12.0, "nothing drawn over the banners: their usual padding");
     }
 
     #[test]
@@ -1875,8 +1846,6 @@ mod tests {
 
     #[test]
     fn the_tab_bar_offers_no_overflow_button_at_any_tab_count() {
-        assert_eq!(bar_items(1), vec!["+"]);
-        assert_eq!(bar_items(2), vec!["+"]);
-        assert_eq!(bar_items(9), vec!["+"]);
+        assert_eq!(bar_items(), vec!["+"], "the bar's items do not depend on how many tabs it holds");
     }
 }

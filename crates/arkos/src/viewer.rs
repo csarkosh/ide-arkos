@@ -74,7 +74,7 @@ pub fn is_markdown(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| ["md", "markdown", "mdx"].iter().any(|m| e.eq_ignore_ascii_case(m)))
 }
 
-/// Whether a viewer of `path` has a rendered view the mode pill and the toggle switch to: a
+/// Whether a viewer of `path` has a rendered view the mode toggle switches to: a
 /// markdown file's page, or a delimited file's grid. A workbook shows its grid in either mode and
 /// has no toggle.
 pub fn renders(path: &Path) -> bool {
@@ -247,8 +247,9 @@ pub fn rebuild_lands(applied_then: u64, applied_now: u64, seq_then: u64, seq_now
     applied_then == applied_now && seq_then == seq_now
 }
 
-/// Whether the mode pill shows: on a markdown document, and on a delimited file with its book,
-/// editable or not (a read-only CSV still switches between its text and its grid). A workbook has
+/// Whether the tab offers a mode switch: on a markdown document (Show raw or Show rendered in its
+/// `⋯` menu), and on a delimited file with its book, editable or not (a read-only CSV still
+/// switches between its text and its grid, with the pill in the strip above it). A workbook has
 /// none.
 pub fn pill_shown(path: &Path, editable: bool, book: Option<&grid::Book>) -> bool {
     let delimited = book.is_some_and(|b| matches!(b.source, grid::Source::Delimited(_)));
@@ -7208,7 +7209,7 @@ mod tests {
 
     #[test]
     fn the_pill_reads_show_raw_then_show_grid_for_a_csv() {
-        use crate::pane_view::pill_label_for;
+        use crate::view_menu::pill_label_for;
         assert_eq!(pill_label_for(ViewMode::Rendered, true), "show raw");
         assert_eq!(pill_label_for(ViewMode::Raw, true), "show grid");
         assert_eq!(pill_label_for(ViewMode::Raw, false), "show rendered", "markdown's stays");

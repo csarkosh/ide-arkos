@@ -807,8 +807,8 @@ Things only a person at the screen can check, in order of value:
 - reading: the five alerts show their icons and colours, `> [!TIP] Shortcut` reads "Shortcut";
   footnote references are raised numbers by first reference, hovering one shows its note, the
   notes are numbered with a `↩` back; front matter shows its title, date and a faint label;
-  "present" (or Alt+Cmd+P) turns presentation on: no handle, no label, a click and typing change
-  nothing, a click on a footnote scrolls to it and `↩` back; "edit" ends it; with
+  Present in the `⋯` menu (or Alt+Cmd+P) turns presentation on: no handle, no label, a click and typing change
+  nothing, a click on a footnote scrolls to it and `↩` back; the `⋯` button stays and Edit in its menu ends it; with
   `page_width = "letter"` a wide pane centres an 816 px column; Cmd+= enlarges the text in it
 - links and images: click a link to `#a-heading` and then its address: the view scrolls to the
   heading; a link to `other.md#a-heading` opens the other file scrolled there; `[[other|text]]`
@@ -822,8 +822,13 @@ Things only a person at the screen can check, in order of value:
   Copy puts the code on the clipboard and reads "Copied"; a header click and Delete remove the
   block; click a Mermaid diagram: its code shows with the caret at its start, and Shift+Enter on
   its last line leaves it and the diagram draws again
-- the "show raw" pill at the top right of the pane, or Shift+Cmd+M, shows the raw file and
-  back; the choice survives a relaunch; another markdown tab keeps its own mode
+- view menu: `⋯` on a markdown tab opens the menu under it, rising into place (instantly under
+  Reduce Motion); each item does its toggle and closes it (Show raw and back, Inline diff with a
+  change against git, Present then Edit, Outline with a check mark); Escape and a click outside
+  close it, and so does `⋯` again; with the find bar open it sits below the bar; under an effect
+  with menu edges it is drawn like the other menus; a CSV's grid keeps its own pill in the strip
+- Shift+Cmd+M, with the menu closed, shows the raw file and back; the choice survives a
+  relaunch; another markdown tab keeps its own mode
 - edit the file in another editor while a line is half typed: the banner offers Reload and
   Keep mine; Cmd+S means Keep mine; with nothing unsaved the file simply reloads
 - a 5 MB markdown file opens and scrolls without stutter; typing in it keeps up; Reduce

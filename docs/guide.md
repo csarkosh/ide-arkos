@@ -96,8 +96,9 @@ on disk; a text file you may write is also an editor (see Editing markdown and E
 plain, and above 64 MB a notice; binaries show a notice. The text preset applies to viewers as to
 terminals, and Cmd+= and Cmd+- resize the focused one. A file in a git repository shows its
 changes against the worktree's HEAD in the gutter: an added line a green bar, a changed line an
-amber one, a deletion a red mark at the top of the line that follows; Shift+Cmd+D (or the "inline
-diff" chip) shows the deleted lines in red between the current ones.
+amber one, a deletion a red mark at the top of the line that follows; Shift+Cmd+D (or Inline
+diff in a markdown tab's `⋯` menu, or the "inline diff" chip at the top right of any other file)
+shows the deleted lines in red between the current ones.
 
 Menus, the palette, notices, find bars and the drop preview ease in over 120 ms and out over
 90 ms; Reduce Motion turns that off. The drop preview glides between zones, the focus glow
@@ -130,8 +131,8 @@ Cmd+Option+[ for the next and previous sheet ("Next sheet" and "Previous sheet" 
 viewer's section of Settings and the keymap). Each sheet keeps its own scroll and selection while
 the tab is open; after a relaunch the first sheet shows.
 
-A CSV has the same "show raw" / "show grid" pill as markdown, and Shift+Cmd+M toggles it. While
-the grid shows, the pill sits in a strip above the grid beside any notice. Raw is the code editor
+A CSV has a "show raw" / "show grid" pill, and Shift+Cmd+M toggles it. While the grid shows, the
+pill sits in a strip above the grid beside any notice. Raw is the code editor
 as before: editing is done there or by an agent, never in the grid. A spreadsheet has no raw mode
 and no pill. The grid follows the file, so an agent rewriting the CSV updates it, and switching
 from raw back to the grid rebuilds it from the edited text.
@@ -168,9 +169,14 @@ its text in the code editor instead, as the pill does.
 
 A `.md` file opens as a document you can edit. Two modes: Rendered shows headings, lists, task
 lists, quotes, code blocks, links and images as they read; Raw shows the file's own text with
-Arkos's light markdown colouring (not a TextMate grammar, so a 5 MB file stays quick). The pill at
-the top right of the pane, or Shift+Cmd+M, switches between them, and each tab remembers its mode
-across a relaunch.
+Arkos's light markdown colouring (not a TextMate grammar, so a 5 MB file stays quick).
+Shift+Cmd+M switches between them, and each tab remembers its mode across a relaunch.
+
+The `⋯` button at the top right of a markdown tab (below the find bar when that is open) opens a
+small menu of the tab's view toggles, each with its shortcut and a check mark when it is on: Show
+raw or Show rendered (Shift+Cmd+M), Inline diff (Shift+Cmd+D, while the file has changes against
+git), Present or Edit (Alt+Cmd+P) and Outline (Option+Cmd+O, when the document has headings).
+Choosing one does it and closes the menu; Escape or a click elsewhere closes it too.
 
 In Rendered mode one block is active at a time: the one holding the caret. A paragraph, heading,
 list or quote stays as it reads while you edit it; the markdown element under the caret shows its
@@ -276,11 +282,11 @@ small raised number; hover it to read the note, Cmd+click it to scroll to the no
 after a note scrolls back. Front matter shows as its `title`, its `date` (or `created`) and a faint
 "front matter" label; click it for its source.
 
-Presentation mode reads a document without editing it: click "present" under the mode pill, or
+Presentation mode reads a document without editing it: choose Present in the tab's `⋯` menu, or
 press Alt+Cmd+P. There is no caret and nothing reveals, a single click follows a link or a
 footnote, and the drag handles, the table's strips, the code block's language list, the
-right-click menu and the front matter label are gone. "edit" (or Alt+Cmd+P again, or Raw mode)
-ends it. A tab remembers it: reopen the window and the tab is still presenting. To read in a column a letter page wide (816 px) in a wide pane, choose "Letter" under
+right-click menu and the front matter label are gone; the `⋯` button stays, and Edit in its menu
+(or Alt+Cmd+P again, or Raw mode) ends it. A tab remembers it: reopen the window and the tab is still presenting. To read in a column a letter page wide (816 px) in a wide pane, choose "Letter" under
 "Page width" in Settings, or run `arkos settings set viewer.page_width letter`. Cmd+= and Cmd+-
 make the focused document's text larger and smaller.
 
