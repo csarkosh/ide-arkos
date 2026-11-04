@@ -137,15 +137,16 @@ fn reveal(fade: &mut Transient<()>, open: bool, now: Instant) -> f32 {
 /// Heights for the Explorer and the Worktrees sections in a sidebar `total` tall, both headers
 /// included, from the Explorer's content height (its rows, without its header): open Worktrees
 /// take what the Explorer does not need, never less than a third of `total`; the Explorer never
-/// less than its header plus one row.
+/// less than its header plus one row. On a sidebar shorter than `2 * ROW_H` the Explorer keeps its
+/// header and a row and Worktrees gets what is left, which may be nothing.
 pub fn sidebar_split(total: f32, explorer_rows_h: f32, explorer_open: bool, worktrees_open: bool) -> (f32, f32) {
     match (explorer_open, worktrees_open) {
         (true, true) => {
             let explorer = (ROW_H + explorer_rows_h).min(total - total / 3.0).max(2.0 * ROW_H);
-            (explorer, (total - explorer).max(ROW_H))
+            (explorer, total - explorer)
         }
-        (true, false) => ((total - ROW_H).max(2.0 * ROW_H), ROW_H),
-        (false, true) => (ROW_H, (total - ROW_H).max(ROW_H)),
+        (true, false) => (total - ROW_H, ROW_H),
+        (false, true) => (ROW_H, total - ROW_H),
         (false, false) => (ROW_H, ROW_H),
     }
 }
@@ -198,7 +199,8 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
     let explorer_open = root.sidebar.explorer_open;
     let worktrees_open = root.sidebar.worktrees_open;
     // The New File prompt is a row of the tree while it is open or fading out.
-    let tree_rows = root.explorer.rows().len() + usize::from(root.new_file.current(root.frame_now).is_some());
+    let entries = root.explorer.rows();
+    let tree_rows = entries.len() + usize::from(root.new_file.current(root.frame_now).is_some());
     let (explorer_h, worktrees_h) = sidebar_split(root.content.h, tree_rows as f32 * ROW_H, explorer_open, worktrees_open);
     let explorer = div()
         .flex()
@@ -233,7 +235,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
             root.save(cx);
             cx.notify();
         })))
-        .when(explorer_open, |d| d.child(render_rows(root, &theme, cx).opacity(explorer_o)));
+        .when(explorer_open, |d| d.child(render_rows(root, entries, &theme, cx).opacity(explorer_o)));
     let worktrees = div()
         .flex_none()
         .h(px(worktrees_h))
@@ -491,8 +493,7 @@ pub fn row_color(status: Option<Status>, ignored: bool, theme: &Theme) -> Rgb {
 /// The Explorer's rows: a virtualized list of the visible entries, only the rows on screen
 /// built each frame. A click on a directory toggles it; on a file it previews (a double click
 /// pins); a right click opens the menu; a file drags out to a terminal.
-pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> UniformList {
-    let entries = root.explorer.rows();
+pub fn render_rows(root: &mut Root, entries: Vec<crate::explorer::Row>, theme: &Theme, cx: &mut Context<Root>) -> UniformList {
     // The New File prompt is a row of the tree while it is open or fading out.
     let prompt = root.new_file.current(root.frame_now).map(|(p, opacity)| {
         let (at, depth) = prompt_row(&entries, &p.dir, &root.project);
@@ -2051,9 +2052,8 @@ mod tests {
 
     #[test]
     fn a_short_sidebar_keeps_the_explorer_s_header() {
-        let (e, w) = super::sidebar_split(120.0, 2000.0, true, true);
-        assert!(e >= 2.0 * super::ROW_H);
-        assert_eq!(w, 120.0 - e);
+        let (e, w) = super::sidebar_split(60.0, 2000.0, true, true);
+        assert_eq!((e, w), (2.0 * super::ROW_H, 60.0 - 2.0 * super::ROW_H));
     }
 
     #[test]
