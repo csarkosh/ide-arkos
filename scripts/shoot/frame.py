@@ -9,7 +9,8 @@ another capture over the window at those pixels first.
 
 `compose` lays framed stills out as the hero: the first large in front, the others fanned
 behind it, a caption on each (the scene's words), on a transparent ground; `compose-portrait`
-the same as a tall picture, for a place beside text:
+the same as a tall picture, for a place beside text. A still given with no caption (`<path>:`)
+gets none:
 
     python3 -I scripts/shoot/frame.py compose <out.png> <front.png>:"The multi tasker" <back.png>:"The web developer" [<back.png>:"The blogger" ...]
 
@@ -61,7 +62,10 @@ def captioned(still, text, align, scale, edge="bottom"):
     """The still with its caption hung on its lower (or upper) border at the left, centre or
     right (the side it shows from behind the front one): a dark pill with light text, readable
     on light and dark pages alike. `scale` is the still's size against the framed original,
-    whose shadow padding the pill sits inside of."""
+    whose shadow padding the pill sits inside of. An empty caption hangs no pill: the card
+    pictures go without, since their frame is too small to spare the room."""
+    if not text:
+        return still.copy()
     font = ImageFont.truetype(CAPTION_FONT, CAPTION_SIZE)
     probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
     box = probe.textbbox((0, 0), text, font=font)
