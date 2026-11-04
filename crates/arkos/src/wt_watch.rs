@@ -31,6 +31,18 @@ pub fn passes(path: &Path, open: &Path, home: bool) -> bool {
     true
 }
 
+/// Whether `path` has a `.git`, skipped or cache folder anywhere below `root`. For a worktree
+/// outside the open folder, whose events reach the callback unfiltered by `passes`: a build writing
+/// into its `target` must not read as the worktree being touched. False when `path` is not under `root`.
+pub fn skipped_below(root: &Path, path: &Path) -> bool {
+    path.strip_prefix(root).is_ok_and(|rel| {
+        rel.components().any(|c| {
+            let name = c.as_os_str().to_string_lossy();
+            name == ".git" || skipped_dir(&name, false)
+        })
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Rule {
     /// `<repo>/.git/worktrees` itself: list that repository again.
@@ -147,6 +159,8 @@ mod tests {
         assert!(passes(&open.join("a/.git/worktrees"), &open, false) && passes(&open.join("a/.git/worktrees/x"), &open, false));
         assert!(!passes(&open.join("a/.git/worktrees/x/logs"), &open, false), "deeper than a worktree's own folder");
         assert!(passes(&open.join("a/.github/workflows"), &open, false), "hidden but not a cache");
+        assert!(!passes(&open.join("Library/x"), &open, true), "the home folder skips Library");
+        assert!(passes(&open.join("Library/x"), &open, false));
     }
 
     fn model(open: &Path) -> (Worktrees, PathBuf, PathBuf) {
@@ -168,6 +182,28 @@ mod tests {
         assert_eq!(classify(&r.join("src"), &open, &m), Rule::Unknown(r.join("src")), "one read_dir: a nested repository registers when first touched");
         assert_eq!(classify(&open.join("new"), &open, &m), Rule::Unknown(open.join("new")));
         assert_eq!(classify(&open.join("1/2/3/4/5/6"), &open, &m), Rule::Ignore, "past the discovery depth and in no repository");
+        assert_eq!(classify(&open.join("1/2/3/4"), &open, &m), Rule::Unknown(open.join("1/2/3/4")), "the deepest folder a walk still reads");
+        assert_eq!(classify(&open.join("1/2/3/4/5"), &open, &m), Rule::Ignore, "one past it");
+    }
+
+    #[test]
+    fn the_enclosing_repositorys_own_git_events_are_ignored() {
+        let open = PathBuf::from("/r/sub");
+        let r = PathBuf::from("/r");
+        let mut m = Worktrees::new(vec![]);
+        m.set_repo(&r, vec![wt(&PathBuf::from("/x/w"), &r)]);
+        assert_eq!(classify(&r.join(".git/index"), &open, &m), Rule::Ignore);
+        assert_eq!(classify(&r.join(".git/worktrees/w/logs"), &open, &m), Rule::Ignore);
+    }
+
+    #[test]
+    fn a_build_inside_an_outside_worktree_is_not_a_touch() {
+        let w = PathBuf::from("/elsewhere/w");
+        assert!(skipped_below(&w, &w.join("target/debug")));
+        assert!(skipped_below(&w, &w.join(".git/index")));
+        assert!(!skipped_below(&w, &w.join("src")));
+        assert!(!skipped_below(&w, &w));
+        assert!(!skipped_below(&w, Path::new("/elsewhere")));
     }
 
     #[test]
