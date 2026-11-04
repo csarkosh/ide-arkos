@@ -1206,6 +1206,9 @@ fn prepare_demo(fixture: &Path, demo: &Path, story: &Story, arkos_exe: &Path) ->
     for name in &story.demo.worktrees {
         let dir = demo.join(".worktrees").join(name);
         git(demo, &["worktree", "add", "-q", "-b", name, dir.to_str().context("worktree path")?])?;
+        if let Some(days) = story.demo.aged.get(name) {
+            backdate(&dir, std::time::SystemTime::now() - Duration::from_secs(days * 86_400))?;
+        }
         worktrees.insert(name.clone(), dir.canonicalize()?);
     }
     // Claude Code reads .claude/settings.json in the folder it runs in: every pane's folder
@@ -1220,6 +1223,30 @@ fn prepare_demo(fixture: &Path, demo: &Path, story: &Story, arkos_exe: &Path) ->
         std::fs::write(dir.join(".claude/settings.json"), serde_json::to_string_pretty(&settings)?)?;
     }
     Ok(worktrees)
+}
+
+/// Dates every file and folder under `dir` to `at`, so it reads as untouched since then; the
+/// `.git` link at its top is git's and left as it is.
+fn backdate(dir: &Path, at: std::time::SystemTime) -> Result<()> {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for entry in std::fs::read_dir(&d)? {
+            let entry = entry?;
+            let path = entry.path();
+            if d == dir && entry.file_name() == ".git" {
+                continue;
+            }
+            let kind = entry.file_type()?;
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                stack.push(path.clone());
+            }
+            std::fs::File::open(&path)?.set_modified(at).with_context(|| format!("dating {}", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// A README's first heading, for the first commit's message.
@@ -1531,3 +1558,27 @@ fn clean(dirs: &Dirs) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backdating_a_folder_dates_every_file_in_it_and_leaves_git_s_link_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        std::fs::create_dir_all(d.join("src/deep")).unwrap();
+        std::fs::write(d.join("README.md"), "x").unwrap();
+        std::fs::write(d.join("src/deep/a.js"), "x").unwrap();
+        std::fs::write(d.join(".git"), "gitdir: /elsewhere").unwrap();
+        let at = std::time::SystemTime::now() - Duration::from_secs(21 * 86_400);
+        backdate(d, at).unwrap();
+        let mtime = |p: &Path| std::fs::metadata(p).unwrap().modified().unwrap();
+        for f in ["README.md", "src/deep/a.js", "src", "src/deep"] {
+            let off = mtime(&d.join(f)).duration_since(at).unwrap_or_default();
+            assert!(off < Duration::from_secs(2), "{f} dated back");
+        }
+        assert!(mtime(&d.join(".git")) > at + Duration::from_secs(86_400), "the .git link is git's");
+    }
+}
+
