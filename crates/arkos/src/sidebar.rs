@@ -12,15 +12,17 @@ use crate::palette::Rgb;
 use crate::theme::Theme;
 use crate::sidebar;
 use crate::tree::{PaneId, Rect, Tab, TabId, Tree, ViewMode};
-use crate::worktrees::{Worktree, WtRow};
+use crate::worktrees::{wt_row_label, Worktree, WtRow};
+use crate::wt_scan::wt_row_place;
 use crate::Root;
 use gpui::{div, prelude::*, px, uniform_list, App, ClickEvent, Context, Div, FocusHandle, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, ScrollHandle, Stateful, UniformList, UniformListScrollHandle, Window};
 use protocol::SessionId;
 use crate::video::Fp;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use futures::StreamExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 pub const MIN_W: f32 = 160.0;
 pub const MAX_W: f32 = 600.0;
@@ -237,28 +239,6 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         })))
         .when(outline_open, |d| d.child(crate::outline::render_rows(root, &theme, cx).opacity(outline_o)));
     let worktrees_open = root.sidebar.worktrees_open;
-    let plus = div()
-        .id("worktree-create")
-        .flex_none()
-        .px(px(4.0))
-        .text_size(px(style.ui(13.0)))
-        .cursor_pointer()
-        .hover(|s| s.text_color(c.text.hsla()))
-        .child("+")
-        .on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
-            // The header under it would close the section on the same click.
-            cx.stop_propagation();
-            root.sidebar.worktrees_open = true;
-            // A prompt already open keeps what was typed; it just takes the keys.
-            if root.wt_prompt.value().is_none() {
-                root.wt_prompt.show(Prompt::new(), Instant::now());
-                root.read_prompt_drivers(cx);
-            }
-            root.wt_focused = true;
-            root.sidebar_focused = false;
-            root.save(cx);
-            cx.notify();
-        }));
     let worktrees = div()
         .flex_none()
         .flex()
@@ -285,18 +265,15 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
                 .on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
                     root.sidebar.worktrees_open = !root.sidebar.worktrees_open;
                     if !root.sidebar.worktrees_open {
-                        // A closed section cannot hold the keys or a prompt.
+                        // A closed section cannot hold the keys.
                         root.wt_focused = false;
-                        root.wt_prompt.hide(Instant::now());
                     }
                     root.save(cx);
                     cx.notify();
-                }))
-                .child(plus),
+                })),
         )
         .when(worktrees_open, |d| {
-            d.children(render_prompt(root, &theme, worktrees_o, cx))
-                .child(render_worktree_rows(root, window, &theme, cx).opacity(worktrees_o))
+            d.child(render_worktree_rows(root, window, &theme, cx).opacity(worktrees_o))
         });
     let column = div()
         .relative()
@@ -811,14 +788,156 @@ pub fn ease_in(elapsed: Duration) -> f32 {
     if t >= 1.0 { 1.0 } else if t <= 0.0 { 0.0 } else { crate::motion::cubic_bezier(crate::motion::STANDARD_DECELERATE, t) }
 }
 
-/// The keyboard's row after the rows changed: still on a row, or none when there are none.
-pub fn clamp_selection(selected: Option<usize>, rows: usize) -> Option<usize> {
-    selected.filter(|_| rows > 0).map(|i| i.min(rows - 1))
+/// The path the Worktrees selection holds for a row: the worktree's, or the changed file's.
+pub fn row_path(row: &WtRow) -> PathBuf {
+    match row {
+        WtRow::Worktree { wt, .. } => wt.path.clone(),
+        WtRow::Change { worktree, rel, .. } => worktree.join(rel),
+    }
+}
+
+/// Up or Down through the rows' paths in `order` (worktrees and the changes of expanded ones,
+/// as drawn). With none selected, Down takes the first and Up the last; at either end the
+/// selection stays. A selection no row has but one row's path holds (a change of a worktree
+/// collapsed since) counts as inside that row: Down goes past it and Up to it. A selection in
+/// no row starts over as if none.
+pub fn step_selection(order: &[&Path], selected: Option<&Path>, down: bool) -> Option<PathBuf> {
+    let last = order.len().checked_sub(1)?;
+    let at = selected.and_then(|s| order.iter().position(|w| s == *w).map(|i| (i, true)).or_else(|| order.iter().position(|w| s.starts_with(w)).map(|i| (i, false))));
+    let i = match at {
+        None if down => 0,
+        None => last,
+        Some((i, _)) if down => (i + 1).min(last),
+        Some((i, true)) => i.saturating_sub(1),
+        Some((i, false)) => i,
+    };
+    Some(order[i].to_path_buf())
 }
 
 /// How many terminal tabs were opened in `dir` or a folder inside it.
 pub fn terminals_inside(tree: &Tree, dir: &Path) -> usize {
     tree.tabs().into_iter().filter(|(_, _, tab)| matches!(tab, Tab::Terminal { cwd: Some(c), .. } if c.starts_with(dir))).count()
+}
+
+/// A `git worktree list` read off the UI thread: the folder asked about, the side worktrees (or
+/// git's words) and each listed worktree's admin stamp.
+type Listed = (PathBuf, Listing, Vec<(PathBuf, crate::worktrees::Stamp)>);
+
+/// What `git worktree list` said about a folder.
+enum Listing {
+    Listed(Vec<Worktree>),
+    /// Git's words, for the section.
+    Failed(String),
+    /// It failed and the folder holds no `.git` any more: the repository went.
+    Gone,
+}
+
+fn list_with_stamps(asked: PathBuf) -> Listed {
+    match crate::worktrees::list_side(&asked) {
+        Ok(list) => {
+            let stamps = list.iter().filter_map(|w| w.admin.as_deref().map(|a| (w.path.clone(), crate::worktrees::stamp(a)))).collect();
+            (asked, Listing::Listed(list), stamps)
+        }
+        Err(_) if std::fs::symlink_metadata(asked.join(".git")).is_err() => (asked, Listing::Gone, Vec::new()),
+        Err(e) => (asked, Listing::Failed(e), Vec::new()),
+    }
+}
+
+fn walk_age(path: PathBuf) -> (PathBuf, Option<crate::wt_scan::Newest>) {
+    let newest = crate::wt_scan::newest_change(&path, crate::wt_scan::AGE_BUDGET);
+    (path, newest)
+}
+
+/// One batch of stream events, repeats dropped: whether the kernel dropped events, whether the
+/// open folder itself changed, and each changed folder once, in the order first seen.
+#[derive(Default)]
+struct WtBatch {
+    must_scan: bool,
+    root_changed: bool,
+    changed: Vec<PathBuf>,
+    seen: HashSet<PathBuf>,
+}
+
+impl WtBatch {
+    fn add(&mut self, ev: crate::fsevents::Event) {
+        match ev {
+            crate::fsevents::Event::MustScan => self.must_scan = true,
+            crate::fsevents::Event::RootChanged => self.root_changed = true,
+            crate::fsevents::Event::Changed(p) => {
+                if self.seen.insert(p.clone()) {
+                    self.changed.push(p);
+                }
+            }
+        }
+    }
+}
+
+/// How many `git worktree list` runs or age walks run at once.
+const WT_PARALLEL: usize = 4;
+
+/// Runs `work` on each item on the background executor, `WT_PARALLEL` at a time, handing each
+/// result to `apply` on the UI thread as it lands. Stops when `apply` says so (a newer pass) and
+/// says false then, or when the window is gone.
+async fn in_parallel<I: Send + 'static, T: Send + 'static>(this: &gpui::WeakEntity<Root>, cx: &mut gpui::AsyncApp, items: Vec<I>, work: fn(I) -> T, mut apply: impl FnMut(&mut Root, T, &mut Context<Root>) -> bool) -> bool {
+    use futures::stream::FuturesUnordered;
+    let mut items = items.into_iter();
+    let mut running = FuturesUnordered::new();
+    loop {
+        while running.len() < WT_PARALLEL {
+            let Some(item) = items.next() else { break };
+            running.push(cx.background_executor().spawn(async move { work(item) }));
+        }
+        let Some(out) = running.next().await else { return true };
+        if !this.update(cx, |root, cx| apply(root, out, cx)).unwrap_or(false) {
+            return false;
+        }
+    }
+}
+
+/// The Worktrees section's line when the file-system watcher is not running: on a network volume,
+/// when it could not start, or when the open folder itself went away; `None` while watching.
+pub fn watched_notice(w: &crate::worktrees::Watched) -> Option<&'static str> {
+    use crate::worktrees::Watched;
+    match w {
+        Watched::Watching => None,
+        Watched::NotLocal => Some("not watched: the folder is on a network volume"),
+        Watched::Failed(_) => Some("not watched: the file watcher could not start"),
+        Watched::FolderGone => Some("the folder is gone"),
+    }
+}
+
+/// The Worktrees section's one dim line, drawn after the rows: the watcher's notice when it is
+/// not watching; else, with no repository listed, the first repository's error; else, with no
+/// rows, `no worktrees`. A repository that failed while others listed is left to the command.
+pub fn wt_section_line(watched: &crate::worktrees::Watched, none_listed: bool, first_error: Option<&str>, has_rows: bool) -> Option<String> {
+    if let Some(notice) = watched_notice(watched) {
+        return Some(notice.to_string());
+    }
+    match first_error {
+        Some(why) if none_listed => Some(why.to_string()),
+        _ => (!has_rows).then(|| "no worktrees".to_string()),
+    }
+}
+
+/// The age cell: `age_text` of the age, with `+` after a capped walk ("at least this recent"),
+/// `~` after a lagging one; empty with no age. A change stamped after `now` reads `now`.
+pub fn wt_row_age(age: Option<&crate::worktrees::Age>, now: SystemTime) -> String {
+    let Some(age) = age else { return String::new() };
+    let Some(changed) = age.changed else { return String::new() };
+    let mut text = crate::wt_scan::age_text(now.duration_since(changed).unwrap_or(Duration::ZERO));
+    if age.capped {
+        text.push('+');
+    }
+    if age.lagging {
+        text.push('~');
+    }
+    text
+}
+
+/// The canonical home folder, read once, for the rows' place lines.
+fn home_dir() -> &'static Path {
+    static HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| std::env::var_os("HOME").map(|h| crate::wt_scan::canonical(Path::new(&h))).unwrap_or_default())
 }
 
 /// The notice after a removal that left terminals open in the removed worktree.
@@ -837,17 +956,14 @@ pub enum WtMenuAction {
     RemoveForce(PathBuf),
 }
 
-/// The right-click menu of a worktree row. The main checkout is never removed; a dirty or
-/// unloaded worktree offers force as well, since the plain removal will be refused. One with
-/// no files (missing, or a bare main checkout) has nothing to open a terminal in, and only
+/// The right-click menu of a worktree row (every row is a side worktree, so every row offers
+/// removal). A dirty or unloaded worktree offers force as well, since the plain removal will be
+/// refused. One with no files (missing, or bare) has nothing to open a terminal in, and only
 /// force removes it.
 pub fn worktree_menu_items(wt: &Worktree, dirty: Option<usize>) -> Vec<(&'static str, WtMenuAction)> {
     let mut v = Vec::new();
     if wt.has_files() {
         v.push(("Open terminal here", WtMenuAction::OpenTerminal(wt.path.clone())));
-    }
-    if wt.is_main {
-        return v;
     }
     if wt.has_files() {
         v.push(("Remove worktree", WtMenuAction::Remove(wt.path.clone())));
@@ -858,236 +974,14 @@ pub fn worktree_menu_items(wt: &Worktree, dirty: Option<usize>) -> Vec<(&'static
     v
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Stage {
-    Branch,
-    Path,
-    /// The repository configures filter drivers, which the checkout runs: named, and a second
-    /// Enter creates.
-    Confirm,
-}
-
-/// The repository's filter drivers as the create prompt knows them. Only `Known` creates.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum Drivers {
-    /// The read has not landed.
-    #[default]
-    Unknown,
-    /// The drivers the repository's own config sets; empty when none.
-    Known(Vec<String>),
-    /// The config could not be read, or names a driver `read_filter_args` refuses.
-    Refused,
-}
-
-impl Drivers {
-    /// From `explorer::filter_drivers`.
-    pub fn from_read(read: Option<Vec<String>>) -> Self {
-        read.map_or(Drivers::Refused, Drivers::Known)
-    }
-}
-
-pub const CHECKING_FILTERS: &str = "checking the repository's filter config\u{2026}";
-pub const REFUSED_FILTERS: &str = "cannot create: unusual filter config";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PromptStep {
-    Stay,
-    Cancel,
-    Create { branch: String, path: PathBuf },
-}
-
-/// The two-step prompt under the Worktrees header: a branch name, then the path (prefilled),
-/// and, when the repository configures filter drivers, a confirmation naming them. Its focus
-/// handle is `Root.wt_prompt_focus`.
-pub struct Prompt {
-    pub branch: LineEdit,
-    pub path: LineEdit,
-    pub stage: Stage,
-    pub error: Option<String>,
-    /// `git worktree add` is running: every key but Escape waits for it.
-    pub creating: bool,
-    /// The filter drivers the confirmation names.
-    pub drivers: Vec<String>,
-    /// Enter on the path came before the drivers were read: said, and nothing created.
-    pub checking: bool,
-}
-
-impl Prompt {
-    pub fn new() -> Self {
-        Prompt { branch: LineEdit::new(), path: LineEdit::new(), stage: Stage::Branch, error: None, creating: false, drivers: Vec::new(), checking: false }
-    }
-
-    /// A key, with `drivers` the repository's filter drivers as known now. Fails closed: Enter on
-    /// the path creates only with `Drivers::Known`, at once when empty, after a confirmation
-    /// naming them otherwise; while the read is out it says so (Enter again once it lands, in
-    /// milliseconds), and a refused config never creates.
-    pub fn key(&mut self, ks: &Keystroke, root: &Path, drivers: &Drivers) -> PromptStep {
-        if self.creating {
-            // Escape closes the prompt; the running git finishes on its own and the list's
-            // refresh shows what it did.
-            return if ks.key == "escape" { PromptStep::Cancel } else { PromptStep::Stay };
-        }
-        self.checking = false;
-        let edit = match self.stage {
-            Stage::Branch => &mut self.branch,
-            Stage::Path => &mut self.path,
-            Stage::Confirm => {
-                return match ks.key.as_str() {
-                    "escape" => PromptStep::Cancel,
-                    "enter" if !ks.modifiers.modified() => {
-                        self.creating = true;
-                        PromptStep::Create { branch: self.branch.text.trim().to_string(), path: PathBuf::from(self.path.text.trim()) }
-                    }
-                    _ => PromptStep::Stay,
-                };
-            }
-        };
-        match edit.handle(ks) {
-            Edit::Cancel => PromptStep::Cancel,
-            Edit::Submit => match self.stage {
-                Stage::Branch => {
-                    let b = self.branch.text.trim().to_string();
-                    if b.is_empty() || b.contains(char::is_whitespace) {
-                        self.error = Some("a branch name, without spaces".into());
-                        return PromptStep::Stay;
-                    }
-                    self.error = None;
-                    self.path.set(&crate::worktrees::default_path(root, &b).to_string_lossy());
-                    self.stage = Stage::Path;
-                    PromptStep::Stay
-                }
-                Stage::Path => {
-                    let p = self.path.text.trim();
-                    if p.is_empty() {
-                        self.error = Some("a path for the worktree".into());
-                        return PromptStep::Stay;
-                    }
-                    let path = PathBuf::from(p);
-                    self.error = None;
-                    match drivers {
-                        Drivers::Unknown => {
-                            self.checking = true;
-                            PromptStep::Stay
-                        }
-                        Drivers::Refused => {
-                            self.error = Some(REFUSED_FILTERS.into());
-                            PromptStep::Stay
-                        }
-                        Drivers::Known(names) if !names.is_empty() => {
-                            self.drivers = names.clone();
-                            self.stage = Stage::Confirm;
-                            PromptStep::Stay
-                        }
-                        Drivers::Known(_) => {
-                            self.creating = true;
-                            PromptStep::Create { branch: self.branch.text.trim().to_string(), path }
-                        }
-                    }
-                }
-                // Its keys were answered above.
-                Stage::Confirm => PromptStep::Stay,
-            },
-            _ => PromptStep::Stay,
-        }
-    }
-
-    /// Pasted text goes into the field being edited, newlines and carriage returns dropped;
-    /// nothing while git creates or the confirmation is up.
-    pub fn paste(&mut self, text: &str) {
-        match self.stage {
-            _ if self.creating => {}
-            Stage::Branch => self.branch.insert_str(text),
-            Stage::Path => self.path.insert_str(text),
-            Stage::Confirm => {}
-        }
-    }
-
-    /// The dim line under the fields: the filter config is being read, or the confirmation
-    /// naming the drivers, until git starts.
-    pub fn note(&self) -> Option<String> {
-        if self.creating {
-            None
-        } else if self.checking {
-            Some(CHECKING_FILTERS.to_string())
-        } else {
-            (self.stage == Stage::Confirm).then(|| format!("creating runs this repository's filter driver(s): {}. Enter again to continue", self.drivers.join(", ")))
-        }
-    }
-}
-
-/// Where a failed `git worktree add` is said.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CreateFailure {
-    /// Under the prompt that is waiting for it, which stays open.
-    InPrompt,
-    /// In a notice: the prompt was closed (or closed and opened afresh) while git ran.
-    Notice,
-}
-
-pub fn create_failure_target(prompt_open_and_creating: bool) -> CreateFailure {
-    if prompt_open_and_creating {
-        CreateFailure::InPrompt
-    } else {
-        CreateFailure::Notice
-    }
-}
-
-/// The create prompt under the Worktrees header: the branch, then the path, and git's or the
-/// prompt's own complaint under them.
-/// `section` is the Worktrees rows' own opacity as the section opens; the prompt's fade
-/// multiplies it.
-fn render_prompt(root: &mut Root, theme: &Theme, section: f32, cx: &mut Context<Root>) -> Option<Div> {
-    let style = root.effect_style();
-    let (p, opacity) = root.wt_prompt.current(root.frame_now)?;
-    // Drawn while it fades out too; only the open prompt holds focus and takes clicks.
-    let live = root.wt_prompt.value().is_some();
-    let family = root.ui_family();
-    let label = |text: &'static str| div().flex_none().w(px(44.0)).text_color(theme.chrome.text_dim.hsla()).child(text);
-    let field = |edit: &LineEdit, placeholder: &str, active: bool| -> Div {
-        if active {
-            line_edit::render(edit, placeholder, theme, family.clone(), 12.0)
-        } else {
-            div().text_size(px(style.ui(12.0))).text_color(theme.chrome.text_dim.hsla()).child(edit.text.clone())
-        }
-    };
-    let row = |l: Div, f: Div| div().h(px(ROW_H)).px(px(10.0)).flex().items_center().gap(px(6.0)).child(l).child(div().min_w_0().flex_1().overflow_hidden().child(f));
-    Some(
-        div()
-            .flex_none()
-            .flex()
-            .flex_col()
-            .relative()
-            .top(px(-motion::lift(opacity, motion::PANEL_LIFT)))
-            .opacity(opacity * section)
-            .text_size(px(style.ui(12.0)))
-            .bg(theme.chrome.tab_inactive.hsla())
-            // Keys reach `wt_key` through the section's listener; a click here takes them back.
-            .when(live, |d| {
-                d.track_focus(&root.wt_prompt_focus).on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
-                        root.wt_focused = true;
-                        root.sidebar_focused = false;
-                        cx.notify();
-                    }),
-                )
-            })
-            .child(row(label("branch"), field(&p.branch, "feature/name", p.stage == Stage::Branch)))
-            .when(p.stage != Stage::Branch, |d| d.child(row(label("path"), field(&p.path, "", p.stage == Stage::Path))))
-            .when_some(p.note(), |d, t| d.child(div().px(px(10.0)).pb(px(4.0)).text_color(theme.chrome.text_dim.hsla()).child(t)))
-            .when(p.creating, |d| d.child(div().px(px(10.0)).pb(px(4.0)).text_color(theme.chrome.text_dim.hsla()).child("creating\u{2026}")))
-            .when_some(p.error.clone().filter(|_| !p.creating), |d, e| d.child(div().px(px(10.0)).pb(px(4.0)).text_color(theme.tree.deleted.hsla()).child(e))),
-    )
-}
-
 /// The Worktrees rows: each worktree (a shimmer while its first `git status` runs) and, once
 /// expanded and loaded, its changed files easing in. Requests the next frame only while
 /// something moves and Reduce Motion is off.
 fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx: &mut Context<Root>) -> Stateful<Div> {
     let style = root.effect_style();
+    root.sync_worktree_hold();
     let rows = root.worktrees.rows();
-    root.worktrees.selected = clamp_selection(root.worktrees.selected, rows.len());
-    let selected = root.worktrees.selected;
+    let selected = root.worktrees.selected.clone();
     let still = crate::motion::reduce_motion();
     let now = Instant::now();
     let width = root.sidebar.width;
@@ -1100,31 +994,42 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
         .flex_col()
         .max_h(px(root.content.h * 0.4))
         .overflow_y_scroll()
-        .track_scroll(&root.sidebar.wt_scroll);
-    if root.worktrees.not_git {
-        // A repository whose filter config turned git status off says that instead.
-        let why = root.explorer.status_off.unwrap_or("not a git repository");
-        list = list.child(div().flex_none().h(px(ROW_H)).px(px(10.0)).flex().items_center().text_color(dim).child(why));
-    }
+        .track_scroll(&root.sidebar.wt_scroll)
+        // While the pointer is over the list its order holds, so a row does not move from under it.
+        .on_hover(cx.listener(|root, hovered: &bool, _window, cx| {
+            root.wt_hovered = *hovered;
+            cx.notify();
+        }));
+    // Read once a frame; the ages tick every ten seconds (`tick_worktree_ages`), so the text is
+    // made here from the stored time and never kept.
+    let wall = SystemTime::now();
+    let line = wt_section_line(&root.worktrees.watched, root.worktrees.by_repo.is_empty(), root.worktrees.errors.values().next().map(String::as_str), !rows.is_empty());
+    let (open, home) = (root.wt_open.clone(), home_dir());
     for (i, row) in rows.into_iter().enumerate() {
         // `flex_none`, or the capped column shrinks every row to fit and the rows overprint
         // each other; the list scrolls instead.
+        let is_selected = selected.as_deref() == Some(row_path(&row).as_path());
+        // A worktree row has a second line, its place, at a smaller size.
+        let h = match row {
+            WtRow::Worktree { .. } => ROW_H + style.ui(14.0),
+            WtRow::Change { .. } => ROW_H,
+        };
         let base = div()
             .id(("worktree-row", i))
             .relative()
             .overflow_hidden()
             .w_full()
             .flex_none()
-            .h(px(ROW_H))
+            .h(px(h))
             .pr(px(8.0))
             .flex()
             .items_center()
             .gap(px(6.0))
-            .when(selected == Some(i), |d| d.bg(selected_bg))
+            .when(is_selected, |d| d.bg(selected_bg))
             .hover(|s| s.bg(hover_bg))
             .cursor_pointer();
         let el = match row {
-            WtRow::Worktree { wt, expanded, loading, dirty } => {
+            WtRow::Worktree { wt, age, expanded, loading, dirty } => {
                 let band = loading.then(|| {
                     let phase = if still {
                         0.5
@@ -1141,12 +1046,10 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
                 } else {
                     "\u{25b8}"
                 };
-                let name = wt.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| wt.path.to_string_lossy().into_owned());
-                let branch = match (&wt.branch, wt.bare) {
-                    (Some(b), _) => b.clone(),
-                    (None, true) => "bare".to_string(),
-                    (None, false) => format!("detached {}", wt.head),
-                };
+                let (name, branch) = wt_row_label(&wt);
+                let name_color = if root.worktrees.is_stale(&wt.path, wall) { dim } else { c.text.hsla() };
+                let age_text = wt_row_age(age.as_ref(), wall);
+                let place = wt_row_place(&wt.path, &open, home);
                 let count = dirty.map(|n| match n {
                     0 => ("clean".to_string(), dim),
                     1 => ("1 change".to_string(), theme.tree.modified.hsla()),
@@ -1156,13 +1059,39 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
                 let has_menu = !worktree_menu_items(&wt, dirty).is_empty();
                 base.pl(px(10.0))
                     .children(band)
-                    .child(div().flex_none().w(px(12.0)).text_color(dim).child(chevron))
-                    .child(div().flex_none().max_w(px(width * 0.5)).truncate().child(name))
-                    .child(div().min_w_0().flex_1().truncate().text_color(dim).child(branch))
-                    .when(wt.missing, |d| d.child(div().flex_none().text_color(theme.tree.deleted.hsla()).child("missing")))
-                    .children(count.map(|(text, color)| div().flex_none().text_size(px(style.ui(11.0))).text_color(color).child(text)))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .line_height(px(style.ui(18.0)))
+                                    .child(div().flex_none().w(px(12.0)).text_color(dim).child(chevron))
+                                    .child(div().flex_none().max_w(px(width * 0.6)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(name_color).child(name))
+                                    .child(div().min_w_0().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(dim).children(branch))
+                                    .when(wt.missing, |d| d.child(div().flex_none().text_color(theme.tree.deleted.hsla()).child("missing")))
+                                    .children(count.map(|(text, color)| div().flex_none().text_size(px(style.ui(11.0))).text_color(color).child(text)))
+                                    .when(!age_text.is_empty(), |d| d.child(div().flex_none().text_size(px(style.ui(12.0))).text_color(dim).child(age_text))),
+                            )
+                            // Under the name: past the chevron's 12 and the gap's 6. Set tight
+                            // under its name, so the pair reads as one row with air before the next.
+                            // A definite width (the sidebar's less the row's 10 and 8 and the 18),
+                            // since gpui keeps a no-wrap text's first measure, taken without one,
+                            // and a long path would be clipped instead of ending in an ellipsis.
+                            .child(
+                                div()
+                                    .pl(px(18.0))
+                                    .line_height(px(style.ui(14.0)))
+                                    .child(div().w(px((width - 36.0).max(0.0))).overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(style.ui(11.0))).text_color(dim).child(place)),
+                            ),
+                    )
                     .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
-                        root.worktrees.selected = Some(i);
+                        root.worktrees.selected = Some(p_click.clone());
                         root.worktrees.toggle(&p_click);
                         root.load_pending_worktrees(cx);
                         root.save(cx);
@@ -1197,12 +1126,16 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
                     .text_color(row_color(Some(status), false, theme).hsla())
                     .child(div().min_w_0().truncate().child(rel.to_string_lossy().into_owned()))
                     .on_click(cx.listener(move |root, ev: &ClickEvent, _window, cx| {
-                        root.worktrees.selected = Some(i);
+                        root.worktrees.selected = Some(path.clone());
                         root.open_viewer(&path, ev.click_count() >= 2, cx);
                     }))
             }
         };
         list = list.child(el);
+    }
+    // After the rows, so a row's child index stays its index in `rows()` for the scroll.
+    if let Some(line) = line {
+        list = list.child(div().flex_none().h(px(ROW_H)).px(px(10.0)).flex().items_center().text_color(dim).truncate().child(line));
     }
     if moving {
         window.request_animation_frame();
@@ -1309,26 +1242,403 @@ impl Root {
         .detach();
     }
 
-    /// Runs `git worktree list` on the background executor. A result older than a newer run
-    /// is dropped.
+    /// The first load and the safety-net pass: find repositories, list each, age each; rows show as
+    /// each stage lands; a result older than a newer pass is dropped (`worktrees_seq`). A
+    /// repository the pass no longer finds is dropped once every list has landed, unless it is
+    /// still a repository under the open folder (a nested one the stream registered, which the
+    /// walk does not enter). The current rows stay up meanwhile.
     pub fn refresh_worktrees(&mut self, cx: &mut Context<Self>) {
         self.worktrees_seq += 1;
         let seq = self.worktrees_seq;
-        let root = self.project.clone();
+        self.wt_pass_at = Instant::now();
+        self.wt_gen += 1;
+        let gen = self.wt_gen;
+        let open = self.wt_open.clone();
         cx.spawn(async move |this, cx| {
-            let list = cx.background_executor().spawn(async move { crate::worktrees::list(&root) }).await;
-            let _ = this.update(cx, |root, cx| {
-                if seq == root.worktrees_seq {
-                    root.worktrees.set_list(list);
-                    if root.wt_menu.value().is_some_and(|m| root.worktrees.find(&m.0).is_none()) {
-                        root.wt_menu.hide(Instant::now());
+            let o = open.clone();
+            let found = cx.background_executor().spawn(async move { crate::wt_scan::find_repos(&o, crate::wt_scan::DISCOVERY_BUDGET) }).await;
+            let mut seen: HashSet<PathBuf> = HashSet::new();
+            let listed = in_parallel(&this, cx, found.repos, list_with_stamps, |root, listed, cx| {
+                if root.worktrees_seq != seq {
+                    return false;
+                }
+                seen.insert(root.apply_worktree_list(gen, listed));
+                root.after_worktree_lists(cx);
+                true
+            })
+            .await;
+            if !listed {
+                return;
+            }
+            let Ok(Some(unseen)) = this.update(cx, |root, _| {
+                (root.worktrees_seq == seq).then(|| root.worktrees.by_repo.keys().chain(root.worktrees.errors.keys()).filter(|k| !seen.contains(*k)).cloned().collect::<Vec<_>>())
+            }) else {
+                return;
+            };
+            let gone = cx.background_executor().spawn(async move { crate::worktrees::pass_drops(&unseen, &open, |k| k.join(".git").exists()) }).await;
+            let Ok(Some(to_age)) = this.update(cx, |root, cx| {
+                if root.worktrees_seq != seq {
+                    return None;
+                }
+                for repo in &gone {
+                    root.forget_repo(repo, gen);
+                }
+                root.after_worktree_lists(cx);
+                root.update_worktree_stream(cx);
+                Some(root.worktrees.all().filter(|w| w.has_files()).map(|w| w.path.clone()).collect::<Vec<_>>())
+            }) else {
+                return;
+            };
+            in_parallel(&this, cx, to_age, walk_age, |root, (path, newest), cx| {
+                if root.worktrees_seq != seq {
+                    return false;
+                }
+                root.apply_age(&path, newest);
+                cx.notify();
+                true
+            })
+            .await;
+        })
+        .detach();
+    }
+
+    /// Creates the stream over `wt_watch::stream_paths` (recreating with `since` when the set
+    /// changes) and spawns the drain task; sets `worktrees.watched`. A folder on a network volume
+    /// gets no stream, and the ten minute pass alone keeps its list.
+    pub fn start_worktree_watch(&mut self, cx: &mut Context<Self>) {
+        if let Some(mut rx) = self.wt_events.take() {
+            cx.spawn(async move |this, cx| {
+                // One batch a second at most (`fsevents::LATENCY`): everything waiting is taken
+                // at once, repeats dropped (a set, since a burst can hold thousands of folders),
+                // and handled in one update.
+                while let Some(first) = rx.next().await {
+                    let mut batch = WtBatch::default();
+                    batch.add(first);
+                    while let Ok(ev) = rx.try_recv() {
+                        batch.add(ev);
                     }
-                    root.load_pending_worktrees(cx);
+                    let handled = this.update(cx, |root, cx| root.worktree_batch(batch, cx));
+                    if handled.is_err() {
+                        return;
+                    }
+                }
+            })
+            .detach();
+        }
+        if !crate::fsevents::local_volume(&self.wt_open) {
+            self.stop_worktree_watch();
+            self.worktrees.watched = crate::worktrees::Watched::NotLocal;
+            self.mark_lagging(&[]);
+            cx.notify();
+            return;
+        }
+        let (paths, left_out) = crate::wt_watch::stream_paths(&self.wt_open, &self.worktrees);
+        let since = self.wt_stream.as_ref().map(|s| s.latest_event_id());
+        let filter = crate::wt_watch::stream_filter(self.wt_open.clone(), self.wt_home, paths[1..].to_vec());
+        match crate::fsevents::Stream::start(&paths, since, filter, self.wt_tx.clone()) {
+            Ok(stream) => {
+                // The old stream, if any, stops here, after the new one took over from its id.
+                self.wt_stream = Some(stream);
+                self.wt_stream_paths = paths;
+                self.worktrees.watched = crate::worktrees::Watched::Watching;
+                self.mark_lagging(&left_out);
+            }
+            Err(e) => {
+                self.stop_worktree_watch();
+                self.worktrees.watched = crate::worktrees::Watched::Failed(e);
+                self.mark_lagging(&[]);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Releases the stream (the window closed).
+    pub fn stop_worktree_watch(&mut self) {
+        self.wt_stream = None;
+        self.wt_stream_paths.clear();
+    }
+
+    /// One event from the stream, by `wt_watch::classify`; git and walks run on the background executor.
+    pub fn worktree_event(&mut self, event: crate::fsevents::Event, cx: &mut Context<Self>) {
+        let mut batch = WtBatch::default();
+        batch.add(event);
+        self.worktree_batch(batch, cx);
+    }
+
+    /// One batch from the stream: the open folder's own news first, then the changed folders,
+    /// already filtered in the stream's callback (`wt_watch::stream_filter`), classified and
+    /// collapsed (`wt_watch::collapse`), so a burst of thousands of folders is one action per
+    /// worktree, repository or folder.
+    fn worktree_batch(&mut self, batch: WtBatch, cx: &mut Context<Self>) {
+        use crate::wt_watch::Rule;
+        if batch.root_changed {
+            if self.wt_open.exists() {
+                if self.worktrees.watched == crate::worktrees::Watched::FolderGone {
+                    self.start_worktree_watch(cx);
+                }
+                self.refresh_worktrees(cx);
+            } else {
+                // A pass in flight would fill the list again.
+                self.worktrees_seq += 1;
+                self.worktrees.watched = crate::worktrees::Watched::FolderGone;
+                self.wt_gen += 1;
+                let repos: Vec<PathBuf> = self.worktrees.by_repo.keys().cloned().collect();
+                for repo in &repos {
+                    self.forget_repo(repo, self.wt_gen);
+                }
+                self.worktrees.errors.clear();
+                self.after_worktree_lists(cx);
+            }
+        } else if batch.must_scan {
+            self.refresh_worktrees(cx);
+        }
+        let open = &self.wt_open;
+        let rules: Vec<_> = batch.changed.into_iter().map(|p| (crate::wt_watch::classify(&p, open, &self.worktrees), p)).collect();
+        for (rule, dirs) in crate::wt_watch::collapse(rules) {
+            match rule {
+                Rule::RelistRepo(repo) => self.relist_repo(repo, cx),
+                Rule::CheckStamp { repo, name } => self.check_worktree_stamp(repo, &name, cx),
+                Rule::Touched(wt) => self.touch_worktree(wt, dirs, cx),
+                Rule::Unknown(dir) => self.look_at_folder(dir, cx),
+                Rule::Ignore => {}
+            }
+        }
+    }
+
+    /// Every 10 s from the slow tick: notify when the section is open and has rows (the age text
+    /// is computed at paint); on the 10 minute mark, `refresh_worktrees`.
+    pub fn tick_worktree_ages(&mut self, cx: &mut Context<Self>) {
+        if crate::explorer_watch::full_pass_due(self.wt_pass_at, Instant::now()) {
+            self.refresh_worktrees(cx);
+        }
+        if self.sidebar.worktrees_open && !self.sidebar.collapsed && self.worktrees.all().next().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// The order holds while the pointer is over the list, or while the keyboard is in the
+    /// section with a row selected.
+    pub fn sync_worktree_hold(&mut self) {
+        self.worktrees.hold_order = self.wt_hovered || (self.wt_focused && self.worktrees.selected.is_some());
+    }
+
+    /// `git worktree list` for one repository, with its stamps, off the UI thread; new worktrees
+    /// get their age walk.
+    fn relist_repo(&mut self, repo: PathBuf, cx: &mut Context<Self>) {
+        self.wt_gen += 1;
+        let gen = self.wt_gen;
+        cx.spawn(async move |this, cx| {
+            let listed = cx.background_executor().spawn(async move { list_with_stamps(repo) }).await;
+            let _ = this.update(cx, |root, cx| root.listed_one(gen, listed, cx));
+        })
+        .detach();
+    }
+
+    /// A list from an event landed: apply it, follow with the stream, age the worktrees that have
+    /// no age yet.
+    fn listed_one(&mut self, gen: u64, listed: Listed, cx: &mut Context<Self>) {
+        let repo = self.apply_worktree_list(gen, listed);
+        self.after_worktree_lists(cx);
+        self.update_worktree_stream(cx);
+        let unaged: Vec<PathBuf> = self.worktrees.by_repo.get(&repo).into_iter().flatten()
+            .filter(|w| w.has_files() && self.worktrees.ages.get(&w.path).and_then(|a| a.changed).is_none())
+            .map(|w| w.path.clone())
+            .collect();
+        if unaged.is_empty() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            in_parallel(&this, cx, unaged, walk_age, |root, (path, newest), cx| {
+                if root.worktrees.find(&path).is_some() {
+                    root.apply_age(&path, newest);
                     cx.notify();
                 }
+                true
+            })
+            .await;
+        })
+        .detach();
+    }
+
+    /// `<repo>/.git/worktrees/<name>` changed: the admin folder's stamp is read off the UI thread
+    /// and the repository listed again only when it moved (a `git status` writing `index` moves
+    /// nothing).
+    fn check_worktree_stamp(&mut self, repo: PathBuf, name: &str, cx: &mut Context<Self>) {
+        let Some(wt) = self.worktrees.by_repo.get(&repo).into_iter().flatten().find(|w| w.admin.as_deref().and_then(Path::file_name).is_some_and(|n| n == std::ffi::OsStr::new(name))) else {
+            return;
+        };
+        let Some(admin) = wt.admin.clone() else { return };
+        let stored = self.worktrees.stamps.get(&wt.path).copied();
+        cx.spawn(async move |this, cx| {
+            let now = cx.background_executor().spawn(async move { crate::worktrees::stamp(&admin) }).await;
+            if stored != Some(now) {
+                let _ = this.update(cx, |root, cx| root.relist_repo(repo, cx));
+            }
+        })
+        .detach();
+    }
+
+    /// Something changed in `dirs` inside the worktree `wt`: its age becomes now, unless the
+    /// folder is gone (missing) or, after a minute's quiet, no entry in any of `dirs` newer than the
+    /// age is anything but noise (`only_noise_newer`: `.DS_Store`, `.git`, a build or cache
+    /// folder; a deletion alone leaves nothing newer and does not count). A worktree marked missing
+    /// whose folder is back is found again and its repository listed. The stat and the
+    /// `read_dir`s (stopping at the first folder with work in it) run off the UI thread.
+    fn touch_worktree(&mut self, wt: PathBuf, dirs: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let at = SystemTime::now();
+        let since = match self.worktrees.ages.get(&wt).and_then(|a| a.changed) {
+            Some(c) if at.duration_since(c).is_ok_and(|d| d < Duration::from_secs(60)) => None,
+            c => Some(c.unwrap_or(SystemTime::UNIX_EPOCH)),
+        };
+        cx.spawn(async move |this, cx| {
+            let w = wt.clone();
+            let (gone, only_noise) = cx
+                .background_executor()
+                .spawn(async move {
+                    let gone = std::fs::symlink_metadata(&w).is_err();
+                    (gone, !gone && since.is_some_and(|s| dirs.iter().all(|d| crate::wt_watch::only_noise_newer(d, s))))
+                })
+                .await;
+            let _ = this.update(cx, |root, cx| {
+                let Some(known) = root.worktrees.find(&wt) else { return };
+                let was_missing = known.missing;
+                if gone {
+                    if !was_missing {
+                        root.worktrees.mark_missing(&wt);
+                        root.after_worktree_lists(cx);
+                        root.update_worktree_stream(cx);
+                    }
+                    return;
+                }
+                if root.worktrees.found_again(&wt) {
+                    // Its admin folder and stamp come from git again.
+                    if let Some(repo) = root.worktrees.repo_of(&wt).map(Path::to_path_buf) {
+                        root.relist_repo(repo, cx);
+                    }
+                    root.update_worktree_stream(cx);
+                }
+                if !only_noise {
+                    root.worktrees.touched(&wt, at);
+                }
+                cx.notify();
             });
         })
         .detach();
+    }
+
+    /// A folder outside every listed worktree changed: one look for `.git` off the UI thread. A
+    /// new one registers the repository (listed, stamped, aged); a known repository whose `.git`
+    /// is gone is dropped.
+    fn look_at_folder(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
+        let known = self.worktrees.by_repo.contains_key(&dir);
+        self.wt_gen += 1;
+        let gen = self.wt_gen;
+        cx.spawn(async move |this, cx| {
+            let d = dir.clone();
+            let seen = cx
+                .background_executor()
+                .spawn(async move {
+                    let has_git = std::fs::symlink_metadata(d.join(".git")).is_ok();
+                    match (has_git, known) {
+                        (true, false) => Some(Some(list_with_stamps(d))),
+                        (false, true) => Some(None),
+                        _ => None,
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |root, cx| match seen {
+                Some(Some(listed)) => root.listed_one(gen, listed, cx),
+                Some(None) => {
+                    root.forget_repo(&dir, gen);
+                    root.after_worktree_lists(cx);
+                    root.update_worktree_stream(cx);
+                }
+                None => {}
+            });
+        })
+        .detach();
+    }
+
+    /// Files a list under its repository (the main checkout git printed, or the folder asked
+    /// about when it has no side worktrees) with its stamps, or git's words under the folder, or
+    /// drops the repository when it went. A result older than the last list or drop applied to
+    /// that repository is dropped. Returns the key.
+    fn apply_worktree_list(&mut self, gen: u64, (asked, list, stamps): Listed) -> PathBuf {
+        let newer = |root: &Self, key: &Path| !crate::worktrees::list_applies(gen, root.wt_list_gen.get(key).copied());
+        match list {
+            Listing::Listed(list) => {
+                let repo = list.first().map_or_else(|| asked.clone(), |w| w.repo.clone());
+                if newer(self, &repo) {
+                    return repo;
+                }
+                self.wt_list_gen.insert(repo.clone(), gen);
+                self.worktrees.errors.remove(&asked);
+                self.worktrees.set_repo(&repo, list);
+                self.worktrees.stamps.extend(stamps);
+                repo
+            }
+            Listing::Failed(e) => {
+                if !newer(self, &asked) {
+                    self.worktrees.errors.insert(asked.clone(), e);
+                }
+                asked
+            }
+            Listing::Gone => {
+                if !newer(self, &asked) {
+                    self.forget_repo(&asked, gen);
+                }
+                asked
+            }
+        }
+    }
+
+    /// Drops a repository, its rows and its error. `gen` is the number of the look that found
+    /// it gone, kept so a list started before it and landing after it is dropped.
+    fn forget_repo(&mut self, repo: &Path, gen: u64) {
+        self.worktrees.remove_repo(repo);
+        self.worktrees.errors.remove(repo);
+        // Never lower a number an event's list already raised.
+        if crate::worktrees::list_applies(gen, self.wt_list_gen.get(repo).copied()) {
+            self.wt_list_gen.insert(repo.to_path_buf(), gen);
+        }
+    }
+
+    /// An age walk landed: merged with the age held (`Worktrees::merge_age`), so a change the
+    /// stream reported while it ran is never moved back.
+    fn apply_age(&mut self, path: &Path, newest: Option<crate::wt_scan::Newest>) {
+        self.worktrees.merge_age(path, crate::worktrees::Age { changed: newest.map(|n| n.at), capped: newest.is_some_and(|n| n.capped), lagging: false });
+    }
+
+    /// After the lists changed: a menu on a worktree that went closes, newly expanded worktrees
+    /// load, and the section redraws.
+    fn after_worktree_lists(&mut self, cx: &mut Context<Self>) {
+        if self.wt_menu.value().is_some_and(|m| self.worktrees.find(&m.0).is_none()) {
+            self.wt_menu.hide(Instant::now());
+        }
+        self.load_pending_worktrees(cx);
+        cx.notify();
+    }
+
+    /// The stream follows the lists: a changed path set recreates it from the old one's event id;
+    /// the worktrees left out of it are marked as lagging, and none when there is no stream.
+    fn update_worktree_stream(&mut self, cx: &mut Context<Self>) {
+        let (paths, left_out) = crate::wt_watch::stream_paths(&self.wt_open, &self.worktrees);
+        match &self.wt_stream {
+            Some(_) if paths != self.wt_stream_paths => self.start_worktree_watch(cx),
+            Some(_) => self.mark_lagging(&left_out),
+            // No stream: the section's notice says the folder is not watched, and no row lags.
+            None => self.mark_lagging(&[]),
+        }
+    }
+
+    /// `lagging` on exactly the worktrees in `left_out`.
+    fn mark_lagging(&mut self, left_out: &[PathBuf]) {
+        for (path, age) in self.worktrees.ages.iter_mut() {
+            age.lagging = left_out.contains(path);
+        }
+        for path in left_out {
+            self.worktrees.ages.entry(path.clone()).or_default().lagging = true;
+        }
     }
 
     /// Runs `git status` for each expanded worktree whose changes are not loaded, off the UI
@@ -1443,58 +1753,11 @@ impl Root {
         cx.notify();
     }
 
-    /// Reads the repository's filter drivers for the create prompt, off the UI thread.
-    /// `Drivers::Unknown` until the read lands.
-    pub fn read_prompt_drivers(&mut self, cx: &mut Context<Self>) {
-        self.wt_prompt_drivers = Drivers::Unknown;
-        let root = self.project.clone();
-        cx.spawn(async move |this, cx| {
-            let read = cx.background_executor().spawn(async move { explorer::filter_drivers(&root) }).await;
-            let _ = this.update(cx, |root, cx| {
-                root.wt_prompt_drivers = Drivers::from_read(read);
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// `git worktree add` off the UI thread. Success closes the prompt; a failure shows git's
-    /// words in it and keeps it open, or in a notice when the prompt was closed meanwhile. The
-    /// list is read again either way.
-    pub fn create_worktree(&mut self, branch: String, path: PathBuf, cx: &mut Context<Self>) {
-        let root = self.project.clone();
-        cx.spawn(async move |this, cx| {
-            let result = cx.background_executor().spawn(async move { crate::worktrees::create(&root, &branch, &path) }).await;
-            let _ = this.update(cx, |root, cx| {
-                match result {
-                    Ok(()) => {
-                        root.wt_prompt.hide(Instant::now());
-                    }
-                    Err(e) => match create_failure_target(root.wt_prompt.value().is_some_and(|p| p.creating)) {
-                        CreateFailure::InPrompt => {
-                            if let Some(p) = root.wt_prompt.value_mut() {
-                                p.error = Some(e);
-                                p.creating = false;
-                                // Back to the path, which the error is most likely about.
-                                if p.stage == Stage::Confirm {
-                                    p.stage = Stage::Path;
-                                }
-                            }
-                        }
-                        CreateFailure::Notice => root.show_notice(format!("cannot create the worktree: {e}"), cx),
-                    },
-                }
-                root.refresh_worktrees(cx);
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
     /// `git worktree remove` off the UI thread; git's refusal (changes, the main checkout) is a
     /// notice, and so are terminals left open in a removed one (they keep running).
     pub fn remove_worktree(&mut self, path: PathBuf, force: bool, cx: &mut Context<Self>) {
-        let root = self.project.clone();
+        let repo = self.worktrees.repo_of(&path).map_or_else(|| self.project.clone(), Path::to_path_buf);
+        let root = repo.clone();
         let removed = path.clone();
         cx.spawn(async move |this, cx| {
             let result = cx.background_executor().spawn(async move { crate::worktrees::remove(&root, &path, force) }).await;
@@ -1506,46 +1769,32 @@ impl Root {
                         n => root.show_notice(removed_notice(n), cx),
                     },
                 }
-                root.refresh_worktrees(cx);
+                root.relist_repo(repo, cx);
             });
         })
         .detach();
     }
 
     /// Keys in the Worktrees section: Up/Down move, Enter or Right expands a worktree or opens a
-    /// change pinned, Space previews it, Left collapses, Escape returns to the pane; with the
-    /// prompt open, the keys go to it (Cmd+V pastes).
+    /// change pinned, Space previews it, Left collapses, Escape returns to the pane.
     pub fn wt_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
-        let drivers = self.wt_prompt_drivers.clone();
-        if let Some(p) = self.wt_prompt.value_mut() {
-            if ks.modifiers.platform && ks.key == "v" {
-                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                    p.paste(&text);
-                }
-                cx.notify();
-                return;
-            }
-            match p.key(ks, &self.project.clone(), &drivers) {
-                PromptStep::Stay => {}
-                PromptStep::Cancel => {
-                    self.wt_prompt.hide(Instant::now());
-                    self.wt_focused = false;
-                }
-                PromptStep::Create { branch, path } => self.create_worktree(branch, path, cx),
-            }
-            cx.notify();
-            return;
-        }
         if ks.modifiers.platform || ks.modifiers.control || ks.modifiers.alt {
             return;
         }
+        self.sync_worktree_hold();
         let rows = self.worktrees.rows();
-        let sel = clamp_selection(self.worktrees.selected, rows.len());
+        let sel = self.worktrees.selected.clone();
         match ks.key.as_str() {
-            "down" if !rows.is_empty() => self.worktrees.selected = Some(sel.map_or(0, |i| (i + 1).min(rows.len() - 1))),
-            "up" if !rows.is_empty() => self.worktrees.selected = Some(sel.map_or(0, |i| i.saturating_sub(1))),
+            "down" | "up" => {
+                let order: Vec<PathBuf> = rows.iter().map(row_path).collect();
+                let order: Vec<&Path> = order.iter().map(PathBuf::as_path).collect();
+                match step_selection(&order, sel.as_deref(), ks.key == "down") {
+                    Some(p) => self.worktrees.selected = Some(p),
+                    None => return,
+                }
+            }
             "enter" | "right" | "left" | "space" => {
-                if let Some(row) = sel.and_then(|i| rows.get(i)) {
+                if let Some(row) = sel.as_deref().and_then(|s| rows.iter().find(|r| row_path(r) == s)) {
                     match row {
                         WtRow::Worktree { wt, expanded, .. } => {
                             let want_open = ks.key != "left";
@@ -1571,7 +1820,8 @@ impl Root {
             "escape" => self.wt_focused = false,
             _ => return,
         }
-        if let Some(i) = self.worktrees.selected {
+        let rows = self.worktrees.rows();
+        if let Some(i) = self.worktrees.selected.as_deref().and_then(|s| rows.iter().position(|r| row_path(r) == s)) {
             self.sidebar.wt_scroll.scroll_to_item(i);
         }
         cx.notify();
@@ -1787,6 +2037,16 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_section_says_when_the_folder_is_not_watched() {
+        use crate::worktrees::Watched;
+        use super::watched_notice;
+        assert_eq!(watched_notice(&Watched::Watching), None);
+        assert_eq!(watched_notice(&Watched::NotLocal), Some("not watched: the folder is on a network volume"));
+        assert_eq!(watched_notice(&Watched::Failed("FSEvents refused the stream".into())), Some("not watched: the file watcher could not start"));
+        assert_eq!(watched_notice(&Watched::FolderGone), Some("the folder is gone"));
+    }
+
     use super::*;
     use crate::tree::{Side, Tree};
     use protocol::SessionId;
@@ -1902,151 +2162,19 @@ mod tests {
     }
 
     #[test]
-    fn the_worktree_menu_offers_a_terminal_and_removal_but_never_for_the_main_checkout() {
+    fn the_worktree_menu_offers_a_terminal_and_removal_for_every_row() {
         use crate::worktrees::Worktree;
-        let main = Worktree { path: "/p".into(), head: "1".into(), branch: Some("main".into()), is_main: true, missing: false, bare: false };
-        let feat = Worktree { path: "/p-f".into(), head: "2".into(), branch: Some("f".into()), is_main: false, missing: false, bare: false };
+        let feat = Worktree { path: "/p-f".into(), repo: "/p".into(), head: "2".into(), branch: Some("f".into()), missing: false, bare: false, locked: false, admin: None };
         let labels = |items: Vec<(&'static str, WtMenuAction)>| items.into_iter().map(|(l, _)| l).collect::<Vec<_>>();
-        assert_eq!(labels(worktree_menu_items(&main, Some(0))), ["Open terminal here"]);
         assert_eq!(labels(worktree_menu_items(&feat, Some(0))), ["Open terminal here", "Remove worktree"]);
         assert_eq!(labels(worktree_menu_items(&feat, Some(3))), ["Open terminal here", "Remove worktree", "Remove worktree, force"], "dirty: the plain remove will be refused, so force is offered");
         assert_eq!(labels(worktree_menu_items(&feat, None)), ["Open terminal here", "Remove worktree", "Remove worktree, force"], "not loaded: cannot tell, offer both");
         let gone = Worktree { missing: true, ..feat.clone() };
         assert_eq!(labels(worktree_menu_items(&gone, None)), ["Remove worktree, force"], "nothing to open; only force removes a missing one");
-        let bare = Worktree { bare: true, branch: None, head: String::new(), ..main.clone() };
-        assert!(worktree_menu_items(&bare, None).is_empty(), "a bare main checkout: no files to open a terminal in, and never removed");
+        let bare = Worktree { bare: true, branch: None, head: String::new(), ..feat.clone() };
+        assert_eq!(labels(worktree_menu_items(&bare, None)), ["Remove worktree, force"], "a bare one: no files to open a terminal in, only force removes it");
         assert_eq!(worktree_menu_items(&feat, Some(0))[0].1, WtMenuAction::OpenTerminal("/p-f".into()));
         assert_eq!(worktree_menu_items(&feat, None)[2].1, WtMenuAction::RemoveForce("/p-f".into()));
-    }
-
-    #[test]
-    fn the_create_prompt_asks_for_the_branch_then_the_path() {
-        use gpui::Keystroke;
-        let key = |k: &str| Keystroke::parse(k).unwrap();
-        let root = std::path::Path::new("/Users/me/proj");
-        let none = Drivers::Known(vec![]);
-        let mut p = Prompt::new();
-        assert_eq!(p.stage, Stage::Branch);
-        assert_eq!(p.key(&key("enter"), root, &none), PromptStep::Stay, "an empty branch does not advance");
-        assert!(p.error.is_some());
-        // "c->c" is gpui's test syntax for a key that types its character.
-        for c in "feat/x".chars() {
-            p.key(&key(&format!("{c}->{c}")), root, &none);
-        }
-        assert_eq!(p.branch.text, "feat/x");
-        assert_eq!(p.key(&key("enter"), root, &none), PromptStep::Stay);
-        assert_eq!(p.stage, Stage::Path);
-        assert!(p.error.is_none(), "a good branch clears the error");
-        assert_eq!(p.path.text, "/Users/me/proj-feat-x", "the default path is filled in");
-        assert_eq!(p.key(&key("enter"), root, &none), PromptStep::Create { branch: "feat/x".into(), path: "/Users/me/proj-feat-x".into() });
-        assert!(p.creating);
-        assert_eq!(p.key(&key("enter"), root, &none), PromptStep::Stay, "a second Enter while git works runs nothing");
-        assert_eq!(p.key(&key("z->z"), root, &none), PromptStep::Stay);
-        assert_eq!(p.path.text, "/Users/me/proj-feat-x", "and types nothing");
-        assert!(p.creating);
-        assert_eq!(p.key(&key("escape"), root, &none), PromptStep::Cancel, "Escape still closes it");
-        let mut q = Prompt::new();
-        assert_eq!(q.key(&key("escape"), root, &none), PromptStep::Cancel);
-        for c in "a b".chars() {
-            q.key(&key(&format!("{c}->{c}")), root, &none);
-        }
-        assert_eq!(q.key(&key("enter"), root, &none), PromptStep::Stay, "a space is not a branch name");
-        assert_eq!((q.stage, q.error.is_some()), (Stage::Branch, true));
-    }
-
-    #[test]
-    fn with_filter_drivers_configured_the_prompt_names_them_and_a_second_enter_creates() {
-        use gpui::Keystroke;
-        let key = |k: &str| Keystroke::parse(k).unwrap();
-        let root = std::path::Path::new("/Users/me/proj");
-        let lfs = Drivers::Known(vec!["lfs".to_string()]);
-        let to_path = |p: &mut Prompt| {
-            for c in "feat".chars() {
-                p.key(&key(&format!("{c}->{c}")), root, &Drivers::Unknown);
-            }
-            assert_eq!(p.key(&key("enter"), root, &Drivers::Unknown), PromptStep::Stay);
-            assert_eq!(p.stage, Stage::Path);
-            assert_eq!(p.note(), None);
-        };
-        let mut p = Prompt::new();
-        to_path(&mut p);
-        assert_eq!(p.key(&key("enter"), root, &lfs), PromptStep::Stay, "the first Enter on the path names the drivers");
-        assert_eq!(p.stage, Stage::Confirm);
-        assert!(!p.creating);
-        assert_eq!(p.note().as_deref(), Some("creating runs this repository's filter driver(s): lfs. Enter again to continue"));
-        assert_eq!(p.key(&key("z->z"), root, &lfs), PromptStep::Stay, "a key is not a confirmation");
-        assert_eq!(p.path.text, "/Users/me/proj-feat", "and types nothing");
-        assert_eq!(p.key(&key("enter"), root, &lfs), PromptStep::Create { branch: "feat".into(), path: "/Users/me/proj-feat".into() });
-        assert!(p.creating);
-        assert_eq!(p.note(), None, "git is running: the line gives way to \"creating\"");
-        // Escape at the confirmation cancels.
-        let mut q = Prompt::new();
-        to_path(&mut q);
-        q.key(&key("enter"), root, &Drivers::Known(vec!["lfs".to_string(), "x".to_string()]));
-        assert_eq!(q.note().as_deref(), Some("creating runs this repository's filter driver(s): lfs, x. Enter again to continue"));
-        assert_eq!(q.key(&key("escape"), root, &lfs), PromptStep::Cancel);
-        // No drivers: one Enter creates, as before.
-        let mut r = Prompt::new();
-        to_path(&mut r);
-        assert_eq!(r.key(&key("enter"), root, &Drivers::Known(vec![])), PromptStep::Create { branch: "feat".into(), path: "/Users/me/proj-feat".into() });
-    }
-
-    #[test]
-    fn the_prompt_creates_nothing_until_the_filter_config_is_known_and_never_when_refused() {
-        use gpui::Keystroke;
-        let key = |k: &str| Keystroke::parse(k).unwrap();
-        let root = std::path::Path::new("/Users/me/proj");
-        let mut p = Prompt::new();
-        for c in "feat".chars() {
-            p.key(&key(&format!("{c}->{c}")), root, &Drivers::Unknown);
-        }
-        p.key(&key("enter"), root, &Drivers::Unknown);
-        // The read has not landed: said, and nothing created.
-        assert_eq!(p.key(&key("enter"), root, &Drivers::Unknown), PromptStep::Stay);
-        assert_eq!((p.stage, p.creating), (Stage::Path, false));
-        assert_eq!(p.note().as_deref(), Some(CHECKING_FILTERS));
-        assert_eq!(p.key(&key("enter"), root, &Drivers::Unknown), PromptStep::Stay, "still not known: still nothing");
-        // It landed, with none: the next Enter creates.
-        assert_eq!(p.key(&key("enter"), root, &Drivers::Known(vec![])), PromptStep::Create { branch: "feat".into(), path: "/Users/me/proj-feat".into() });
-        // Refused: never creates, however often Enter comes.
-        let mut q = Prompt::new();
-        for c in "feat".chars() {
-            q.key(&key(&format!("{c}->{c}")), root, &Drivers::Refused);
-        }
-        q.key(&key("enter"), root, &Drivers::Refused);
-        for _ in 0..3 {
-            assert_eq!(q.key(&key("enter"), root, &Drivers::Refused), PromptStep::Stay);
-            assert_eq!(q.error.as_deref(), Some(REFUSED_FILTERS));
-            assert!(!q.creating);
-            assert_ne!(q.stage, Stage::Confirm);
-        }
-        assert_eq!(q.note(), None);
-        assert_eq!(Drivers::from_read(None), Drivers::Refused, "an unreadable or unusual config");
-        assert_eq!(Drivers::from_read(Some(vec![])), Drivers::Known(vec![]));
-    }
-
-    #[test]
-    fn a_paste_goes_into_the_field_being_edited_on_one_line() {
-        use gpui::Keystroke;
-        let root = std::path::Path::new("/Users/me/proj");
-        let mut p = Prompt::new();
-        p.paste("feat/\r\nx\n");
-        assert_eq!((p.branch.text.as_str(), p.branch.cursor), ("feat/x", 6));
-        p.key(&Keystroke::parse("enter").unwrap(), root, &Drivers::Known(vec!["lfs".to_string()]));
-        p.path.clear();
-        p.paste("/tmp/wt\n");
-        assert_eq!(p.path.text, "/tmp/wt");
-        assert_eq!(p.branch.text, "feat/x", "the path stage pastes into the path");
-        p.key(&Keystroke::parse("enter").unwrap(), root, &Drivers::Known(vec!["lfs".to_string()]));
-        assert_eq!(p.stage, Stage::Confirm);
-        p.paste("more");
-        assert_eq!(p.path.text, "/tmp/wt", "nothing is pasted at the confirmation");
-    }
-
-    #[test]
-    fn a_failed_create_shows_in_the_waiting_prompt_or_else_in_a_notice() {
-        assert_eq!(create_failure_target(true), CreateFailure::InPrompt);
-        assert_eq!(create_failure_target(false), CreateFailure::Notice, "closed, or reopened afresh, while git ran: not silent");
     }
 
     #[test]
@@ -2065,11 +2193,34 @@ mod tests {
     }
 
     #[test]
-    fn the_worktrees_selection_stays_on_a_row() {
-        assert_eq!(clamp_selection(Some(5), 3), Some(2), "rows went away under it");
-        assert_eq!(clamp_selection(Some(1), 3), Some(1));
-        assert_eq!(clamp_selection(Some(0), 0), None, "no rows, no selection");
-        assert_eq!(clamp_selection(None, 3), None);
+    fn up_and_down_step_the_selected_path_through_every_row() {
+        let order = [Path::new("/a"), Path::new("/b"), Path::new("/c")];
+        let step = |sel: Option<&str>, down: bool| step_selection(&order, sel.map(Path::new), down);
+        assert_eq!(step(None, true), Some("/a".into()), "none selected: Down takes the first");
+        assert_eq!(step(None, false), Some("/c".into()), "and Up the last");
+        assert_eq!(step(Some("/a"), true), Some("/b".into()));
+        assert_eq!(step(Some("/c"), true), Some("/c".into()), "the end holds");
+        assert_eq!(step(Some("/b"), false), Some("/a".into()));
+        assert_eq!(step(Some("/a"), false), Some("/a".into()), "the start holds");
+        assert_eq!(step(Some("/b/src/x.rs"), true), Some("/c".into()), "from a change no longer drawn, Down goes past its worktree");
+        assert_eq!(step(Some("/b/src/x.rs"), false), Some("/b".into()), "and Up to its worktree");
+        assert_eq!(step(Some("/gone"), true), Some("/a".into()), "a selection that went starts over");
+        assert_eq!(step_selection(&[], Some(Path::new("/a")), true), None, "no worktrees, no selection");
+        // The keys walk every drawn row: an expanded worktree's changes are reachable.
+        use crate::gitstatus::Status;
+        use crate::worktrees::{Worktree, Worktrees};
+        let wt = |p: &str| Worktree { path: p.into(), repo: "/r".into(), head: "1".into(), branch: None, missing: false, bare: false, locked: false, admin: None };
+        let mut w = Worktrees::new(vec![]);
+        w.set_repo(Path::new("/r"), vec![wt("/r-a"), wt("/r-b")]);
+        assert!(w.toggle(Path::new("/r-a")));
+        w.mark_loading(Path::new("/r-a"));
+        w.set_changes(Path::new("/r-a"), Some(vec![(PathBuf::from("x.rs"), Status::Modified), (PathBuf::from("y.rs"), Status::Added)]));
+        let paths: Vec<PathBuf> = w.rows().iter().map(row_path).collect();
+        let rows: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+        assert_eq!(step_selection(&rows, Some(Path::new("/r-a")), true), Some("/r-a/x.rs".into()), "Down from the worktree lands on its first change");
+        assert_eq!(step_selection(&rows, Some(Path::new("/r-a/x.rs")), true), Some("/r-a/y.rs".into()));
+        assert_eq!(step_selection(&rows, Some(Path::new("/r-a/y.rs")), true), Some("/r-b".into()), "then the next worktree");
+        assert_eq!(step_selection(&rows, Some(Path::new("/r-a/x.rs")), false), Some("/r-a".into()), "Up from the change returns to the worktree");
     }
 
     #[test]
@@ -2182,5 +2333,31 @@ mod tests {
         // missing file is ticked with no fingerprint; a view made after the poll read its paths
         // waits for the next poll rather than being told its file is gone.
         assert_eq!(video_ticks(&views, &polled), vec![(1, Some((5, 10))), (2, None)]);
+    }
+
+    #[test]
+    fn the_age_cell_marks_a_capped_walk_and_a_lagging_one_and_is_blank_without_an_age() {
+        use crate::worktrees::Age;
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let age = |secs: u64, capped: bool, lagging: bool| Age { changed: Some(now - Duration::from_secs(secs)), capped, lagging };
+        assert_eq!(wt_row_age(Some(&age(4 * 60, false, false)), now), "4 min");
+        assert_eq!(wt_row_age(Some(&age(4 * 60, true, false)), now), "4 min+");
+        assert_eq!(wt_row_age(Some(&age(4 * 60, false, true)), now), "4 min~");
+        assert_eq!(wt_row_age(Some(&age(4 * 60, true, true)), now), "4 min+~");
+        assert_eq!(wt_row_age(None, now), "");
+        assert_eq!(wt_row_age(Some(&Age { changed: None, capped: false, lagging: false }), now), "", "no change seen yet");
+        assert_eq!(wt_row_age(Some(&Age { changed: Some(now + Duration::from_secs(90)), capped: false, lagging: false }), now), "now", "a clock ahead reads now");
+    }
+
+    #[test]
+    fn the_section_line_says_why_it_is_not_watched_then_why_nothing_listed_then_that_there_is_nothing() {
+        use crate::worktrees::Watched;
+        let gone = Watched::FolderGone;
+        assert_eq!(wt_section_line(&gone, true, Some("fatal: x"), false).as_deref(), Some("the folder is gone"), "the watcher's notice first");
+        assert_eq!(wt_section_line(&Watched::NotLocal, false, None, true).as_deref(), Some("not watched: the folder is on a network volume"), "said under the rows too");
+        assert_eq!(wt_section_line(&Watched::Watching, true, Some("fatal: x"), false).as_deref(), Some("fatal: x"), "nothing listed: the first error");
+        assert_eq!(wt_section_line(&Watched::Watching, false, Some("fatal: x"), false).as_deref(), Some("no worktrees"), "a repository listed: its failed neighbour is not shown");
+        assert_eq!(wt_section_line(&Watched::Watching, true, None, false).as_deref(), Some("no worktrees"), "no repositories at all");
+        assert_eq!(wt_section_line(&Watched::Watching, false, Some("fatal: x"), true), None, "rows and watching: no line");
     }
 }

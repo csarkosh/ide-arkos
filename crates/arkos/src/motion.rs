@@ -157,7 +157,7 @@ pub fn move_progress(since: Instant, now: Instant, dur: Duration) -> f32 {
 }
 
 /// How far above its resting place a menu starts as it enters, and a panel (the palette, a find
-/// bar, the worktree prompt).
+/// bar).
 pub const MENU_LIFT: f32 = 4.0;
 pub const PANEL_LIFT: f32 = 6.0;
 

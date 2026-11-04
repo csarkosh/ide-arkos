@@ -21,6 +21,7 @@ usage: arkos guide                  how an agent shows the user a file and chang
        arkos open <file | url> ...  show a video, a document or a web page in a pane beside you
        arkos video <command> ...    status, play, pause, seek, step, loop, reload, close, mute
        arkos panes                  this window's panes and tabs, numbered as Cmd+1..9
+       arkos worktrees [<folder>] ...  the side worktrees under a folder, newest change first, for pruning
        arkos [<folder>]             open a window on a folder (default: the current one)
        arkos sandbox [<folder> | <command> ...]   a second Arkos with its own config, to try a theme or effect in
        arkos theme <command> ...    list, validate, template, contrast, add, use, preview, current

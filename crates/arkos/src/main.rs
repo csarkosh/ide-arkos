@@ -27,6 +27,7 @@ mod empty_pane;
 mod explorer;
 mod explorer_watch;
 mod find;
+mod fsevents;
 mod gitstatus;
 mod grid;
 mod grid_view;
@@ -103,6 +104,9 @@ mod wk_web_view;
 mod workbook;
 mod workspace;
 mod worktrees;
+mod worktrees_cli;
+mod wt_scan;
+mod wt_watch;
 
 use futures::channel::oneshot;
 use gpui::{
@@ -289,16 +293,32 @@ pub struct Root {
     /// Keyboard focus is in the worktree list (Ctrl+Shift+G). Focusing a pane or a tab hands
     /// it back, as for the file tree.
     pub wt_focused: bool,
-    /// The create prompt under the Worktrees header while it is open; it holds the keys while
-    /// `wt_focused`.
-    pub wt_prompt: Transient<sidebar::Prompt>,
-    /// The repository's filter drivers, read as the prompt opens; `Unknown` until the read lands.
-    pub wt_prompt_drivers: sidebar::Drivers,
     /// A worktree row's right-click menu while it is open: the worktree and the click.
     pub wt_menu: Transient<(PathBuf, gpui::Point<gpui::Pixels>)>,
-    /// The Worktrees section's focus handle, and the create prompt's.
+    /// The Worktrees section's focus handle.
     pub wt_focus: FocusHandle,
-    pub wt_prompt_focus: FocusHandle,
+    /// The pointer is over the Worktrees list (wired by the section's paint): the order holds.
+    pub wt_hovered: bool,
+    /// The open folder as the worktree model and the file-system watcher compare it: canonical,
+    /// computed once.
+    pub wt_open: PathBuf,
+    /// The open folder is the home folder, so `Library` and `Applications` are skipped too.
+    pub wt_home: bool,
+    /// The FSEvents stream behind the Worktrees section; `None` on a network volume, when it could
+    /// not start, and after the window closed.
+    pub wt_stream: Option<fsevents::Stream>,
+    /// The paths `wt_stream` watches, to tell when the set changed.
+    pub wt_stream_paths: Vec<PathBuf>,
+    /// When the last full pass (the first load or the safety net) started.
+    pub wt_pass_at: Instant,
+    /// The stream's events until the drain task takes them; every stream sends on `wt_tx`.
+    pub wt_events: Option<futures::channel::mpsc::UnboundedReceiver<fsevents::Event>>,
+    pub wt_tx: futures::channel::mpsc::UnboundedSender<fsevents::Event>,
+    /// Bumped as each `git worktree list` or look for a repository starts (a full pass takes one
+    /// for all its lists); `wt_list_gen` keeps, per repository, the number of the list applied or
+    /// the drop made last, so an older list or error landing after it is dropped.
+    pub wt_gen: u64,
+    pub wt_list_gen: HashMap<PathBuf, u64>,
     /// The text size new terminals start at, and that panes without a terminal measure with.
     /// Cmd+= and Cmd+- change the focused terminal's own size, not this.
     pub font_size: f32,
@@ -637,6 +657,8 @@ impl Root {
         let details_open = saved.as_ref().map(|w| w.details_open.clone()).unwrap_or_default();
         let folds = saved.as_ref().map(|w| w.folds.clone()).unwrap_or_default();
         let diagram_modes = saved.as_ref().map(|w| w.diagram_modes.clone()).unwrap_or_default();
+        let wt_open = wt_scan::canonical(&project);
+        let (wt_tx, wt_rx) = futures::channel::mpsc::unbounded();
         // The folder's own sidebar when it saved one, else the config's defaults.
         let (sidebar, explorer, worktrees) = match saved.as_ref().and_then(|w| w.sidebar.clone()) {
             Some(s) => (sidebar::Sidebar::new(s.width, s.collapsed, s.explorer_open, s.worktrees_open, s.outline_open, cx), explorer::Explorer::new(project.clone(), s.expanded, s.show_ignored), worktrees::Worktrees::new(s.worktrees_expanded)),
@@ -694,11 +716,18 @@ impl Root {
             worktrees,
             worktrees_seq: 0,
             wt_focused: false,
-            wt_prompt: Transient::Hidden,
-            wt_prompt_drivers: sidebar::Drivers::Unknown,
             wt_menu: Transient::Hidden,
             wt_focus: cx.focus_handle(),
-            wt_prompt_focus: cx.focus_handle(),
+            wt_hovered: false,
+            wt_open: wt_open.clone(),
+            wt_home: std::env::var_os("HOME").map(|h| wt_scan::canonical(Path::new(&h))).is_some_and(|h| h == wt_open),
+            wt_stream: None,
+            wt_stream_paths: Vec::new(),
+            wt_pass_at: Instant::now(),
+            wt_events: Some(wt_rx),
+            wt_tx,
+            wt_gen: 0,
+            wt_list_gen: HashMap::new(),
             font_size: preset.size,
             line_height: preset.line_height,
             text_preset,
@@ -1248,7 +1277,6 @@ impl Root {
             || self.wt_menu.animating(now)
             || self.palette.animating(now)
             || self.notice.animating(now)
-            || self.wt_prompt.animating(now)
             || self.url_prompt.animating(now)
             || self.drop_tints.values().any(|t| t.animating(now))
             || self.reorder.as_ref().is_some_and(|r| r.animating(now))
@@ -1282,7 +1310,6 @@ impl Root {
         self.wt_menu.settle(now);
         self.palette.settle(now);
         self.notice.settle(now);
-        self.wt_prompt.settle(now);
         self.url_prompt.settle(now);
     }
 
@@ -3135,7 +3162,7 @@ impl Root {
         idle::Chrome {
             palette: self.palette.value().is_some(),
             menu: self.tab_menu.value().is_some() || self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.link_menu.value().is_some() || self.md_menu.value().is_some() || self.popover.value().is_some(),
-            prompt: self.wt_prompt.value().is_some() || self.url_prompt.value().is_some(),
+            prompt: self.url_prompt.value().is_some(),
             find: self.active_terminal(cx).is_some_and(|t| t.read(cx).find.is_some()) || self.active_viewer().is_some_and(|v| v.read(cx).find.is_some()),
             drag: self.drop_target.is_some() || self.resizing.is_some() || self.sidebar_resizing,
             unsaved: self.viewers.values().any(|v| {
@@ -3762,7 +3789,6 @@ impl Root {
             || self.context_menu.value().is_some()
             || self.link_menu.value().is_some()
             || self.md_menu.value().is_some()
-            || self.wt_prompt.value().is_some()
             || self.wt_menu.value().is_some()
             || self.drop_target.is_some()
             || self.reorder.is_some()
@@ -4240,7 +4266,7 @@ impl Render for Root {
         let side_col = sidebar::render(self, window, cx);
         // Focus follows the tree: the focused pane's terminal or viewer (its find bar while that
         // is open), or the pane's own handle. The palette holds it while it is open; then the
-        // URL prompt (over the focused pane, until Enter or Escape), the worktree prompt, the worktree list (Ctrl+Shift+G) and the file tree (Shift+Cmd+E)
+        // URL prompt (over the focused pane, until Enter or Escape), the worktree list (Ctrl+Shift+G) and the file tree (Shift+Cmd+E)
         // while they hold the keys. An open prompt holds them only while the list does, so a
         // click on a pane takes them back without losing what was typed.
         let wanted = if let Some(f) = self.palette.value().and_then(|p| p.focus.clone()) {
@@ -4249,8 +4275,6 @@ impl Render for Root {
             Some(self.url_prompt_focus.clone())
         } else if self.tab_rename.is_some() {
             Some(self.tab_rename_focus.clone())
-        } else if self.wt_focused && self.wt_prompt.value().is_some() {
-            Some(self.wt_prompt_focus.clone())
         } else if self.wt_focused {
             Some(self.wt_focus.clone())
         } else if self.sidebar_focused && self.new_file.value().is_some() {
@@ -4589,6 +4613,7 @@ fn main() {
         Some("open") => std::process::exit(open_cli::open_cli(&args[2..])),
         Some("video") => std::process::exit(open_cli::video_cli(&args[2..])),
         Some("panes") => std::process::exit(open_cli::panes_cli(&args[2..])),
+        Some("worktrees") => std::process::exit(worktrees_cli::worktrees_cli(&args[2..])),
         Some("theme") => std::process::exit(agent_cli::theme_cli(&args[2..])),
         Some("effect") => std::process::exit(agent_cli::effect_cli(&args[2..])),
         Some("settings") => std::process::exit(agent_cli::settings_cli(&args[2..])),
@@ -5095,6 +5120,7 @@ fn open_project_window(
             root.load_pending_dirs(cx);
             root.refresh_status(cx);
             root.refresh_worktrees(cx);
+            root.start_worktree_watch(cx);
             cx.notify();
         });
         // A Settings, About or Keybindings window opened from the chooser shows this window's
@@ -5145,6 +5171,11 @@ fn open_project_window(
             let left = cx.windows().len();
             let project_open = cx.windows().iter().any(|w| w.window_id() == project_window);
             let chooser = close_root.read(cx).chooser.filter(|h| cx.windows().iter().any(|w| w.window_id() == h.window_id()));
+            // The project window is gone: its file-system watcher stops now, not at the quit
+            // that follows (this closure keeps the `Root` alive until then).
+            if !project_open {
+                close_root.update(cx, |root, _| root.stop_worktree_watch());
+            }
             match after_window_closed(left, project_open, chooser.is_some() || aux::aux_open(cx) > 0) {
                 AfterClose::Quit => {
                     close_root.update(cx, |root, cx| if says_goodbye(root.user_closing, left) { root.leaving(cx) } else { root.flush_for_quit(false, cx) });

@@ -71,25 +71,25 @@ pub fn panes_cli(args: &[String]) -> i32 {
 }
 
 /// The words, the value flags and the switches of a command's arguments.
-struct Parsed {
-    words: Vec<String>,
-    values: Vec<(String, String)>,
-    switches: Vec<String>,
+pub(crate) struct Parsed {
+    pub(crate) words: Vec<String>,
+    pub(crate) values: Vec<(String, String)>,
+    pub(crate) switches: Vec<String>,
 }
 
 impl Parsed {
-    fn value(&self, flag: &str) -> Option<&str> {
+    pub(crate) fn value(&self, flag: &str) -> Option<&str> {
         self.values.iter().rev().find(|(f, _)| f == flag).map(|(_, v)| v.as_str())
     }
 
-    fn has(&self, flag: &str) -> bool {
+    pub(crate) fn has(&self, flag: &str) -> bool {
         self.switches.iter().any(|f| f == flag)
     }
 }
 
 /// Splits `args`; `valued` flags take the next argument, `switches` stand alone, `--json` is
 /// always allowed. Any other flag, or a valued flag with no value, is a usage error (`None`).
-fn parse(args: &[String], valued: &[&str], switches: &[&str]) -> Option<Parsed> {
+pub(crate) fn parse(args: &[String], valued: &[&str], switches: &[&str]) -> Option<Parsed> {
     let mut p = Parsed { words: Vec::new(), values: Vec::new(), switches: Vec::new() };
     let mut it = args.iter().peekable();
     while let Some(arg) = it.next() {

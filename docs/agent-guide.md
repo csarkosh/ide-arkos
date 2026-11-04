@@ -39,7 +39,8 @@ for you, so never write the file by hand when a command exists.
 
 Every theme and settings command that reads or writes files works with no window open and no
 daemon running, so you can prepare a theme before Arkos is even started. `arkos open`,
-`arkos video` and `arkos panes` act on a window, so they need one (exit 3 without).
+`arkos video` and `arkos panes` act on a window, so they need one (exit 3 without);
+`arkos worktrees` reads the folders and git itself and needs neither.
 
 ## 3. Showing the user a file
 
@@ -241,6 +242,35 @@ tab's line carries its page's address after the title.
 `--all` prints every window, each headed `window {pid} ({project})`; it cannot be given with
 `--window` (exit 2).
 
+### `arkos worktrees`
+
+`arkos worktrees [<folder>] [--stale <age>] [--json]` lists the side worktrees of every repository
+under a folder, the ones the sidebar's Worktrees section shows: never a main checkout, newest
+change first, where a change is any file in the worktree changing (build and cache folders
+excepted). It needs no window and works from any folder: the folder is the current one unless
+you name one, and a folder inside a repository resolves to that repository, along with any
+repositories below it. One line each:
+
+```
+   2 h  release (spinner-crossfade)  ide-arkos/.worktrees/release
+   9 d  csv-grid  ide-arkos/.worktrees/csv-grid
+```
+
+The age (`now`, `4 min`, `7 h`, `2 d`, `3 w`, `5 mo`, `2 y`), the folder name, the branch in
+brackets only when it differs from the name (`(detached)` when there is none), and where it is:
+relative to the folder, else under `~`, else the full path. `+` after the age says the walk
+stopped at its budget, so the worktree changed at least that recently. A worktree whose folder is
+gone ends with `missing`; one with no files to date has a blank age. A repository whose worktrees
+could not be listed (git failed, or its filter config is one Arkos will not run git under) is
+named on stderr as `cannot list {repo}: {reason}`, and the others are still listed.
+
+- `--stale <age>`: only the worktrees unchanged for at least that long: `7d`, `36h`, `90m`,
+  `2w`. One with no age is kept, since unknown is not fresh.
+- `--json`: one JSON value on stdout, below.
+
+It only reports. To prune, confirm with the user, then run `git worktree remove <path>` from that worktree's repository; `--force` for one with changes.
+The text line prints a path as it is, control characters included, so parse the `--json` form for the path before running `git worktree remove`.
+
 ### Times
 
 `TIME` is seconds (`12`, `12.5`), `m:ss` (`0:12`), `m:ss.fff` (`1:05.5`) or `h:mm:ss[.fff]`
@@ -257,7 +287,10 @@ that does not exist, no such video tab, several to choose from, several windows,
 `unplayable` or whose reused tab still shows an older cut than the file, a window that reported an error, did not answer or is too old for the command); 2 usage
 (the usage text is on stderr, ending `see: arkos guide`); 3 no window to aim at
 (`no window running`, `session {id} is not shown in a window`, or
-`your session is not shown in this window; pass --pane or --window`).
+`your session is not shown in this window; pass --pane or --window`). `arkos worktrees` needs no
+window: it exits 0 with its list (an empty one too, and one that left out a repository it could
+not list), 1 for `no such folder: {path}`, and 2 for a `--stale` it cannot read
+(`not an age: "soon"`), a second folder or an unknown flag.
 
 With `--json` the command prints one JSON value on stdout and nothing else, and an error is
 `{ "error": text, "exit": n }` there (with the same exit code). Times are seconds.
@@ -280,6 +313,13 @@ With `--json` the command prints one JSON value on stdout and nothing else, and 
   your tab, `path` on a document, a video or a local page, `session` on a terminal, `url` on a
   browser tab. `--all --json` is an array of
   these, one per window, with `{ "window": pid, "error" }` for a window that did not answer.
+- `arkos worktrees`: `{ "folder", "worktrees": [{ "path", "name", "branch": string | null,
+  "repository", "changed": seconds | null, "age_seconds": seconds | null, "missing", "locked",
+  "capped" }], "repositories": [{ "path", "error"? }] }`, newest first. `repository` is the main
+  checkout's path; `changed` is seconds since 1970 of the newest file and `age_seconds` the time
+  since, both whole and null with no age; `capped` says the walk stopped at its budget.
+  `repositories` names every repository found, with `error` only on one whose worktrees could
+  not be listed.
 
 ### A video tab follows its file
 
