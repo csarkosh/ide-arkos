@@ -27,6 +27,7 @@ mod empty_pane;
 mod explorer;
 mod explorer_watch;
 mod find;
+mod fsevents;
 mod gitstatus;
 mod grid;
 mod grid_view;
