@@ -279,8 +279,7 @@ arkos worktrees [<folder>] [--stale <age>] [--json]
   `git worktree remove <path>` run in that worktree's repository.
 - `docs/agent-guide.md` (which `arkos guide` prints) gains a short section; its test that the
   guide names every command and flag gains this one.
-- Telemetry: the command is counted like the other agent commands (`AgentCommand`,
-  `telemetry/events.toml`, `docs/telemetry.md` regenerated). No paths or names are sent.
+- No telemetry: windowless agent commands record nothing, as `arkos theme` does.
 
 ## Nested repositories
 

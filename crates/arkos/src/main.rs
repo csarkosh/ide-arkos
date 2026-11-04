@@ -104,6 +104,7 @@ mod wk_web_view;
 mod workbook;
 mod workspace;
 mod worktrees;
+mod worktrees_cli;
 mod wt_scan;
 mod wt_watch;
 
@@ -4612,6 +4613,7 @@ fn main() {
         Some("open") => std::process::exit(open_cli::open_cli(&args[2..])),
         Some("video") => std::process::exit(open_cli::video_cli(&args[2..])),
         Some("panes") => std::process::exit(open_cli::panes_cli(&args[2..])),
+        Some("worktrees") => std::process::exit(worktrees_cli::worktrees_cli(&args[2..])),
         Some("theme") => std::process::exit(agent_cli::theme_cli(&args[2..])),
         Some("effect") => std::process::exit(agent_cli::effect_cli(&args[2..])),
         Some("settings") => std::process::exit(agent_cli::settings_cli(&args[2..])),

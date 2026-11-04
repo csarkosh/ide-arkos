@@ -39,6 +39,19 @@ impl Worktree {
     }
 }
 
+/// The row's name line: the folder name, and the branch only when it differs (`detached` when
+/// none, `bare` for a bare repository's entry).
+pub fn wt_row_label(wt: &Worktree) -> (String, Option<String>) {
+    let name = wt.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| wt.path.to_string_lossy().into_owned());
+    let branch = match (&wt.branch, wt.bare) {
+        (Some(b), _) if *b == name => None,
+        (Some(b), _) => Some(b.clone()),
+        (None, true) => Some("bare".to_string()),
+        (None, false) => Some("detached".to_string()),
+    };
+    (name, branch)
+}
+
 pub type Changes = Vec<(PathBuf, Status)>;
 
 /// The modification times of `HEAD`, `gitdir` and `locked` in a worktree's admin folder, each
@@ -698,6 +711,17 @@ worktree /r-c\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch refs/heads/
         let w = Worktrees::new(vec![]);
         assert_eq!(w.watched, Watched::Watching);
         assert!(!w.hold_order && w.selected.is_none());
+    }
+
+    fn on_branch(path: &str, branch: Option<&str>) -> Worktree {
+        Worktree { path: path.into(), repo: "/p".into(), head: "abcd1234".into(), branch: branch.map(Into::into), missing: false, bare: false, locked: false, admin: None }
+    }
+
+    #[test]
+    fn a_row_names_the_folder_and_the_branch_only_when_it_differs() {
+        assert_eq!(wt_row_label(&on_branch("/p/.worktrees/csv-grid", Some("csv-grid"))), ("csv-grid".into(), None));
+        assert_eq!(wt_row_label(&on_branch("/p/.worktrees/release", Some("spinner-crossfade"))), ("release".into(), Some("spinner-crossfade".into())));
+        assert_eq!(wt_row_label(&on_branch("/p/x", None)), ("x".into(), Some("detached".into())));
     }
 
     /// A temp dir holding the repository one level down, so the worktrees the tests create

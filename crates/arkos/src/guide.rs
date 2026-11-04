@@ -266,13 +266,13 @@ mod tests {
         let named = [
             "arkos open", "arkos video status", "arkos video play", "arkos video pause", "arkos video seek", "arkos video step", "arkos video loop", "arkos video reload",
             "arkos video close", "arkos video mute", "arkos video unmute", "arkos panes", "--pane", "--split", "--at", "--paused", "--playing", "--loop", "--loop off", "--raw",
-            "--new", "--wait", "--focus", "--window", "--all", "ARKOS_SESSION_ID",
+            "--new", "--wait", "--focus", "--window", "--all", "ARKOS_SESSION_ID", "arkos worktrees", "--stale",
         ];
         for s in named {
             assert!(TEXT.contains(s), "the guide names {s}");
         }
         // Every usage line the commands print is in the guide as printed.
-        for usage in [crate::open_cli::OPEN_USAGE, crate::open_cli::VIDEO_USAGE, crate::open_cli::PANES_USAGE] {
+        for usage in [crate::open_cli::OPEN_USAGE, crate::open_cli::VIDEO_USAGE, crate::open_cli::PANES_USAGE, crate::worktrees_cli::WORKTREES_USAGE] {
             for line in usage.lines().filter(|l| l.contains("arkos ")) {
                 let form = line.trim_start_matches("usage:").trim();
                 assert!(TEXT.contains(form), "the guide gives the form {form}");

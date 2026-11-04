@@ -12,7 +12,8 @@ use crate::palette::Rgb;
 use crate::theme::Theme;
 use crate::sidebar;
 use crate::tree::{PaneId, Rect, Tab, TabId, Tree, ViewMode};
-use crate::worktrees::{Worktree, WtRow};
+use crate::worktrees::{wt_row_label, Worktree, WtRow};
+use crate::wt_scan::wt_row_place;
 use crate::Root;
 use gpui::{div, prelude::*, px, uniform_list, App, ClickEvent, Context, Div, FocusHandle, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, ScrollHandle, Stateful, UniformList, UniformListScrollHandle, Window};
 use protocol::SessionId;
@@ -916,34 +917,6 @@ pub fn wt_section_line(watched: &crate::worktrees::Watched, none_listed: bool, f
         Some(why) if none_listed => Some(why.to_string()),
         _ => (!has_rows).then(|| "no worktrees".to_string()),
     }
-}
-
-/// The row's name line: the folder name, and the branch only when it differs (`detached` when
-/// none, `bare` for a bare repository's entry).
-pub fn wt_row_label(wt: &Worktree) -> (String, Option<String>) {
-    let name = wt.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| wt.path.to_string_lossy().into_owned());
-    let branch = match (&wt.branch, wt.bare) {
-        (Some(b), _) if *b == name => None,
-        (Some(b), _) => Some(b.clone()),
-        (None, true) => Some("bare".to_string()),
-        (None, false) => Some("detached".to_string()),
-    };
-    (name, branch)
-}
-
-/// The row's place line: relative to `open` when inside it (the open folder itself reads as its
-/// own name), else `~`-shortened when under `home`, else the full path.
-pub fn wt_row_place(path: &Path, open: &Path, home: &Path) -> String {
-    if path == open {
-        return path.file_name().map_or_else(|| path.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
-    }
-    if let Ok(rel) = path.strip_prefix(open) {
-        return rel.to_string_lossy().into_owned();
-    }
-    if let Some(rel) = (!home.as_os_str().is_empty()).then(|| path.strip_prefix(home).ok()).flatten() {
-        return if rel.as_os_str().is_empty() { "~".to_string() } else { format!("~/{}", rel.to_string_lossy()) };
-    }
-    path.to_string_lossy().into_owned()
 }
 
 /// The age cell: `age_text` of the age, with `+` after a capped walk ("at least this recent"),
@@ -2364,25 +2337,6 @@ mod tests {
         // missing file is ticked with no fingerprint; a view made after the poll read its paths
         // waits for the next poll rather than being told its file is gone.
         assert_eq!(video_ticks(&views, &polled), vec![(1, Some((5, 10))), (2, None)]);
-    }
-
-    fn wt(path: &str, branch: Option<&str>) -> crate::worktrees::Worktree {
-        crate::worktrees::Worktree { path: path.into(), repo: "/p".into(), head: "abcd1234".into(), branch: branch.map(Into::into), missing: false, bare: false, locked: false, admin: None }
-    }
-
-    #[test]
-    fn a_row_names_the_folder_and_the_branch_only_when_it_differs() {
-        assert_eq!(wt_row_label(&wt("/p/.worktrees/csv-grid", Some("csv-grid"))), ("csv-grid".into(), None));
-        assert_eq!(wt_row_label(&wt("/p/.worktrees/release", Some("spinner-crossfade"))), ("release".into(), Some("spinner-crossfade".into())));
-        assert_eq!(wt_row_label(&wt("/p/x", None)), ("x".into(), Some("detached".into())));
-    }
-
-    #[test]
-    fn a_row_places_the_worktree_relative_to_the_open_folder_or_under_home() {
-        assert_eq!(wt_row_place(Path::new("/Users/me/Projects/a/.worktrees/w"), Path::new("/Users/me/Projects"), Path::new("/Users/me")), "a/.worktrees/w");
-        assert_eq!(wt_row_place(Path::new("/Users/me/other/w"), Path::new("/Users/me/Projects"), Path::new("/Users/me")), "~/other/w");
-        assert_eq!(wt_row_place(Path::new("/Volumes/x/w"), Path::new("/Users/me/Projects"), Path::new("/Users/me")), "/Volumes/x/w");
-        assert_eq!(wt_row_place(Path::new("/Users/me/Projects/w"), Path::new("/Users/me/Projects/w"), Path::new("/Users/me")), "w", "the open folder itself: its own name, never blank");
     }
 
     #[test]

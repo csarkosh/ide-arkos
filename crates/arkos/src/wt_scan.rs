@@ -156,8 +156,6 @@ pub fn age_text(age: Duration) -> String {
 }
 
 /// `7d`, `36h`, `90m`, `2w` to a duration; `None` for anything else.
-// Task 9 uses it; until then only the tests call it.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn parse_age(text: &str) -> Option<Duration> {
     let unit = text.chars().last()?;
     let per = match unit {
@@ -174,10 +172,33 @@ pub fn parse_age(text: &str) -> Option<Duration> {
     digits.parse::<u64>().ok()?.checked_mul(per).map(Duration::from_secs)
 }
 
+/// The row's place line: relative to `open` when inside it (the open folder itself reads as its
+/// own name), else `~`-shortened when under `home`, else the full path.
+pub fn wt_row_place(path: &Path, open: &Path, home: &Path) -> String {
+    if path == open {
+        return path.file_name().map_or_else(|| path.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
+    }
+    if let Ok(rel) = path.strip_prefix(open) {
+        return rel.to_string_lossy().into_owned();
+    }
+    if let Some(rel) = (!home.as_os_str().is_empty()).then(|| path.strip_prefix(home).ok()).flatten() {
+        return if rel.as_os_str().is_empty() { "~".to_string() } else { format!("~/{}", rel.to_string_lossy()) };
+    }
+    path.to_string_lossy().into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn a_row_places_the_worktree_relative_to_the_open_folder_or_under_home() {
+        assert_eq!(wt_row_place(Path::new("/Users/me/Projects/a/.worktrees/w"), Path::new("/Users/me/Projects"), Path::new("/Users/me")), "a/.worktrees/w");
+        assert_eq!(wt_row_place(Path::new("/Users/me/other/w"), Path::new("/Users/me/Projects"), Path::new("/Users/me")), "~/other/w");
+        assert_eq!(wt_row_place(Path::new("/Volumes/x/w"), Path::new("/Users/me/Projects"), Path::new("/Users/me")), "/Volumes/x/w");
+        assert_eq!(wt_row_place(Path::new("/Users/me/Projects/w"), Path::new("/Users/me/Projects/w"), Path::new("/Users/me")), "w", "the open folder itself: its own name, never blank");
+    }
 
     fn mk(p: &Path) {
         fs::create_dir_all(p).unwrap();
