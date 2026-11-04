@@ -262,13 +262,20 @@ impl Worktrees {
         }
     }
 
-    /// Replaces `repo`'s worktrees with `list` and clears its error. A worktree no longer listed
+    /// Replaces `repo`'s worktrees with `list` and clears its error. A path in `list` leaves any
+    /// other repository's list, so the later list wins. A worktree no longer listed
     /// takes its state with it; one that went missing keeps its age but loses its expansion.
     pub fn set_repo(&mut self, repo: &Path, list: Vec<Worktree>) {
         let old = self.by_repo.insert(repo.to_path_buf(), list).unwrap_or_default();
         self.errors.remove(repo);
         let new = &self.by_repo[repo];
         let listed: HashSet<PathBuf> = new.iter().map(|w| w.path.clone()).collect();
+        // One row per path: a path this list holds leaves every other repository's list, and its
+        // state stays, since it belongs to the path.
+        for (_, theirs) in self.by_repo.iter_mut().filter(|(r, _)| r.as_path() != repo) {
+            theirs.retain(|w| !listed.contains(&w.path));
+        }
+        let new = &self.by_repo[repo];
         let without_files: Vec<PathBuf> = new.iter().filter(|w| !w.has_files()).map(|w| w.path.clone()).collect();
         for gone in old.iter().map(|w| &w.path).filter(|p| !listed.contains(*p)) {
             self.forget(gone);
@@ -348,7 +355,8 @@ impl Worktrees {
     /// `hold_order` is set the order last computed holds: worktrees listed since go after it,
     /// in their own order, and ones that went are left out.
     pub fn ordered(&self) -> Vec<&Worktree> {
-        let mut fresh: Vec<&Worktree> = self.all().collect();
+        let mut seen = HashSet::new();
+        let mut fresh: Vec<&Worktree> = self.all().filter(|w| seen.insert(w.path.as_path())).collect();
         fresh.sort_by(|a, b| {
             let (x, y) = (self.ages.get(&a.path).and_then(|g| g.changed), self.ages.get(&b.path).and_then(|g| g.changed));
             match (x, y) {
@@ -724,6 +732,29 @@ worktree /r-c\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch refs/heads/
         w.set_repo(Path::new("/p"), vec![stay.clone()]);
         assert_eq!(w.selected, Some(stay.path.clone()), "a row still listed keeps the selection");
         assert_eq!(w.ordered().len(), 2);
+    }
+
+    #[test]
+    fn a_worktree_listed_under_two_repositories_appears_once() {
+        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+        let mut w = Worktrees::new(vec![]);
+        w.set_repo(Path::new("/a"), vec![wt("/w", "/a")]);
+        w.set_age(Path::new("/w"), Age { changed: Some(t), capped: false, lagging: false });
+        w.set_repo(Path::new("/b"), vec![wt("/w", "/b"), wt("/w2", "/b")]);
+        assert_eq!(w.all().filter(|x| x.path == Path::new("/w")).count(), 1);
+        assert_eq!(w.repo_of(Path::new("/w")), Some(Path::new("/b")), "the later list wins");
+        let rows = w.rows().into_iter().filter(|r| matches!(r, WtRow::Worktree { .. })).count();
+        assert_eq!(rows, 2);
+        assert!(w.ages.contains_key(Path::new("/w")), "the age belongs to the path and stays");
+    }
+
+    #[test]
+    fn rows_never_repeat_a_path_even_when_two_repositories_hold_it() {
+        let mut w = Worktrees::new(vec![]);
+        w.by_repo.insert("/a".into(), vec![wt("/w", "/a")]);
+        w.by_repo.insert("/b".into(), vec![wt("/w", "/b")]);
+        let paths: Vec<PathBuf> = w.rows().into_iter().filter_map(|r| match r { WtRow::Worktree { wt, .. } => Some(wt.path), _ => None }).collect();
+        assert_eq!(paths, vec![PathBuf::from("/w")]);
     }
 
     #[test]
