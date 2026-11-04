@@ -223,10 +223,7 @@ and says "Copied". A click on the header elsewhere selects the whole block, so D
 A Mermaid block shows its diagram until you click it, then its code the same way (see
 Diagrams for its Code and Split modes).
 
-The sidebar's Outline section lists the focused markdown document's headings as a tree. A click
-scrolls to a heading (unfolding it if a fold hides it), the heading in view is highlighted as you
-scroll, a chevron collapses a heading's children in the outline, and resting the pointer on a row
-shows a preview of its section beside the sidebar.
+The outline lives inside the markdown tab; see Editing markdown.
 
 Arkos saves a second after you stop typing, and Cmd+S saves at once. The tab shows " •" until the
 file is written. Line endings (`\n` or `\r\n`) and a byte order mark are kept as the file had

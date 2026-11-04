@@ -46,7 +46,6 @@ mod md_links;
 mod md_math;
 mod md_menu;
 mod lang_menu;
-mod outline;
 mod slash_menu;
 mod links;
 mod launch_agent;
@@ -261,9 +260,6 @@ pub struct Root {
     pub link_menu: Transient<link_menu::LinkMenu>,
     /// A markdown document's right-click menu while it is open, and while it fades out.
     pub md_menu: Transient<md_menu::MdMenu>,
-    /// The outline row under the pointer: its heading, the pointer's height, and since when, for
-    /// the section preview shown after half a second.
-    pub outline_hover: Option<(usize, f32, std::time::Instant)>,
     /// What the bell shows.
     pub notices: notices::Notices,
     /// The doctor's table as last probed.
@@ -661,8 +657,8 @@ impl Root {
         let (wt_tx, wt_rx) = futures::channel::mpsc::unbounded();
         // The folder's own sidebar when it saved one, else the config's defaults.
         let (sidebar, explorer, worktrees) = match saved.as_ref().and_then(|w| w.sidebar.clone()) {
-            Some(s) => (sidebar::Sidebar::new(s.width, s.collapsed, s.explorer_open, s.worktrees_open, s.outline_open, cx), explorer::Explorer::new(project.clone(), s.expanded, s.show_ignored), worktrees::Worktrees::new(s.worktrees_expanded)),
-            None => (sidebar::Sidebar::new(config.sidebar.width, config.sidebar.collapsed, true, true, true, cx), explorer::Explorer::new(project.clone(), Vec::new(), false), worktrees::Worktrees::new(Vec::new())),
+            Some(s) => (sidebar::Sidebar::new(s.width, s.collapsed, s.explorer_open, s.worktrees_open, cx), explorer::Explorer::new(project.clone(), s.expanded, s.show_ignored), worktrees::Worktrees::new(s.worktrees_expanded)),
+            None => (sidebar::Sidebar::new(config.sidebar.width, config.sidebar.collapsed, true, true, cx), explorer::Explorer::new(project.clone(), Vec::new(), false), worktrees::Worktrees::new(Vec::new())),
         };
         // No saved layout: the empty screen, not a shell nobody asked for.
         let tree = saved.map(|ws| ws.tree).unwrap_or_else(Tree::empty);
@@ -702,7 +698,6 @@ impl Root {
             new_file_focus: cx.focus_handle(),
             link_menu: Transient::Hidden,
             md_menu: Transient::Hidden,
-            outline_hover: None,
             notices: Default::default(),
             doctor_states: Vec::new(),
             doctor_busy: None,
@@ -1687,7 +1682,7 @@ impl Root {
     }
 
     pub fn save(&mut self, cx: &mut App) {
-        let sidebar = SidebarSaved { width: self.sidebar.width, collapsed: self.sidebar.collapsed, show_ignored: self.explorer.show_ignored, expanded: self.explorer.expanded_dirs(), worktrees_expanded: self.worktrees.expanded.iter().cloned().collect(), explorer_open: self.sidebar.explorer_open, worktrees_open: self.sidebar.worktrees_open, outline_open: self.sidebar.outline_open };
+        let sidebar = SidebarSaved { width: self.sidebar.width, collapsed: self.sidebar.collapsed, show_ignored: self.explorer.show_ignored, expanded: self.explorer.expanded_dirs(), worktrees_expanded: self.worktrees.expanded.iter().cloned().collect(), explorer_open: self.sidebar.explorer_open, worktrees_open: self.sidebar.worktrees_open, outline_open: true };
         let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone(), folds: self.folds.clone(), diagram_modes: self.diagram_modes.clone() };
         request_save(&self.save_queue, ws, cx);
     }
@@ -4470,7 +4465,6 @@ impl Render for Root {
             .children(md_menu::render_md_menu(self, cx))
             .children(slash_menu::render_slash_menu(self, cx))
             .children(lang_menu::render_lang_menu(self, cx))
-            .children(outline::render_preview(self, cx))
             .children(self.render_popover(window, cx))
             .children(sidebar::render_worktree_menu(self, cx));
         // One request per frame while anything eases; an idle window asks for none.

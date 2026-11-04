@@ -796,10 +796,6 @@ Things only a person at the screen can check, in order of value:
 - structure: hover a heading: its chevron shows; click it: the section hides and the heading ends
   with "…"; Cmd+K Cmd+0 folds all, Cmd+K Cmd+J unfolds all; the folds survive a relaunch; Down from
   a folded heading lands after its section
-- structure: the Outline section lists the headings as a tree; a click on a heading a fold hides
-  shows it and scrolls there; paging through a long document moves the highlight; resting on a row
-  shows its preview; drag a paragraph's handle above a heading: the accent line shows where, and it
-  lands there with blank lines around it; one undo puts it back
 - reading: the five alerts show their icons and colours, `> [!TIP] Shortcut` reads "Shortcut";
   footnote references are raised numbers by first reference, hovering one shows its note, the
   notes are numbered with a `↩` back; front matter shows its title, date and a faint label;

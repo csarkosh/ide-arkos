@@ -151,8 +151,9 @@ pub struct SidebarSaved {
     pub explorer_open: bool,
     #[serde(default = "default_true")]
     pub worktrees_open: bool,
-    /// Whether the Outline section is open. Absent in files from before milestone A4: open.
-    #[serde(default = "default_true")]
+    /// The sidebar's Outline section is gone; this is ignored since 2026-11-04. It stays so an
+    /// old saved file loads, and it is no longer written.
+    #[serde(default = "default_true", skip_serializing)]
     pub outline_open: bool,
 }
 
@@ -503,6 +504,16 @@ mod tests {
         let old = load_from(&file, project).unwrap().sidebar.unwrap();
         assert_eq!(old.worktrees_expanded, Vec::<PathBuf>::new());
         assert!(old.explorer_open && old.worktrees_open, "both sections start open");
+    }
+
+    #[test]
+    fn a_saved_sidebar_without_an_outline_flag_loads_and_one_with_it_is_ignored() {
+        let base = |extra: &str| format!(r#"{{ "width": 250.0, "collapsed": false, "show_ignored": false, "expanded": []{extra} }}"#);
+        let with: SidebarSaved = serde_json::from_str(&base(r#", "outline_open": false"#)).unwrap();
+        let without: SidebarSaved = serde_json::from_str(&base("")).unwrap();
+        assert!(!with.outline_open && without.outline_open);
+        let written = serde_json::to_string(&with).unwrap();
+        assert!(!written.contains("outline_open"), "the flag is not written: {written}");
     }
 
     #[test]

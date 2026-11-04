@@ -49,12 +49,6 @@ pub struct Sidebar {
     /// list would still take clicks).
     pub explorer_fade: Transient<()>,
     pub worktrees_fade: Transient<()>,
-    /// The Outline section (structure spec, section 2): open or not, its rows' fade, its scroll,
-    /// and the headings whose children it hides (the outline's own state, not the document's).
-    pub outline_open: bool,
-    pub outline_fade: Transient<()>,
-    pub outline_scroll: ScrollHandle,
-    pub outline_collapsed: std::collections::BTreeSet<crate::md_fold::FoldKey>,
 }
 
 pub fn clamp_width(w: f32) -> f32 {
@@ -73,7 +67,7 @@ pub fn visible_width(width: f32, collapsed: bool) -> f32 {
 }
 
 impl Sidebar {
-    pub fn new(width: f32, collapsed: bool, explorer_open: bool, worktrees_open: bool, outline_open: bool, cx: &mut Context<Root>) -> Self {
+    pub fn new(width: f32, collapsed: bool, explorer_open: bool, worktrees_open: bool, cx: &mut Context<Root>) -> Self {
         // Sections open at launch are already there: no fade as the window first draws.
         let now = Instant::now();
         let fade = |open: bool| if open { Transient::shown((), now) } else { Transient::Hidden };
@@ -88,10 +82,6 @@ impl Sidebar {
             slide: None,
             explorer_fade: fade(explorer_open),
             worktrees_fade: fade(worktrees_open),
-            outline_open,
-            outline_fade: fade(outline_open),
-            outline_scroll: ScrollHandle::new(),
-            outline_collapsed: Default::default(),
         }
     }
 
@@ -155,7 +145,6 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
     }
     let explorer_o = reveal(&mut root.sidebar.explorer_fade, root.sidebar.explorer_open, now);
     let worktrees_o = reveal(&mut root.sidebar.worktrees_fade, root.sidebar.worktrees_open, now);
-    let outline_o = reveal(&mut root.sidebar.outline_fade, root.sidebar.outline_open, now);
     let theme = root.theme.clone();
     let c = &theme.chrome;
     let width = root.sidebar.width;
@@ -224,20 +213,6 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
             cx.notify();
         })))
         .when(explorer_open, |d| d.child(render_rows(root, &theme, cx).opacity(explorer_o)));
-    let outline_open = root.sidebar.outline_open;
-    let outline = div()
-        .flex_none()
-        .flex()
-        .flex_col()
-        .border_t_1()
-        .border_color(if style.ink_borders { c.border.alpha(0.0) } else { c.border.hsla() })
-        .child(header("outline-header", "Outline", outline_open).on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
-            root.sidebar.outline_open = !root.sidebar.outline_open;
-            root.outline_hover = None;
-            root.save(cx);
-            cx.notify();
-        })))
-        .when(outline_open, |d| d.child(crate::outline::render_rows(root, &theme, cx).opacity(outline_o)));
     let worktrees_open = root.sidebar.worktrees_open;
     let worktrees = div()
         .flex_none()
@@ -290,7 +265,6 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .text_size(px(style.ui(13.0)))
         .text_color(c.text.hsla())
         .child(explorer)
-        .child(outline)
         .child(worktrees)
         .child(handle);
     if !sliding {
