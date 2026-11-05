@@ -25,6 +25,7 @@ constant int ARKOS_TABLE_BLOCK = 9;      constant int ARKOS_TABLE_HEADER_BLOCK =
 constant int ARKOS_MENU_BLOCK = 11;    constant int ARKOS_ROWS_BLOCK = 12;
 constant int ARKOS_BINDER_BLOCK = 13;    constant int ARKOS_ACTIVE_TAB_BLOCK = 14;
 constant int ARKOS_TITLE_GROUP_BLOCK = 15;
+constant int ARKOS_SIDEBAR_FOOT_BLOCK = 16;  // the sidebar's empty space below its last name
 // A title group block is one group of the title bar's contents where the bar lays it out, with
 // no edges: its words (the app's name, the project's path, `sandbox`) and its icons, a block
 // each, so a wash can set a label behind each with the bar showing between them.
@@ -33,7 +34,8 @@ constant int ARKOS_TITLE_GROUP_BLOCK = 15;
 // A binder block is the gutter between the sidebar and the panes, there only when the effect's
 // manifest asks for one (`binder`); nothing of the app's is drawn in it.
 // A media block is a video's picture, opaque over the wash: only what is drawn outside it shows.
-// A table block is a markdown table, whose fills are clear; its header block is its first row.
+// A table block is a markdown table, whose fills are clear while the document's paper lets the
+// wash show through; its header block is its first row.
 // A rows block is a terminal's grid of rows, inside its pane's body, with no edges: its `pitch`
 // is a row's height in points, so a wash can rule the paper under each row (the first row's
 // top is the block's top). A menu block is an open menu or popover. The menu stage (arkos_overlay) is given them with

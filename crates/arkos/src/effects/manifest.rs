@@ -46,6 +46,9 @@ pub struct Manifest {
     pub document_paper_alpha: Option<f32>,
     /// The bars and the sidebar over the wash.
     pub chrome_alpha: f32,
+    /// The bars inside a tab's body over the wash: a grid's banner, a sheet strip, a video's
+    /// bar and a web tab's address bar. Absent, `chrome_alpha`.
+    pub body_bars_alpha: Option<f32>,
     /// The active tab over the wash.
     pub active_tab_alpha: f32,
     /// How far the text moves towards ink (black on a light theme, white on a dark one) while
@@ -71,6 +74,11 @@ impl Manifest {
     /// else the wash's `frame_rate` capped at `active::GLYPH_RATE_CAP`.
     pub fn glyph_rate(&self) -> u32 {
         self.glyph_rate.unwrap_or_else(|| self.frame_rate.min(crate::effects::active::GLYPH_RATE_CAP))
+    }
+
+    /// The bars inside a tab's body: the `body_bars_alpha` key, else `chrome_alpha`.
+    pub fn body_bars_alpha(&self) -> f32 {
+        self.body_bars_alpha.unwrap_or(self.chrome_alpha)
     }
 
     /// The paper a document reads on: the `document_paper_alpha` key, else `paper_alpha`.
@@ -99,6 +107,7 @@ impl Default for Manifest {
             paper_alpha: 0.5,
             document_paper_alpha: None,
             chrome_alpha: 0.0,
+            body_bars_alpha: None,
             active_tab_alpha: 0.55,
             text_contrast: 0.0,
             glyph_motion: false,
@@ -170,6 +179,9 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
         in_range("document_paper_alpha", a, 0.5, 1.0)?;
     }
     in_range("chrome_alpha", m.chrome_alpha, 0.0, 1.0)?;
+    if let Some(a) = m.body_bars_alpha {
+        in_range("body_bars_alpha", a, 0.0, 1.0)?;
+    }
     in_range("active_tab_alpha", m.active_tab_alpha, 0.0, 1.0)?;
     in_range("text_contrast", m.text_contrast, 0.0, 1.0)?;
     if let Some(r) = m.glyph_rate {
@@ -294,6 +306,15 @@ mod tests {
             std::fs::write(f.join(file), format!("// {file} of {name}\n")).unwrap();
         }
         f
+    }
+
+    #[test]
+    fn body_bars_alpha_follows_chrome_alpha_unless_given_and_is_refused_out_of_range() {
+        let m = parse(&with("chrome_alpha = 0.2")).unwrap();
+        assert_eq!((m.body_bars_alpha, m.body_bars_alpha()), (None, 0.2));
+        assert_eq!(parse(&with("body_bars_alpha = 1.0")).unwrap().body_bars_alpha(), 1.0);
+        let e = parse(&with("body_bars_alpha = 1.5")).unwrap_err();
+        assert!(e.contains("body_bars_alpha must be 0.0 to 1.0"), "{e}");
     }
 
     #[test]
@@ -526,6 +547,18 @@ mod tests {
     }
 
     #[test]
+    fn the_built_in_overworld_parses_with_its_fixed_values() {
+        let b = BUILTIN.iter().find(|b| b.name == "overworld").expect("overworld is built in");
+        let m = parse(b.manifest).unwrap();
+        assert_eq!(m.description, "A night overworld in muted pixel art at the foot of the sidebar: stars, a castle, pines and fireflies.");
+        assert_eq!((m.frame_rate, m.scale), (30, 1.0), "30 fps, so the chrome the wash paints keeps up with the app");
+        assert!(!m.ink_borders && m.glyphs.is_none() && !b.hidden);
+        assert_eq!((m.highlights, m.menus), (Highlights::Effect, MenuLook::App));
+        assert_eq!((m.paper_alpha, m.chrome_alpha, m.active_tab_alpha, m.text_contrast), (1.0, 0.0, 0.0, 0.0));
+        assert_eq!(m.body_bars_alpha(), 1.0, "the bars inside a tab's body keep their colour");
+    }
+
+    #[test]
     fn the_built_in_runic_parses_with_its_fixed_values() {
         let b = BUILTIN.iter().find(|b| b.name == "runic").expect("runic is built in");
         let m = parse(b.manifest).unwrap();
@@ -552,7 +585,7 @@ mod tests {
         assert!(listed.iter().any(|(n, s)| n == "neon" && matches!(s, Source::Folder(_))), "{listed:?}");
         assert_eq!(
             list(Path::new("/nonexistent/effects")),
-            vec![("watercolor".to_string(), Source::BuiltIn), ("runic".to_string(), Source::BuiltIn), ("material".to_string(), Source::BuiltIn), ("notebook".to_string(), Source::BuiltIn)]
+            vec![("watercolor".to_string(), Source::BuiltIn), ("runic".to_string(), Source::BuiltIn), ("material".to_string(), Source::BuiltIn), ("notebook".to_string(), Source::BuiltIn), ("overworld".to_string(), Source::BuiltIn)]
         );
     }
 

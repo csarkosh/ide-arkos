@@ -803,12 +803,11 @@ mod tests {
     fn navy_the_default_recommends_no_effect_and_lavender_watercolor_watercolor() {
         assert_eq!(builtin("navy").unwrap().recommended_effect(), None);
         assert_eq!(builtin("lavender-watercolor").unwrap().recommended_effect(), Some("watercolor"));
-        assert_eq!(builtin("timo-purple").unwrap().recommended_effect(), None);
-        // Any theme may recommend one: Timo Purple, which recommends none, given a table.
-        let purple = BUILTIN.iter().find(|(n, _)| *n == "timo-purple").unwrap().1;
-        let text = purple.to_string() + "\n[effect]\nname = \"ink\"\n";
+        // Any theme may recommend one: Navy, which recommends none, given a table.
+        let navy = BUILTIN.iter().find(|(n, _)| *n == "navy").unwrap().1;
+        let text = navy.to_string() + "\n[effect]\nname = \"ink\"\n";
         assert_eq!(parse(&text).unwrap().recommended_effect(), Some("ink"));
-        assert!(parse(&(purple.to_string() + "\n[effect]\nname = \"a\"\nspeed = 2\n")).is_err(), "name is the only key");
+        assert!(parse(&(navy.to_string() + "\n[effect]\nname = \"a\"\nspeed = 2\n")).is_err(), "name is the only key");
     }
 
     #[test]
@@ -1062,6 +1061,11 @@ mod tests {
         let font = &notebook.font;
         assert_eq!((font.ui.as_deref(), font.prose.as_deref(), font.terminal.as_deref()), (Some("Chalkboard SE"), Some("Chalkboard SE"), Some("Monaspace Radon")));
         assert_eq!(notebook.chrome.focus_ring, notebook.terminal.cursor, "the margin's red is the accent and the cursor");
+    }
+
+    #[test]
+    fn timo_purple_recommends_the_overworld_effect() {
+        assert_eq!(builtin("timo-purple").unwrap().recommended_effect(), Some("overworld"));
     }
 
     #[test]

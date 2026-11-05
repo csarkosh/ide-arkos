@@ -116,7 +116,7 @@ Optional. A shader effect drawn under the window's text.
 
 | Key | What it sets |
 | --- | --- |
-| `name` | The effect the theme was designed with; the user's `effect.name` in `config.toml` or Settings may choose another. `peach-watercolor` and `lavender-watercolor` set `watercolor`, `matrix` and `navy-runic` set `runic`, `composition-notebook` sets `notebook`, and `material`, `peach-watercolor` and `lavender-material` set `material`; `navy`, the default, sets none and draws plain. |
+| `name` | The effect the theme was designed with; the user's `effect.name` in `config.toml` or Settings may choose another. `peach-watercolor` and `lavender-watercolor` set `watercolor`, `matrix` and `navy-runic` set `runic`, `composition-notebook` sets `notebook`, `timo-purple` sets `overworld`, and `material`, `peach-watercolor` and `lavender-material` set `material`; `navy`, the default, sets none and draws plain. |
 
 ## Adding a theme
 

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use metal::{Device, MTLLoadAction, MTLPixelFormat, MTLPrimitiveType, MTLStorageMode, MTLStoreAction, MTLTextureUsage, RenderPassDescriptor, TextureDescriptor};
 
-use super::blocks::{self, Block, HighlightState, Kind, Mark};
+use super::blocks::{self, Block, HighlightState, Kind, Mark, Shape};
 use super::manifest::{Effect, Highlights};
 use super::{active, inputs, layer, PREAMBLE};
 use crate::theme::Theme;
@@ -104,18 +104,26 @@ pub fn verdict(ms: f32) -> &'static str {
     }
 }
 
-/// The blocks of a window of `size` points as it opens: the title bar, the sidebar with its
-/// divider and one pane, and, when the effect paints the highlights, a selected Explorer row.
+/// The blocks of a window of `size` points as it opens: the title bar with its words and icons,
+/// the sidebar with its divider and 200 points of empty foot below its last name, one pane with
+/// its active tab, and, when the effect paints the highlights, a selected Explorer row. So an
+/// effect that draws in the foot, on the active tab or round the title's groups pays for it here.
 fn sample_blocks(size: (f32, f32), effect: &Effect) -> Vec<Block> {
     let top = crate::chrome::TITLE_BAR_H;
     let content = Rect { x: SIDEBAR_W, y: top, w: (size.0 - SIDEBAR_W).max(0.0), h: (size.1 - top).max(0.0) };
     let panes = [(1, content)];
+    let divider = top + content.h * 0.6;
+    let shapes = [
+        Shape { key: blocks::TITLE_WORDS_KEY, rect: Rect { x: 80.0, y: 6.0, w: 320.0, h: 16.0 }, kind: Kind::TitleGroup, pitch: 0.0 },
+        Shape { key: blocks::TITLE_ICONS_KEY, rect: Rect { x: (size.0 - 70.0).max(0.0), y: 4.0, w: 56.0, h: 20.0 }, kind: Kind::TitleGroup, pitch: 0.0 },
+        Shape { key: blocks::tab_key(1), rect: Rect { x: content.x, y: top, w: 160.0, h: crate::pane_view::TAB_BAR_H }, kind: Kind::ActiveTab, pitch: 0.0 },
+    ];
     let mut strokes = Vec::new();
     if effect.manifest.highlights == Highlights::Effect {
         let row = Rect { x: 0.0, y: top + 60.0, w: SIDEBAR_W, h: 22.0 };
         strokes.push((Mark { key: 11, rect: row, kind: Kind::RowHighlight, state: HighlightState::Selected }, 1.0));
     }
-    let scene = active::scene(content, 0.0, Some(top + content.h * 0.6), &panes, &[], &[], &strokes);
+    let scene = active::scene(content, 0.0, Some(divider), Some((size.1 - 200.0).max(divider)), &panes, &[], &shapes, &strokes);
     blocks::blocks(&scene, effect.manifest.ink_borders)
 }
 
@@ -394,12 +402,15 @@ mod tests {
     }
 
     #[test]
-    fn the_bench_draws_a_window_as_it_opens_with_a_selected_row_when_the_effect_paints_it() {
+    fn the_bench_draws_a_window_as_it_opens_with_its_title_groups_active_tab_sidebar_foot_and_a_selected_row_when_the_effect_paints_it() {
         let mut effect = super::super::manifest::load("watercolor", std::path::Path::new("/nonexistent/effects")).unwrap();
         let kinds = |e: &Effect| sample_blocks((1200.0, 800.0), e).iter().map(|b| b.kind).collect::<Vec<_>>();
-        assert_eq!(kinds(&effect), vec![Kind::TitleBar, Kind::Sidebar, Kind::Divider, Kind::TabBar, Kind::PaneBody, Kind::RowHighlight]);
+        let opened = [Kind::TitleBar, Kind::Sidebar, Kind::Divider, Kind::SidebarFoot, Kind::TabBar, Kind::PaneBody, Kind::TitleGroup, Kind::TitleGroup, Kind::ActiveTab];
+        assert_eq!(kinds(&effect), [&opened[..], &[Kind::RowHighlight]].concat());
         effect.manifest.highlights = Highlights::App;
-        assert_eq!(kinds(&effect), vec![Kind::TitleBar, Kind::Sidebar, Kind::Divider, Kind::TabBar, Kind::PaneBody]);
+        assert_eq!(kinds(&effect), opened.to_vec());
+        let foot = sample_blocks((1200.0, 800.0), &effect).into_iter().find(|b| b.kind == Kind::SidebarFoot).unwrap();
+        assert_eq!((foot.rect.y, foot.rect.h), (600.0, 200.0), "a foot tall enough for the whole scene");
         let body = sample_blocks((1200.0, 800.0), &effect).into_iter().find(|b| b.kind == Kind::PaneBody).unwrap();
         assert_eq!(body.rect.x + body.rect.w, 1200.0, "the pane reaches the window's right edge");
     }

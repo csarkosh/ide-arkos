@@ -300,7 +300,7 @@ pub fn render(view: &Entity<VideoView>, theme: &Theme, style: crate::effects::ac
         .items_center()
         .gap(px(10.0))
         .px(px(10.0))
-        .bg(c.tab_bar.alpha(style.chrome_alpha))
+        .bg(c.tab_bar.alpha(style.body_bars_alpha))
         .text_color(text)
         .font_family(family)
         .text_size(px(12.0))

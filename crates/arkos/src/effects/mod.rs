@@ -12,6 +12,10 @@ pub mod inputs;
 pub mod layer;
 pub mod manifest;
 pub mod paint;
+/// The overworld wash's layout and timing mirrored in Rust, for its tests alone: the app never
+/// runs it.
+#[cfg(test)]
+pub mod overworld;
 /// The runic wash's rain mirrored in Rust, for its tests alone for now.
 #[cfg(test)]
 pub mod runic;
@@ -78,6 +82,13 @@ pub const BUILTIN: &[BuiltIn] = &[
         glyphs: Some(include_str!("../../effects/notebook/glyphs.metal")),
         hidden: false,
     },
+    BuiltIn {
+        name: "overworld",
+        manifest: include_str!("../../effects/overworld/effect.toml"),
+        wash: include_str!("../../effects/overworld/wash.metal"),
+        glyphs: None,
+        hidden: false,
+    },
 ];
 
 /// The name of the effect to draw for the config's choice under `theme`: the theme's own
@@ -117,7 +128,7 @@ mod tests {
         let purple = crate::theme::builtin("timo-purple").unwrap();
         assert_eq!(resolve(&EffectChoice::Theme, &peach), Some("watercolor".to_string()));
         assert_eq!(resolve(&EffectChoice::Theme, &navy), None, "Navy, the default, draws plain");
-        assert_eq!(resolve(&EffectChoice::Theme, &purple), None);
+        assert_eq!(resolve(&EffectChoice::Theme, &purple), Some("overworld".to_string()));
         assert_eq!(resolve(&EffectChoice::None, &peach), None);
         assert_eq!(resolve(&EffectChoice::Named("ink".into()), &navy), Some("ink".to_string()));
     }
@@ -161,6 +172,7 @@ mod tests {
             3 => "Three",
             4 => "Four",
             5 => "Five",
+            6 => "Six",
             n => panic!("{n} built-ins: teach this test the word"),
         })));
         assert!(guide.contains("| `glyph_rate` |"), "the manifest table has a glyph_rate row");

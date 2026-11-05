@@ -609,17 +609,20 @@ the result (`arkos theme template timo-purple` prints it). The choices, and why 
 ## 9. Effects
 
 An effect is a pair of Metal shaders that paint the project window: a wash drawn under every
-surface, and optionally the text itself. Five are built in: Peach Watercolor and Lavender Watercolor recommend `watercolor`
+surface, and optionally the text itself. Six are built in: Peach Watercolor and Lavender Watercolor recommend `watercolor`
 (still ink glyphs), `space` is hidden (recommended by no theme and left out of Settings and
 `arkos effect list`, though `arkos effect use space` and a config naming it still draw it: a night
-sky with glowing edges and still holo text; Navy, the default, draws plain), Matrix and Navy Runic recommend `runic` (faint rune rain, emissive text in the theme's
+sky with glowing edges and still holo text), Matrix and Navy Runic recommend `runic` (faint rune rain, emissive text in the theme's
 accent that glitches now and then, and a terminal that decodes its changed cells; it was called
 `matrix` before 0.7.20, and that name still draws it), Material and Lavender Material recommend `material` (the
 panes as rounded cards in the theme's page colour on a frame of its sidebar colour, underlined active tabs, a pill on the selected
-row, a search bar round the title, a progress bar on a busy pane, no glyph shader) and
+row, a search bar round the title, a progress bar on a busy pane, no glyph shader),
 Composition Notebook recommends `notebook` (the
 marbled cover over the title bar, cream pages ruled under the terminal's rows, pencil edges, a
-highlighter on the selected row, and terminal text written in by a ballpoint); the user may pick any
+highlighter on the selected row, and terminal text written in by a ballpoint), and Timo Purple recommends `overworld`
+(a muted pixel-art night overworld at the foot of the sidebar, a few stars in the title bar and a
+lantern on each active tab, no glyph shader; markdown tables and the CSV grid keep their own fills
+over it). Navy, the default, alone draws plain. The user may pick any
 effect for any theme, or none, in
 Settings or through `arkos effect use`. An effect reads the theme's colours on every frame, so
 write it to suit any theme rather than one.
@@ -633,7 +636,8 @@ What an effect can touch:
   A video's picture (`ARKOS_MEDIA_BLOCK`) is opaque over the wash, so only what the wash draws
   outside it shows; with `ink_borders` it comes with all four edges, its rectangle a point and a
   half outside the picture so the outline is seen whole. A table (`ARKOS_TABLE_BLOCK`) has
-  clear fills under an effect and comes with all four edges; its header
+  clear fills while the document's paper lets the wash show through (`document_paper_alpha` under
+  1.0; at 1.0 its fills, and a grid's, keep their own colours) and comes with all four edges; its header
   (`ARKOS_TABLE_HEADER_BLOCK`) with the edge under it. The app draws the table's inner lines
   itself, in ink. A terminal's rows (`ARKOS_ROWS_BLOCK`, no edges) are the grid of cells it
   draws, as far as they are seen, with `pitch` the height of a row in points from the block's
@@ -648,6 +652,9 @@ What an effect can touch:
   where the bar lays it out: its words (the app's name, the project's path and in a sandbox
   `sandbox`) and its icons, a block each, at least 40 points apart (the built-in `notebook` sets
   a cover label behind each).
+  The sidebar's foot (`ARKOS_SIDEBAR_FOOT_BLOCK`, no edges) is the sidebar's empty space below its
+  last visible name, through to the sidebar's bottom. It is reported whenever the sidebar shows and
+  there is room, and it follows the lists as they grow, scroll, open and close.
 - The text, through the glyph shader: it replaces gpui's own stages for the project window's
   glyphs.
 - The alphas of the app's surfaces over the wash: the paper of terminals and documents, the bars
@@ -693,6 +700,7 @@ key and the range.
 | `paper_alpha` | 0.5 to 1.0 | 0.5 | A terminal's paper over the wash, and a document's unless `document_paper_alpha` is set. It never goes below 0.5, so text keeps its ground. |
 | `document_paper_alpha` | 0.5 to 1.0 | `paper_alpha` | The paper of a markdown tab (rendered or raw) and a file viewer tab over the wash, which are for reading: a higher value lets less of the wash through behind the text. The terminal keeps `paper_alpha`. Matrix sets 0.92. |
 | `chrome_alpha` | 0.0 to 1.0 | 0.0 | The title bar, the tab bars, the inactive tabs and the sidebar over the wash. |
+| `body_bars_alpha` | 0.0 to 1.0 | `chrome_alpha` | The bars inside a tab's body over the wash: a grid's banner, a spreadsheet's sheet strip, a video's bar and a web tab's address bar. |
 | `active_tab_alpha` | 0.0 to 1.0 | 0.55 | The active tab over the wash. |
 | `text_contrast` | 0.0 to 1.0 | 0.0 | How far the text moves towards ink (black on a light theme, white on a dark one): `chrome.text` that far, `chrome.text_dim` three quarters and `terminal.foreground` nine tenths of the way. |
 

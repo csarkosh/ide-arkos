@@ -41,6 +41,8 @@ pub struct Style {
     pub document_paper_alpha: f32,
     /// The title bar, the tab bars, the inactive tabs and the sidebar.
     pub chrome_alpha: f32,
+    /// The bars inside a tab's body: the manifest's `body_bars_alpha`, else its `chrome_alpha`.
+    pub body_bars_alpha: f32,
     /// The active tab, a lighter patch on its bar.
     pub active_tab_alpha: f32,
     /// The window's own background and each pane's body: opaque without an effect and gone
@@ -74,7 +76,19 @@ pub struct Style {
 impl Style {
     /// The app as it paints without an effect.
     pub fn plain() -> Style {
-        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
+        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, body_bars_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
+    }
+
+    /// The ground a document's own fills go with: a markdown table's header and paper rows and a
+    /// grid's header, row numbers and rows. They go clear with `ground_alpha` only while the
+    /// document's paper lets the wash show through; over an opaque paper nothing of the wash could
+    /// show, so they keep their own colours.
+    pub fn document_ground(&self) -> f32 {
+        if self.document_paper_alpha >= 1.0 {
+            1.0
+        } else {
+            self.ground_alpha
+        }
     }
 
     /// A UI text size of `pt` points as this style draws it.
@@ -97,6 +111,7 @@ pub fn style_at(manifest: &Manifest, fade: f32) -> Style {
         paper_alpha: lerp(1.0, manifest.paper_alpha.max(0.5), f),
         document_paper_alpha: lerp(1.0, manifest.document_paper_alpha().max(0.5), f),
         chrome_alpha: lerp(1.0, manifest.chrome_alpha, f),
+        body_bars_alpha: lerp(1.0, manifest.body_bars_alpha(), f),
         active_tab_alpha: lerp(1.0, manifest.active_tab_alpha, f),
         ground_alpha: 1.0 - f,
         ink_borders: full && manifest.ink_borders,
@@ -182,10 +197,10 @@ pub fn latest_scroll(instants: impl IntoIterator<Item = Option<Instant>>) -> Opt
 }
 
 /// What a frame's blocks are made from in the project window: the panes' content area and the
-/// binder's width left of it, the window's bars, the sidebar's divider when laid out, the panes and those whose Claude session
+/// binder's width left of it, the window's bars, the sidebar's divider and the end of its names when laid out, the panes and those whose Claude session
 /// works, the shapes laid out inside them and the highlights' strokes.
-pub fn scene<'a>(content: Rect, binder: f32, divider_y: Option<f32>, panes: &'a [(PaneId, Rect)], busy: &'a [PaneId], shapes: &'a [Shape], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
-    Scene { content, title_bar_h: crate::chrome::TITLE_BAR_H, tab_bar_h: crate::pane_view::TAB_BAR_H, binder, divider_y, panes, busy, shapes, strokes }
+pub fn scene<'a>(content: Rect, binder: f32, divider_y: Option<f32>, sidebar_end: Option<f32>, panes: &'a [(PaneId, Rect)], busy: &'a [PaneId], shapes: &'a [Shape], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
+    Scene { content, title_bar_h: crate::chrome::TITLE_BAR_H, tab_bar_h: crate::pane_view::TAB_BAR_H, binder, divider_y, sidebar_end, panes, busy, shapes, strokes }
 }
 
 /// Whether the GPU's time per frame is worth a line in the window log: the first reading, then
@@ -743,12 +758,21 @@ mod tests {
     }
 
     #[test]
+    fn the_body_bars_follow_the_chrome_unless_the_manifest_says_otherwise() {
+        let mut m = Manifest { chrome_alpha: 0.0, ..Manifest::default() };
+        assert_eq!(style_at(&m, 1.0).body_bars_alpha, 0.0, "every existing effect is unchanged");
+        m.body_bars_alpha = Some(1.0);
+        assert_eq!((style_at(&m, 0.5).body_bars_alpha, style_at(&m, 1.0).body_bars_alpha), (1.0, 1.0));
+        assert_eq!(Style::plain().body_bars_alpha, 1.0);
+    }
+
+    #[test]
     fn the_style_is_plain_at_zero_and_the_manifest_s_at_one() {
         let m = watercolor().manifest;
         assert_eq!(style_at(&m, 0.0), Style::plain());
         assert_eq!(
             style_at(&m, 1.0),
-            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, title_pad: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false, terminal_paint: true }
+            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, body_bars_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, title_pad: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false, terminal_paint: true }
         );
         let half = style_at(&m, 0.5);
         assert_eq!((half.paper_alpha, half.chrome_alpha, half.ground_alpha), (0.75, 0.5, 0.5));
@@ -782,6 +806,21 @@ mod tests {
         let matrix = manifest::load("runic", Path::new("/nonexistent/effects")).unwrap().manifest;
         assert_eq!(style_at(&matrix, 1.0).document_paper_alpha, 0.92);
         assert_eq!(style_at(&matrix, 1.0).paper_alpha, 0.65);
+    }
+
+    #[test]
+    fn a_document_s_fills_go_with_the_ground_through_every_fade_unless_its_paper_stays_opaque() {
+        for b in crate::effects::BUILTIN {
+            let m = manifest::load(b.name, Path::new("/nonexistent/effects")).unwrap().manifest;
+            for step in 0..=20 {
+                let s = style_at(&m, step as f32 / 20.0);
+                // Every effect before overworld sees through its documents' paper, so its tables
+                // and grids are drawn exactly as they were, fade by fade.
+                let want = if b.name == "overworld" { 1.0 } else { s.ground_alpha };
+                assert_eq!(s.document_ground(), want, "{} at {step}/20", b.name);
+            }
+        }
+        assert_eq!(Style::plain().document_ground(), 1.0, "no effect, the fills as ever");
     }
 
     #[test]
@@ -907,7 +946,7 @@ mod tests {
         tree.split(first, Side::Right, Tab::Terminal { session: protocol::SessionId(2), cwd: None }).unwrap();
         for content in [Rect { x: 240.0, y: 28.0, w: 960.0, h: 772.0 }, Rect { x: 240.0, y: 28.0, w: 660.0, h: 572.0 }] {
             let layout = tree.layout(content);
-            let out = blocks::blocks(&scene(content, 0.0, None, &layout.panes, &[], &[], &[]), true);
+            let out = blocks::blocks(&scene(content, 0.0, None, None, &layout.panes, &[], &[], &[]), true);
             assert_eq!(out[0].rect.w, content.x + content.w, "the title bar spans the window");
             let bars: Vec<Rect> = out.iter().filter(|b| b.kind == Kind::TabBar).map(|b| b.rect).collect();
             let want: Vec<Rect> = layout.panes.iter().map(|(_, r)| Rect { h: crate::pane_view::TAB_BAR_H, ..*r }).collect();
