@@ -612,16 +612,17 @@ An effect is a pair of Metal shaders that paint the project window: a wash drawn
 surface, and optionally the text itself. Six are built in: Peach Watercolor and Lavender Watercolor recommend `watercolor`
 (still ink glyphs), `space` is hidden (recommended by no theme and left out of Settings and
 `arkos effect list`, though `arkos effect use space` and a config naming it still draw it: a night
-sky with glowing edges and still holo text; Navy, the default, draws plain), Matrix and Navy Runic recommend `runic` (faint rune rain, emissive text in the theme's
+sky with glowing edges and still holo text), Matrix and Navy Runic recommend `runic` (faint rune rain, emissive text in the theme's
 accent that glitches now and then, and a terminal that decodes its changed cells; it was called
 `matrix` before 0.7.20, and that name still draws it), Material and Lavender Material recommend `material` (the
 panes as rounded cards in the theme's page colour on a frame of its sidebar colour, underlined active tabs, a pill on the selected
 row, a search bar round the title, a progress bar on a busy pane, no glyph shader),
 Composition Notebook recommends `notebook` (the
 marbled cover over the title bar, cream pages ruled under the terminal's rows, pencil edges, a
-highlighter on the selected row, and terminal text written in by a ballpoint), and `overworld`
+highlighter on the selected row, and terminal text written in by a ballpoint), and Timo Purple recommends `overworld`
 (a muted pixel-art night overworld at the foot of the sidebar, a few stars in the title bar and a
-lantern on each active tab, no glyph shader); the user may pick any
+lantern on each active tab, no glyph shader; markdown tables and the CSV grid keep their own fills
+over it). Navy, the default, alone draws plain. The user may pick any
 effect for any theme, or none, in
 Settings or through `arkos effect use`. An effect reads the theme's colours on every frame, so
 write it to suit any theme rather than one.

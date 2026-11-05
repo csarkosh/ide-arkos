@@ -128,7 +128,7 @@ mod tests {
         let purple = crate::theme::builtin("timo-purple").unwrap();
         assert_eq!(resolve(&EffectChoice::Theme, &peach), Some("watercolor".to_string()));
         assert_eq!(resolve(&EffectChoice::Theme, &navy), None, "Navy, the default, draws plain");
-        assert_eq!(resolve(&EffectChoice::Theme, &purple), None);
+        assert_eq!(resolve(&EffectChoice::Theme, &purple), Some("overworld".to_string()));
         assert_eq!(resolve(&EffectChoice::None, &peach), None);
         assert_eq!(resolve(&EffectChoice::Named("ink".into()), &navy), Some("ink".to_string()));
     }

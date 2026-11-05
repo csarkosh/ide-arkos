@@ -543,6 +543,14 @@ Things only a person at the screen can check, in order of value:
   while wet; under Navy with `effect.name = "notebook"` the cover's label and the rules read in
   Navy's colours
 - effects: Navy (`effect.name = "theme"`, the default) draws plain, with no effect
+- effects: under Timo Purple, overworld draws a muted night scene at the foot of the sidebar (stars, a crescent moon, a castle with cyan windows, pines, grass and a path) with crisp 3 point pixels on Retina and on a 1x screen, a few stars in the title bar clear of its words and icons, and a lantern on each pane's active tab; the lantern ends where the tab's label begins, never under it; every tab body is plain Timo Purple
+- effects: under overworld the Explorer's selected and hovered rows, the Worktrees rows and the hovered tab are filled as without an effect
+- effects: under overworld, as the Worktrees list grows the scene is cut from the top, and with under about 50 points left below the last name it is gone; with Worktrees closed there is no scene; no name ever sits on art
+- effects: under overworld, Cmd+B slides the sidebar out with the scene and back; a narrow sidebar keeps the castle centred and the pines at its edges
+- effects: under overworld the stars twinkle slowly, a castle window dims every 10 to 20 seconds, fireflies rise from the grass; under Reduce Motion it is a still frame with everything lit
+- effects: under overworld a grid's banner, a spreadsheet's sheet strip, a video's bar and a web tab's address bar keep their own colours
+- effects: under overworld a markdown table's header and alternate rows, and a CSV grid's header, row numbers and alternate rows, keep their own colours
+- effects: overworld on Peach Watercolor reads as an intended dusk scene, not a broken one
 - effects, space: Navy with `effect.name = "space"` shows the night sky; over ten minutes a
   shooting star crosses every 8 to 16 seconds (one at a time, in under a second, no bright
   flash), a planet drifts across over several minutes, the stars twinkle slowly, and there is

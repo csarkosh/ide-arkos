@@ -2,6 +2,10 @@
 # to Arkos. The schema is in docs/themes.md.
 name = "timo-purple"
 appearance = "dark"
+
+[effect]
+name = "overworld"
+
 [chrome]
 window_bg = "#330076"
 title_bar = "#2a0062"
