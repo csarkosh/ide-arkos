@@ -551,7 +551,7 @@ mod tests {
         let b = BUILTIN.iter().find(|b| b.name == "overworld").expect("overworld is built in");
         let m = parse(b.manifest).unwrap();
         assert_eq!(m.description, "A night overworld in muted pixel art at the foot of the sidebar: stars, a castle, pines and fireflies.");
-        assert_eq!((m.frame_rate, m.scale), (10, 1.0));
+        assert_eq!((m.frame_rate, m.scale), (30, 1.0), "30 fps, so the chrome the wash paints keeps up with the app");
         assert!(!m.ink_borders && m.glyphs.is_none() && !b.hidden);
         assert_eq!((m.highlights, m.menus), (Highlights::Effect, MenuLook::App));
         assert_eq!((m.paper_alpha, m.chrome_alpha, m.active_tab_alpha, m.text_contrast), (1.0, 0.0, 0.0, 0.0));

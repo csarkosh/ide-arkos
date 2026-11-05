@@ -2,8 +2,9 @@ name = "overworld"
 description = "A night overworld in muted pixel art at the foot of the sidebar: stars, a castle, pines and fireflies."
 wash = "wash.metal"
 # No glyph shader: the text stays as the font draws it.
-frame_rate = 10               # 1 to 60; the wash's frames per second while anything moves: the
-                              # twinkles, the windows and the fireflies are slow
+frame_rate = 30               # 1 to 60; the wash's frames per second while anything moves: the
+                              # art is slow, but the wash paints the chrome and the active tab, so
+                              # a tab click, a hover, a sidebar drag and Cmd+B keep up with the app
 scale = 1.0                   # 0.1 to 1.0; full size, so every 3 point art pixel stays crisp
 ink_borders = false           # the app keeps drawing its own 1 px borders
 highlights = "effect"         # "effect": the wash paints the selected and hovered rows, the hovered
