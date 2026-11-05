@@ -222,8 +222,9 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
                 pitch: 0.0,
             });
         }
-        // The empty space below the last name, down to the sidebar's bottom.
-        if let Some(y) = scene.sidebar_end.filter(|y| *y < bottom - 1.0) {
+        // The empty space below the last name, down to the sidebar's bottom, never reaching up
+        // into the title bar.
+        if let Some(y) = scene.sidebar_end.filter(|y| *y > bar && *y < bottom - 1.0) {
             out.push(Block {
                 rect: Rect { x: 0.0, y, w: side, h: bottom - y },
                 kind: Kind::SidebarFoot,
@@ -377,10 +378,11 @@ mod tests {
     }
 
     #[test]
-    fn no_foot_is_reported_when_the_names_reach_the_bottom() {
+    fn no_foot_is_reported_when_the_names_reach_the_bottom_or_their_end_is_not_below_the_title_bar() {
         for end in [Some(800.0), Some(950.0), None] {
             assert!(!blocks(&scene_with_sidebar_end(end), false).iter().any(|b| b.kind == Kind::SidebarFoot), "{end:?}");
         }
+        assert!(!blocks(&scene_with_sidebar_end(Some(20.0)), false).iter().any(|b| b.kind == Kind::SidebarFoot), "an end inside the 38 point title bar");
     }
 
     #[test]
