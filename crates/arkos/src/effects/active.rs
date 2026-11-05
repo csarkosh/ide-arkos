@@ -79,6 +79,18 @@ impl Style {
         Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, body_bars_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
     }
 
+    /// The ground a document's own fills go with: a markdown table's header and paper rows and a
+    /// grid's header, row numbers and rows. They go clear with `ground_alpha` only while the
+    /// document's paper lets the wash show through; over an opaque paper nothing of the wash could
+    /// show, so they keep their own colours.
+    pub fn document_ground(&self) -> f32 {
+        if self.document_paper_alpha >= 1.0 {
+            1.0
+        } else {
+            self.ground_alpha
+        }
+    }
+
     /// A UI text size of `pt` points as this style draws it.
     pub fn ui(&self, pt: f32) -> f32 {
         pt + self.ui_text_bump
@@ -794,6 +806,21 @@ mod tests {
         let matrix = manifest::load("runic", Path::new("/nonexistent/effects")).unwrap().manifest;
         assert_eq!(style_at(&matrix, 1.0).document_paper_alpha, 0.92);
         assert_eq!(style_at(&matrix, 1.0).paper_alpha, 0.65);
+    }
+
+    #[test]
+    fn a_document_s_fills_go_with_the_ground_through_every_fade_unless_its_paper_stays_opaque() {
+        for b in crate::effects::BUILTIN {
+            let m = manifest::load(b.name, Path::new("/nonexistent/effects")).unwrap().manifest;
+            for step in 0..=20 {
+                let s = style_at(&m, step as f32 / 20.0);
+                // Every effect before overworld sees through its documents' paper, so its tables
+                // and grids are drawn exactly as they were, fade by fade.
+                let want = if b.name == "overworld" { 1.0 } else { s.ground_alpha };
+                assert_eq!(s.document_ground(), want, "{} at {step}/20", b.name);
+            }
+        }
+        assert_eq!(Style::plain().document_ground(), 1.0, "no effect, the fills as ever");
     }
 
     #[test]

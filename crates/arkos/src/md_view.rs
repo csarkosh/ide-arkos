@@ -841,8 +841,9 @@ pub struct BlockCtx {
     pub selection: Rgb,
     pub find_current: Rgb,
     pub caret: Rgb,
-    /// The window's ground under an effect (`Style::ground_alpha`): 1 plain, 0 under an effect.
-    /// A table's fills go with it, so the wash shows through them.
+    /// The ground a document's fills go with (`Style::document_ground`): 1 plain or over an
+    /// opaque document paper, else the window's ground. A table's fills go with it, so the wash
+    /// shows through them while the paper lets it.
     pub ground: f32,
     /// The effect inks the borders, so a table draws only its inner lines, in ink.
     pub ink: bool,
@@ -977,7 +978,7 @@ pub fn render(
         selection: theme.semantic.find_match,
         find_current: theme.semantic.find_current,
         caret: theme.chrome.text,
-        ground: style.ground_alpha,
+        ground: style.document_ground(),
         ink: style.ink_borders,
         shapes: (style.ground_alpha < 1.0).then_some(root),
     });
@@ -3436,6 +3437,24 @@ mod tests {
         assert_eq!(row_fill(1, header, paper, tint, 0.0).a, 0.0);
         assert_eq!(row_fill(2, header, paper, tint, 0.0), tint, "the stripe stays");
         assert_eq!(row_fill(0, header, paper, tint, 0.5).a, 0.5, "halfway through a fade");
+    }
+
+    #[test]
+    fn a_table_keeps_its_fills_when_the_document_paper_is_opaque() {
+        use crate::effects::active::Style;
+        let (header, paper) = (gpui::hsla(0.1, 0.5, 0.8, 1.0), gpui::hsla(0.1, 0.5, 0.97, 1.0));
+        let tint = gpui::hsla(0.0, 0.0, 0.1, 0.04);
+        let under = |document_paper_alpha: f32| Style { document_paper_alpha, ground_alpha: 0.0, ..Style::plain() };
+        // Over an opaque document paper the wash cannot show, so the fills stay the table's own.
+        let opaque = under(1.0).document_ground();
+        assert_eq!(row_fill(0, header, paper, tint, opaque), header);
+        assert_eq!(row_fill(1, header, paper, tint, opaque), paper);
+        // Over a see-through paper they still go with the ground, as before.
+        for see_through in [0.92, 0.5] {
+            let ground = under(see_through).document_ground();
+            assert_eq!(row_fill(0, header, paper, tint, ground).a, 0.0, "{see_through}");
+            assert_eq!(row_fill(1, header, paper, tint, ground).a, 0.0, "{see_through}");
+        }
     }
 
     #[test]

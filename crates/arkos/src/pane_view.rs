@@ -1227,7 +1227,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     };
     let body = match kind {
         Kind::Grid { .. } => {
-            let element = GridElement::new(viewer.clone(), root.prose_family(), family.clone(), GridColors::new(&theme, style), style.ground_alpha, (style.ground_alpha < 1.0).then(|| cx.weak_entity()))
+            let element = GridElement::new(viewer.clone(), root.prose_family(), family.clone(), GridColors::new(&theme, style), style.document_ground(), (style.ground_alpha < 1.0).then(|| cx.weak_entity()))
                 .paper_alpha(style.document_paper_alpha)
                 .paper_radius(paper_radius(style));
             // A workbook of several sheets has its tabs under the grid, which shrinks by their height.

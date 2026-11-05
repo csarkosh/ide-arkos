@@ -245,7 +245,8 @@ pub struct GridElement {
     prose: SharedString,
     mono: SharedString,
     colors: GridColors,
-    /// The window's ground under an effect (`Style::ground_alpha`), which the fills go with.
+    /// The ground the fills go with (`Style::document_ground`): the window's under an effect
+    /// whose document paper lets the wash through, else 1.
     ground: f32,
     /// Where the grid reports itself to the wash while an effect is on.
     shapes: Option<WeakEntity<Root>>,

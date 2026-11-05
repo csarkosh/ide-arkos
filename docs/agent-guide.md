@@ -635,7 +635,8 @@ What an effect can touch:
   A video's picture (`ARKOS_MEDIA_BLOCK`) is opaque over the wash, so only what the wash draws
   outside it shows; with `ink_borders` it comes with all four edges, its rectangle a point and a
   half outside the picture so the outline is seen whole. A table (`ARKOS_TABLE_BLOCK`) has
-  clear fills under an effect and comes with all four edges; its header
+  clear fills while the document's paper lets the wash show through (`document_paper_alpha` under
+  1.0; at 1.0 its fills, and a grid's, keep their own colours) and comes with all four edges; its header
   (`ARKOS_TABLE_HEADER_BLOCK`) with the edge under it. The app draws the table's inner lines
   itself, in ink. A terminal's rows (`ARKOS_ROWS_BLOCK`, no edges) are the grid of cells it
   draws, as far as they are seen, with `pitch` the height of a row in points from the block's

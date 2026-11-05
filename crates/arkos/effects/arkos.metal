@@ -34,7 +34,8 @@ constant int ARKOS_SIDEBAR_FOOT_BLOCK = 16;  // the sidebar's empty space below 
 // A binder block is the gutter between the sidebar and the panes, there only when the effect's
 // manifest asks for one (`binder`); nothing of the app's is drawn in it.
 // A media block is a video's picture, opaque over the wash: only what is drawn outside it shows.
-// A table block is a markdown table, whose fills are clear; its header block is its first row.
+// A table block is a markdown table, whose fills are clear while the document's paper lets the
+// wash show through; its header block is its first row.
 // A rows block is a terminal's grid of rows, inside its pane's body, with no edges: its `pitch`
 // is a row's height in points, so a wash can rule the paper under each row (the first row's
 // top is the block's top). A menu block is an open menu or popover. The menu stage (arkos_overlay) is given them with
