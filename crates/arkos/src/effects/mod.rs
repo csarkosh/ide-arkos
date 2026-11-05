@@ -12,6 +12,10 @@ pub mod inputs;
 pub mod layer;
 pub mod manifest;
 pub mod paint;
+/// The overworld wash's layout and timing mirrored in Rust, for its tests alone: the app never
+/// runs it.
+#[cfg(test)]
+pub mod overworld;
 /// The runic wash's rain mirrored in Rust, for its tests alone for now.
 #[cfg(test)]
 pub mod runic;
@@ -76,6 +80,13 @@ pub const BUILTIN: &[BuiltIn] = &[
         manifest: include_str!("../../effects/notebook/effect.toml"),
         wash: include_str!("../../effects/notebook/wash.metal"),
         glyphs: Some(include_str!("../../effects/notebook/glyphs.metal")),
+        hidden: false,
+    },
+    BuiltIn {
+        name: "overworld",
+        manifest: include_str!("../../effects/overworld/effect.toml"),
+        wash: include_str!("../../effects/overworld/wash.metal"),
+        glyphs: None,
         hidden: false,
     },
 ];
@@ -161,6 +172,7 @@ mod tests {
             3 => "Three",
             4 => "Four",
             5 => "Five",
+            6 => "Six",
             n => panic!("{n} built-ins: teach this test the word"),
         })));
         assert!(guide.contains("| `glyph_rate` |"), "the manifest table has a glyph_rate row");

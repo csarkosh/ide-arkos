@@ -547,6 +547,18 @@ mod tests {
     }
 
     #[test]
+    fn the_built_in_overworld_parses_with_its_fixed_values() {
+        let b = BUILTIN.iter().find(|b| b.name == "overworld").expect("overworld is built in");
+        let m = parse(b.manifest).unwrap();
+        assert_eq!(m.description, "A night overworld in muted pixel art at the foot of the sidebar: stars, a castle, pines and fireflies.");
+        assert_eq!((m.frame_rate, m.scale), (10, 1.0));
+        assert!(!m.ink_borders && m.glyphs.is_none() && !b.hidden);
+        assert_eq!((m.highlights, m.menus), (Highlights::Effect, MenuLook::App));
+        assert_eq!((m.paper_alpha, m.chrome_alpha, m.active_tab_alpha, m.text_contrast), (1.0, 0.0, 0.0, 0.0));
+        assert_eq!(m.body_bars_alpha(), 1.0, "the bars inside a tab's body keep their colour");
+    }
+
+    #[test]
     fn the_built_in_runic_parses_with_its_fixed_values() {
         let b = BUILTIN.iter().find(|b| b.name == "runic").expect("runic is built in");
         let m = parse(b.manifest).unwrap();
@@ -573,7 +585,7 @@ mod tests {
         assert!(listed.iter().any(|(n, s)| n == "neon" && matches!(s, Source::Folder(_))), "{listed:?}");
         assert_eq!(
             list(Path::new("/nonexistent/effects")),
-            vec![("watercolor".to_string(), Source::BuiltIn), ("runic".to_string(), Source::BuiltIn), ("material".to_string(), Source::BuiltIn), ("notebook".to_string(), Source::BuiltIn)]
+            vec![("watercolor".to_string(), Source::BuiltIn), ("runic".to_string(), Source::BuiltIn), ("material".to_string(), Source::BuiltIn), ("notebook".to_string(), Source::BuiltIn), ("overworld".to_string(), Source::BuiltIn)]
         );
     }
 

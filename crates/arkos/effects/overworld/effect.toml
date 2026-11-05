@@ -1,0 +1,22 @@
+name = "overworld"
+description = "A night overworld in muted pixel art at the foot of the sidebar: stars, a castle, pines and fireflies."
+wash = "wash.metal"
+# No glyph shader: the text stays as the font draws it.
+frame_rate = 10               # 1 to 60; the wash's frames per second while anything moves: the
+                              # twinkles, the windows and the fireflies are slow
+scale = 1.0                   # 0.1 to 1.0; full size, so every 3 point art pixel stays crisp
+ink_borders = false           # the app keeps drawing its own 1 px borders
+highlights = "effect"         # "effect": the wash paints the selected and hovered rows, the hovered
+                              # tab and the active tabs with their lanterns; "app" (the default):
+                              # the app keeps its own fills and reports no highlight blocks
+menus = "app"                 # "ink", "glow" or "app" (the default): how the menus and popovers
+                              # look while the effect is on
+paper_alpha = 1.0             # 0.5 to 1.0; a terminal's or document's paper over the wash: opaque,
+                              # so no art shows behind a tab's text
+chrome_alpha = 0.0            # 0.0 to 1.0; the bars and the sidebar over the wash: clear, so the
+                              # scene and the stars show
+body_bars_alpha = 1.0         # 0.0 to 1.0; the bars inside a tab's body over the wash: opaque, so
+                              # they keep their own colour
+active_tab_alpha = 0.0        # 0.0 to 1.0; the active tab over the wash: clear, the wash paints it
+                              # and its lantern
+text_contrast = 0.0           # 0.0 to 1.0; how far the text moves towards ink while the effect is on

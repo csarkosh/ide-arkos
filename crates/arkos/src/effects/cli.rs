@@ -491,7 +491,7 @@ mod tests {
         assert_eq!(
             out,
             format!(
-                "watercolor (built in)\nrunic (built in)\nmaterial (built in)\nnotebook (built in)\nbroken (folder, invalid: {}: scale must be 0.1 to 1.0 (was 2.0))\nneon (folder)\n",
+                "watercolor (built in)\nrunic (built in)\nmaterial (built in)\nnotebook (built in)\noverworld (built in)\nbroken (folder, invalid: {}: scale must be 0.1 to 1.0 (was 2.0))\nneon (folder)\n",
                 effects.join("broken").join("effect.toml").display()
             )
         );
@@ -502,9 +502,10 @@ mod tests {
         assert_eq!(v[1], serde_json::json!({ "name": "runic", "source": "built-in" }));
         assert_eq!(v[2], serde_json::json!({ "name": "material", "source": "built-in" }));
         assert_eq!(v[3], serde_json::json!({ "name": "notebook", "source": "built-in" }));
-        assert_eq!((v[4]["name"].as_str(), v[4]["source"].as_str()), (Some("broken"), Some("invalid")));
-        assert!(v[4]["error"].as_str().unwrap().contains("scale must be 0.1 to 1.0"));
-        assert_eq!(v[5], serde_json::json!({ "name": "neon", "source": "folder", "path": effects.join("neon") }));
+        assert_eq!(v[4], serde_json::json!({ "name": "overworld", "source": "built-in" }));
+        assert_eq!((v[5]["name"].as_str(), v[5]["source"].as_str()), (Some("broken"), Some("invalid")));
+        assert!(v[5]["error"].as_str().unwrap().contains("scale must be 0.1 to 1.0"));
+        assert_eq!(v[6], serde_json::json!({ "name": "neon", "source": "folder", "path": effects.join("neon") }));
         assert_eq!(run(&["list", "extra"], &env).0, 2);
     }
 
@@ -621,7 +622,7 @@ mod tests {
         }
         let s = Setup::new();
         let env = env!(s, s.path("none.sock"));
-        for (name, copy) in [("space", "stars"), ("runic", "rain")] {
+        for (name, copy) in [("space", "stars"), ("runic", "rain"), ("overworld", "night")] {
             let effect = manifest::load(name, Path::new("/nonexistent/effects")).unwrap();
             assert_eq!(compile(&effect), Ok(()), "{name}");
             // Runic reads ARKOS_CALM_ALPHA, which the check declares ahead of it as a window does.
