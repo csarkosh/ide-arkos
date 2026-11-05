@@ -648,6 +648,9 @@ What an effect can touch:
   where the bar lays it out: its words (the app's name, the project's path and in a sandbox
   `sandbox`) and its icons, a block each, at least 40 points apart (the built-in `notebook` sets
   a cover label behind each).
+  The sidebar's foot (`ARKOS_SIDEBAR_FOOT_BLOCK`, no edges) is the sidebar's empty space below its
+  last visible name, through to the sidebar's bottom. It is reported whenever the sidebar shows and
+  there is room, and it follows the lists as they grow, scroll, open and close.
 - The text, through the glyph shader: it replaces gpui's own stages for the project window's
   glyphs.
 - The alphas of the app's surfaces over the wash: the paper of terminals and documents, the bars

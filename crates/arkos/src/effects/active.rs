@@ -182,10 +182,10 @@ pub fn latest_scroll(instants: impl IntoIterator<Item = Option<Instant>>) -> Opt
 }
 
 /// What a frame's blocks are made from in the project window: the panes' content area and the
-/// binder's width left of it, the window's bars, the sidebar's divider when laid out, the panes and those whose Claude session
+/// binder's width left of it, the window's bars, the sidebar's divider and the end of its names when laid out, the panes and those whose Claude session
 /// works, the shapes laid out inside them and the highlights' strokes.
-pub fn scene<'a>(content: Rect, binder: f32, divider_y: Option<f32>, panes: &'a [(PaneId, Rect)], busy: &'a [PaneId], shapes: &'a [Shape], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
-    Scene { content, title_bar_h: crate::chrome::TITLE_BAR_H, tab_bar_h: crate::pane_view::TAB_BAR_H, binder, divider_y, panes, busy, shapes, strokes }
+pub fn scene<'a>(content: Rect, binder: f32, divider_y: Option<f32>, sidebar_end: Option<f32>, panes: &'a [(PaneId, Rect)], busy: &'a [PaneId], shapes: &'a [Shape], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
+    Scene { content, title_bar_h: crate::chrome::TITLE_BAR_H, tab_bar_h: crate::pane_view::TAB_BAR_H, binder, divider_y, sidebar_end, panes, busy, shapes, strokes }
 }
 
 /// Whether the GPU's time per frame is worth a line in the window log: the first reading, then
@@ -907,7 +907,7 @@ mod tests {
         tree.split(first, Side::Right, Tab::Terminal { session: protocol::SessionId(2), cwd: None }).unwrap();
         for content in [Rect { x: 240.0, y: 28.0, w: 960.0, h: 772.0 }, Rect { x: 240.0, y: 28.0, w: 660.0, h: 572.0 }] {
             let layout = tree.layout(content);
-            let out = blocks::blocks(&scene(content, 0.0, None, &layout.panes, &[], &[], &[]), true);
+            let out = blocks::blocks(&scene(content, 0.0, None, None, &layout.panes, &[], &[], &[]), true);
             assert_eq!(out[0].rect.w, content.x + content.w, "the title bar spans the window");
             let bars: Vec<Rect> = out.iter().filter(|b| b.kind == Kind::TabBar).map(|b| b.rect).collect();
             let want: Vec<Rect> = layout.panes.iter().map(|(_, r)| Rect { h: crate::pane_view::TAB_BAR_H, ..*r }).collect();

@@ -25,6 +25,7 @@ constant int ARKOS_TABLE_BLOCK = 9;      constant int ARKOS_TABLE_HEADER_BLOCK =
 constant int ARKOS_MENU_BLOCK = 11;    constant int ARKOS_ROWS_BLOCK = 12;
 constant int ARKOS_BINDER_BLOCK = 13;    constant int ARKOS_ACTIVE_TAB_BLOCK = 14;
 constant int ARKOS_TITLE_GROUP_BLOCK = 15;
+constant int ARKOS_SIDEBAR_FOOT_BLOCK = 16;  // the sidebar's empty space below its last name
 // A title group block is one group of the title bar's contents where the bar lays it out, with
 // no edges: its words (the app's name, the project's path, `sandbox`) and its icons, a block
 // each, so a wash can set a label behind each with the bar showing between them.

@@ -33,6 +33,8 @@ pub enum Kind {
     /// One group of the title bar's contents as laid out: its words (the app's name, the
     /// project's path and in a sandbox the word `sandbox`), or its icons.
     TitleGroup = 15,
+    /// The sidebar's empty space below its last visible name, through to the sidebar's bottom.
+    SidebarFoot = 16,
 }
 
 /// The edges of a block the app no longer draws when the effect inks the borders, a bit each.
@@ -168,6 +170,8 @@ pub struct Scene<'a> {
     /// The gutter's width between the sidebar and `content`; 0, none.
     pub binder: f32,
     pub divider_y: Option<f32>,
+    /// The window y in points where the sidebar's last visible name ends, when laid out.
+    pub sidebar_end: Option<f32>,
     pub panes: &'a [(PaneId, Rect)],
     /// The panes whose active tab is a terminal whose Claude session works: their tab bar and
     /// body blocks are busy.
@@ -212,6 +216,19 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
                 kind: Kind::Divider,
                 edges: edges(EDGE_TOP),
                 seed: 3.0,
+                value: 1.0,
+                ordinal: 0.0,
+                busy: 0.0,
+                pitch: 0.0,
+            });
+        }
+        // The empty space below the last name, down to the sidebar's bottom.
+        if let Some(y) = scene.sidebar_end.filter(|y| *y < bottom - 1.0) {
+            out.push(Block {
+                rect: Rect { x: 0.0, y, w: side, h: bottom - y },
+                kind: Kind::SidebarFoot,
+                edges: 0,
+                seed: 5.0,
                 value: 1.0,
                 ordinal: 0.0,
                 busy: 0.0,
@@ -331,7 +348,61 @@ mod tests {
     }
 
     fn scene<'a>(content: Rect, divider_y: Option<f32>, panes: &'a [(PaneId, Rect)], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
-        Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, divider_y, panes, busy: &[], shapes: &[], strokes }
+        Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, divider_y, sidebar_end: None, panes, busy: &[], shapes: &[], strokes }
+    }
+
+    /// The content area starting at `x`, under the title bar and down to y 800.
+    fn content_x(x: f32) -> Rect {
+        rect(x, 38.0, 1200.0 - x, 762.0)
+    }
+
+    /// One pane, the given content area and where the sidebar's names end.
+    fn scene_with(content: Rect, sidebar_end: Option<f32>) -> Scene<'static> {
+        static PANES: [(PaneId, Rect); 1] = [(1, Rect { x: 240.0, y: 38.0, w: 960.0, h: 762.0 })];
+        Scene { sidebar_end, ..scene(content, None, &PANES, &[]) }
+    }
+
+    fn scene_with_sidebar_end(end: Option<f32>) -> Scene<'static> {
+        scene_with(content_x(240.0), end)
+    }
+
+    #[test]
+    fn a_sidebar_foot_spans_the_sidebar_below_its_last_name() {
+        // content starts at x 240 under a 38 pt title bar and runs to y 800; the names end at 600.
+        let out = blocks(&scene_with_sidebar_end(Some(600.0)), false);
+        let foot: Vec<_> = out.iter().filter(|b| b.kind == Kind::SidebarFoot).collect();
+        assert_eq!(foot.len(), 1);
+        assert_eq!(foot[0].rect, rect(0.0, 600.0, 240.0, 200.0));
+        assert_eq!((foot[0].edges, foot[0].seed), (0, 5.0));
+    }
+
+    #[test]
+    fn no_foot_is_reported_when_the_names_reach_the_bottom() {
+        for end in [Some(800.0), Some(950.0), None] {
+            assert!(!blocks(&scene_with_sidebar_end(end), false).iter().any(|b| b.kind == Kind::SidebarFoot), "{end:?}");
+        }
+    }
+
+    #[test]
+    fn the_foot_is_as_wide_as_the_sidebar_on_screen_and_gone_without_one() {
+        // Mid-slide the content starts at x 90; with no sidebar it starts at 0.
+        let sliding = blocks(&scene_with(content_x(90.0), Some(600.0)), false);
+        assert_eq!(sliding.iter().find(|b| b.kind == Kind::SidebarFoot).unwrap().rect.w, 90.0);
+        assert!(!blocks(&scene_with(content_x(0.0), Some(600.0)), false).iter().any(|b| b.kind == Kind::SidebarFoot));
+    }
+
+    #[test]
+    fn the_foot_comes_before_the_panes_so_the_cap_never_drops_it() {
+        let out = blocks(&scene_with_sidebar_end(Some(600.0)), false);
+        let foot = out.iter().position(|b| b.kind == Kind::SidebarFoot).unwrap();
+        let first_bar = out.iter().position(|b| b.kind == Kind::TabBar).unwrap();
+        assert!(foot < first_bar);
+    }
+
+    #[test]
+    fn the_preamble_numbers_the_sidebar_foot_block_as_the_app_does() {
+        assert_eq!(Kind::SidebarFoot as u32, 16);
+        assert!(crate::effects::PREAMBLE.contains("ARKOS_SIDEBAR_FOOT_BLOCK = 16"));
     }
 
     #[test]
@@ -406,7 +477,7 @@ mod tests {
         assert_eq!((out[1].value, out[1].ordinal), (0.6, HighlightState::Hovered as u32 as f32));
         // The same stroke gives the same block in the wash and in the backdrop.
         let panes = [];
-        let in_wash = blocks(&Scene { content: rect(0.0, 0.0, 800.0, 600.0), title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, divider_y: None, panes: &panes, busy: &[], shapes: &[], strokes: &[(inside, 0.6)] }, true);
+        let in_wash = blocks(&Scene { content: rect(0.0, 0.0, 800.0, 600.0), title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, divider_y: None, sidebar_end: None, panes: &panes, busy: &[], shapes: &[], strokes: &[(inside, 0.6)] }, true);
         assert_eq!(in_wash.last(), out.last());
     }
 

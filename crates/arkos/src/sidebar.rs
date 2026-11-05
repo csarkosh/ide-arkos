@@ -157,6 +157,8 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
     let style = root.effect_style();
     let now = root.frame_now;
     let sliding = root.sidebar.sliding(now);
+    // A hidden sidebar reports nothing stale.
+    root.effect_sidebar_end = None;
     if root.sidebar.collapsed && !sliding {
         return None;
     }
@@ -272,6 +274,8 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
                     cx.notify();
                 })),
         )
+        // Closed, the names end at the header's bottom; open, the rows' own marker reports it.
+        .when(!worktrees_open, |d| d.child(sidebar_end_marker(cx)))
         .when(worktrees_open, |d| {
             d.child(render_worktree_rows(root, window, &theme, cx).opacity(worktrees_o))
         });
@@ -1145,10 +1149,28 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
     if let Some(line) = line {
         list = list.child(div().flex_none().h(px(ROW_H)).px(px(10.0)).flex().items_center().text_color(dim).truncate().child(line));
     }
+    // Last in the scroll, so its top is where the last name ends (below the sidebar when the list
+    // overflows).
+    list = list.child(sidebar_end_marker(cx));
     if moving {
         window.request_animation_frame();
     }
     list
+}
+
+/// A zero-height canvas that reports its top as where the sidebar's names end, for an effect's
+/// sidebar foot.
+fn sidebar_end_marker(cx: &mut Context<Root>) -> impl IntoElement {
+    let weak = cx.weak_entity();
+    gpui::canvas(
+        move |bounds, _window, cx| {
+            let _ = weak.update(cx, |root, _| root.effect_sidebar_end = Some(f32::from(bounds.origin.y)));
+        },
+        |_, _, _, _| {},
+    )
+    .w_full()
+    .h(px(0.0))
+    .flex_none()
 }
 
 /// The worktree row's right-click menu, drawn like the file tree's.

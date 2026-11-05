@@ -425,6 +425,8 @@ pub struct Root {
     /// Where the sidebar's Worktrees section starts, in window points, as last laid out: the
     /// divider the wash draws between it and the Explorer.
     pub effect_divider: Option<f32>,
+    /// The window y where the sidebar's last visible name ends, reported by its canvases.
+    pub effect_sidebar_end: Option<f32>,
     /// The highlights laid out this frame (spec 4.6): cleared at the start of each render and
     /// pushed by the Explorer rows' and the tabs' canvases while the effect paints highlights.
     pub effect_marks: Vec<effects::blocks::Mark>,
@@ -781,6 +783,7 @@ impl Root {
             glyph_timer_gen: 0,
             transparent: false,
             effect_divider: None,
+            effect_sidebar_end: None,
             effect_marks: Vec::new(),
             effect_shapes: Vec::new(),
             effect_menus: Vec::new(),
@@ -4109,7 +4112,7 @@ impl Root {
         let busy = self.sessions.working_panes(&self.tree);
         let e = self.effect.as_mut()?;
         let style = e.style(now);
-        let scene = effects::active::scene(self.content, self.binder, self.effect_divider, &layout.panes, &busy, &self.effect_shapes, &strokes);
+        let scene = effects::active::scene(self.content, self.binder, self.effect_divider, self.effect_sidebar_end, &layout.panes, &busy, &self.effect_shapes, &strokes);
         self.effect_strokes_now = strokes.clone();
         let blocks = effects::blocks::blocks(&scene, style.ink_borders);
         let (size, scale) = e.layer.metrics();
