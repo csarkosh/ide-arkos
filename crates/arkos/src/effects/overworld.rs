@@ -182,6 +182,91 @@ mod tests {
         assert!(dimmed_window(s + DIM_FOR * 0.5).is_some() && dimmed_window(s + DIM_FOR + 0.01).is_none());
     }
 
+    fn wash() -> &'static str {
+        crate::effects::BUILTIN.iter().find(|b| b.name == "overworld").unwrap().wash
+    }
+
+    #[test]
+    fn the_wash_declares_every_constant_mirrored_here_with_the_same_value() {
+        let wash = wash();
+        for line in [
+            format!("constant float ART_PX = {ART_PX:?};"),
+            format!("constant float SCENE_MAX_H = {SCENE_MAX_H:?};"),
+            format!("constant float SCENE_MIN_H = {SCENE_MIN_H:?};"),
+            format!("constant float STAR_CLEAR = {STAR_CLEAR:?};"),
+            format!("constant float DIM_CYCLE = {DIM_CYCLE:?};"),
+            format!("constant float DIM_SLACK = {DIM_SLACK:?};"),
+            format!("constant float DIM_FOR = {DIM_FOR:?};"),
+            format!("constant int CASTLE_WINDOWS = {CASTLE_WINDOWS};"),
+            format!("constant uint DIM_SALT = 0x{DIM_SALT:08X}u;"),
+            format!("constant int FIREFLIES = {FIREFLIES};"),
+            format!("constant float FIREFLY_PERIOD_MIN = {:?};", FIREFLY_PERIOD[0]),
+            format!("constant float FIREFLY_PERIOD_MAX = {:?};", FIREFLY_PERIOD[1]),
+            format!("constant float FIREFLY_FADE_IN = {FIREFLY_FADE_IN:?};"),
+            format!("constant float FIREFLY_FADE_FROM = {FIREFLY_FADE_FROM:?};"),
+            format!("constant float FIREFLY_FADE_TO = {FIREFLY_FADE_TO:?};"),
+            format!("constant uint FIREFLY_SALT = 0x{FIREFLY_SALT:08X}u;"),
+            format!("constant float TWINKLE_PERIOD_MIN = {:?};", TWINKLE_PERIOD[0]),
+            format!("constant float TWINKLE_PERIOD_MAX = {:?};", TWINKLE_PERIOD[1]),
+            format!("constant uint TWINKLE_SALT = 0x{TWINKLE_SALT:08X}u;"),
+        ] {
+            assert!(wash.contains(&line), "wash.metal lacks {line}");
+        }
+    }
+
+    /// A small Timo Purple window as the app reports it: the title bar with its words and icons,
+    /// a 180 point sidebar whose names end at y 120, and one pane with its active tab.
+    const W: u32 = 400;
+    const H: u32 = 300;
+    const SIDE: f32 = 180.0;
+    const NAMES_END: f32 = 120.0;
+    const WORDS: Rect = Rect { x: 80.0, y: 6.0, w: 120.0, h: 16.0 };
+    const ICONS: Rect = Rect { x: 340.0, y: 4.0, w: 50.0, h: 20.0 };
+
+    fn small_window() -> Vec<crate::effects::blocks::Block> {
+        use crate::effects::blocks::{blocks, Kind, Shape};
+        let top = crate::chrome::TITLE_BAR_H;
+        let content = Rect { x: SIDE, y: top, w: W as f32 - SIDE, h: H as f32 - top };
+        let panes = [(1, content)];
+        let shapes = [
+            Shape { key: 1, rect: WORDS, kind: Kind::TitleGroup, pitch: 0.0 },
+            Shape { key: 2, rect: ICONS, kind: Kind::TitleGroup, pitch: 0.0 },
+            Shape { key: 7, rect: Rect { x: SIDE, y: top, w: 100.0, h: crate::pane_view::TAB_BAR_H }, kind: Kind::ActiveTab, pitch: 0.0 },
+        ];
+        let scene = crate::effects::active::scene(content, 0.0, None, Some(NAMES_END), &panes, &[], &shapes, &[]);
+        blocks(&scene, false)
+    }
+
+    /// Every pixel of the frame inside `r`, a window point a pixel.
+    fn pixels(frame: &[crate::palette::Rgb], r: Rect) -> Vec<crate::palette::Rgb> {
+        let (x0, y0, x1, y1) = (r.x as u32, r.y as u32, (r.x + r.w) as u32, (r.y + r.h) as u32);
+        (y0..y1).flat_map(|y| (x0..x1).map(move |x| frame[(y * W + x) as usize])).collect()
+    }
+
+    #[test]
+    fn on_the_gpu_the_names_title_and_tab_bodies_sit_on_plain_colour_and_only_the_foot_has_art() {
+        if metal::Device::system_default().is_none() {
+            return;
+        }
+        let theme = crate::theme::builtin("timo-purple").unwrap();
+        let c = &theme.chrome;
+        let blocks = small_window();
+        let top = crate::chrome::TITLE_BAR_H;
+        let tab = crate::pane_view::TAB_BAR_H;
+        let band = scene_band(Rect { x: 0.0, y: NAMES_END, w: SIDE, h: H as f32 - NAMES_END }).unwrap();
+        for t in [0.0, 3.7, 21.3] {
+            let frame = crate::effects::bench::render_frame(wash(), &theme, (W, H), t, &blocks);
+            let body = Rect { x: SIDE, y: top + tab, w: W as f32 - SIDE, h: H as f32 - top - tab };
+            assert!(pixels(&frame, body).iter().all(|p| *p == c.window_bg), "a tab body is plain window_bg at {t}");
+            let names = Rect { x: 0.0, y: top, w: SIDE, h: band.y - top };
+            assert!(pixels(&frame, names).iter().all(|p| *p == c.sidebar), "the sidebar above the scene is plain at {t}");
+            for g in [WORDS, ICONS] {
+                assert!(pixels(&frame, g).iter().all(|p| *p == c.title_bar), "the title bar is plain under {g:?} at {t}");
+            }
+            assert!(pixels(&frame, band).iter().any(|p| *p != c.sidebar), "the scene is drawn in the foot at {t}");
+        }
+    }
+
     #[test]
     fn a_firefly_is_gone_before_it_leaves_the_scene() {
         for i in 0..FIREFLIES {
