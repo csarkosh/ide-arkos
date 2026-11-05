@@ -1,0 +1,102 @@
+<h2>A, calmer: two levels</h2>
+<p class="subtitle">Both keep the art away from anything you read. No stars behind file names or tab labels, a plain tab bar, and the landscape only at the foot of the sidebar. The second goes further and dims the art toward the theme's own purples, so it reads like a painted backdrop.</p>
+
+<style>
+  .gb-wrap { position: relative; width: 720px; height: 450px; margin: 0 auto; }
+  .gb-wrap canvas { position: absolute; left: 0; top: 0; width: 720px; height: 450px; image-rendering: pixelated; }
+  .gb-txt { position: absolute; font-family: Menlo, monospace; color: #f3edff; white-space: pre; pointer-events: none; }
+  .gb-side { left: 14px; top: 34px; font-size: 11px; line-height: 17px; color: #c4b6ea; }
+  .gb-side b { color: #f3edff; font-weight: normal; }
+  .gb-tabs { top: 30px; font-size: 11px; color: #c4b6ea; }
+  .gb-tabs b { color: #f3edff; font-weight: normal; }
+  .gb-body { left: 176px; top: 66px; font-size: 12px; line-height: 18px; }
+  .gb-title { top: 5px; left: 0; width: 720px; text-align: center; font-size: 11px; color: #c4b6ea; }
+  .c { color: #00ffff; } .g { color: #5fe39a; } .d { color: #c4b6ea; } .m { color: #e39bff; }
+  .card .card-image { background: #120030; padding: 12px 0; overflow-x: auto; aspect-ratio: auto !important; height: auto !important; display: block !important; }
+</style>
+
+<div class="cards" style="grid-template-columns: 1fr;">
+  <div class="card" data-choice="soft" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="gb-wrap" id="mock-soft"></div></div>
+    <div class="card-body">
+      <h3>A1. Soft (my pick)</h3>
+      <p>The full colours, but only where nothing is written: a few stars at the title bar's ends and in the sidebar's empty sky, the castle, pines and grass at the bottom. The tab bar is the theme's own, with a small lit lantern on the active tab. Moving: stars twinkle, castle windows flicker, fireflies rise; nothing moves behind text.</p>
+    </div>
+  </div>
+  <div class="card" data-choice="softer" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="gb-wrap" id="mock-softer"></div></div>
+    <div class="card-body">
+      <h3>A2. Softer</h3>
+      <p>The same scene, its colours pulled toward the theme's purples: the grass a violet green, the castle a silhouette with only its windows lit. Calmer still, at the cost of some of the Game Boy brightness.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const W = 240, H = 150;
+  const P = { bg: '#330076', chrome: '#2a0062', deep: '#1a0045', night: '#1c0050', border: '#4b2a98', hover: '#7a5ad0', cyan: '#00ffff', text: '#f3edff', dim: '#c4b6ea', banner: '#3b1a86', green: '#5fe39a', yellow: '#ffd166', magenta: '#e39bff' };
+  function hex(c) { return [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16)); }
+  function mix(a, b, t) { const x = hex(a), y = hex(b); return '#' + x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, '0')).join(''); }
+
+  function draw(id, mute) {
+    let seed = 11;
+    const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+    // Muting pulls every art colour toward the sidebar's purple.
+    const k = c => mute ? mix(c, P.chrome, mute) : c;
+    const wrap = document.getElementById(id);
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H; wrap.appendChild(cv);
+    const x = cv.getContext('2d');
+    const r = (a, b, w, h, c) => { x.fillStyle = c; x.fillRect(a, b, w, h); };
+    const p = (a, b, c) => r(a, b, 1, 1, c);
+    function dither(a, b, w, h, c1, c2, t) {
+      for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) p(a + i, b + j, (t(j / h) > (((i + j) % 2 === 0) ? 0.25 : 0.75)) ? c2 : c1);
+    }
+    // Plain chrome first: the window as the theme draws it.
+    r(0, 0, W, H, P.chrome);
+    // Sky: only the sidebar's lower half and the title bar's ends get a gradient and stars.
+    dither(0, 70, 52, 42, P.chrome, k(P.banner), t => t);
+    for (let i = 0; i < 26; i++) {
+      const a = Math.floor(rnd() * 240), b = 1 + Math.floor(rnd() * 6);
+      if (a < 70 || a > 200) p(a, b, rnd() < 0.3 ? k(P.cyan) : k(P.dim));
+    }
+    for (let i = 0; i < 16; i++) {
+      const a = 2 + Math.floor(rnd() * 48), b = 72 + Math.floor(rnd() * 20);
+      p(a, b, rnd() < 0.25 ? k(P.cyan) : k(P.text));
+    }
+    // Moon, low in the empty sky.
+    for (let j = -4; j <= 4; j++) for (let i = -4; i <= 4; i++) {
+      if (i * i + j * j <= 16 && !((i - 2) * (i - 2) + (j + 1) * (j + 1) <= 13)) p(42 + i, 79 + j, k(P.text));
+    }
+    // Hills, castle, pines.
+    for (let i = 0; i < 52; i++) { const h = Math.round(6 + 3 * Math.sin(i / 7) + 2 * Math.sin(i / 3)); r(i, 118 - h, 1, h + 40, k('#24005a')); }
+    const cs = mute ? mix('#1a0045', P.chrome, mute * 0.5) : '#1a0045';
+    r(10, 98, 26, 16, cs); r(8, 92, 6, 22, cs); r(32, 92, 6, 22, cs); r(19, 86, 8, 28, cs);
+    for (const [a, b] of [[8, 91], [10, 91], [12, 91], [32, 91], [34, 91], [36, 91], [19, 85], [21, 85], [23, 85], [25, 85]]) p(a, b, cs);
+    r(22, 81, 1, 5, cs); r(23, 80, 3, 2, k(P.magenta));
+    for (const [a, b] of [[10, 96], [34, 96], [22, 90], [16, 103], [28, 103]]) p(a, b, P.cyan);
+    function pine(a, b, h) { for (let j = 0; j < h; j++) { const w = Math.floor(j / 2) + 1; r(a - w + 1, b + j, w * 2 - 1, 1, k(j % 3 === 0 ? '#1e5a52' : '#174844')); } r(a, b + h, 1, 2, k('#3a1f2e')); }
+    pine(4, 114, 12); pine(46, 112, 14); pine(40, 120, 9);
+    // Grass and a path.
+    dither(0, 128, 52, 22, k('#2f8a63'), k('#1e5a52'), t => t * 1.4);
+    for (let i = 0; i < 14; i++) { const a = Math.floor(rnd() * 52), b = 128 + Math.floor(rnd() * 20); p(a, b, k(P.green)); }
+    for (let j = 0; j < 22; j++) r(22 + Math.round(4 * Math.sin(j / 6)), 128 + j, 5 + Math.floor(j / 6), 1, k('#6b4a8a'));
+    for (const [a, b] of [[14, 124], [38, 132], [30, 118]]) p(a, b, P.yellow);
+    // Sidebar edge, tab bar as the theme draws it, and the body.
+    r(52, 8, 1, 142, P.border);
+    r(53, 17, 187, 1, P.border);
+    r(54, 18, 184, 130, P.border); r(55, 19, 182, 128, P.bg);
+    r(56, 9, 34, 10, P.bg); r(56, 9, 34, 1, P.cyan);
+    // The lantern on the active tab.
+    p(59, 11, k('#8a6aa8')); r(58, 12, 3, 3, k('#8a6aa8')); p(59, 13, P.yellow);
+
+    const t = (cls, html, style) => { const d = document.createElement('div'); d.className = 'gb-txt ' + cls; d.innerHTML = html; if (style) d.setAttribute('style', style); wrap.appendChild(d); };
+    t('gb-title', 'arkos-demo');
+    [['<b>claude</b>', 64], ['notes.md', 100], ['zsh', 146]].forEach(([s, a]) => t('gb-tabs', s, 'left:' + a * 3 + 'px'));
+    t('gb-side', 'EXPLORER\n  src\n    <b>main.rs</b>\n    settings.rs\n    theme.rs\n  docs\n  README.md\n\nWORKTREES\n  release');
+    t('gb-body', '<span class="c">❯</span> cargo test -p arkos\n<span class="d">   Compiling arkos v0.8.20</span>\n<span class="g">test result: ok.</span> 1494 passed\n\n<span class="m">●</span> Claude is editing settings.rs\n<span class="d">  ⎿ Updated 3 files</span>\n\n<span class="c">❯</span> <span class="d">▌</span>');
+  }
+  draw('mock-soft', 0);
+  draw('mock-softer', 0.45);
+})();
+</script>

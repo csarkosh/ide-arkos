@@ -1,0 +1,260 @@
+<h2>Timo Purple: three pixel-art directions</h2>
+<p class="subtitle">The game lives in the sidebar, the title bar, the tab bar and the gaps. The tab body stays plain Timo Purple so your work reads as it does today. All art is original, drawn at a low resolution and scaled up like a Game Boy Advance screen. Still frames: what moves is in each caption.</p>
+
+<style>
+  .gb-wrap { position: relative; width: 720px; height: 450px; margin: 0 auto; }
+  .gb-wrap canvas { position: absolute; left: 0; top: 0; width: 720px; height: 450px; image-rendering: pixelated; }
+  .gb-txt { position: absolute; font-family: Menlo, monospace; color: #f3edff; white-space: pre; pointer-events: none; }
+  .gb-side { left: 14px; top: 34px; font-size: 11px; line-height: 17px; color: #c4b6ea; }
+  .gb-side b { color: #f3edff; font-weight: normal; }
+  .gb-tabs { top: 30px; font-size: 11px; color: #c4b6ea; }
+  .gb-tabs b { color: #f3edff; font-weight: normal; }
+  .gb-body { left: 176px; top: 66px; font-size: 12px; line-height: 18px; }
+  .gb-title { top: 5px; left: 0; width: 720px; text-align: center; font-size: 11px; color: #c4b6ea; }
+  .c { color: #00ffff; } .g { color: #5fe39a; } .d { color: #c4b6ea; } .y { color: #ffd166; } .m { color: #e39bff; }
+  .card .card-image { background: #120030; padding: 12px 0; overflow-x: auto; aspect-ratio: auto !important; height: auto !important; display: block !important; }
+</style>
+
+<div class="cards" style="grid-template-columns: 1fr;">
+  <div class="card" data-choice="overworld" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="gb-wrap" id="mock-a"></div></div>
+    <div class="card-body">
+      <h3>A. Overworld at dusk</h3>
+      <p>The sidebar is a slice of a night landscape: a starry sky, a crescent moon, a far castle with cyan windows, pines and grass at the bottom. The tab bar is a stone ledge; the active tab is lit. Moving: stars twinkle, the castle's windows flicker now and then, a cloud drifts across the title bar, fireflies rise from the grass.</p>
+    </div>
+  </div>
+  <div class="card" data-choice="menu" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="gb-wrap" id="mock-b"></div></div>
+    <div class="card-body">
+      <h3>B. RPG menu windows</h3>
+      <p>Every pane and bar is a classic bordered menu box with notched pixel corners, on a dithered purple ground. A pixel cursor points at the active tab and the selected file. Moving: the cursor bobs, a glint runs along a box's border when it gets focus, and the ground's gradient shimmers slowly.</p>
+    </div>
+  </div>
+  <div class="card" data-choice="dungeon" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="gb-wrap" id="mock-c"></div></div>
+    <div class="card-body">
+      <h3>C. Crystal dungeon</h3>
+      <p>The ground is a stone wall of violet bricks. Torches with cyan magic flames line the sidebar, and the tab bar is a carved lintel set with gems; the active tab's gem glows. Moving: flames flicker, sparkles drift up from them, and a busy Claude session's gem pulses.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const S = 3, W = 240, H = 150;
+  const P = { bg: '#330076', chrome: '#2a0062', deep: '#1a0045', night: '#120034', border: '#4b2a98', hover: '#7a5ad0', cyan: '#00ffff', text: '#f3edff', dim: '#c4b6ea', banner: '#3b1a86', green: '#5fe39a', yellow: '#ffd166', magenta: '#e39bff', blue: '#8fb8ff', red: '#ff8a9e' };
+  let seed = 7;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+
+  function mk(id) {
+    const wrap = document.getElementById(id);
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    wrap.appendChild(cv);
+    const x = cv.getContext('2d');
+    const r = (a, b, w, h, c) => { x.fillStyle = c; x.fillRect(a, b, w, h); };
+    const p = (a, b, c) => r(a, b, 1, 1, c);
+    return { wrap, r, p };
+  }
+  function text(wrap, cls, html, style) {
+    const d = document.createElement('div');
+    d.className = 'gb-txt ' + cls;
+    d.innerHTML = html;
+    if (style) d.setAttribute('style', style);
+    wrap.appendChild(d);
+  }
+  // Two colours mixed by an ordered checker, the GBA way of faking a gradient.
+  function dither(g, a, b, w, h, c1, c2, t) {
+    for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+      const k = ((i + j) % 2 === 0) ? 0.25 : 0.75;
+      g.p(a + i, b + j, (t(j / h) > k) ? c2 : c1);
+    }
+  }
+  function star(g, a, b, big, c) {
+    g.p(a, b, c);
+    if (big) { g.p(a - 1, b, P.dim); g.p(a + 1, b, P.dim); g.p(a, b - 1, P.dim); g.p(a, b + 1, P.dim); }
+  }
+  function body(g) {
+    // The plain, soft tab body: the theme's own purple with a hairline edge.
+    g.r(54, 18, 184, 130, P.border);
+    g.r(55, 19, 182, 128, P.bg);
+  }
+  function common(wrap, xs) {
+    text(wrap, 'gb-title', 'arkos-demo');
+    ['<b>claude</b>', 'notes.md', 'zsh'].forEach((t, i) => text(wrap, 'gb-tabs', t, 'left:' + xs[i] * 3 + 'px'));
+    text(wrap, 'gb-body',
+      '<span class="c">❯</span> cargo test -p arkos\n' +
+      '<span class="d">   Compiling arkos v0.8.20</span>\n' +
+      '<span class="g">test result: ok.</span> 1494 passed\n\n' +
+      '<span class="m">●</span> Claude is editing settings.rs\n' +
+      '<span class="d">  ⎿ Updated 3 files</span>\n\n' +
+      '<span class="c">❯</span> <span class="d">▌</span>');
+  }
+  function sideText(wrap, cursor) {
+    text(wrap, 'gb-side',
+      'EXPLORER\n' + (cursor ? '' : '') +
+      '  src\n' +
+      '    <b>main.rs</b>\n' +
+      '    settings.rs\n' +
+      '    theme.rs\n' +
+      '  docs\n' +
+      '  README.md\n\n' +
+      'WORKTREES\n' +
+      '  release');
+  }
+
+  // A. Overworld at dusk
+  (function () {
+    seed = 11;
+    const g = mk('mock-a');
+    // Sky over the title bar and the sidebar, darker at the top.
+    dither(g, 0, 0, 240, 8, P.night, P.deep, t => t);
+    dither(g, 0, 8, 52, 100, P.night, P.chrome, t => t * 1.2);
+    dither(g, 0, 70, 52, 40, P.chrome, P.banner, t => t);
+    for (let i = 0; i < 70; i++) {
+      const a = Math.floor(rnd() * 240), b = Math.floor(rnd() * 8);
+      if (a > 52) star(g, a, b, false, rnd() < 0.3 ? P.cyan : P.dim);
+    }
+    for (let i = 0; i < 30; i++) { const a = 2 + Math.floor(rnd() * 48), b = 10 + Math.floor(rnd() * 80); if (a < 40 && b < 66) continue; star(g, a, b, rnd() < 0.15, rnd() < 0.25 ? P.cyan : P.text); }
+    // A cloud on the title bar.
+    g.r(150, 3, 14, 2, P.banner); g.r(153, 2, 7, 1, P.banner); g.r(147, 4, 4, 1, P.banner);
+    // Crescent moon.
+    for (let j = -5; j <= 5; j++) for (let i = -5; i <= 5; i++) {
+      const inA = i * i + j * j <= 25, inB = (i - 2) * (i - 2) + (j + 1) * (j + 1) <= 20;
+      if (inA && !inB) g.p(42 + i, 16 + j, P.text);
+    }
+    // Hills.
+    for (let i = 0; i < 52; i++) {
+      const h = Math.round(6 + 3 * Math.sin(i / 7) + 2 * Math.sin(i / 3));
+      g.r(i, 112 - h, 1, h + 40, '#24005a');
+    }
+    // A far castle.
+    const cs = '#1a0045';
+    g.r(10, 92, 26, 16, cs); g.r(8, 86, 6, 22, cs); g.r(32, 86, 6, 22, cs); g.r(19, 80, 8, 28, cs);
+    for (const [a, b] of [[8, 85], [10, 85], [12, 85], [32, 85], [34, 85], [36, 85], [19, 79], [21, 79], [23, 79], [25, 79], [11, 91], [15, 91], [29, 91]]) g.p(a, b, cs);
+    g.p(22, 74, P.dim); g.r(22, 75, 1, 5, cs); g.r(23, 74, 3, 2, P.magenta);
+    for (const [a, b] of [[10, 90], [34, 90], [22, 84], [16, 97], [28, 97], [22, 100]]) g.p(a, b, P.cyan);
+    // Pines.
+    function pine(a, b, h) {
+      for (let j = 0; j < h; j++) { const w = Math.floor(j / 2) + 1; g.r(a - w + 1, b + j, w * 2 - 1, 1, j % 3 === 0 ? '#1e5a52' : '#174844'); }
+      g.r(a, b + h, 1, 2, '#3a1f2e');
+    }
+    pine(4, 108, 12); pine(46, 106, 14); pine(40, 114, 9);
+    // Grass and a path.
+    dither(g, 0, 122, 52, 28, '#2f8a63', '#1e5a52', t => t * 1.4);
+    for (let i = 0; i < 18; i++) { const a = Math.floor(rnd() * 52), b = 122 + Math.floor(rnd() * 26); g.p(a, b, P.green); g.p(a, b - 1, '#3fa577'); }
+    for (let j = 0; j < 28; j++) g.r(22 + Math.round(4 * Math.sin(j / 6)), 122 + j, 5 + Math.floor(j / 6), 1, '#6b4a8a');
+    // Fireflies.
+    for (const [a, b] of [[14, 118], [38, 126], [30, 112], [9, 134]]) { g.p(a, b, P.yellow); }
+    // Sidebar's text needs a calmer patch: a translucent band behind the names.
+    g.r(52, 8, 1, 142, P.border);
+    // Tab bar: a stone ledge.
+    g.r(53, 8, 187, 10, '#3b1a86');
+    for (let i = 53; i < 240; i++) { g.p(i, 8, P.hover); g.p(i, 17, '#24005a'); }
+    for (let i = 53; i < 240; i += 9) { g.r(i, 9, 1, 4, '#2a0062'); g.r(i + 4, 13, 1, 4, '#2a0062'); }
+    g.r(53, 12, 187, 1, '#2a0062');
+    // The active tab, lit, joined to the body.
+    body(g);
+    g.r(56, 9, 34, 10, P.bg); g.r(56, 9, 34, 1, P.cyan); g.r(56, 9, 1, 9, P.border); g.r(89, 9, 1, 9, P.border);
+    g.p(58, 12, P.yellow); g.p(58, 13, P.yellow);
+    common(g.wrap, [62, 102, 146]);
+    sideText(g.wrap, false);
+  })();
+
+  // B. RPG menu windows
+  (function () {
+    seed = 23;
+    const g = mk('mock-b');
+    // Dithered ground in the gaps, a slow purple gradient.
+    dither(g, 0, 0, 240, 150, P.night, '#2a0062', t => t);
+    function box(a, b, w, h, fill) {
+      g.r(a + 1, b, w - 2, h, P.text); g.r(a, b + 1, w, h - 2, P.text);
+      g.r(a + 1, b + 1, w - 2, h - 2, P.hover);
+      g.r(a + 2, b + 2, w - 4, h - 4, fill);
+      g.p(a + 2, b + 2, P.hover); g.p(a + w - 3, b + 2, P.hover); g.p(a + 2, b + h - 3, P.hover); g.p(a + w - 3, b + h - 3, P.hover);
+    }
+    function cursor(a, b) {
+      const shape = ['X....', 'XX...', 'XXX..', 'XXXX.', 'XXX..', 'XX...', 'X....'];
+      shape.forEach((row, j) => [...row].forEach((ch, i) => { if (ch === 'X') g.p(a + i, b + j, P.yellow); }));
+      g.p(a, b + 7, '#a3842f');
+    }
+    box(1, 0, 238, 9, P.chrome);
+    box(1, 10, 50, 139, P.chrome);
+    // Gradient inside the sidebar's box, the menu look.
+    dither(g, 3, 12, 46, 135, P.chrome, '#24005a', t => t);
+    // Tabs as small boxes.
+    box(54, 9, 40, 11, P.bg);
+    box(96, 9, 44, 11, P.chrome);
+    box(142, 9, 30, 11, P.chrome);
+    // Body box: soft inside.
+    g.r(54, 20, 185, 129, P.text); g.r(55, 20, 183, 128, P.hover); g.r(56, 20, 181, 127, P.bg);
+    g.r(55, 19, 38, 2, P.bg);
+    cursor(57, 11);
+    cursor(9, 23);
+    // Three hearts at the right of the title bar.
+    function heart(a, b, c) { const s = ['.X.X.', 'XXXXX', 'XXXXX', '.XXX.', '..X..']; s.forEach((row, j) => [...row].forEach((ch, i) => { if (ch === 'X') g.p(a + i, b + j, c); })); }
+    heart(220, 2, P.red); heart(226, 2, P.red); heart(232, 2, '#5a2a6a');
+    common(g.wrap, [64, 101, 147]);
+    text(g.wrap, 'gb-side',
+      'EXPLORER\n' +
+      '  src\n' +
+      '    <b>main.rs</b>\n' +
+      '    settings.rs\n' +
+      '    theme.rs\n' +
+      '  docs\n' +
+      '  README.md\n\n' +
+      'WORKTREES\n' +
+      '  release', 'left:20px;top:36px');
+  })();
+
+  // C. Crystal dungeon
+  (function () {
+    seed = 41;
+    const g = mk('mock-c');
+    // Stone bricks over the whole ground.
+    g.r(0, 0, 240, 150, '#1a0045');
+    for (let row = 0; row < 38; row++) {
+      const off = (row % 2) * 5;
+      for (let col = -1; col < 25; col++) {
+        const a = col * 10 + off, b = row * 4;
+        const shade = rnd();
+        const c = shade < 0.15 ? '#4b2a98' : shade < 0.6 ? '#2e0870' : '#24005a';
+        g.r(a + 1, b + 1, 9, 3, c);
+        g.r(a + 1, b + 1, 9, 1, shade < 0.15 ? '#4b2a98' : '#33107a');
+      }
+    }
+    // Torches on the sidebar, with magic flames and a dithered glow.
+    function torch(a, b) {
+      for (let j = -14; j <= 14; j++) for (let i = -14; i <= 14; i++) {
+        const d = Math.sqrt(i * i + j * j);
+        if (d < 14 && d > 4 && ((i + j) % 2 === 0)) g.p(a + i, b + j, d < 8 ? '#4a48c0' : d < 11 ? '#3d2a9a' : '#33107a');
+      }
+      // Bracket and handle.
+      g.r(a - 2, b + 3, 5, 2, '#8a6aa8'); g.r(a - 1, b + 5, 3, 8, '#4a2a3a'); g.r(a - 2, b + 12, 5, 1, '#8a6aa8');
+      // A cyan flame, white at its heart.
+      const f = ['..X..', '.XXX.', '.XYX.', 'XXYXX', 'XYWYX', 'XYWYX', '.XYX.'];
+      f.forEach((row, j) => [...row].forEach((ch, i) => { if (ch !== '.') g.p(a - 2 + i, b - 5 + j, ch === 'X' ? P.blue : ch === 'Y' ? P.cyan : P.text); }));
+      for (const [i, j, c] of [[3, -9, P.cyan], [-3, -12, P.dim], [1, -15, P.text], [-2, -18, P.cyan]]) g.p(a + i, b + j, c);
+    }
+    torch(44, 34); torch(44, 84); torch(44, 132);
+    // Sidebar's calm column for the names.
+    g.r(1, 9, 37, 140, '#1f0052');
+    g.r(38, 9, 1, 140, '#4b2a98');
+    // Lintel tab bar with gems.
+    g.r(52, 7, 188, 11, '#3b1a86');
+    g.r(52, 7, 188, 1, P.hover); g.r(52, 17, 188, 1, '#1a0045');
+    function gem(a, b, lit) {
+      const c = lit ? P.cyan : '#5a4aa0', h = lit ? P.text : '#7a6ac0', sh = lit ? '#00a0b0' : '#3d2a7a';
+      g.r(a + 1, b, 2, 1, h); g.r(a, b + 1, 4, 1, c); g.p(a, b + 1, h); g.r(a, b + 2, 4, 1, sh); g.r(a + 1, b + 3, 2, 1, sh);
+    }
+    body(g);
+    g.r(56, 8, 34, 11, P.bg); g.r(56, 8, 34, 1, P.cyan);
+    gem(57, 10, true); gem(97, 10, false); gem(141, 10, false);
+    // The title bar: a darker course of stone.
+    g.r(0, 0, 240, 7, '#1a0045');
+    for (let i = 0; i < 240; i += 12) g.r(i, 0, 11, 6, '#24005a');
+    common(g.wrap, [62, 102, 146]);
+    sideText(g.wrap, false);
+  })();
+})();
+</script>

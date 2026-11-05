@@ -1,0 +1,173 @@
+<h2>A2 with a markdown file and a CSV</h2>
+<p class="subtitle">The art stays in the sidebar, the title bar and the tab bars. A rendered markdown tab (left, with its outline rail and the ⋯ view button) and a CSV grid (right) sit on plain Timo Purple, drawn as they are today.</p>
+
+<style>
+  .dw { position: relative; width: 960px; height: 570px; margin: 0 auto; font-family: -apple-system, "Helvetica Neue", sans-serif; }
+  .dw canvas { position: absolute; left: 0; top: 0; width: 960px; height: 570px; image-rendering: pixelated; }
+  .dw .t { position: absolute; color: #f3edff; white-space: pre; }
+  .dw .mono { font-family: Menlo, monospace; }
+  .side { left: 14px; top: 34px; font-size: 11px; line-height: 17px; color: #c4b6ea; }
+  .side b { color: #f3edff; font-weight: normal; }
+  .side i { color: #00ffff; font-style: normal; }
+  .tab { font-size: 11px; color: #c4b6ea; top: 31px; }
+  .tab b { color: #f3edff; font-weight: normal; }
+  .ttl { top: 6px; left: 0; width: 960px; text-align: center; font-size: 11px; color: #c4b6ea; }
+  .body { position: absolute; background: #330076; overflow: hidden; }
+  .md { left: 166px; top: 57px; width: 388px; height: 506px; }
+  .md .rail { position: absolute; left: 0; top: 0; width: 26px; height: 100%; border-right: 1px solid #4b2a98; }
+  .md .rail span { position: absolute; left: 10px; width: 6px; height: 6px; border-radius: 3px; border: 1px solid #c4b6ea; box-sizing: border-box; }
+  .md .rail span.on { background: #00ffff; border-color: #00ffff; }
+  .md .rail .menu { left: 6px; top: 8px; width: 14px; height: 10px; border: 0; border-radius: 0; color: #c4b6ea; font-size: 11px; line-height: 10px; }
+  .md .page { position: absolute; left: 44px; top: 14px; right: 18px; color: #f3edff; font-size: 13px; line-height: 19px; }
+  .md h1 { font-size: 22px; margin: 4px 0 8px; font-weight: 700; }
+  .md h2 { font-size: 16px; margin: 14px 0 6px; font-weight: 700; }
+  .md p { margin: 0 0 8px; }
+  .md a { color: #00ffff; text-decoration: none; }
+  .md code { font-family: Menlo, monospace; font-size: 11.5px; background: #3b1a86; padding: 1px 4px; border-radius: 3px; }
+  .md table { border-collapse: collapse; font-size: 12px; margin: 4px 0 10px; }
+  .md th { background: #3b1a86; text-align: left; font-weight: 600; }
+  .md th, .md td { border: 1px solid #4b2a98; padding: 3px 8px; }
+  .md td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  .md ul { margin: 0 0 8px; padding-left: 18px; }
+  .md li::marker { color: #c4b6ea; }
+  .md pre { font-family: Menlo, monospace; font-size: 11.5px; background: #2a0062; border: 1px solid #4b2a98; border-radius: 4px; padding: 6px 8px; margin: 4px 0; line-height: 16px; }
+  .vbtn { position: absolute; top: 8px; right: 8px; width: 26px; height: 22px; border-radius: 6px; background: #3b1a86; color: #c4b6ea; text-align: center; font-size: 13px; line-height: 20px; }
+  .csv { left: 568px; top: 57px; width: 386px; height: 506px; }
+  .csv table { border-collapse: collapse; font-size: 12px; color: #f3edff; margin-top: 40px; }
+  .csv th { background: #3b1a86; font-weight: 600; text-align: left; }
+  .csv th, .csv td { border-bottom: 1px solid #4b2a98; border-right: 1px solid #4b2a98; padding: 4px 10px; }
+  .csv td.g { color: #c4b6ea; text-align: right; font-family: Menlo, monospace; font-size: 11px; background: #2e0070; }
+  .csv td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  .csv tr.s td:not(.g) { background: #380a80; }
+  .csv tr.sel td.sel { outline: 2px solid #00ffff; outline-offset: -2px; }
+  .card .card-image { background: #120030; padding: 12px 0; overflow-x: auto; aspect-ratio: auto !important; height: auto !important; display: block !important; }
+</style>
+
+<div class="cards" style="grid-template-columns: 1fr;">
+  <div class="card">
+    <div class="card-image"><div class="dw" id="docs">
+      <div class="t ttl">metrics</div>
+      <div class="t side">EXPLORER
+  data
+    <b>signups.csv</b>
+  scripts
+  .gitignore
+  README.md
+  <i>report.md</i>
+
+WORKTREES
+  metrics-q4</div>
+      <div class="t tab" style="left:190px"><b>report.md</b></div>
+      <div class="t tab" style="left:282px">claude</div>
+      <div class="t tab" style="left:592px"><b>signups.csv</b></div>
+      <div class="t tab" style="left:690px">zsh</div>
+
+      <div class="body md">
+        <div class="rail">
+          <span class="on" style="top:40px"></span>
+          <span style="top:64px"></span>
+          <span style="top:80px"></span>
+          <span style="top:96px"></span>
+        </div>
+        <div class="vbtn">⋯</div>
+        <div class="page">
+          <h1>Weekly signups</h1>
+          <p>Signups and conversion by channel, for the team's Monday review. See <a href="#">the dashboard</a> for the live numbers.</p>
+          <h2>This week</h2>
+          <table>
+            <tr><th>Channel</th><th>Visits</th><th>Signups</th><th>Conv.</th></tr>
+            <tr><td>search</td><td class="n">4,879</td><td class="n">156</td><td class="n">3.2%</td></tr>
+            <tr><td>referral</td><td class="n">1,887</td><td class="n">149</td><td class="n">7.9%</td></tr>
+            <tr><td>social</td><td class="n">2,532</td><td class="n">41</td><td class="n">1.6%</td></tr>
+          </table>
+          <h2>Notes</h2>
+          <ul>
+            <li>Referral moved most: <code>+51</code> on the week.</li>
+            <li>Social is flat; the new ads start Monday.</li>
+          </ul>
+          <pre>python scripts/weekly.py --since 2026-10-26</pre>
+        </div>
+      </div>
+
+      <div class="body csv">
+        <div class="vbtn">⋯</div>
+        <table>
+          <tr><th style="background:#2e0070"></th><th>week</th><th>channel</th><th>visits</th><th>signups</th></tr>
+          <tr><td class="g">2</td><td>2026-09-07</td><td>search</td><td class="n">4111</td><td class="n">118</td></tr>
+          <tr class="s"><td class="g">3</td><td>2026-09-07</td><td>referral</td><td class="n">1323</td><td class="n">70</td></tr>
+          <tr class="sel"><td class="g">4</td><td>2026-09-07</td><td>social</td><td class="n sel">2611</td><td class="n">43</td></tr>
+          <tr class="s"><td class="g">5</td><td>2026-09-07</td><td>email</td><td class="n">852</td><td class="n">61</td></tr>
+          <tr><td class="g">6</td><td>2026-09-14</td><td>search</td><td class="n">4085</td><td class="n">124</td></tr>
+          <tr class="s"><td class="g">7</td><td>2026-09-14</td><td>referral</td><td class="n">1294</td><td class="n">68</td></tr>
+          <tr><td class="g">8</td><td>2026-09-14</td><td>social</td><td class="n">2550</td><td class="n">46</td></tr>
+          <tr class="s"><td class="g">9</td><td>2026-09-14</td><td>email</td><td class="n">871</td><td class="n">59</td></tr>
+          <tr><td class="g">10</td><td>2026-09-21</td><td>search</td><td class="n">4302</td><td class="n">131</td></tr>
+          <tr class="s"><td class="g">11</td><td>2026-09-21</td><td>referral</td><td class="n">1350</td><td class="n">77</td></tr>
+          <tr><td class="g">12</td><td>2026-09-21</td><td>social</td><td class="n">2498</td><td class="n">39</td></tr>
+          <tr class="s"><td class="g">13</td><td>2026-09-21</td><td>email</td><td class="n">905</td><td class="n">64</td></tr>
+          <tr><td class="g">14</td><td>2026-09-28</td><td>search</td><td class="n">4410</td><td class="n">140</td></tr>
+          <tr class="s"><td class="g">15</td><td>2026-09-28</td><td>referral</td><td class="n">1402</td><td class="n">88</td></tr>
+          <tr><td class="g">16</td><td>2026-09-28</td><td>social</td><td class="n">2577</td><td class="n">44</td></tr>
+          <tr class="s"><td class="g">17</td><td>2026-09-28</td><td>email</td><td class="n">930</td><td class="n">66</td></tr>
+          <tr><td class="g">18</td><td>2026-10-05</td><td>search</td><td class="n">4522</td><td class="n">143</td></tr>
+        </table>
+      </div>
+    </div></div>
+    <div class="card-body">
+      <h3>A2 around real documents</h3>
+      <p>The markdown and the grid keep their own colours: headings and text in the theme's light lavender, links and the current outline dot in cyan, table headers and code on a slightly lighter purple, the grid's alternate rows a shade apart. Nothing from the scene shows through either pane.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const W = 320, H = 190, mute = 0.45;
+  const P = { bg: '#330076', chrome: '#2a0062', border: '#4b2a98', cyan: '#00ffff', text: '#f3edff', dim: '#c4b6ea', banner: '#3b1a86', green: '#5fe39a', yellow: '#ffd166', magenta: '#e39bff' };
+  const hex = c => [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16));
+  const mix = (a, b, t) => { const x = hex(a), y = hex(b); return '#' + x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, '0')).join(''); };
+  const k = c => mix(c, P.chrome, mute);
+  let seed = 11;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  const wrap = document.getElementById('docs');
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H; wrap.insertBefore(cv, wrap.firstChild);
+  const x = cv.getContext('2d');
+  const r = (a, b, w, h, c) => { x.fillStyle = c; x.fillRect(a, b, w, h); };
+  const p = (a, b, c) => r(a, b, 1, 1, c);
+  const dither = (a, b, w, h, c1, c2, t) => { for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) p(a + i, b + j, (t(j / h) > (((i + j) % 2 === 0) ? 0.25 : 0.75)) ? c2 : c1); };
+
+  r(0, 0, W, H, P.chrome);
+  const dy = 40; // the scene sits lower in this taller window
+  dither(0, 70 + dy, 52, 42, P.chrome, k(P.banner), t => t);
+  for (let i = 0; i < 30; i++) { const a = Math.floor(rnd() * W), b = 1 + Math.floor(rnd() * 6); if (a < 90 || a > 250) p(a, b, rnd() < 0.3 ? k(P.cyan) : k(P.dim)); }
+  for (let i = 0; i < 16; i++) p(2 + Math.floor(rnd() * 48), 72 + dy + Math.floor(rnd() * 20), rnd() < 0.25 ? k(P.cyan) : k(P.text));
+  for (let j = -4; j <= 4; j++) for (let i = -4; i <= 4; i++) if (i * i + j * j <= 16 && !((i - 2) * (i - 2) + (j + 1) * (j + 1) <= 13)) p(42 + i, 79 + dy + j, k(P.text));
+  for (let i = 0; i < 52; i++) { const h = Math.round(6 + 3 * Math.sin(i / 7) + 2 * Math.sin(i / 3)); r(i, 118 + dy - h, 1, h + 40, k('#24005a')); }
+  const cs = mix('#1a0045', P.chrome, mute * 0.5);
+  r(10, 98 + dy, 26, 16, cs); r(8, 92 + dy, 6, 22, cs); r(32, 92 + dy, 6, 22, cs); r(19, 86 + dy, 8, 28, cs);
+  for (const [a, b] of [[8, 91], [10, 91], [12, 91], [32, 91], [34, 91], [36, 91], [19, 85], [21, 85], [23, 85], [25, 85]]) p(a, b + dy, cs);
+  r(22, 81 + dy, 1, 5, cs); r(23, 80 + dy, 3, 2, k(P.magenta));
+  for (const [a, b] of [[10, 96], [34, 96], [22, 90], [16, 103], [28, 103]]) p(a, b + dy, P.cyan);
+  const pine = (a, b, h) => { for (let j = 0; j < h; j++) { const w = Math.floor(j / 2) + 1; r(a - w + 1, b + j, w * 2 - 1, 1, k(j % 3 === 0 ? '#1e5a52' : '#174844')); } r(a, b + h, 1, 2, k('#3a1f2e')); };
+  pine(4, 114 + dy, 12); pine(46, 112 + dy, 14); pine(40, 120 + dy, 9);
+  dither(0, 128 + dy, 52, 22, k('#2f8a63'), k('#1e5a52'), t => t * 1.4);
+  for (let i = 0; i < 14; i++) p(Math.floor(rnd() * 52), 128 + dy + Math.floor(rnd() * 20), k(P.green));
+  for (let j = 0; j < 22; j++) r(22 + Math.round(4 * Math.sin(j / 6)), 128 + dy + j, 5 + Math.floor(j / 6), 1, k('#6b4a8a'));
+  for (const [a, b] of [[14, 124], [38, 132], [30, 118]]) p(a, b + dy, P.yellow);
+
+  // Sidebar edge, the two panes' tab bars and edges.
+  r(52, 8, 1, H - 8, P.border);
+  for (const [a, w] of [[54, 133], [188, 131]]) {
+    r(a, 17, w, 1, P.border);
+    r(a, 18, w, H - 19, P.border);
+    r(a + 1, 19, w - 2, H - 21, P.bg);
+  }
+  // Active tabs, each with the lantern.
+  for (const a of [56, 190]) {
+    r(a, 9, 32, 10, P.bg); r(a, 9, 32, 1, P.cyan);
+    p(a + 3, 11, k('#8a6aa8')); r(a + 2, 12, 3, 3, k('#8a6aa8')); p(a + 3, 13, P.yellow);
+  }
+  // The focused pane's ring, as Timo Purple draws it.
+  r(54, 18, 133, 1, P.cyan); r(54, 18, 1, H - 19, P.cyan); r(186, 18, 1, H - 19, P.cyan); r(54, H - 2, 133, 1, P.cyan);
+})();
+</script>

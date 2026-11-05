@@ -1,0 +1,108 @@
+<h2>When the names reach the scene</h2>
+<p class="subtitle">The real sidebar: Explorer at the top, Worktrees always holding at least the bottom third. Each option is shown twice: with a short Worktrees list, which leaves room at the foot, and with a long one, which doesn't.</p>
+
+<style>
+  .ov-row { display: flex; gap: 28px; justify-content: center; padding: 16px 0; }
+  .ov-one { text-align: center; color: #c4b6ea; font-size: 12px; }
+  .ov-wrap { position: relative; width: 156px; height: 450px; margin-bottom: 6px; }
+  .ov-wrap canvas { position: absolute; left: 0; top: 0; width: 156px; height: 450px; image-rendering: pixelated; }
+  .ov-txt { position: absolute; left: 10px; top: 6px; font-family: Menlo, monospace; font-size: 11px; line-height: 18px; color: #c4b6ea; white-space: pre; text-align: left; }
+  .ov-txt b { color: #f3edff; font-weight: normal; }
+  .card .card-image { background: #120030; aspect-ratio: auto !important; height: auto !important; display: block !important; }
+</style>
+
+<div class="cards" style="grid-template-columns: 1fr 1fr;">
+  <div class="card" data-choice="shrink" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="ov-row">
+      <div class="ov-one"><div class="ov-wrap" id="s-short"></div>room at the foot</div>
+      <div class="ov-one"><div class="ov-wrap" id="s-long"></div>a long list</div>
+    </div></div>
+    <div class="card-body">
+      <h3>1. Shrink, then hide</h3>
+      <p>The scene fills only the space below the last name. With room, the ground, pines and castle show and the sky is cut short. As the list grows the scene is cut from the top, ground last, and below about 50 points it is gone. Text never sits on art.</p>
+    </div>
+  </div>
+  <div class="card" data-choice="dim" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="ov-row">
+      <div class="ov-one"><div class="ov-wrap" id="d-short"></div>room at the foot</div>
+      <div class="ov-one"><div class="ov-wrap" id="d-long"></div>a long list</div>
+    </div></div>
+    <div class="card-body">
+      <h3>2. Stay, dimmed under text</h3>
+      <p>The scene always fills the foot of the sidebar. Behind each line of names it fades almost to the plain sidebar colour, and it shows in full only where no name is. With a long list most of it is a faint ghost.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const W = 52, H = 150, ROW = 6; // logical pixels; one row of names is 18 px, 6 logical
+  const P = { chrome: '#2a0062', border: '#4b2a98', cyan: '#00ffff', text: '#f3edff', dim: '#c4b6ea', banner: '#3b1a86', green: '#5fe39a', yellow: '#ffd166', magenta: '#e39bff' };
+  const hex = c => [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16));
+  const mix = (a, b, t) => { const x = hex(a), y = hex(b); return '#' + x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, '0')).join(''); };
+  const SCENE = 46; // the full scene's height, about 140 points
+
+  // The scene drawn into a 52 x SCENE grid of colours (null where it is the plain sidebar).
+  function scene() {
+    let seed = 11;
+    const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+    const g = Array.from({ length: SCENE }, () => Array(W).fill(null));
+    const k = c => mix(c, P.chrome, 0.45);
+    const p = (a, b, c) => { if (a >= 0 && a < W && b >= 0 && b < SCENE) g[b][a] = c; };
+    const r = (a, b, w, h, c) => { for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) p(a + i, b + j, c); };
+    for (let j = 0; j < 14; j++) for (let i = 0; i < W; i++) if (j / 14 > (((i + j) % 2 === 0) ? 0.25 : 0.75)) p(i, j, k(P.banner));
+    for (let i = 0; i < 9; i++) p(2 + Math.floor(rnd() * 48), Math.floor(rnd() * 12), rnd() < 0.3 ? k(P.cyan) : k(P.text));
+    for (let j = -3; j <= 3; j++) for (let i = -3; i <= 3; i++) if (i * i + j * j <= 9 && !((i - 1.5) ** 2 + (j + 1) ** 2 <= 7)) p(43 + i, 5 + j, k(P.text));
+    for (let i = 0; i < W; i++) { const h = Math.round(5 + 2 * Math.sin(i / 7) + 1.5 * Math.sin(i / 3)); r(i, 26 - h, 1, h + 30, k('#24005a')); }
+    const cs = mix('#1a0045', P.chrome, 0.22);
+    r(14, 14, 22, 12, cs); r(12, 10, 5, 16, cs); r(33, 10, 5, 16, cs); r(22, 6, 7, 20, cs);
+    for (const a of [12, 14, 16, 33, 35, 37, 22, 24, 26, 28]) p(a, a < 20 || a > 30 ? 9 : 5, cs);
+    r(25, 2, 1, 4, cs); r(26, 2, 2, 1, k(P.magenta));
+    for (const [a, b] of [[14, 14], [35, 14], [25, 10], [19, 19], [30, 19]]) p(a, b, P.cyan);
+    const pine = (a, b, h) => { for (let j = 0; j < h; j++) { const w = Math.floor(j / 2) + 1; r(a - w + 1, b + j, w * 2 - 1, 1, k(j % 3 === 0 ? '#1e5a52' : '#174844')); } r(a, b + h, 1, 2, k('#3a1f2e')); };
+    pine(4, 20, 11); pine(47, 18, 13); pine(41, 25, 8);
+    for (let j = 32; j < SCENE; j++) for (let i = 0; i < W; i++) p(i, j, ((j - 32) / 14 * 1.4 > (((i + j) % 2 === 0) ? 0.25 : 0.75)) ? k('#1e5a52') : k('#2f8a63'));
+    for (let i = 0; i < 10; i++) p(Math.floor(rnd() * W), 32 + Math.floor(rnd() * 13), k(P.green));
+    for (let j = 32; j < SCENE; j++) r(22 + Math.round(3 * Math.sin(j / 5)), j, 4 + Math.floor((j - 32) / 5), 1, k('#6b4a8a'));
+    for (const [a, b] of [[10, 30], [38, 34], [30, 28]]) p(a, b, P.yellow);
+    return g;
+  }
+  const art = scene();
+
+  // rows: the lines of names, as text; wt: how many worktree rows.
+  function sidebar(id, wt, mode) {
+    const lines = ['EXPLORER', '  src', '    <b>main.rs</b>', '    settings.rs', '    theme.rs', '  docs', '  README.md'];
+    const wtHeader = 16; // Worktrees holds the bottom third: its header starts two thirds down
+    while (lines.length < wtHeader) lines.push('');
+    lines.push('WORKTREES');
+    const names = ['outline-rail', 'release', 'csv-grid', 'light-themes', 'pictures', 'appearance'];
+    for (let i = 0; i < wt; i++) lines.push('  ' + names[i]);
+    const rowsEnd = lines.length * ROW + 2; // logical y where the last name ends
+    const wrap = document.getElementById(id);
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H; wrap.appendChild(cv);
+    const x = cv.getContext('2d');
+    x.fillStyle = P.chrome; x.fillRect(0, 0, W, H);
+    const top = H - SCENE;
+    for (let j = 0; j < SCENE; j++) for (let i = 0; i < W; i++) {
+      const y = top + j, c = art[j][i];
+      if (!c) continue;
+      let col = c;
+      if (mode === 'shrink') {
+        const room = H - rowsEnd - 2;
+        if (room < 17 || y < H - room) continue; // under ~50 points of room the scene is gone
+      } else {
+        const row = Math.floor((y - 2) / ROW);
+        const named = row < lines.length && lines[row] && lines[row].trim() !== '';
+        if (named) col = mix(c, P.chrome, 0.85);
+      }
+      x.fillStyle = col; x.fillRect(i, y, 1, 1);
+    }
+    x.fillStyle = P.border; x.fillRect(W - 1, 0, 1, H);
+    const t = document.createElement('div'); t.className = 'ov-txt'; t.innerHTML = lines.join('\n'); wrap.appendChild(t);
+  }
+  sidebar('s-short', 2, 'shrink');
+  sidebar('s-long', 6, 'shrink');
+  sidebar('d-short', 2, 'dim');
+  sidebar('d-long', 6, 'dim');
+})();
+</script>
