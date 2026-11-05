@@ -515,7 +515,9 @@ stroke, menus pencil-edged cards, and the text is hand-set (each glyph a little 
 graphite grain, no bleed), with new terminal text written in by a ballpoint as watercolor's pen
 writes it. Under an effect a web tab's address
 bar is clear over the wash and the page is outlined; on a light theme a page that sets no
-background of its own sits on the paper with the wash through it, as a document does.
+background of its own sits on the paper with the wash through it, as a document does. Overworld
+keeps the bars inside a tab's body, the address bar among them, in their own colours, and leaves
+a web tab's page and borders as they are without an effect.
 Timo Purple comes with `overworld`: a muted pixel-art night overworld at the foot of the sidebar, a lantern on the active tab; every tab body stays plain Timo Purple, and a markdown table or a CSV grid keeps its own fills. Any theme can
 carry any effect, since an effect reads the theme's colours. Settings, Appearance offers None,
 "Theme's choice" and Material; any other effect is chosen with `arkos effect use <name>` or

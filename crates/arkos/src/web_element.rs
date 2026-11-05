@@ -228,8 +228,9 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, s
         .items_center()
         .gap(px(4.0))
         .px(px(4.0))
-        // The bar is chrome, as the video's strip is: see-through under an effect, its hairline
-        // left to the wash.
+        // The bar sits inside the tab's body, as the video's strip does: as see-through as the
+        // effect's `body_bars_alpha`, its hairline left to the wash when the effect inks the
+        // borders.
         .bg(c.banner.alpha(style.body_bars_alpha))
         .border_b_1()
         .border_color(if style.ink_borders { c.border.alpha(0.0) } else { border })
@@ -299,7 +300,7 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, s
         .flex_1()
         .min_h_0()
         .relative()
-        // The page's paper, see-through under an effect as a document's is.
+        // The page's paper, as see-through as the effect's `paper_alpha`, as a document's is.
         .bg(c.window_bg.alpha(style.paper_alpha))
         .child(report)
         .children(outline)

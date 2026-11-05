@@ -804,10 +804,10 @@ mod tests {
         assert_eq!(builtin("navy").unwrap().recommended_effect(), None);
         assert_eq!(builtin("lavender-watercolor").unwrap().recommended_effect(), Some("watercolor"));
         // Any theme may recommend one: Navy, which recommends none, given a table.
-        let purple = BUILTIN.iter().find(|(n, _)| *n == "navy").unwrap().1;
-        let text = purple.to_string() + "\n[effect]\nname = \"ink\"\n";
+        let navy = BUILTIN.iter().find(|(n, _)| *n == "navy").unwrap().1;
+        let text = navy.to_string() + "\n[effect]\nname = \"ink\"\n";
         assert_eq!(parse(&text).unwrap().recommended_effect(), Some("ink"));
-        assert!(parse(&(purple.to_string() + "\n[effect]\nname = \"a\"\nspeed = 2\n")).is_err(), "name is the only key");
+        assert!(parse(&(navy.to_string() + "\n[effect]\nname = \"a\"\nspeed = 2\n")).is_err(), "name is the only key");
     }
 
     #[test]
