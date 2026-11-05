@@ -696,6 +696,7 @@ key and the range.
 | `paper_alpha` | 0.5 to 1.0 | 0.5 | A terminal's paper over the wash, and a document's unless `document_paper_alpha` is set. It never goes below 0.5, so text keeps its ground. |
 | `document_paper_alpha` | 0.5 to 1.0 | `paper_alpha` | The paper of a markdown tab (rendered or raw) and a file viewer tab over the wash, which are for reading: a higher value lets less of the wash through behind the text. The terminal keeps `paper_alpha`. Matrix sets 0.92. |
 | `chrome_alpha` | 0.0 to 1.0 | 0.0 | The title bar, the tab bars, the inactive tabs and the sidebar over the wash. |
+| `body_bars_alpha` | 0.0 to 1.0 | `chrome_alpha` | The bars inside a tab's body over the wash: a grid's banner, a spreadsheet's sheet strip, a video's bar and a web tab's address bar. |
 | `active_tab_alpha` | 0.0 to 1.0 | 0.55 | The active tab over the wash. |
 | `text_contrast` | 0.0 to 1.0 | 0.0 | How far the text moves towards ink (black on a light theme, white on a dark one): `chrome.text` that far, `chrome.text_dim` three quarters and `terminal.foreground` nine tenths of the way. |
 

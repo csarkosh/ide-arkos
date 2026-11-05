@@ -41,6 +41,8 @@ pub struct Style {
     pub document_paper_alpha: f32,
     /// The title bar, the tab bars, the inactive tabs and the sidebar.
     pub chrome_alpha: f32,
+    /// The bars inside a tab's body: the manifest's `body_bars_alpha`, else its `chrome_alpha`.
+    pub body_bars_alpha: f32,
     /// The active tab, a lighter patch on its bar.
     pub active_tab_alpha: f32,
     /// The window's own background and each pane's body: opaque without an effect and gone
@@ -74,7 +76,7 @@ pub struct Style {
 impl Style {
     /// The app as it paints without an effect.
     pub fn plain() -> Style {
-        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
+        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, body_bars_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
     }
 
     /// A UI text size of `pt` points as this style draws it.
@@ -97,6 +99,7 @@ pub fn style_at(manifest: &Manifest, fade: f32) -> Style {
         paper_alpha: lerp(1.0, manifest.paper_alpha.max(0.5), f),
         document_paper_alpha: lerp(1.0, manifest.document_paper_alpha().max(0.5), f),
         chrome_alpha: lerp(1.0, manifest.chrome_alpha, f),
+        body_bars_alpha: lerp(1.0, manifest.body_bars_alpha(), f),
         active_tab_alpha: lerp(1.0, manifest.active_tab_alpha, f),
         ground_alpha: 1.0 - f,
         ink_borders: full && manifest.ink_borders,
@@ -743,12 +746,21 @@ mod tests {
     }
 
     #[test]
+    fn the_body_bars_follow_the_chrome_unless_the_manifest_says_otherwise() {
+        let mut m = Manifest { chrome_alpha: 0.0, ..Manifest::default() };
+        assert_eq!(style_at(&m, 1.0).body_bars_alpha, 0.0, "every existing effect is unchanged");
+        m.body_bars_alpha = Some(1.0);
+        assert_eq!((style_at(&m, 0.5).body_bars_alpha, style_at(&m, 1.0).body_bars_alpha), (1.0, 1.0));
+        assert_eq!(Style::plain().body_bars_alpha, 1.0);
+    }
+
+    #[test]
     fn the_style_is_plain_at_zero_and_the_manifest_s_at_one() {
         let m = watercolor().manifest;
         assert_eq!(style_at(&m, 0.0), Style::plain());
         assert_eq!(
             style_at(&m, 1.0),
-            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, title_pad: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false, terminal_paint: true }
+            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, body_bars_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, title_pad: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false, terminal_paint: true }
         );
         let half = style_at(&m, 0.5);
         assert_eq!((half.paper_alpha, half.chrome_alpha, half.ground_alpha), (0.75, 0.5, 0.5));

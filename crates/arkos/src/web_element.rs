@@ -230,7 +230,7 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, s
         .px(px(4.0))
         // The bar is chrome, as the video's strip is: see-through under an effect, its hairline
         // left to the wash.
-        .bg(c.banner.alpha(style.chrome_alpha))
+        .bg(c.banner.alpha(style.body_bars_alpha))
         .border_b_1()
         .border_color(if style.ink_borders { c.border.alpha(0.0) } else { border })
         .font_family(family.clone())

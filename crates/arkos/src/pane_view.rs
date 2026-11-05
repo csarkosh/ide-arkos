@@ -1099,7 +1099,7 @@ fn sheet_strip(viewer: &gpui::Entity<viewer::Viewer>, names: &[String], active: 
         .flex()
         .flex_row()
         .overflow_x_scroll()
-        .bg(c.tab_bar.alpha(style.chrome_alpha))
+        .bg(c.tab_bar.alpha(style.body_bars_alpha))
         .font_family(family)
         .text_size(px(style.ui(12.0)));
     for (i, name) in names.iter().enumerate() {
@@ -1394,7 +1394,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     let (pill, strip_pill) = if kind_is_grid { (None, pill) } else { (pill.map(|p| p.absolute().top(px(pill_top)).right(px(14.0))), None) };
     if let Some(strip) = kind_is_grid.then(|| grid_strip(strip_pill.is_some(), grid_banner)).flatten() {
         let text = div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().children(strip.banner);
-        banners.push(banner_row().items_center().bg(theme.chrome.banner.alpha(style.chrome_alpha)).child(text).children(strip_pill.map(|p| p.flex_none())));
+        banners.push(banner_row().items_center().bg(theme.chrome.banner.alpha(style.body_bars_alpha)).child(text).children(strip_pill.map(|p| p.flex_none())));
     }
     let body = if banners.is_empty() { body } else { div().size_full().flex().flex_col().children(banners).child(div().flex_1().min_h_0().child(body)) };
     // The `⋯` button and its menu.
