@@ -114,16 +114,20 @@ constant float FIREFLY_CLIMB = 16.0;
 
 // The lantern on an active tab: 3 art pixels wide and 4 tall, LANTERN_IN points in from the tab's
 // left so it fits inside the 10 points of padding before the label, centred on the tab's height.
-// Its body is the dim text pulled toward the sidebar, warmed by its flame.
+// Its body is the dim text pulled toward the sidebar, warmed by its flame. A tab narrower than
+// LANTERN_MIN_W, a dragged slot that has dropped its padding, carries none.
 constant float LANTERN_IN = 1.0;
+constant float LANTERN_MIN_W = 30.0;
 constant float LANTERN_TONE = 0.55;
 constant float LANTERN_GLOW = 0.18;
 
-// The title bar's stars: none past the traffic lights' end (TITLE_LEFT), one in some of the cells
-// of TITLE_CELL columns, on a row from 1 to 7 of the bar.
+// The title bar's stars: none before TITLE_LEFT, the traffic lights' end; one in some of the cells
+// of TITLE_CELL columns, on a row from 1 to 7 of the bar, and only in the TITLE_END_CELLS cells at
+// each end of a free stretch, so a wide bar still has only a few.
 constant float TITLE_LEFT = 80.0;
 constant int TITLE_CELL = 12;
 constant float TITLE_STAR_CHANCE = 0.5;
+constant int TITLE_END_CELLS = 4;
 constant uint TITLE_SALT = 0x9E3779B9u;
 
 // A highlight's block is its row or tab inset by this much on each side (`blocks::stroke_block`);
@@ -166,6 +170,28 @@ bool star_clear(float2 p, constant ArkosInputs& u, int nb) {
         }
     }
     return true;
+}
+
+// The free stretch of the title bar `bar` a star at window x `x` lies in, its left and right in
+// window points: from TITLE_LEFT, or the nearest group before it grown by STAR_CLEAR, to the bar's
+// end, or the nearest group after it grown by STAR_CLEAR.
+float2 free_stretch(float x, float4 bar, constant ArkosInputs& u, int nb) {
+    float2 run = float2(TITLE_LEFT, bar.x + bar.z);
+    for (int i = 0; i < nb; i++) {
+        ArkosBlock g = u.blocks[i];
+        if (int(g.kind) != ARKOS_TITLE_GROUP_BLOCK) {
+            continue;
+        }
+        float left = g.rect.x - STAR_CLEAR;
+        float right = g.rect.x + g.rect.z + STAR_CLEAR;
+        if (right <= x) {
+            run.x = max(run.x, right);
+        }
+        if (left >= x + ART_PX) {
+            run.y = min(run.y, left);
+        }
+    }
+    return run;
 }
 
 float dim_start(uint k) {
@@ -277,8 +303,10 @@ float3 scene(constant ArkosInputs& u, int i, int j, int w, float t) {
     if (j >= HILL_BASE - hill) {
         col = mute(u, darker(u, sb, HILL_STEP));
     }
-    // The castle, centred, its windows lit in the focus colour and one now and then dimming.
-    int d = i - (w - 1) / 2;
+    // The castle, centred, its windows lit in the focus colour and one now and then dimming. Its
+    // walls span columns -13 to 12 from `mid`, so on an even band they sit on its very middle.
+    int mid = w / 2;
+    int d = i - mid;
     if (castle_at(d, j)) {
         float3 stone = mute(u, darker(u, sb, CASTLE_STEP));
         col = stone;
@@ -314,7 +342,7 @@ float3 scene(constant ArkosInputs& u, int i, int j, int w, float t) {
         if (hash01((uint(j) * 1024u + uint(i)) ^ GRASS_SALT) < GRASS_BLADES) {
             col = mute(u, green);
         }
-        int from = (w - 1) / 2 + PATH_FROM + int(rint(3.0 * sin(float(j) / 5.0)));
+        int from = mid + PATH_FROM + int(rint(3.0 * sin(float(j) / 5.0)));
         if (i >= from && i < from + 4 + (j - GRASS_TOP) / 5) {
             col = mute(u, mix(sb, u.colors[ARKOS_TEXT_DIM].rgb, PATH_TONE));
         }
@@ -355,18 +383,27 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     float3 col = u.colors[ARKOS_WINDOW_BG].rgb;
     int nb = min(int(u.block_count), 48);
     bool on_active = false;
+    // The sidebar's rect as shown (it narrows as Cmd+B slides it out); zero width when none.
+    float4 side = float4(0.0);
     // The blocks come in the order they are painted: the title bar, the sidebar and its foot, the
     // panes' tab bars and bodies, the shapes (each active tab among them), then the highlights.
     for (int i = 0; i < nb; i++) {
         ArkosBlock blk = u.blocks[i];
         int kind = int(blk.kind);
         float4 r = blk.rect;
+        if (kind == ARKOS_SIDEBAR_BLOCK) {
+            side = r;
+        }
         if (kind == ARKOS_ROW_HIGHLIGHT_BLOCK || kind == ARKOS_TAB_HIGHLIGHT_BLOCK) {
             // Filled as the app fills them: a selected row in the active tab's colour, a hovered
             // row or tab in the inactive tab's (the app's hover wins over its selection). A hovered
-            // active tab stays the active tab.
+            // active tab stays the active tab. A row in the sidebar's column is cut at the
+            // sidebar's shown edge, since its mark keeps the full column while the sidebar slides.
             float4 full = float4(r.xy - STROKE_INSET, r.zw + 2.0 * STROKE_INSET);
             if (!inside_rect(p, full) || (kind == ARKOS_TAB_HIGHLIGHT_BLOCK && on_active)) {
+                continue;
+            }
+            if (kind == ARKOS_ROW_HIGHLIGHT_BLOCK && side.z > 0.0 && full.x < side.x + side.z && !inside_rect(p, side)) {
                 continue;
             }
             bool selected = kind == ARKOS_ROW_HIGHLIGHT_BLOCK && int(blk.ordinal) == 1;
@@ -392,7 +429,12 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             for (int g = 0; g < nb; g++) {
                 grouped = grouped || int(u.blocks[g].kind) == ARKOS_TITLE_GROUP_BLOCK;
             }
-            bool clear = grouped && o.x >= TITLE_LEFT && o.x + ART_PX <= r.x + r.z && star_clear(o, u, nb) && star_clear(o + float2(ART_PX, 0.0), u, nb) && star_clear(o + float2(0.0, ART_PX), u, nb) && star_clear(o + ART_PX, u, nb);
+            float2 run = free_stretch(o.x, r, u, nb);
+            float cw = ART_PX * float(TITLE_CELL);
+            int first = int(floor((run.x - r.x) / cw));
+            int last = int(floor((run.y - r.x) / cw));
+            bool near_end = cell - first < TITLE_END_CELLS || last - cell < TITLE_END_CELLS;
+            bool clear = grouped && near_end && o.x >= TITLE_LEFT && o.x + ART_PX <= r.x + r.z && star_clear(o, u, nb) && star_clear(o + float2(ART_PX, 0.0), u, nb) && star_clear(o + float2(0.0, ART_PX), u, nb) && star_clear(o + ART_PX, u, nb);
             if (clear) {
                 float3 c = hash01(id + 3u) < STAR_FOCUS ? u.colors[ARKOS_FOCUS_RING].rgb : u.colors[ARKOS_TEXT].rgb;
                 col = mix(col, mute(u, c), twinkle(float(1000 + cell), t) * k);
@@ -414,10 +456,14 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             col = u.colors[ARKOS_WINDOW_BG].rgb;
         } else if (kind == ARKOS_ACTIVE_TAB_BLOCK) {
             float3 tab = u.colors[ARKOS_TAB_ACTIVE].rgb;
+            col = tab;
+            on_active = true;
+            if (r.z < LANTERN_MIN_W) {
+                continue;
+            }
             float2 o = float2(r.x + LANTERN_IN, r.y + floor((r.w - 4.0 * ART_PX) * 0.5));
             int2 q = int2(floor((p - o) / ART_PX));
             col = mix(tab, lantern(u, q, tab), k);
-            on_active = true;
         }
     }
     return float4(col, 1.0);
