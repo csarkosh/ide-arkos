@@ -1543,10 +1543,7 @@ fn render_browser(root: &mut Root, pane: PaneId, tab: TabId, url: String, cx: &m
     let family = root.ui_family();
     div()
         .size_full()
-        .on_mouse_down(MouseButton::Left, cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
-            root.focus_pane(pane, cx);
-            root.keys_back_to_arkos();
-        }))
+        .on_mouse_down(MouseButton::Left, cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| root.focus_pane(pane, cx)))
         .child(crate::web_element::render(&view, pane, tab, &theme, root.effect_style(), family, cx))
 }
 

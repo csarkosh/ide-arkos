@@ -970,6 +970,10 @@ Things only a person at the screen can check, in order of value:
   two seconds; `arkos open` of the same file again after an edit prints "reloaded"
 - web pane: click into a page's text field and type: the page gets it; Cmd+1: the first pane takes
   the focus; click the tab bar: the pane's keys work again; Cmd+L: the address field has the cursor
+- web pane: click anywhere in a page, then click the terminal beside it and type: the terminal
+  has the focus and every key, with no beep; the same with the app in the background, the click
+  bringing it forward; click the page and run `arkos open notes.md --pane 1 --focus` from a
+  session: the pane opened into has the focus and the keys
 - web pane: click into a page, then close its tab (its × or Cmd+W) and type into the terminal
   that takes its place: every key arrives once (the page handed the keys back as it went; without
   that, the window was its own first responder and each key reached the terminal twice)

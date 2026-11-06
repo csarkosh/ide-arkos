@@ -396,6 +396,8 @@ pub struct Root {
     pub web_titles: HashMap<TabId, String>,
     /// gpui's own `NSView` in the project window, which takes the keys back from a web view.
     pub ns_view: Option<objc2::rc::Retained<objc2_app_kit::NSView>>,
+    /// The web tab whose page held the window's keyboard at the last frame.
+    page_with_keys: Option<TabId>,
     /// The repaint scheduled for a text field's cursor to blink (`line_edit::take_blink_wake`).
     caret_wake: Option<Instant>,
     /// The key monitor (`screen::install_key_monitor`), alive while the window is.
@@ -773,6 +775,7 @@ impl Root {
             webs: HashMap::new(),
             web_titles: HashMap::new(),
             ns_view: None,
+            page_with_keys: None,
             key_monitor: None,
             effect: None,
             glyphs_pending: None,
@@ -3854,7 +3857,7 @@ impl Root {
     /// At the top of every render: a web view whose tab is not on screen (not the active tab of
     /// a shown pane, an overlay open, the window hidden) is hidden now; the ones on screen are
     /// placed by their canvas as it paints. A page that took the keyboard with a click (gpui saw
-    /// no press) makes its pane the focused one.
+    /// no press) makes its pane the focused one, once (`web::page_took_keys`).
     pub fn update_web_visibility(&mut self, cx: &mut Context<Self>) {
         if self.webs.is_empty() {
             return;
@@ -3862,19 +3865,17 @@ impl Root {
         let shown: Vec<PaneId> = self.layout().panes.into_iter().map(|(p, _)| p).collect();
         let hidden = self.ns_window.as_ref().is_some_and(|ns| screen::window_hidden(ns));
         let covered = self.covered();
-        let mut focus = None;
+        let mut holder = None;
         for (tab, v) in &self.webs {
             let on_screen = video_plays(&self.tree, &shown, *tab, hidden) && !covered && v.read(cx).shows_page();
             if !on_screen {
                 v.update(cx, |v, _| v.place(None));
             } else if v.read(cx).has_keys() {
-                if let Some((pane, _)) = self.tree.locate(*tab) {
-                    if self.tree.focused != pane {
-                        focus = Some(pane);
-                    }
-                }
+                holder = Some(*tab);
             }
         }
+        let took = web::page_took_keys(std::mem::replace(&mut self.page_with_keys, holder), holder);
+        let focus = took.and_then(|tab| self.tree.locate(tab)).map(|(pane, _)| pane).filter(|pane| *pane != self.tree.focused);
         if let Some(pane) = focus {
             self.sidebar_focused = false;
             self.wt_focused = false;
@@ -4161,7 +4162,8 @@ impl Root {
         e.layer.backdrop(key, area, opacity, &inputs)
     }
 
-    /// The keys come back to gpui from a web view: before a field of Arkos's own takes them.
+    /// The keys come back to gpui from a web view: on any press gpui hears (`render`), and before
+    /// a field of Arkos's own takes them.
     pub fn keys_back_to_arkos(&self) {
         if let (Some(ns), Some(view)) = (&self.ns_window, &self.ns_view) {
             screen::make_first_responder(ns, view);
@@ -4456,6 +4458,11 @@ impl Render for Root {
                     cx.notify();
                 }
             }))
+            // A press gpui hears is outside every page (a web view takes its own), so a page that
+            // holds the keys gives them back here, whoever handles the press and even if it stops
+            // there. AppKit will not: gpui's view declines first responder on a click. The next
+            // frame would otherwise read the page as just clicked and undo the press's focus.
+            .capture_any_mouse_down(cx.listener(|root, _ev: &MouseDownEvent, _window, _cx| root.keys_back_to_arkos()))
             .capture_key_down(cx.listener(|root, ev: &KeyDownEvent, _window, cx| {
                 if root.escape_closes_menu(&ev.keystroke, cx) {
                     cx.stop_propagation();

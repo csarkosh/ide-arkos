@@ -553,3 +553,13 @@ The answers are rulings 7 to 9, written into this spec by the implementer.
 17. Retired keybinding names are ignored silently by `validate` (`keymap::RETIRED`), not
     reported: a report would need a notice path that `Config::load` does not have, and the
     names mean nothing any more.
+18. (2026-11-05, found by logging the first responder at each key after a beep in a terminal
+    beside a page) gpui's view declines first responder on a click, so AppKit leaves the keys in
+    the page when gpui's view is pressed, and `Root::update_web_visibility` read a page that
+    still held them as one just clicked and moved the focus back to it within the frame. A
+    click on the terminal beside a page therefore did nothing, every key went to the page, and
+    a page with no field beeps at each one; any click in the page did this, not only a picture.
+    Two things stop it: any press gpui hears gives the keys back in the capture phase, before
+    its handlers run and before a frame can read the page (`render`), and the page's pane takes
+    the focus only as the page takes the keys (`web::page_took_keys`), so a focus moved by
+    anything else (`arkos open --focus` to another pane) stands and the keys follow it.

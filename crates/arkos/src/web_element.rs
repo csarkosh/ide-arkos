@@ -126,7 +126,6 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, s
             cx.listener(move |root, ev: &MouseDownEvent, window, cx| {
                 cx.stop_propagation();
                 root.focus_pane(pane, cx);
-                root.keys_back_to_arkos();
                 window.focus(&address_focus);
                 // The first press into the field selects the whole address; a press while it is
                 // already being edited puts the cursor under the pointer, as in a browser.

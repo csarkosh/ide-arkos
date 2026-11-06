@@ -8,6 +8,7 @@
 //! `evaluate_js` and `snapshot`, and nothing else here has to change for it.
 
 use crate::screen::Frame;
+use crate::tree::TabId;
 use crate::video::{follow, Follow, Fp};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -24,6 +25,14 @@ pub const CRASH_WINDOW: Duration = Duration::from_secs(60);
 
 /// How long a notice ("downloads are not supported here") stays on the bar.
 pub const NOTICE_FOR: Duration = Duration::from_secs(6);
+
+/// The page whose pane takes the focus this frame, from the page that held the window's keyboard
+/// at the last frame and the one that holds it now: only one that has just taken it, which is
+/// all gpui ever learns of a click into a page. A page still holding it claims nothing, so a
+/// focus moved elsewhere stands and `render` brings the keys back.
+pub fn page_took_keys(last: Option<TabId>, now: Option<TabId>) -> Option<TabId> {
+    now.filter(|_| now != last)
+}
 
 /// The next zoom level up (`dir` positive) or down from `current`; the ladder's ends hold.
 pub fn zoom_step(current: f64, dir: i32) -> f64 {
@@ -577,6 +586,20 @@ impl WebModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_page_claims_the_focus_only_as_it_takes_the_keys() {
+        // A click into a page, which gpui never hears: its pane takes the focus, once.
+        assert_eq!(page_took_keys(None, Some(7)), Some(7));
+        // Still holding them on later frames it claims nothing, so a focus moved elsewhere (a
+        // press on another pane, an `arkos open --focus`) stands and the keys come back.
+        assert_eq!(page_took_keys(Some(7), Some(7)), None);
+        // The keys passing straight from one page to another are a click into the second.
+        assert_eq!(page_took_keys(Some(7), Some(8)), Some(8));
+        // No page holds them: nothing to claim, whoever held them last.
+        assert_eq!(page_took_keys(Some(7), None), None);
+        assert_eq!(page_took_keys(None, None), None);
+    }
 
     fn tmp_file(dir: &Path, name: &str) -> PathBuf {
         let p = dir.join(name);
