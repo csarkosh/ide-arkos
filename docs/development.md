@@ -648,16 +648,17 @@ Things only a person at the screen can check, in order of value:
   leaves the old cut on screen with the strip saying "new file cannot be played yet", and the next
   good write loads
 - video pane: a relaunch brings the tab back paused on the frame
-- video pane: `arkos open` from a Claude Code tab splits a preview pane to the right the first
-  time and reuses it the second; the keyboard focus stays in the Claude Code tab
+- video pane: `arkos open` from a Claude Code tab adds the file as a new, active tab in the Claude
+  Code tab's own pane, splitting nothing, the second time too; `--split right` puts it in a new
+  pane to the right and the keyboard focus stays in the Claude Code tab
 - video pane: open a cut from the sidebar into the Claude Code tab's pane, switch back to the
-  Claude Code tab, and have the agent `arkos open` it: the video moves, at its position, into a pane
-  to the right, the Claude Code tab stays shown, and Space still types to Claude Code
+  Claude Code tab, and have the agent `arkos open` it: the cut's tab is shown where it is, at its
+  position, and no pane is made
 - video pane: `arkos open <file> --at 0:12 --loop 0:12-0:18 --playing` loops the range with sound
 - video pane, the fresh session demo: from a fresh Claude Code session in a window with the hooks
-  installed (pointing at the dev binary, or after the release), "show me the animatic beside you
-  and stop on the radio scene" ends with the video paused in a pane to the right, and the agent
-  ran `arkos guide` first
+  installed (pointing at the dev binary, or after the release), "show me the animatic and stop on
+  the radio scene" ends with the video paused as a tab in the agent's pane, "show me the animatic
+  beside you" ends with it in a pane to the right, and the agent ran `arkos guide` first
 - video pane: a 4K file plays without the window stuttering, and the GPU stays idle when every
   video is paused (Activity Monitor's GPU column)
 - video pane, the strip: Space plays with sound; the scrubber moves and a click seeks; a drag

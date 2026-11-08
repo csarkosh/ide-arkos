@@ -107,42 +107,42 @@ These are refused before anything is sent, with exit 1 and a line saying what to
 - a folder: `{path} is a folder`
 - anything else that is not text: `{path} is not a text file; Arkos shows text, markdown and video`
 
-Where the tab goes, the preview pane rule:
+Where the tab goes:
 
-- With neither `--pane` nor `--split`, the tab goes to your preview pane. The first open from your
-  session splits your own pane to the right and the new pane becomes your preview pane; every
-  later open goes into it as a new tab while it exists. If the pane has been closed, the next open
-  splits again. The window does not keep it across a relaunch. This gives you a place of your own
-  beside you and never covers a pane the user is looking at.
-- `--pane N`: into pane N, numbered as Cmd+1 to Cmd+9 number them and as `arkos panes` lists them.
-  A pane that does not exist exits 1 with `pane {n} does not exist; this window has {count}`.
+- With neither `--pane` nor `--split`, the tab is a new tab in your own pane (the one holding your
+  session), made its active tab. This is the default: the user asked you to show them something,
+  and your pane is where they are looking. No pane is split.
 - `--split right|down|left|up`: your own pane is split on that side and the tab is the new pane's
-  first tab.
+  first tab. Use it only when the user asks to see the file side by side with you ("beside you",
+  "next to this", "in a split"). A later file for the same place goes in with `--pane N`, the number
+  the first open printed, rather than another split.
+- `--pane N`: into pane N, numbered as Cmd+1 to Cmd+9 number them and as `arkos panes` lists them,
+  for when the user names a pane. A pane that does not exist exits 1 with
+  `pane {n} does not exist; this window has {count}`.
 - Without a session (outside Arkos, or with `--window`), your pane is the window's focused pane:
-  the preview rule splits it to the right the first time and reuses that pane afterwards, and
-  `--split` splits it.
+  a plain open adds a tab there, and `--split` splits it.
 - When your session's tab is not in the window (it was closed and is in its minute of grace), a
-  preview or a split exits 3 with
+  plain open or a split exits 3 with
   `your session is not shown in this window; pass --pane or --window`. `--pane N` still works.
 
 A file already open in the window is never opened twice: the tab that shows it, of any kind, is
-made the active tab of its pane wherever it is, and that rule wins over `--pane` and `--split`.
-The one exception is your own pane, where showing it would cover you: a tab on the file there
-(the user opened it beside your tab) moves into your preview pane, or into a new pane split off
-yours to the right, which becomes your preview pane; a video keeps its position and its play
-state through the move.
+made the active tab of its pane wherever it is, your own pane included, and nothing is moved. That
+rule wins over `--pane` and `--split`. When several panes show the file, the one in the pane the
+open aims at (yours, or pane N) is used, else the first in `arkos panes` order. A video keeps its
+position and its play state.
 `--new` forces another tab, placed by the rules above. On a video tab reused this way `--at`,
 `--paused`, `--playing` and `--loop` apply; a reused markdown or CSV tab switches to raw with `--raw`.
 
-Focus stays with you. An open makes its tab the active one in its pane but never moves the
-keyboard focus, not even when it splits a new pane: the user is typing to you, and a jump would
-send their next Space to the video. `--focus` moves the focus to the tab, for when the user asks you
+Focus stays where it was. An open makes its tab the active one in its pane but never moves the
+keyboard focus to another pane, not even when it splits a new one. A plain open puts the tab in
+your pane, which is usually the focused pane, so the user's keys reach the tab they now see;
+switching back to your tab is theirs to do. `--focus` moves the focus to the tab, for when the user asks you
 to hand it over ("put it in front of me").
 
 The flags:
 
 - `--pane N`: the pane, as above. Not with `--split`.
-- `--split right|down|left|up`: split your pane on that side, as above.
+- `--split right|down|left|up`: split your pane on that side, as above; only for a side-by-side view.
 - `--at TIME`: seek there once the video has loaded; past the end goes to the last frame. A new
   tab starts at 0 without it; a reused tab keeps its position.
 - `--paused` / `--playing`: the state after the open. A new tab is paused without either (the
@@ -162,6 +162,7 @@ The command waits for a video to load (up to about two seconds), so its line car
 A slower load reports `loading`; ask `arkos video status` a moment later. What it prints:
 
 ```
+opened video ranger-radio-animatic.mp4 in pane 1, 0:12.0 of 1:48.5, paused, 1920x1080
 opened video ranger-radio-animatic.mp4 in pane 2 (new pane), 0:12.0 of 1:48.5, paused, 1920x1080
 shown video ranger-radio-animatic.mp4 in pane 2, 0:12.0 of 1:48.5, playing, loop 0:12.0-0:18.0, 1920x1080
 reloaded, shown video ranger-radio-animatic.mp4 in pane 2, 0:12.0 of 1:48.5, paused, 1920x1080
@@ -169,7 +170,8 @@ opened notes.md in pane 2, rendered
 shown notes.md in pane 3, raw
 ```
 
-`opened` is a new tab and `shown` a reused one; `(new pane)` says the open split a pane;
+`opened` is a new tab and `shown` a reused one; `(new pane)` says the open split a pane (only
+with `--split`);
 `reloaded, ` says this command found a reused video's file changed and loaded the new cut itself;
 a tab that had already followed the file on its own (it does within about two seconds of a render
 ending) prints `shown` without it. Either way, exit 0 with no `error` and the state `ready` means
@@ -354,13 +356,14 @@ arkos open out/ranger-radio/ranger-radio-animatic.mp4 --at 0:12 --loop 0:12-0:18
 arkos video status out/ranger-radio/ranger-radio-animatic.mp4 --json
 ```
 
-A web page works the same way: `arkos open out/report.html` shows a report with its media beside
-you, a rewrite of the file reloads it, and `arkos open http://localhost:4173/` shows the dev
+A web page works the same way: `arkos open out/report.html` shows a report with its media in your
+pane, a rewrite of the file reloads it, and `arkos open http://localhost:4173/` shows the dev
 server's page (when the server is not up yet the pane says so with a Retry button, and the same
 command again once it is up shows the page).
 
-The first `open` splits your pane and shows the cut paused on 0:12; tell the user it is in pane 2
-(the number the line printed). The second `open` reuses that tab: it makes sure the tab shows the
+The first `open` adds the cut as a tab in your pane and shows it paused on 0:12; tell the user it
+is in pane 1 (the number the line printed). Had they asked to see it beside you, the first
+`open` would take `--split right`, and the line would say pane 2 (new pane). The second `open` reuses that tab: it makes sure the tab shows the
 new file, jumps to 0:12 and loops the scene with sound. The tab reloads on its own within about
 two seconds of the file changing, so when the render finished a few seconds before, the tab has
 already loaded the new cut and the second `open` prints `shown` without `reloaded`; when it had
@@ -903,7 +906,8 @@ For files in panes:
 
 - Open a file in a pane when the user asks to see, watch or review it, and offer it when you have
   just made one.
-- Prefer the preview pane, and name the pane number to the user.
+- Open in your own pane by default; split only when the user asks to see something side by side,
+  and use `--pane N` when they name a pane. Name the pane number to the user.
 - Never open the same file twice: `open` reuses its tab for you.
 - Leave the tab open when you finish; the user closes it.
 - Pause before you talk about a frame.

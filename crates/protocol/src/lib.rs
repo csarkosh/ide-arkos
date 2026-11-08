@@ -188,14 +188,15 @@ pub enum OpenKind {
     Web,
 }
 
-/// Where `PaneAction::Open` puts the new tab.
+/// Where `PaneAction::Open` puts the new tab. postcard sends the variant's index, so `Here` stays
+/// first: it is the index older command lines send for a plain open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Placement {
-    /// The preview slot beside the agent.
-    Preview,
+    /// A new tab in the calling agent's own pane, or the focused pane without a session.
+    Here,
     /// The pane with this number, as `PaneAction::Panes` lists them.
     Pane(u32),
-    /// A new pane split off on this side of the focused one.
+    /// A new pane split off on this side of the agent's pane (the focused one without a session).
     Split(SplitSide),
 }
 
@@ -640,6 +641,15 @@ mod tests {
         assert_eq!(first_byte(&Request::DirectDone { id: 1, outcome: outcome.clone() }), 27);
         assert_eq!(first_byte(&Response::Directed { pid: 3, project: "/p".into(), outcome }), 11);
         assert_eq!(first_byte(&Event::Direct { id: 1, action, session: None }), 5);
+    }
+
+    #[test]
+    fn a_plain_open_keeps_the_index_older_command_lines_send() {
+        // `Here` took the place of `Preview`, so a window and a command line from either side of
+        // the change still understand each other.
+        assert_eq!(first_byte(&Placement::Here), 0);
+        assert_eq!(first_byte(&Placement::Pane(1)), 1);
+        assert_eq!(first_byte(&Placement::Split(SplitSide::Right)), 2);
     }
 
     #[test]

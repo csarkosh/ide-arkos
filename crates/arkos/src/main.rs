@@ -248,10 +248,6 @@ pub struct Root {
     /// The tab a single click previews into; the next single click replaces it. `None` once
     /// pinned or closed.
     pub preview_tab: Option<TabId>,
-    /// Each agent session's preview pane (spec 5): where its plain `arkos open` goes while the
-    /// pane lives. `None` is the key of an open sent without a session. Not saved: after a
-    /// relaunch the first open splits again.
-    pub preview_panes: HashMap<Option<SessionId>, PaneId>,
     /// The file tree's right-click menu while it is open, and while it fades out.
     pub context_menu: Transient<sidebar::ContextMenu>,
     /// The tree's New File prompt while it is open (a row of the tree), and while it fades out;
@@ -710,7 +706,6 @@ impl Root {
             sidebar_focused: false,
             explorer,
             preview_tab: None,
-            preview_panes: HashMap::new(),
             context_menu: Transient::Hidden,
             new_file: Transient::Hidden,
             new_file_focus: cx.focus_handle(),

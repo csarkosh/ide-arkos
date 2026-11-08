@@ -932,15 +932,15 @@ in an Arkos shell uses it the same way when you ask to see a change before it la
 
 ### Agents
 
-A coding agent running in an Arkos terminal can show you a video or a document in a pane beside
-it and drive the video, and it can make a theme, try it, check its contrast and switch to it with
+A coding agent running in an Arkos terminal can show you a video or a document in its pane and
+drive the video, and it can make a theme, try it, check its contrast and switch to it with
 commands, and change the common settings the same way. `arkos guide` prints what the agent needs.
 
 `arkos open <file>` puts a video, a markdown file or any other text file in a pane of the window
-the agent runs in. The first open splits the agent's own pane to the right and later ones reuse
-that pane, so it never covers what you are looking at; `--pane N` (numbered as Cmd+1 to Cmd+9)
-and `--split` choose another place. A file already open is shown where it is rather than opened
-twice. The keyboard focus stays where you are typing unless the agent passes `--focus`. A video
+the agent runs in: by default as a new tab in the agent's own pane, made active, so it appears
+where you are working. `--split right|down|left|up` shows it side by side instead (the guide tells
+agents to split only when you ask for that), and `--pane N` (numbered as Cmd+1 to Cmd+9) puts it
+in that pane. A file already open is shown where it is rather than opened twice or moved. The keyboard focus stays where you are typing unless the agent passes `--focus`. A video
 opens paused unless the agent asks otherwise, and `--at 0:12`, `--loop 0:12-0:18` and `--playing`
 jump to a scene and play it on repeat. `arkos video` plays, pauses, seeks, steps, loops, reloads,
 mutes and closes a video tab, and `arkos panes` lists the panes and their tabs (their titles,
@@ -968,7 +968,7 @@ contrast pair, a window that reported an error or none that answered, an old dae
 | `arkos settings get [<key>]` | the config file, or one key's value | 0, 1 |
 | `arkos settings set <key> <value>` | sets a key on the allow-list, then reloads every window | 0, 1, 2 |
 | `arkos config reload` | asks every window to read `config.toml` now | 0, 1, 3 |
-| `arkos open <file>` | shows a video, a markdown file or a text file in a pane beside the agent | 0, 1, 2, 3 |
+| `arkos open <file>` | shows a video, a markdown file or a text file as a new tab in the agent's pane | 0, 1, 2, 3 |
 | `arkos video <command> [<file>]` | `status`, `play`, `pause`, `seek`, `step`, `loop`, `reload`, `close`, `mute`, `unmute` on a video tab | 0, 1, 2, 3 |
 | `arkos panes` | the window's panes in Cmd+1 order with their tabs; `--all` for every window | 0, 1, 3 |
 | `arkos guide` | prints the agent guide; `--path` writes it to a file and prints the path; `--install` installs it as a Claude Code skill | 0, 1 |

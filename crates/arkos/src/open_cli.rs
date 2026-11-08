@@ -297,7 +297,6 @@ pub fn opened_line(o: &PaneOutcome, file_name: &str) -> String {
         "browser" => format!("page {file_name}"),
         _ => file_name.to_string(),
     };
-    // A reused tab can be in a new pane too: one moved out of the agent's own pane.
     let fresh = if *new_pane { " (new pane)" } else { "" };
     let tail = match (video, web, kind.as_str()) {
         (Some(v), _, _) => format!(", {}", detail(v, false)),
@@ -452,7 +451,7 @@ pub fn open_cli_to(args: &[String], env: &DirectEnv, out: &mut dyn Write, err: &
                 other => return Err(format!("not a side: {other}; use right, down, left or up")),
             })
         } else {
-            Placement::Preview
+            Placement::Here
         };
         Ok((window, at, loop_change, place))
     })();
@@ -889,15 +888,36 @@ mod tests {
     }
 
     #[test]
+    fn a_plain_open_asks_for_the_agents_own_pane_and_split_asks_for_a_side() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().canonicalize().unwrap();
+        std::fs::write(d.join("x.md"), b"# x").unwrap();
+        let sock = dir.path().join("d.sock");
+        let server = fake_daemon(&sock, vec![opened(None, false), opened(None, false), opened(None, false)]);
+        for args in [&["x.md"][..], &["x.md", "--split", "right"], &["x.md", "--pane", "1"]] {
+            assert_eq!(run(open_cli_to, args, &sock, &d, Some(5)).code, 0, "{args:?}");
+        }
+        let places: Vec<Placement> = server
+            .join()
+            .unwrap()
+            .iter()
+            .map(|r| match direct_of(r).1 {
+                PaneAction::Open { place, .. } => place,
+                other => panic!("not an open: {other:?}"),
+            })
+            .collect();
+        assert_eq!(places, vec![Placement::Here, Placement::Split(SplitSide::Right), Placement::Pane(1)]);
+        // The preview pane is gone, and no flag brings it back.
+        assert_eq!(run(open_cli_to, &["x.md", "--beside"], &sock, &d, Some(5)).code, 2);
+    }
+
+    #[test]
     fn open_says_new_pane_for_a_split_and_reloaded_and_shown_for_a_reuse() {
         let path = Path::new("/v/x.mp4");
         let o = PaneOutcome::Opened { pane: 2, tab: 1, kind: "video".into(), reused: false, reloaded: false, new_pane: true, raw: false, video: Some(state(path)), web: None };
         assert_eq!(opened_line(&o, "x.mp4"), "opened video x.mp4 in pane 2 (new pane), 0:12.0 of 1:48.5, paused, 1920x1080");
         let o = PaneOutcome::Opened { pane: 2, tab: 1, kind: "video".into(), reused: true, reloaded: true, new_pane: false, raw: false, video: Some(state(path)), web: None };
         assert_eq!(opened_line(&o, "x.mp4"), "reloaded, shown video x.mp4 in pane 2, 0:12.0 of 1:48.5, paused, 1920x1080");
-        // A reused tab moved out of the agent's pane into a new split says so too.
-        let o = PaneOutcome::Opened { pane: 2, tab: 1, kind: "video".into(), reused: true, reloaded: false, new_pane: true, raw: false, video: Some(state(path)), web: None };
-        assert_eq!(opened_line(&o, "x.mp4"), "shown video x.mp4 in pane 2 (new pane), 0:12.0 of 1:48.5, paused, 1920x1080");
         let o = PaneOutcome::Opened { pane: 2, tab: 1, kind: "markdown".into(), reused: false, reloaded: false, new_pane: false, raw: false, video: None, web: None };
         assert_eq!(opened_line(&o, "notes.md"), "opened notes.md in pane 2, rendered");
         let o = PaneOutcome::Opened { pane: 3, tab: 1, kind: "markdown".into(), reused: true, reloaded: false, new_pane: false, raw: true, video: None, web: None };
