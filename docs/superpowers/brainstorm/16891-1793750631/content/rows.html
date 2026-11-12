@@ -1,0 +1,73 @@
+<style>
+  .sb { width: 260px; background: #eef1f6; color: #1f2328; font: 13px/1.35 -apple-system, "DM Sans", sans-serif; border-radius: 10px; padding: 8px 0 10px; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+  .sb .hd { display: flex; justify-content: space-between; padding: 6px 12px 6px 10px; font-size: 11px; letter-spacing: .04em; color: #4b5563; }
+  .sb .hd b { font-weight: 600; }
+  .sb .collapsed { padding: 4px 10px; font-size: 11px; color: #4b5563; letter-spacing: .04em; border-bottom: 1px solid #dde2ea; margin-bottom: 4px; }
+  .row { padding: 4px 12px 4px 22px; }
+  .row:hover { background: #e2e7ef; }
+  .l1 { display: flex; justify-content: space-between; gap: 8px; }
+  .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .br { color: #6b7280; }
+  .t { color: #6b7280; font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .t.fresh { color: #1d6f42; }
+  .path { color: #8a919c; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stale .name { color: #6b7280; }
+  .wrap { display: flex; gap: 28px; align-items: flex-start; flex-wrap: wrap; }
+  .note { font-size: 13px; color: #555; max-width: 260px; margin-top: 8px; }
+</style>
+
+<h2>Which rows belong in the list?</h2>
+<p class="subtitle">Your real ~/Projects, newest change first. Each row: name, time since any file in it last changed, and where it is (relative to the open folder). Branch shown only when it differs from the name.</p>
+
+<div class="options">
+  <div class="option" data-choice="all" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Every checkout (26 rows)</h3>
+      <div class="wrap">
+        <div class="sb">
+          <div class="collapsed">▸ EXPLORER</div>
+          <div class="hd"><b>▾ WORKTREES</b><span>+</span></div>
+          <div class="row"><div class="l1"><span class="name">csarko.sh <span class="br">master</span></span><span class="t fresh">4 min</span></div><div class="path">csarko.sh</div></div>
+          <div class="row"><div class="l1"><span class="name">ide-arkos</span><span class="t fresh">6 min</span></div><div class="path">ide-arkos</div></div>
+          <div class="row"><div class="l1"><span class="name">field-notes</span><span class="t">4 h</span></div><div class="path">field-notes</div></div>
+          <div class="row"><div class="l1"><span class="name">metrics</span><span class="t">7 h</span></div><div class="path">metrics</div></div>
+          <div class="row"><div class="l1"><span class="name">algorithms</span><span class="t">9 h</span></div><div class="path">algorithms</div></div>
+          <div class="row"><div class="l1"><span class="name">film-generation</span><span class="t">1 d</span></div><div class="path">film-generation</div></div>
+          <div class="row"><div class="l1"><span class="name">lantern</span><span class="t">1 d</span></div><div class="path">lantern</div></div>
+          <div class="row"><div class="l1"><span class="name">light-themes</span><span class="t">2 d</span></div><div class="path">ide-arkos/.worktrees/light-themes</div></div>
+          <div class="row"><div class="l1"><span class="name">mail</span><span class="t">2 d</span></div><div class="path">csarko.sh/.worktrees/mail</div></div>
+          <div class="row"><div class="l1"><span class="name">tree-flutter</span><span class="t">2 d</span></div><div class="path">game-dayhike/.claude/worktrees/tree-flutter</div></div>
+          <div class="row"><div class="l1"><span class="name">game-dayhike</span><span class="t">2 d</span></div><div class="path">game-dayhike</div></div>
+          <div class="row"><div class="l1"><span class="name">app-macstats</span><span class="t">2 d</span></div><div class="path">app-macstats</div></div>
+          <div class="row"><div class="l1"><span class="name">asset-generation</span><span class="t">2 d</span></div><div class="path">asset-generation</div></div>
+          <div class="row"><div class="l1"><span class="name">release <span class="br">spinner-crossfade</span></span><span class="t">2 d</span></div><div class="path">ide-arkos/.worktrees/release</div></div>
+          <div class="row" style="color:#8a919c;padding-left:22px">… 12 more</div>
+        </div>
+        <p class="note">Every repository's own folder is a row too, so the list doubles as "what changed lately across all my projects". Long: the 8 side worktrees are mixed in with 18 project folders.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="side" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Side worktrees only (8 rows)</h3>
+      <div class="wrap">
+        <div class="sb">
+          <div class="collapsed">▸ EXPLORER</div>
+          <div class="hd"><b>▾ WORKTREES</b><span>+</span></div>
+          <div class="row"><div class="l1"><span class="name">light-themes</span><span class="t">2 d</span></div><div class="path">ide-arkos/.worktrees/light-themes</div></div>
+          <div class="row"><div class="l1"><span class="name">mail</span><span class="t">2 d</span></div><div class="path">csarko.sh/.worktrees/mail</div></div>
+          <div class="row"><div class="l1"><span class="name">tree-flutter</span><span class="t">2 d</span></div><div class="path">game-dayhike/.claude/worktrees/tree-flutter</div></div>
+          <div class="row"><div class="l1"><span class="name">release <span class="br">spinner-crossfade</span></span><span class="t">2 d</span></div><div class="path">ide-arkos/.worktrees/release</div></div>
+          <div class="row"><div class="l1"><span class="name">mail</span><span class="t">4 d</span></div><div class="path">skills-general/.worktrees/mail</div></div>
+          <div class="row stale"><div class="l1"><span class="name">explore-shimmer</span><span class="t">8 d</span></div><div class="path">game-dayhike/.claude/worktrees/explore-shimmer</div></div>
+          <div class="row stale"><div class="l1"><span class="name">asset-generation-leak-scan <span class="br">detached</span></span><span class="t">14 d</span></div><div class="path">asset-generation-leak-scan</div></div>
+          <div class="row stale"><div class="l1"><span class="name">rate-limit</span><span class="t">18 d</span></div><div class="path">preview/.worktrees/rate-limit</div></div>
+        </div>
+        <p class="note">Only the worktrees made beside a repository (yours and Claude Code's own <code>.claude/worktrees</code>). Short, and every row is something that might be stale. A week or older reads dimmer.</p>
+      </div>
+    </div>
+  </div>
+</div>

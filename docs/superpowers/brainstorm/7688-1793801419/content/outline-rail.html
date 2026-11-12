@@ -1,0 +1,138 @@
+<style>
+  .tab { position: relative; background: #f7f7fb; color: #1f2328; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.15); overflow: hidden; font: 14px/1.5 -apple-system, "DM Sans", sans-serif; }
+  .bar { height: 30px; display: flex; align-items: center; gap: 10px; padding: 0 12px; border-bottom: 1px solid #e3e5ec; font-size: 12.5px; color: #4b5563; }
+  .bar .t { padding: 3px 0; border-bottom: 2px solid #3b6fd8; color: #1f2328; }
+  .body { display: flex; height: 330px; }
+  .doc { flex: 1; padding: 14px 22px; overflow: hidden; }
+  .doc h1 { font: 600 22px/1.2 Georgia, serif; margin: 0 0 6px; }
+  .doc h2 { font: 600 16px/1.3 Georgia, serif; margin: 14px 0 4px; }
+  .doc p { margin: 0 0 6px; color: #374151; font-size: 13px; }
+  .doc .here { background: #e8eefc; border-radius: 4px; }
+  /* collapsed stepper rail */
+  .rail { width: 26px; flex: none; position: relative; border-right: 1px solid #e9ebf1; }
+  .rail .line { position: absolute; left: 12px; top: 22px; bottom: 30px; width: 2px; background: #d7dbe5; }
+  .rail .dot { position: absolute; left: 7px; width: 12px; height: 12px; border-radius: 50%; background: #f7f7fb; border: 2px solid #9aa3b5; box-sizing: border-box; }
+  .rail .dot.sub { left: 9px; width: 8px; height: 8px; border-width: 2px; }
+  .rail .dot.on { background: #3b6fd8; border-color: #3b6fd8; }
+  .rail .dot.done { background: #9aa3b5; }
+  .rail .tip { position: absolute; left: 28px; background: #1f2328; color: #fff; font-size: 11.5px; padding: 3px 8px; border-radius: 6px; white-space: nowrap; }
+  .rail .toggle { position: absolute; left: 5px; top: 4px; width: 16px; height: 14px; color: #6b7280; font-size: 12px; line-height: 14px; text-align: center; }
+  /* expanded */
+  .panel { width: 190px; flex: none; border-right: 1px solid #e9ebf1; padding: 8px 0; font-size: 12.5px; position: relative; background: #f2f3f8; }
+  .panel .hd { display: flex; justify-content: space-between; padding: 2px 12px 8px; color: #6b7280; font-size: 11px; letter-spacing: .05em; }
+  .step { position: relative; padding: 5px 10px 5px 30px; color: #4b5563; }
+  .step.sub { padding-left: 44px; font-size: 12px; }
+  .step .d { position: absolute; left: 12px; top: 10px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid #9aa3b5; box-sizing: border-box; background: #f2f3f8; }
+  .step.sub .d { left: 26px; width: 8px; height: 8px; top: 11px; }
+  .step.on { color: #1f2328; font-weight: 600; background: #e3e9f8; border-radius: 0 16px 16px 0; margin-right: 10px; }
+  .step.on .d { background: #3b6fd8; border-color: #3b6fd8; }
+  .step.done .d { background: #9aa3b5; }
+  .panel .vline { position: absolute; left: 16px; top: 44px; bottom: 26px; width: 2px; background: #d7dbe5; }
+  .modal { position: absolute; left: 0; top: 30px; bottom: 0; box-shadow: 4px 0 18px rgba(0,0,0,.18); z-index: 2; }
+  .scrim { position: absolute; inset: 30px 0 0 0; background: rgba(20,22,30,.18); z-index: 1; }
+  .narrow { width: 330px; }
+  .wrap { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-start; }
+  .cap { font-size: 13px; color: #555; margin: 6px 2px 0; max-width: 520px; }
+</style>
+
+<h2>An outline rail inside the markdown tab</h2>
+<p class="subtitle">Material's expanded/collapsed navigation rail, drawn as a vertical stepper. Collapsed by default; click the ☰ or press a shortcut to expand. The document is "Launch plan"; the reader is in "Where we stand".</p>
+
+<div class="options">
+  <div class="option" data-choice="collapsed" onclick="toggleSelect(this)">
+    <div class="letter">1</div>
+    <div class="content">
+      <h3>Collapsed (the default): a 26 px stepper rail</h3>
+      <div class="wrap">
+        <div class="tab" style="width:620px">
+          <div class="bar"><span class="t">launch-plan.md</span><span>decision-logs.md</span></div>
+          <div class="body">
+            <div class="rail">
+              <div class="toggle">☰</div>
+              <div class="line"></div>
+              <div class="dot done" style="top:28px"></div>
+              <div class="dot on" style="top:70px"></div>
+              <div class="tip" style="top:64px">Where we stand</div>
+              <div class="dot sub" style="top:108px"></div>
+              <div class="dot sub" style="top:136px"></div>
+              <div class="dot" style="top:180px"></div>
+              <div class="dot" style="top:226px"></div>
+              <div class="dot" style="top:272px"></div>
+            </div>
+            <div class="doc">
+              <h1>Launch plan</h1>
+              <p>One page anyone can read in a minute. The table is the plan; the rest explains it.</p>
+              <h2 class="here">Where we stand</h2>
+              <p>Report builder, scheduling and permissions are done. Export to PDF has not started; the onboarding nudge is in progress.</p>
+              <p>Priya owns the builder and the nudge, Tom scheduling, Ana permissions.</p>
+              <h2>How a report gets out</h2>
+              <p>Draft, review, schedule, send. Each step has one owner and one day.</p>
+            </div>
+          </div>
+        </div>
+        <p class="cap">One dot per heading on a line, smaller dots for subheadings; the filled dot is the section in view, the grey ones are read. Hover a dot for its heading; click to jump. It costs 26 px of the document's width.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="expanded" onclick="toggleSelect(this)">
+    <div class="letter">2</div>
+    <div class="content">
+      <h3>Expanded in a wide tab: beside the document</h3>
+      <div class="wrap">
+        <div class="tab" style="width:620px">
+          <div class="bar"><span class="t">launch-plan.md</span><span>decision-logs.md</span></div>
+          <div class="body">
+            <div class="panel">
+              <div class="hd"><span>OUTLINE</span><span>«</span></div>
+              <div class="vline"></div>
+              <div class="step done"><span class="d"></span>Launch plan</div>
+              <div class="step on"><span class="d"></span>Where we stand</div>
+              <div class="step sub"><span class="d"></span>Owners</div>
+              <div class="step sub"><span class="d"></span>Risks</div>
+              <div class="step"><span class="d"></span>How a report gets out</div>
+              <div class="step"><span class="d"></span>Before we ship</div>
+              <div class="step"><span class="d"></span>The number we watch</div>
+            </div>
+            <div class="doc">
+              <h1>Launch plan</h1>
+              <p>One page anyone can read in a minute.</p>
+              <h2 class="here">Where we stand</h2>
+              <p>Report builder, scheduling and permissions are done. Export to PDF has not started.</p>
+              <h2>How a report gets out</h2>
+              <p>Draft, review, schedule, send.</p>
+            </div>
+          </div>
+        </div>
+        <p class="cap">The same stepper with its labels, pushing the document right (Material's "standard" rail). « collapses it again. The tab remembers which way you left it.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="narrow" onclick="toggleSelect(this)">
+    <div class="letter">3</div>
+    <div class="content">
+      <h3>Expanded in a narrow tab: over the document</h3>
+      <div class="wrap">
+        <div class="tab narrow">
+          <div class="bar"><span class="t">launch-plan.md</span></div>
+          <div class="body">
+            <div class="rail"><div class="toggle">☰</div><div class="line"></div><div class="dot on" style="top:70px"></div></div>
+            <div class="doc"><h1>Launch plan</h1><p>One page anyone can read in a minute.</p><h2 class="here">Where we stand</h2><p>Report builder, scheduling and permissions are done.</p></div>
+          </div>
+          <div class="scrim"></div>
+          <div class="panel modal">
+            <div class="hd"><span>OUTLINE</span><span>«</span></div>
+            <div class="vline"></div>
+            <div class="step done"><span class="d"></span>Launch plan</div>
+            <div class="step on"><span class="d"></span>Where we stand</div>
+            <div class="step sub"><span class="d"></span>Owners</div>
+            <div class="step"><span class="d"></span>How a report gets out</div>
+            <div class="step"><span class="d"></span>Before we ship</div>
+          </div>
+        </div>
+        <p class="cap">Below about 520 px of tab width the expanded rail slides over the text with a scrim instead of squeezing it (Material's "modal" rail, its advice for narrow windows); a click on a heading or outside closes it.</p>
+      </div>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,4 @@
+# Brainstorm server runtime state: ports, pids, logs and localhost access keys.
+.last-token
+.last-port
+*/state/
