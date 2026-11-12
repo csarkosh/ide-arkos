@@ -5,7 +5,7 @@
 //! Arkos theme holds to 4.5:1 on its background; background-like keys name the 256-colour cube
 //! and grey ramp, which Arkos derives from the theme as faint tints of its background.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// The file's slug, and so the name Claude Code's `theme` setting selects it by.
 pub const SLUG: &str = "arkos";
@@ -165,12 +165,6 @@ pub fn contrast_pairs(theme: &crate::theme::Theme) -> Vec<crate::theme::Pair> {
 pub fn arkos_theme_json() -> serde_json::Value {
     let overrides: serde_json::Map<String, serde_json::Value> = KEYS.iter().map(|(k, _, v)| (k.to_string(), serde_json::json!(v))).collect();
     serde_json::json!({ "name": "Arkos", "base": "dark-ansi", "overrides": overrides })
-}
-
-/// Claude Code's themes folder: `$CLAUDE_CONFIG_DIR/themes`, else `~/.claude/themes`, beside the
-/// settings file `hook_cli::claude_settings_path` names.
-pub fn themes_dir() -> PathBuf {
-    crate::hook_cli::claude_settings_path().parent().map(|d| d.join("themes")).unwrap_or_else(|| PathBuf::from("themes"))
 }
 
 /// Writes `dir/arkos.json` when it is missing or its text differs from `arkos_theme_json`,

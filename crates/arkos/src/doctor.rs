@@ -2,7 +2,8 @@
 //! installed app and its leftovers, the daemon (asked over its socket with a Hello that names no
 //! window, so it confirms nothing and is never relaunched), the update marker and the rejected
 //! versions, the end of the daemon's update journal and of `window.log`, and the crash reports
-//! from the last day, the themes with the agent guide skill, and the telemetry mode with its
+//! from the last day, the themes with the agent guide skill, the Claude Code config folders in
+//! use with the sessions whose Claude Code reports nothing, and the telemetry mode with its
 //! queue (as `arkos telemetry status` finds them). It starts no daemon, opens no window and
 //! changes no file.
 use crate::guide::SkillState;
@@ -35,6 +36,12 @@ pub struct Where {
     pub config: PathBuf,
     /// The agent guide skill's folder in this environment's Claude config.
     pub skills: PathBuf,
+    /// The home folder: a Claude Code with no `CLAUDE_CONFIG_DIR` keeps its config in its
+    /// `.claude`, and a folder under it is printed with `~`.
+    pub home: Option<PathBuf>,
+    /// The binary the hook entries name (`update::launch_path`): hooks that name another count
+    /// as missing, as they do in the window's doctor.
+    pub hook_exe: PathBuf,
 }
 
 impl Where {
@@ -49,6 +56,8 @@ impl Where {
             themes: crate::paths::themes_dir(),
             config: crate::paths::config_file(),
             skills: crate::guide::skills_dir(),
+            home: crate::claude_folders::home(),
+            hook_exe: crate::update::launch_path().unwrap_or_else(|| PathBuf::from("arkos")),
         }
     }
 
@@ -113,6 +122,25 @@ pub fn report(w: &Where, now: SystemTime) -> String {
     let reports: Vec<String> = recent_reports(&w.reports, now).into_iter().map(|p| p.display().to_string()).collect();
     section(&mut out, &format!("crash reports from the last day in {}", w.reports.display()), &reports);
     section(&mut out, "themes", &themes_section(&w.themes, &w.config, &w.skills, &crate::guide::skill_state(&w.skills)));
+    // The folders the window remembers, the one a Claude Code with no `CLAUDE_CONFIG_DIR` uses,
+    // and any a session runs under now. Nothing is remembered from here: the doctor is read-only.
+    let default = w.skills.parent().map(Path::to_path_buf).unwrap_or_default();
+    let mut folders = crate::claude_folders::read(&w.app_support.join("claude-folders"), &default);
+    let seen = match w.home.as_ref().map(|h| h.join(".claude")) {
+        Some(home_default) => {
+            if home_default.is_dir() && !folders.contains(&home_default) {
+                folders.push(home_default.clone());
+            }
+            crate::agent_probe::run(&w.socket, &home_default)
+        }
+        None => Err("HOME is not set".to_string()),
+    };
+    for s in seen.iter().flatten() {
+        if !folders.contains(&s.folder) {
+            folders.push(s.folder.clone());
+        }
+    }
+    section(&mut out, "Claude Code config folders", &claude_section(&folders, &w.hook_exe, w.home.as_deref(), &seen));
     let _ = writeln!(out, "the daemon's own log: {}", w.socket.with_file_name("arkosd.log").display());
     out
 }
@@ -159,6 +187,49 @@ pub fn themes_section(themes: &Path, config: &Path, skills_dir: &Path, skill: &S
         SkillState::Foreign => "a different skill".to_string(),
     };
     lines.push(format!("agent guide skill in {}: {said}", skills_dir.display()));
+    lines
+}
+
+/// The doctor's Claude Code lines (spec 2026-11-12): for each config folder in use whether its
+/// settings hold the hooks, the wheel scrolling setting and the Arkos theme, or why they cannot
+/// be read; then each session whose Claude Code reports nothing, with its folder, or that every
+/// one reports. `seen` is the probe's answer (`agent_probe::run`), an error when no daemon gave
+/// its sessions.
+pub fn claude_section(folders: &[PathBuf], hook_exe: &Path, home: Option<&Path>, seen: &Result<Vec<crate::agent_probe::Seen>, String>) -> Vec<String> {
+    use crate::hook_cli::{claude_theme_at, hooks_installed_at, wheel_scroll_acceleration_at};
+    let name = |folder: &Path| crate::claude_folders::tilde(folder, home);
+    let mut lines: Vec<String> = folders
+        .iter()
+        .map(|folder| {
+            let settings = crate::claude_folders::settings_of(folder);
+            match (hooks_installed_at(&settings, hook_exe), wheel_scroll_acceleration_at(&settings), claude_theme_at(&settings)) {
+                (Ok(hooks), Ok(scroll), Ok(theme)) => format!(
+                    "{}: hooks {}; smooth wheel scrolling {}; theme {}",
+                    name(folder),
+                    if hooks { "installed" } else { "missing, its tabs show no Claude Code state" },
+                    if scroll == Some(false) { "on" } else { "off" },
+                    theme.as_deref().unwrap_or("not set")
+                ),
+                (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => format!("{}: {e}", name(folder)),
+            }
+        })
+        .collect();
+    match seen {
+        Ok(seen) => {
+            let silent: Vec<&crate::agent_probe::Seen> = seen.iter().filter(|s| !s.reports).collect();
+            for s in &silent {
+                lines.push(format!("session {}: its claude, under {}, reports nothing; restart it once that folder has the hooks", s.session.0, name(&s.folder)));
+            }
+            if silent.is_empty() {
+                lines.push(match seen.len() {
+                    0 => "no Claude Code is running in a session".to_string(),
+                    1 => "1 session runs a Claude Code and it reports its state".to_string(),
+                    n => format!("{n} sessions run a Claude Code and each reports its state"),
+                });
+            }
+        }
+        Err(e) => lines.push(format!("sessions not checked: {e}")),
+    }
     lines
 }
 
@@ -302,6 +373,8 @@ mod tests {
             themes: config.join("themes"),
             config: config.join("config.toml"),
             skills: root.path().join("claude").join("skills"),
+            home: Some(root.path().to_path_buf()),
+            hook_exe: "/x/arkos".into(),
         };
         let before = listing(root.path());
         let text = report(&w, now);
@@ -325,6 +398,37 @@ mod tests {
         assert!(text.contains("\nthemes:\n"), "{text}");
         assert!(text.contains(&format!("  {}: ", config.join("themes").join("half.toml").display())), "{text}");
         assert!(text.contains(&format!("  agent guide skill in {}: not installed\n", root.path().join("claude").join("skills").display())), "{text}");
+        assert!(text.contains("\nClaude Code config folders:\n  ~/claude: hooks missing, its tabs show no Claude Code state; smooth wheel scrolling off; theme not set\n  sessions not checked: cannot reach arkosd: "), "{text}");
+    }
+
+    #[test]
+    fn the_claude_section_lists_each_folder_and_each_silent_session() {
+        use crate::agent_probe::Seen;
+        use protocol::SessionId;
+        let home = tempfile::tempdir().unwrap();
+        let exe = Path::new("/Applications/Arkos IDE.app/Contents/MacOS/arkos");
+        let folders: Vec<PathBuf> = [".claude", ".claude2", ".claude3"].iter().map(|f| home.path().join(f)).collect();
+        let first = folders[0].join("settings.json");
+        crate::hook_cli::install_hooks_at(&first, exe, false).unwrap();
+        crate::hook_cli::set_wheel_scroll_acceleration_at(&first, false).unwrap();
+        crate::hook_cli::set_claude_theme_at(&first, "custom:arkos").unwrap();
+        crate::hook_cli::set_claude_theme_at(&folders[1].join("settings.json"), "dark").unwrap();
+        std::fs::create_dir_all(&folders[2]).unwrap();
+        std::fs::write(folders[2].join("settings.json"), "{ not json").unwrap();
+        let seen = Ok(vec![
+            Seen { session: SessionId(11), folder: folders[0].clone(), reports: true },
+            Seen { session: SessionId(12), folder: folders[1].clone(), reports: false },
+        ]);
+        let lines = claude_section(&folders, exe, Some(home.path()), &seen);
+        assert_eq!(lines[0], "~/.claude: hooks installed; smooth wheel scrolling on; theme custom:arkos");
+        assert_eq!(lines[1], "~/.claude2: hooks missing, its tabs show no Claude Code state; smooth wheel scrolling off; theme dark");
+        assert!(lines[2].starts_with(&format!("~/.claude3: cannot parse {}", folders[2].join("settings.json").display())), "{lines:?}");
+        assert_eq!(lines[3], "session 12: its claude, under ~/.claude2, reports nothing; restart it once that folder has the hooks");
+        assert_eq!(lines.len(), 4);
+        let all_report = Ok(vec![Seen { session: SessionId(11), folder: folders[0].clone(), reports: true }]);
+        assert_eq!(claude_section(&folders[..1], exe, Some(home.path()), &all_report)[1], "1 session runs a Claude Code and it reports its state");
+        assert_eq!(claude_section(&folders[..1], exe, Some(home.path()), &Ok(vec![]))[1], "no Claude Code is running in a session");
+        assert_eq!(claude_section(&folders[..1], exe, Some(home.path()), &Err("cannot reach arkosd: gone".into()))[1], "sessions not checked: cannot reach arkosd: gone");
     }
 
     #[test]
@@ -392,6 +496,8 @@ mod tests {
             themes: "/c/themes".into(),
             config: "/c/config.toml".into(),
             skills: "/h/.claude/skills".into(),
+            home: None,
+            hook_exe: "/x/arkos".into(),
         };
         assert_eq!(w("/Users/me/Apps/Arkos IDE.app/Contents/MacOS/arkos").bundle(), PathBuf::from("/Users/me/Apps/Arkos IDE.app"));
         assert_eq!(w("/x/target/debug/arkos").bundle(), PathBuf::from("/Applications/Arkos IDE.app"));

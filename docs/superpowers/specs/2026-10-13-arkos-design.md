@@ -268,6 +268,10 @@ Claude Code's hooks run shell commands on lifecycle events. The daemon sets
 | Notification (permission or idle prompt) | waiting |
 | Stop | waiting |
 
+The hooks live in a Claude Code config folder's `settings.json`. A Claude Code started under
+another folder (`CLAUDE_CONFIG_DIR`) needs them there too: see
+[the config folders spec](2026-11-12-claude-config-folders-design.md).
+
 Tab states and icons: **working**, a small glyph with a slow, soft breathing pulse (about a
 2 s cycle, ticked at a low rate so a working tab costs a few percent of one core at most, and
 paused when the window is not visible); **waiting**, a solid dot in the theme's warm accent that

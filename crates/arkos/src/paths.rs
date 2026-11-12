@@ -19,6 +19,11 @@ pub fn recent_file() -> PathBuf {
     app_support().join("recent.json")
 }
 
+/// The Claude Code config folders seen in use besides the default one (`claude_folders.rs`).
+pub fn claude_folders_file() -> PathBuf {
+    app_support().join("claude-folders")
+}
+
 /// The version the last launch ran, so a relaunch can say "Updated to X" (notices.rs).
 pub fn last_version_file() -> PathBuf {
     app_support().join("last_version")

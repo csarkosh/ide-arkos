@@ -26,8 +26,9 @@ pub struct Item {
 /// `update_error` is whether the last update failed, which offers "Retry update".
 /// `show_ignored` is whether the file tree lists ignored entries. In a `sandbox` the items that
 /// would write the login item, the user's Claude Code hooks or skill, or update say
-/// `not in a sandbox` (and Root runs nothing for them).
-pub fn items(cfg: &Config, themes: &[(String, Option<crate::theme::Appearance>)], current_preset: &str, current_theme: &str, themes_dir: &Path, update_ready: Option<&str>, update_error: bool, start_at_login: StartAtLogin, login_item_installed: bool, claude_settings: &Path, show_ignored: bool, unread: usize, to_fix: usize, sandbox: bool) -> Vec<Item> {
+/// `not in a sandbox` (and Root runs nothing for them). `claude_folders` is how many Claude Code
+/// config folders are known: with more than one, the hooks command writes each that lacks them.
+pub fn items(cfg: &Config, themes: &[(String, Option<crate::theme::Appearance>)], current_preset: &str, current_theme: &str, themes_dir: &Path, update_ready: Option<&str>, update_error: bool, start_at_login: StartAtLogin, login_item_installed: bool, claude_settings: &Path, claude_folders: usize, show_ignored: bool, unread: usize, to_fix: usize, sandbox: bool) -> Vec<Item> {
     let mut out = Vec::new();
     for a in ACTIONS {
         if a.name == "command palette" || a.name == "quit" {
@@ -52,6 +53,7 @@ pub fn items(cfg: &Config, themes: &[(String, Option<crate::theme::Appearance>)]
             },
             Command::Notifications => if unread == 0 { "nothing new".to_string() } else { format!("{unread} unread") },
             Command::Doctor => if to_fix == 0 { "all good".to_string() } else { format!("{to_fix} to fix") },
+            Command::InstallHooks if claude_folders > 1 => "into each Claude Code config folder that lacks them".to_string(),
             Command::InstallHooks => format!("into {}", claude_settings.display()),
             // The skills folder sits beside the settings file: both follow CLAUDE_CONFIG_DIR.
             Command::InstallAgentGuide => format!("into {}", claude_settings.with_file_name("skills").display()),
@@ -246,19 +248,19 @@ mod tests {
         let cfg = Config::default();
         let dir = std::path::Path::new("/u/.config/arkos/themes");
         let settings = Path::new("/Users/me/.claude/settings.json");
-        let items = items(&cfg, &[("navy".into(), Some(crate::theme::Appearance::Dark)), ("peach-watercolor".into(), Some(crate::theme::Appearance::Light))], "comfortable", "navy", dir, None, false, StartAtLogin::Ask, false, settings, false, 0, 0, false);
+        let items = items(&cfg, &[("navy".into(), Some(crate::theme::Appearance::Dark)), ("peach-watercolor".into(), Some(crate::theme::Appearance::Light))], "comfortable", "navy", dir, None, false, StartAtLogin::Ask, false, settings, 1, false, 0, 0, false);
         // The palette and quit are not offered, nor "Retry update" with no update error.
         let n_actions = crate::keymap::ACTIONS.len() - 3;
         assert_eq!(items.len(), n_actions + 3 + 2 + 2);
         assert_eq!(items.iter().find(|i| i.label == "Check for updates").unwrap().command, Command::CheckForUpdates);
         assert!(!items.iter().any(|i| i.command == Command::RetryUpdate));
-        let failed = self::items(&cfg, &[], "comfortable", "navy", dir, None, true, StartAtLogin::Ask, false, settings, false, 0, 0, false);
+        let failed = self::items(&cfg, &[], "comfortable", "navy", dir, None, true, StartAtLogin::Ask, false, settings, 1, false, 0, 0, false);
         assert_eq!(failed.iter().find(|i| i.label == "Retry update").unwrap().command, Command::RetryUpdate);
         assert!(!items.iter().any(|i| i.label == "Command palette" || i.label == "Quit"));
         let update = items.iter().find(|i| i.label == "Update now").unwrap();
         assert_eq!(update.command, Command::UpdateNow);
         assert_eq!(update.detail, "relaunch on the installed binaries");
-        let ready = self::items(&cfg, &[], "comfortable", "navy", dir, Some("update ready: 0.2.0 (def5678)"), false, StartAtLogin::Ask, false, settings, false, 0, 0, false);
+        let ready = self::items(&cfg, &[], "comfortable", "navy", dir, Some("update ready: 0.2.0 (def5678)"), false, StartAtLogin::Ask, false, settings, 1, false, 0, 0, false);
         assert_eq!(ready.iter().find(|i| i.label == "Update now").unwrap().detail, "update ready: 0.2.0 (def5678)");
         let split = items.iter().find(|i| i.label == "Split right").unwrap();
         assert_eq!(split.detail, "Cmd+\\");
@@ -275,7 +277,7 @@ mod tests {
         assert!(items.iter().any(|i| i.command == Command::ReloadConfig));
         let extract = items.iter().find(|i| i.command == Command::ExtractThemes).unwrap();
         assert_eq!(extract.detail, "to /u/.config/arkos/themes");
-        let items = self::items(&cfg, &[], "compact", "navy", dir, None, false, StartAtLogin::Ask, false, settings, false, 0, 0, false);
+        let items = self::items(&cfg, &[], "compact", "navy", dir, None, false, StartAtLogin::Ask, false, settings, 1, false, 0, 0, false);
         let compact = items.iter().find(|i| i.label == "Text preset: compact").unwrap();
         assert_eq!(compact.detail, "14 px, line height 1.3, below the research's comfort floor, current", "the floor note stays");
         let sidebar = items.iter().find(|i| i.label == "Toggle sidebar").unwrap();
@@ -317,10 +319,10 @@ mod tests {
         assert_eq!((play.detail.as_str(), &play.command), ("Space", &Command::VideoPlayPause));
         let ignored = items.iter().find(|i| i.label == "Show ignored files").unwrap();
         assert_eq!((ignored.detail.as_str(), &ignored.command), ("off", &Command::ShowIgnoredFiles));
-        let shown = self::items(&cfg, &[], "comfortable", "navy", dir, None, false, StartAtLogin::Ask, false, settings, true, 0, 0, false);
+        let shown = self::items(&cfg, &[], "comfortable", "navy", dir, None, false, StartAtLogin::Ask, false, settings, 1, true, 0, 0, false);
         assert_eq!(shown.iter().find(|i| i.label == "Show ignored files").unwrap().detail, "on");
         let unbound = cfg_with("split right", "");
-        let items = self::items(&unbound, &[], "comfortable", "navy", dir, None, false, StartAtLogin::Ask, false, settings, false, 0, 0, false);
+        let items = self::items(&unbound, &[], "comfortable", "navy", dir, None, false, StartAtLogin::Ask, false, settings, 1, false, 0, 0, false);
         assert_eq!(items.iter().find(|i| i.label == "Split right").unwrap().detail, "");
     }
 
@@ -329,19 +331,22 @@ mod tests {
         let cfg = Config::default();
         let settings = Path::new("/Users/me/.claude/settings.json");
         let find = |items: &[Item], label: &str| items.iter().find(|i| i.label == label).cloned().unwrap_or_else(|| panic!("no {label}"));
-        let ask_off = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, false, StartAtLogin::Ask, false, settings, false, 2, 1, false);
-        let quiet = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, false, StartAtLogin::Ask, false, settings, false, 0, 0, false);
+        let ask_off = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, false, StartAtLogin::Ask, false, settings, 1, false, 2, 1, false);
+        let quiet = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, false, StartAtLogin::Ask, false, settings, 1, false, 0, 0, false);
         assert_eq!(find(&ask_off, "Start at login").detail, "off: turn on so sessions come back after a restart");
         assert_eq!(find(&ask_off, "Start at login").command, Command::StartAtLogin);
-        let ask_on = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, false, StartAtLogin::Ask, true, settings, false, 0, 0, false);
+        let ask_on = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, false, StartAtLogin::Ask, true, settings, 1, false, 0, 0, false);
         assert_eq!(find(&ask_on, "Start at login").detail, "on: run to turn off");
-        let pinned = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, false, StartAtLogin::On, true, settings, false, 0, 0, false);
+        let pinned = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, false, StartAtLogin::On, true, settings, 1, false, 0, 0, false);
         assert_eq!(find(&pinned, "Start at login").detail, "on, set in config.toml ([recovery] start_at_login)");
-        let off = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, false, StartAtLogin::Off, false, settings, false, 0, 0, false);
+        let off = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, false, StartAtLogin::Off, false, settings, 1, false, 0, 0, false);
         assert_eq!(find(&off, "Start at login").detail, "off, set in config.toml ([recovery] start_at_login)");
         let hooks = find(&ask_off, "Install Claude Code hooks");
         assert_eq!(hooks.detail, "into /Users/me/.claude/settings.json");
         assert_eq!(hooks.command, Command::InstallHooks);
+        let folders = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, false, StartAtLogin::Ask, false, settings, 3, false, 0, 0, false);
+        assert_eq!(find(&folders, "Install Claude Code hooks").detail, "into each Claude Code config folder that lacks them");
+        assert_eq!(find(&folders, "Install agent guide").detail, "into /Users/me/.claude/skills", "the guide still goes to the default folder alone");
         let guide = find(&ask_off, "Install agent guide");
         assert_eq!((guide.detail.as_str(), guide.command), ("into /Users/me/.claude/skills", Command::InstallAgentGuide));
         let bell = find(&ask_off, "Notifications");
@@ -408,7 +413,7 @@ mod tests {
     fn in_a_sandbox_the_login_update_and_install_items_say_they_do_nothing() {
         let cfg = Config::default();
         let settings = Path::new("/Users/me/.claude/settings.json");
-        let all = |sandbox| items(&cfg, &[], "comfortable", "navy", Path::new("/t"), Some("update ready: 0.2.0 (def5678)"), true, StartAtLogin::Ask, false, settings, false, 0, 0, sandbox);
+        let all = |sandbox| items(&cfg, &[], "comfortable", "navy", Path::new("/t"), Some("update ready: 0.2.0 (def5678)"), true, StartAtLogin::Ask, false, settings, 1, false, 0, 0, sandbox);
         let (outside, inside) = (all(false), all(true));
         let refused = [Command::StartAtLogin, Command::CheckForUpdates, Command::UpdateNow, Command::RetryUpdate, Command::InstallHooks, Command::InstallAgentGuide];
         assert_eq!(inside.len(), outside.len(), "every item is still listed");

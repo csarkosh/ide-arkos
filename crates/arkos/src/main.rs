@@ -1,5 +1,6 @@
 mod about;
 mod agent_cli;
+mod agent_probe;
 mod app_nap;
 mod aux;
 mod bounded;
@@ -7,6 +8,7 @@ mod av_player;
 mod cache;
 mod chooser_sessions;
 mod chrome;
+mod claude_folders;
 mod claude_theme;
 mod client;
 mod closed_stack;
@@ -141,6 +143,24 @@ const CONNECTING: &str = "connecting to arkosd";
 const NOTICE_FOR: Duration = Duration::from_secs(6);
 /// How often kills the daemon refused during an upgrade are sent again.
 const KILL_RETRY: Duration = Duration::from_secs(1);
+/// A new title in a session that reports nothing asks for a probe of the agents this long
+/// after: Claude Code sets its title as it starts and its SessionStart hook reports a moment
+/// later, and a probe between the two would call a Claude Code with hooks silent.
+const TITLE_PROBE_DELAY: Duration = Duration::from_secs(3);
+
+/// Runs `apply` on each settings file and returns the first error, having still tried the rest:
+/// one config folder that cannot be written does not keep a doctor's fix from the others.
+fn in_each(paths: &[PathBuf], apply: impl Fn(&Path) -> Result<(), String>) -> Result<(), String> {
+    let mut first = Ok(());
+    for path in paths {
+        if let Err(e) = apply(path) {
+            if first.is_ok() {
+                first = Err(e);
+            }
+        }
+    }
+    first
+}
 
 /// The status bar's word on the daemon, from the connection banner alone: empty once the daemon
 /// answered, `CONNECTING` until then, an `ERROR_PREFIX` error or a disconnect reason otherwise.
@@ -280,6 +300,13 @@ pub struct Root {
     pub doctor_busy: Option<doctor_panel::CheckId>,
     /// True once the doctor turned the scroll-acceleration key off during this run.
     pub scroll_applied: bool,
+    /// The Claude Code config folders in use, the default one first (`claude_folders`). The
+    /// doctor's Claude Code rows read each one's settings file.
+    pub claude_folders: Vec<PathBuf>,
+    /// The sessions whose Claude Code reports nothing, as last probed (`agent_probe`).
+    pub silent: Vec<SessionId>,
+    /// A probe of the agents is waiting or running off the UI thread; another waits for it.
+    agents_probing: bool,
     /// This Arkos is a sandbox (`ARKOS_SANDBOX`, read once at startup): it never writes the
     /// user's Claude Code settings, colours, hooks or skill, never writes the login item, never
     /// updates.
@@ -727,6 +754,9 @@ impl Root {
             doctor_states: Vec::new(),
             doctor_busy: None,
             scroll_applied: false,
+            claude_folders: vec![claude_folders::default_folder()],
+            silent: Vec::new(),
+            agents_probing: false,
             sandbox: ::telemetry::is_sandbox(),
             popover: Transient::Hidden,
             bell_read_before: None,
@@ -873,6 +903,7 @@ impl Root {
             }
             if next == chrome::Popover::Doctor {
                 self.probe_doctor();
+                self.probe_agents(Duration::ZERO, cx);
             }
             if next == chrome::Popover::Bell {
                 self.bell_read_before = self.notices.opened_at();
@@ -948,26 +979,119 @@ impl Root {
         if self.sandbox {
             return;
         }
-        let settings = hook_cli::claude_settings_path();
-        let themes = claude_theme::themes_dir();
+        self.follow_theme_in(self.claude_folders.clone(), cx);
+    }
+
+    /// `follow_theme_in_claude` for these config folders: each one Arkos knows at startup, and
+    /// one first seen in use later (`probe_agents`).
+    fn follow_theme_in(&mut self, folders: Vec<PathBuf>, cx: &mut Context<Self>) {
         let root = cx.entity();
         cx.spawn(async move |_, cx| {
-            let done = cx.background_executor().spawn(async move { claude_theme::follow_at(&settings, &themes) }).await;
-            let was = match done {
-                Ok(d) => d.switched_from,
-                Err(e) => {
-                    eprintln!("arkos: Claude Code's Arkos theme: {e}");
-                    None
-                }
-            };
-            if let Some(was) = was {
-                eprintln!("arkos: Claude Code's theme was {}; set to {}", was.as_deref().unwrap_or("unset"), claude_theme::SELECTED);
+            let switched = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut switched = false;
+                    for folder in &folders {
+                        match claude_theme::follow_at(&claude_folders::settings_of(folder), &folder.join("themes")) {
+                            Ok(done) => {
+                                if let Some(was) = done.switched_from {
+                                    eprintln!("arkos: Claude Code's theme in {} was {}; set to {}", folder.display(), was.as_deref().unwrap_or("unset"), claude_theme::SELECTED);
+                                    switched = true;
+                                }
+                            }
+                            Err(e) => eprintln!("arkos: Claude Code's Arkos theme in {}: {e}", folder.display()),
+                        }
+                    }
+                    switched
+                })
+                .await;
+            if switched {
                 let _ = root.update(cx, |root, cx| {
                     root.notices.set(notices::Kind::ClaudeColours, claude_theme::SWITCH_NOTICE, None, SystemTime::now());
                     root.probe_doctor();
                     cx.notify();
                 });
             }
+        })
+        .detach();
+    }
+
+    /// Reads the folders remembered from earlier runs (`claude_folders`), once at startup. A
+    /// sandbox keeps to the default folder: its rows are pinned and it never probes.
+    fn load_claude_folders(&mut self) {
+        if !self.sandbox {
+            self.claude_folders = claude_folders::read(&paths::claude_folders_file(), &claude_folders::default_folder());
+        }
+    }
+
+    /// Each known config folder's settings file, the default folder's first.
+    fn claude_settings(&self) -> Vec<PathBuf> {
+        self.claude_folders.iter().map(|f| claude_folders::settings_of(f)).collect()
+    }
+
+    /// The tabs whose Claude Code reports nothing, as the tab bar names them; those of other
+    /// windows are counted.
+    fn silent_tabs(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut elsewhere = 0;
+        for session in self.silent.iter().filter(|s| !self.sessions.is_reporting(**s)) {
+            let here = self.tree.tabs().into_iter().find(|(_, _, tab)| matches!(tab, Tab::Terminal { session: s, .. } if s == session));
+            match here {
+                Some((pane, idx, _)) => names.push(pane_view::tab_title(self, pane, idx)),
+                None => elsewhere += 1,
+            }
+        }
+        match elsewhere {
+            0 => {}
+            1 => names.push("1 in another window".to_string()),
+            n => names.push(format!("{n} in other windows")),
+        }
+        names
+    }
+
+    /// Looks, off the UI thread, for each session's Claude Code, its config folder and whether
+    /// it reports itself (`agent_probe`, spec 2026-11-12): a folder first seen joins
+    /// `claude_folders` and gets the startup theme step, and the doctor's rows are read again
+    /// over the new list. Run when the window connects, when the doctor opens or installs the
+    /// hooks, and `delay` after a title change in a session that reports nothing. Never on a
+    /// timer, never in a sandbox, and never without a daemon to ask.
+    fn probe_agents(&mut self, delay: Duration, cx: &mut Context<Self>) {
+        if self.sandbox || self.agents_probing || self.sessions.client.is_none() {
+            return;
+        }
+        self.agents_probing = true;
+        let (socket, file, default) = (paths::socket_path(), paths::claude_folders_file(), claude_folders::default_folder());
+        let unnamed = claude_folders::home_default();
+        let root = cx.entity();
+        cx.spawn(async move |_, cx| {
+            if !delay.is_zero() {
+                cx.background_executor().timer(delay).await;
+            }
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let seen = agent_probe::run(&socket, &unnamed)?;
+                    let found: Vec<PathBuf> = seen.iter().map(|s| s.folder.clone()).collect();
+                    let folders = claude_folders::add(&file, &default, &found)?;
+                    Ok::<_, String>((seen, folders))
+                })
+                .await;
+            let _ = root.update(cx, |root, cx| {
+                root.agents_probing = false;
+                match result {
+                    Ok((seen, folders)) => {
+                        let new: Vec<PathBuf> = folders.iter().filter(|f| !root.claude_folders.contains(f)).cloned().collect();
+                        root.claude_folders = folders;
+                        root.silent = seen.iter().filter(|s| !s.reports).map(|s| s.session).collect();
+                        if !new.is_empty() {
+                            root.follow_theme_in(new, cx);
+                        }
+                        root.probe_doctor();
+                        cx.notify();
+                    }
+                    Err(e) => eprintln!("arkos: cannot look for Claude Code sessions: {e}"),
+                }
+            });
         })
         .detach();
     }
@@ -1007,11 +1131,15 @@ impl Root {
     /// Reads the doctor's table: files and flags only, no prompt, no launchctl. Run when the
     /// popover opens, when an action finishes, and once at startup so the dot is right.
     fn probe_doctor(&mut self) {
-        let settings = hook_cli::claude_settings_path();
+        let settings = self.claude_settings();
+        let home = claude_folders::home();
+        let silent = self.silent_tabs();
         let exe = update::launch_path().unwrap_or_else(|| PathBuf::from("arkos"));
         let skills = guide::skills_dir();
         let p = doctor_panel::Probe {
             settings: &settings,
+            home: home.as_deref(),
+            silent: &silent,
             exe: &exe,
             start_at_login: self.config.recovery.start_at_login,
             login_item_installed: launch_agent::installed(&launch_agent::agent_path()),
@@ -1033,10 +1161,13 @@ impl Root {
         match id {
             CheckId::WheelScroll | CheckId::ClaudeTheme if self.refused_in_sandbox(id) => {}
             CheckId::WheelScroll => {
-                let path = hook_cli::claude_settings_path();
+                let (settings, exe) = (self.claude_settings(), update::launch_path().unwrap_or_else(|| PathBuf::from("arkos")));
                 let root = cx.entity();
                 cx.spawn(async move |_, cx| {
-                    let r = cx.background_executor().spawn(async move { hook_cli::set_wheel_scroll_acceleration_at(&path, false) }).await;
+                    let r = cx
+                        .background_executor()
+                        .spawn(async move { in_each(&doctor_panel::needing(CheckId::WheelScroll, &settings, &exe), |path| hook_cli::set_wheel_scroll_acceleration_at(path, false)) })
+                        .await;
                     let _ = root.update(cx, |root, cx| {
                         root.doctor_busy = None;
                         match r {
@@ -1052,13 +1183,16 @@ impl Root {
                 .detach();
             }
             CheckId::ClaudeTheme => {
-                let path = hook_cli::claude_settings_path();
-                let themes = claude_theme::themes_dir();
+                let (settings, exe) = (self.claude_settings(), update::launch_path().unwrap_or_else(|| PathBuf::from("arkos")));
                 let root = cx.entity();
                 cx.spawn(async move |_, cx| {
                     let r = cx
                         .background_executor()
-                        .spawn(async move { claude_theme::ensure_theme_file(&themes).and_then(|_| hook_cli::set_claude_theme_at(&path, claude_theme::SELECTED)) })
+                        .spawn(async move {
+                            in_each(&doctor_panel::needing(CheckId::ClaudeTheme, &settings, &exe), |path| {
+                                claude_theme::ensure_theme_file(&path.with_file_name("themes")).and_then(|_| hook_cli::set_claude_theme_at(path, claude_theme::SELECTED))
+                            })
+                        })
                         .await;
                     let _ = root.update(cx, |root, cx| {
                         root.doctor_busy = None;
@@ -1105,13 +1239,39 @@ impl Root {
             return;
         }
         let exe = update::launch_path().unwrap_or_else(|| PathBuf::from("arkos"));
+        let settings = self.claude_settings();
+        let home = claude_folders::home();
         let root = cx.entity();
         cx.spawn(async move |_, cx| {
-            let result = cx.background_executor().spawn(async move { hook_cli::install_hooks(&exe) }).await;
-            let (text, error) = match result {
-                Ok((path, added, replaced)) => (format!("installed {added} hook entries in {} (replaced {replaced}); restart claude for them to take effect", path.display()), None),
-                Err(e) => (format!("cannot install hooks: {e}"), Some(e)),
-            };
+            let (text, error) = cx
+                .background_executor()
+                .spawn(async move {
+                    // Every folder that lacks them; with none lacking (the palette's command on
+                    // a machine already set up) the default folder again, as it always was.
+                    let mut paths = doctor_panel::needing(doctor_panel::CheckId::TitleHook, &settings, &exe);
+                    if paths.is_empty() {
+                        paths = settings.iter().take(1).cloned().collect();
+                    }
+                    let (mut wrote, mut added, mut replaced, mut error) = (Vec::new(), 0, 0, None);
+                    for path in &paths {
+                        match hook_cli::install_hooks_at(path, &exe, ::telemetry::is_sandbox()) {
+                            Ok((path, a, r)) => {
+                                wrote.push(claude_folders::tilde(&path, home.as_deref()));
+                                added += a;
+                                replaced += r;
+                            }
+                            Err(e) => {
+                                error.get_or_insert(e);
+                            }
+                        }
+                    }
+                    let text = match (&error, wrote.is_empty()) {
+                        (Some(e), true) => format!("cannot install hooks: {e}"),
+                        _ => format!("installed {added} hook entries in {} (replaced {replaced}); restart claude for them to take effect", wrote.join(", ")),
+                    };
+                    (text, error)
+                })
+                .await;
             let _ = root.update(cx, |root, cx| {
                 root.doctor_busy = None;
                 root.show_notice(text, cx);
@@ -1119,6 +1279,8 @@ impl Root {
                     Some(e) => root.mark_doctor_broken(doctor_panel::CheckId::TitleHook, e),
                     None => root.probe_doctor(),
                 }
+                // Which tabs run a Claude Code started before the hooks: the row names them.
+                root.probe_agents(Duration::ZERO, cx);
                 cx.notify();
             });
         })
@@ -2187,7 +2349,7 @@ impl Root {
         self.close_popovers(Instant::now());
         let themes_dir = paths::themes_dir();
         let themes: Vec<(String, Option<theme::Appearance>)> = theme::kinds(&themes_dir).into_iter().map(|(n, _, k)| (n, k)).collect();
-        let items = command_palette::items(&self.config, &themes, &self.text_preset, &self.theme.name, &themes_dir, self.update_ready.as_deref(), self.update_error.is_some(), self.config.recovery.start_at_login, launch_agent::installed(&launch_agent::agent_path()), &hook_cli::claude_settings_path(), self.explorer.show_ignored, self.notices.unread_count(), self.doctor_needs_fix(), self.sandbox);
+        let items = command_palette::items(&self.config, &themes, &self.text_preset, &self.theme.name, &themes_dir, self.update_ready.as_deref(), self.update_error.is_some(), self.config.recovery.start_at_login, launch_agent::installed(&launch_agent::agent_path()), &hook_cli::claude_settings_path(), self.claude_folders.len(), self.explorer.show_ignored, self.notices.unread_count(), self.doctor_needs_fix(), self.sandbox);
         self.palette.show(command_palette::Palette::new(items, cx.focus_handle()), Instant::now());
         cx.notify();
     }
@@ -3331,6 +3493,16 @@ impl Root {
         if self.sessions.route_events(events, cx) {
             cx.notify();
         }
+        // A Claude Code the probe found silent has reported since: its row clears without one.
+        if self.sessions.take_newly_reporting() && self.silent.iter().any(|s| self.sessions.is_reporting(*s)) {
+            let sessions = &self.sessions;
+            self.silent.retain(|s| !sessions.is_reporting(*s));
+            self.probe_doctor();
+            cx.notify();
+        }
+        if self.sessions.take_probe_wanted() {
+            self.probe_agents(TITLE_PROBE_DELAY, cx);
+        }
     }
 
     /// Asks the daemon to start the installed window in this project once we are gone. The window
@@ -3554,6 +3726,7 @@ impl Root {
                     self.grids.clear();
                 }
                 self.sessions.note_list(&list);
+                self.probe_agents(Duration::ZERO, cx);
                 let infos: Vec<_> = list.iter().map(|d| d.info.clone()).collect();
                 for step in reconcile(&self.tree, &infos, &self.project) {
                     match step {
@@ -5154,6 +5327,7 @@ fn open_project_window(
             root.config_error = config_error;
             root.invitation_config_changed();
             root.theme_error = theme_error;
+            root.load_claude_folders();
             root.seed_notices(updated);
             if theme_retired {
                 root.notices.set(notices::Kind::ThemeRetired, config::NAVY_LIGHT_NOTICE, None, SystemTime::now());

@@ -201,6 +201,15 @@ pub struct SessionManager {
     pub states: HashMap<SessionId, ClaudeState>,
     /// Each shown terminal's label (`TermLabel`), there exactly when its terminal is.
     pub labels: HashMap<SessionId, TermLabel>,
+    /// Sessions whose Claude Code has reported itself: an agent record in the list, or a
+    /// `State` event. A terminal bell is not a report: it rings without hooks.
+    reporting: HashSet<SessionId>,
+    /// When a title change last asked for a probe of each session that reports nothing.
+    probed: HashMap<SessionId, std::time::Instant>,
+    /// A title change asked for a probe of the agents (`take_probe_wanted`).
+    probe_wanted: bool,
+    /// A session started reporting since the root last looked (`take_newly_reporting`).
+    newly_reporting: bool,
     /// Sessions whose replay is being parsed; their live events wait in `backlog`.
     restoring: HashSet<SessionId>,
     backlog: HashMap<SessionId, Vec<Event>>,
@@ -218,7 +227,7 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub fn new(transport: Arc<dyn Transport>, client: Option<Arc<Client>>, project: PathBuf) -> Self {
-        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashMap::new(), states: HashMap::new(), labels: HashMap::new(), restoring: HashSet::new(), backlog: HashMap::new(), offline: false, kills_to_resend: Vec::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
+        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashMap::new(), states: HashMap::new(), labels: HashMap::new(), reporting: HashSet::new(), probed: HashMap::new(), probe_wanted: false, newly_reporting: false, restoring: HashSet::new(), backlog: HashMap::new(), offline: false, kills_to_resend: Vec::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
     }
 
     /// A new connection: requests go to it from now on.
@@ -336,6 +345,9 @@ impl SessionManager {
     pub fn note_list(&mut self, list: &[SessionDetail]) {
         for d in list {
             self.states.insert(d.info.id, d.info.state);
+            if d.agent.is_some() {
+                self.note_reporting(d.info.id);
+            }
             if let Some(agent) = &d.agent {
                 crate::telemetry::agent_listed(d.info.id.0, &agent.kind, d.recovered);
             }
@@ -347,6 +359,46 @@ impl SessionManager {
 
     pub fn note_state(&mut self, session: SessionId, state: ClaudeState) {
         self.states.insert(session, state);
+    }
+
+    /// At most this often does one session's title ask for a probe of the agents.
+    pub const PROBE_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+    fn note_reporting(&mut self, session: SessionId) {
+        if self.reporting.insert(session) {
+            self.probed.remove(&session);
+            self.newly_reporting = true;
+        }
+    }
+
+    /// Whether `session`'s Claude Code has reported itself to the daemon.
+    pub fn is_reporting(&self, session: SessionId) -> bool {
+        self.reporting.contains(&session)
+    }
+
+    /// `session`'s terminal has a new title at `now`. Claude Code sets one when it starts, so
+    /// for a session that reports nothing this is the moment to look for a `claude` whose
+    /// config folder has no hooks (`agent_probe`): asked at most once a `PROBE_EVERY` for the
+    /// session, since a shell sets a title at every prompt.
+    pub fn title_changed(&mut self, session: SessionId, now: std::time::Instant) {
+        if self.reporting.contains(&session) {
+            return;
+        }
+        if self.probed.get(&session).is_some_and(|at| now.saturating_duration_since(*at) < Self::PROBE_EVERY) {
+            return;
+        }
+        self.probed.insert(session, now);
+        self.probe_wanted = true;
+    }
+
+    /// True once after a title change asked for a probe.
+    pub fn take_probe_wanted(&mut self) -> bool {
+        std::mem::take(&mut self.probe_wanted)
+    }
+
+    /// True once after a session that reported nothing sent its first report.
+    pub fn take_newly_reporting(&mut self) -> bool {
+        std::mem::take(&mut self.newly_reporting)
     }
 
     /// The user looked at or typed into a waiting tab: idle now, and the daemon is told so a
@@ -621,6 +673,9 @@ impl SessionManager {
         let Some(t) = self.terminals.get(&session) else { return false };
         let t = t.read(cx);
         let label = TermLabel { title: t.title.clone(), alive: t.alive, exit_code: t.exit_code };
+        if label.alive && !label.title.is_empty() && self.labels.get(&session).is_none_or(|old| old.title != label.title) {
+            self.title_changed(session, std::time::Instant::now());
+        }
         self.note_label(session, label)
     }
 
@@ -633,9 +688,12 @@ impl SessionManager {
                 Event::State { session, state } => {
                     crate::telemetry::agent_state(session.0, *state);
                     changed |= self.states.insert(*session, *state) != Some(*state);
+                    self.note_reporting(*session);
                 }
                 Event::Exited { session, .. } => {
                     changed |= self.states.remove(session).is_some();
+                    self.reporting.remove(session);
+                    self.probed.remove(session);
                 }
                 // The root reads `UpdateStaged` and `Customize` itself (`Root::route_events`).
                 Event::Output { .. } | Event::UpdateStaged { .. } | Event::Customize { .. } | Event::Direct { .. } => {}
@@ -798,6 +856,46 @@ mod tests {
         assert_eq!(m.working_panes(&tree), vec![left, right]);
         m.note_state(SessionId(1), ClaudeState::Waiting);
         assert_eq!(m.working_panes(&tree), vec![right], "a waiting session is not busy");
+    }
+
+    #[test]
+    fn a_title_change_asks_for_a_probe_once_a_minute_and_only_for_a_session_that_reports_nothing() {
+        let rec = Recorder::new();
+        let mut m = SessionManager::new(rec.clone(), None, PathBuf::from("/p"));
+        let t0 = std::time::Instant::now();
+        let at = |secs: u64| t0 + std::time::Duration::from_secs(secs);
+        assert!(!m.take_probe_wanted());
+        m.title_changed(SessionId(1), at(0));
+        assert!(m.take_probe_wanted(), "a session that reports nothing: look for a claude without hooks");
+        assert!(!m.take_probe_wanted(), "asked once");
+        m.title_changed(SessionId(1), at(30));
+        assert!(!m.take_probe_wanted(), "a shell sets its title at every prompt: not again within the minute");
+        m.title_changed(SessionId(2), at(30));
+        assert!(m.take_probe_wanted(), "each session has its own minute");
+        m.title_changed(SessionId(1), at(60));
+        assert!(m.take_probe_wanted());
+        // Its Claude Code reports: never again, and the root is told once so a row can clear.
+        assert!(!m.take_newly_reporting());
+        m.note_events(&[Event::State { session: SessionId(1), state: ClaudeState::Working }]);
+        assert!(m.is_reporting(SessionId(1)));
+        assert!(m.take_newly_reporting());
+        assert!(!m.take_newly_reporting());
+        m.title_changed(SessionId(1), at(600));
+        assert!(!m.take_probe_wanted());
+        m.note_events(&[Event::State { session: SessionId(1), state: ClaudeState::Waiting }]);
+        assert!(!m.take_newly_reporting(), "only the first report");
+        // An agent record in the list is a report too; a plain shell in it is not.
+        let mut hooked = detail(3, Path::new("/p"), true, ClaudeState::Idle, false);
+        hooked.agent = Some(protocol::AgentRecord { kind: "claude".into(), id: "abc".into(), resume: vec!["claude".into(), "--resume".into(), "abc".into()] });
+        m.note_list(&[hooked, detail(4, Path::new("/p"), true, ClaudeState::Idle, false)]);
+        assert!(m.is_reporting(SessionId(3)));
+        assert!(!m.is_reporting(SessionId(4)));
+        assert!(m.take_newly_reporting());
+        // The shell ended: what ran in it is gone, and a new one under the id starts over.
+        m.note_events(&[Event::Exited { session: SessionId(1), code: Some(0) }]);
+        assert!(!m.is_reporting(SessionId(1)));
+        m.title_changed(SessionId(1), at(601));
+        assert!(m.take_probe_wanted());
     }
 
     #[test]

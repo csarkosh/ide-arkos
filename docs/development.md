@@ -883,6 +883,14 @@ Things only a person at the screen can check, in order of value:
   dot; "Apply" writes the key and a `settings.json.bak`; a restarted `claude` scrolls smoothly
   in a fullscreen conversation; the doctor's Start at login and title hook rows match the
   palette's commands; "Copy report" puts `arkos doctor`'s text on the clipboard
+- with the hooks in `~/.claude` only, run a `claude` under another config folder in a tab
+  (`CLAUDE_CONFIG_DIR=~/.claude3 claude`): a few seconds after its title appears the doctor wears
+  a dot and the title hook row reads "missing in ~/.claude3: tabs running there show no Claude
+  Code state"; "Install" writes that folder and the row reads "installed; restart claude in
+  <tab> for the tab to show its state"; restart it there and send a prompt: the tab's glyph
+  breathes and the row is good; `pkill -9 -x arkosd`: the tab comes back resumed, with its
+  conversation, under that folder (design:
+  `docs/superpowers/specs/2026-11-12-claude-config-folders-design.md`)
 - Escape, a click outside, the icon again, or switching to another app closes a popover; opening
   one closes the other; Reduce Motion shows them without the lift
 - move the window to a second display and resize it, then "Update now" (or quit and open the

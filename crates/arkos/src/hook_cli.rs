@@ -83,20 +83,32 @@ pub fn parse_hook_input(stdin: &str) -> Option<HookInput> {
 }
 
 /// The command that resumes an agent's session, as argv. Claude Code: `claude --resume <id>`
-/// works from any directory and never sends a message.
-pub fn resume_command(kind: &str, id: &str) -> Vec<String> {
-    match kind {
-        "claude" => vec!["claude".into(), "--resume".into(), id.into()],
-        other => vec![other.into(), "--resume".into(), id.into()],
+/// works from any directory and never sends a message. An agent started under a config folder
+/// of its own (`config_dir`, its `CLAUDE_CONFIG_DIR`) keeps its conversations there, so its
+/// command starts with `env CLAUDE_CONFIG_DIR=<folder>`: recovery types every word quoted, and a
+/// quoted `NAME=value` is not an assignment to a shell. A folder that is not UTF-8 cannot be a
+/// word of the record and is left out.
+pub fn resume_command(kind: &str, id: &str, config_dir: Option<&Path>) -> Vec<String> {
+    let mut argv = Vec::new();
+    if let Some(dir) = config_dir.and_then(Path::to_str).filter(|d| !d.is_empty()) {
+        argv.push("env".to_string());
+        argv.push(format!("CLAUDE_CONFIG_DIR={dir}"));
     }
+    argv.extend([kind.to_string(), "--resume".to_string(), id.to_string()]);
+    argv
 }
 
-pub fn request_for(notify: &Notify, session: SessionId, input: Option<&HookInput>) -> Option<Request> {
+/// The hook's own `CLAUDE_CONFIG_DIR`, which is its Claude Code's: `None` when unset or empty.
+pub fn config_dir_env() -> Option<PathBuf> {
+    std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()).map(PathBuf::from)
+}
+
+pub fn request_for(notify: &Notify, session: SessionId, input: Option<&HookInput>, config_dir: Option<&Path>) -> Option<Request> {
     match notify {
         Notify::State(state) => Some(Request::SetState { session, state: *state }),
         Notify::Event(HookEvent::SessionStart) => {
             let id = input?.session_id.clone();
-            Some(Request::SetAgent { session, agent: AgentRecord { kind: "claude".into(), resume: resume_command("claude", &id), id } })
+            Some(Request::SetAgent { session, agent: AgentRecord { kind: "claude".into(), resume: resume_command("claude", &id, config_dir), id } })
         }
         // "other" is a Claude Code that was killed, as a shutdown kills it: the record stays, so
         // the recovery that follows resumes it. Any other end (or none given) clears it.
@@ -139,7 +151,8 @@ pub fn send_one_with(socket: &Path, request: Request, timeout: Duration) -> std:
 /// Code's own, `None` when the environment names none) and the context lines; it installs or
 /// refreshes the agent guide skill there and prints the lines to `out`; nothing else goes to `out`.
 /// In a `sandbox` the lines are printed and no skill is written: the folder is the user's own.
-pub fn run_with(args: &[String], socket: &Path, session_env: Option<&str>, stdin: &mut dyn Read, out: &mut dyn Write, start: &dyn Fn() -> (Option<PathBuf>, String), sandbox: bool) -> i32 {
+/// `config_dir` is the starting Claude Code's `CLAUDE_CONFIG_DIR`, for its resume command.
+pub fn run_with(args: &[String], socket: &Path, session_env: Option<&str>, stdin: &mut dyn Read, out: &mut dyn Write, start: &dyn Fn() -> (Option<PathBuf>, String), sandbox: bool, config_dir: Option<&Path>) -> i32 {
     let notify = match parse_notify(args) {
         Ok(n) => n,
         Err(usage) => {
@@ -174,7 +187,7 @@ pub fn run_with(args: &[String], socket: &Path, session_env: Option<&str>, stdin
         }
         Notify::State(_) => None,
     };
-    let Some(request) = request_for(&notify, session, input.as_ref()) else {
+    let Some(request) = request_for(&notify, session, input.as_ref(), config_dir) else {
         if input.is_none() {
             eprintln!("arkos notify: the hook's stdin had no session_id; nothing recorded");
         }
@@ -396,6 +409,7 @@ pub fn run(args: &[String]) -> i32 {
                 (crate::guide::find_skills_dir(), context_lines(on_path, &this_exe()))
             },
             ::telemetry::is_sandbox(),
+            config_dir_env().as_deref(),
         ),
         Some("hooks") => match args.get(1).map(String::as_str) {
             Some("print") => {
@@ -456,17 +470,41 @@ mod tests {
 
     #[test]
     fn the_resume_command_is_claude_resume_with_the_id() {
-        assert_eq!(resume_command("claude", "abc"), vec!["claude", "--resume", "abc"]);
+        assert_eq!(resume_command("claude", "abc", None), vec!["claude", "--resume", "abc"]);
         let input = |reason: Option<&str>| HookInput { session_id: "abc".into(), reason: reason.map(str::to_string) };
-        let r = request_for(&Notify::Event(HookEvent::SessionStart), SessionId(7), Some(&input(None)));
-        assert_eq!(r, Some(Request::SetAgent { session: SessionId(7), agent: AgentRecord { kind: "claude".into(), id: "abc".into(), resume: resume_command("claude", "abc") } }));
+        let r = request_for(&Notify::Event(HookEvent::SessionStart), SessionId(7), Some(&input(None)), None);
+        assert_eq!(r, Some(Request::SetAgent { session: SessionId(7), agent: AgentRecord { kind: "claude".into(), id: "abc".into(), resume: resume_command("claude", "abc", None) } }));
         let clear = Some(Request::ClearAgent { session: SessionId(7), id: "abc".into() });
         for reason in [None, Some("clear"), Some("resume"), Some("logout"), Some("prompt_input_exit")] {
-            assert_eq!(request_for(&Notify::Event(HookEvent::SessionEnd), SessionId(7), Some(&input(reason))), clear, "{reason:?}");
+            assert_eq!(request_for(&Notify::Event(HookEvent::SessionEnd), SessionId(7), Some(&input(reason)), None), clear, "{reason:?}");
         }
-        assert_eq!(request_for(&Notify::Event(HookEvent::SessionEnd), SessionId(7), Some(&input(Some("other")))), None, "killed, as at a shutdown: kept so it is resumed");
-        assert_eq!(request_for(&Notify::Event(HookEvent::SessionStart), SessionId(7), None), None, "no stdin, nothing to record");
-        assert_eq!(request_for(&Notify::State(ClaudeState::Waiting), SessionId(7), None), Some(Request::SetState { session: SessionId(7), state: ClaudeState::Waiting }));
+        assert_eq!(request_for(&Notify::Event(HookEvent::SessionEnd), SessionId(7), Some(&input(Some("other"))), None), None, "killed, as at a shutdown: kept so it is resumed");
+        assert_eq!(request_for(&Notify::Event(HookEvent::SessionStart), SessionId(7), None, None), None, "no stdin, nothing to record");
+        assert_eq!(request_for(&Notify::State(ClaudeState::Waiting), SessionId(7), None, None), Some(Request::SetState { session: SessionId(7), state: ClaudeState::Waiting }));
+    }
+
+    #[test]
+    fn an_agent_started_under_another_config_folder_is_resumed_under_it() {
+        let dir = Path::new("/Users/me/.claude3");
+        assert_eq!(resume_command("claude", "abc", Some(dir)), vec!["env", "CLAUDE_CONFIG_DIR=/Users/me/.claude3", "claude", "--resume", "abc"]);
+        assert_eq!(resume_command("claude", "abc", Some(Path::new("/Users/me/My Claude"))), vec!["env", "CLAUDE_CONFIG_DIR=/Users/me/My Claude", "claude", "--resume", "abc"], "one word, quoted when typed");
+        assert_eq!(resume_command("claude", "abc", Some(Path::new(""))), vec!["claude", "--resume", "abc"], "an empty folder is no folder");
+        let input = HookInput { session_id: "abc".into(), reason: None };
+        let r = request_for(&Notify::Event(HookEvent::SessionStart), SessionId(7), Some(&input), Some(dir));
+        assert_eq!(r, Some(Request::SetAgent { session: SessionId(7), agent: AgentRecord { kind: "claude".into(), id: "abc".into(), resume: resume_command("claude", "abc", Some(dir)) } }));
+        assert_eq!(request_for(&Notify::Event(HookEvent::SessionEnd), SessionId(7), Some(&input), Some(dir)), Some(Request::ClearAgent { session: SessionId(7), id: "abc".into() }), "the end names the id alone");
+    }
+
+    #[test]
+    fn a_session_start_records_the_hooks_own_config_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, rx) = fake_daemon(dir.path());
+        let skills = dir.path().join("skills");
+        let start = r#"{"session_id":"abc","hook_event_name":"SessionStart"}"#;
+        let folder = Path::new("/Users/me/.claude2");
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut Vec::new(), &start_in(&skills), false, Some(folder)), 0);
+        let want = AgentRecord { kind: "claude".into(), id: "abc".into(), resume: vec!["env".into(), "CLAUDE_CONFIG_DIR=/Users/me/.claude2".into(), "claude".into(), "--resume".into(), "abc".into()] };
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::SetAgent { session: SessionId(7), agent: want });
     }
 
     /// A daemon stand-in: accepts one client, records its first request, answers Ok.
@@ -499,7 +537,7 @@ mod tests {
         let skills = dir.path().join("skills");
         let mut out = Vec::new();
         let unresolved = || -> (Option<PathBuf>, String) { panic!("a state notify resolves no skills folder") };
-        let code = run_with(&args("notify --state waiting"), &socket, Some("7"), &mut std::io::empty(), &mut out, &unresolved, false);
+        let code = run_with(&args("notify --state waiting"), &socket, Some("7"), &mut std::io::empty(), &mut out, &unresolved, false, None);
         assert_eq!(code, 0);
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::SetState { session: SessionId(7), state: ClaudeState::Waiting });
         assert!(out.is_empty(), "a state hook prints nothing");
@@ -513,7 +551,7 @@ mod tests {
         let skills = dir.path().join("skills");
         let start = r#"{"session_id":"abc","cwd":"/p","hook_event_name":"SessionStart","source":"startup"}"#;
         let mut out = Vec::new();
-        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &start_in(&skills), false), 0);
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &start_in(&skills), false, None), 0);
         let agent = AgentRecord { kind: "claude".into(), id: "abc".into(), resume: vec!["claude".into(), "--resume".into(), "abc".into()] };
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::SetAgent { session: SessionId(7), agent });
         assert_eq!(String::from_utf8(out).unwrap(), CONTEXT_LINES);
@@ -524,7 +562,7 @@ mod tests {
         let again = tempfile::tempdir().unwrap();
         let (socket, _rx) = fake_daemon(again.path());
         let mut out = Vec::new();
-        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &start_in(&skills), false), 0);
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &start_in(&skills), false, None), 0);
         assert_eq!(String::from_utf8(out).unwrap(), CONTEXT_LINES);
         assert_eq!(std::fs::metadata(&skill).unwrap().modified().unwrap(), mtime);
         // A skill someone else wrote under that name stays as it was, and the hook still succeeds.
@@ -532,7 +570,7 @@ mod tests {
         let third = tempfile::tempdir().unwrap();
         let (socket, _rx) = fake_daemon(third.path());
         let mut out = Vec::new();
-        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &start_in(&skills), false), 0);
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &start_in(&skills), false, None), 0);
         assert_eq!(String::from_utf8(out).unwrap(), CONTEXT_LINES);
         assert_eq!(std::fs::read_to_string(&skill).unwrap(), "---\nname: theirs\n---\nhi\n");
     }
@@ -544,12 +582,12 @@ mod tests {
         let skills = dir.path().join("skills");
         let mut out = Vec::new();
         let mut stdin = r#"{"session_id":"abc","hook_event_name":"SessionEnd","reason":"other"}"#.as_bytes();
-        assert_eq!(run_with(&args("notify --event session-end"), &socket, Some("7"), &mut stdin, &mut out, &start_in(&skills), false), 0);
+        assert_eq!(run_with(&args("notify --event session-end"), &socket, Some("7"), &mut stdin, &mut out, &start_in(&skills), false, None), 0);
         assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "nothing reached the daemon");
         let dir = tempfile::tempdir().unwrap();
         let (socket, rx) = fake_daemon(dir.path());
         let mut stdin = r#"{"session_id":"abc","hook_event_name":"SessionEnd","reason":"clear"}"#.as_bytes();
-        assert_eq!(run_with(&args("notify --event session-end"), &socket, Some("7"), &mut stdin, &mut out, &start_in(&skills), false), 0);
+        assert_eq!(run_with(&args("notify --event session-end"), &socket, Some("7"), &mut stdin, &mut out, &start_in(&skills), false, None), 0);
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::ClearAgent { session: SessionId(7), id: "abc".into() });
         assert!(out.is_empty(), "a session end prints nothing");
         assert!(!skills.exists());
@@ -562,13 +600,13 @@ mod tests {
         // The environment as the hook would see it with neither CLAUDE_CONFIG_DIR nor HOME set.
         let homeless = || (crate::guide::skills_dir_from(None, None), CONTEXT_LINES.to_string());
         let mut out = Vec::new();
-        assert_eq!(run_with(&args("notify --state working"), &socket, Some("7"), &mut std::io::empty(), &mut out, &homeless, false), 0);
+        assert_eq!(run_with(&args("notify --state working"), &socket, Some("7"), &mut std::io::empty(), &mut out, &homeless, false, None), 0);
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::SetState { session: SessionId(7), state: ClaudeState::Working });
         assert!(out.is_empty());
         let again = tempfile::tempdir().unwrap();
         let (socket, rx) = fake_daemon(again.path());
         let start = r#"{"session_id":"abc","hook_event_name":"SessionStart"}"#;
-        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &homeless, false), 0);
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &homeless, false, None), 0);
         assert!(matches!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::SetAgent { .. }), "the agent is still recorded");
         assert_eq!(String::from_utf8(out).unwrap(), CONTEXT_LINES, "and the lines still print");
     }
@@ -618,10 +656,10 @@ mod tests {
         let (socket, rx) = fake_daemon(dir.path());
         let skills = dir.path().join("skills");
         let mut out = Vec::new();
-        assert_eq!(run_with(&args("notify --state working"), &socket, None, &mut std::io::empty(), &mut out, &start_in(&skills), false), 0);
-        assert_eq!(run_with(&args("notify --state working"), &socket, Some("not a number"), &mut std::io::empty(), &mut out, &start_in(&skills), false), 0);
+        assert_eq!(run_with(&args("notify --state working"), &socket, None, &mut std::io::empty(), &mut out, &start_in(&skills), false, None), 0);
+        assert_eq!(run_with(&args("notify --state working"), &socket, Some("not a number"), &mut std::io::empty(), &mut out, &start_in(&skills), false, None), 0);
         let mut stdin = r#"{"session_id":"abc","hook_event_name":"SessionStart"}"#.as_bytes();
-        assert_eq!(run_with(&args("notify --event session-start"), &socket, None, &mut stdin, &mut out, &start_in(&skills), false), 0);
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, None, &mut stdin, &mut out, &start_in(&skills), false, None), 0);
         assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "nothing reached the daemon");
         assert!(out.is_empty(), "outside Arkos a session start prints nothing");
         assert!(!skills.exists(), "and installs nothing");
@@ -632,8 +670,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let skills = dir.path().join("skills");
         let started = std::time::Instant::now();
-        assert_eq!(run_with(&args("notify --state working"), &dir.path().join("missing.sock"), Some("7"), &mut std::io::empty(), &mut Vec::new(), &start_in(&skills), false), 0);
-        assert_eq!(run_with(&args("notify --state nonsense"), &dir.path().join("missing.sock"), Some("7"), &mut std::io::empty(), &mut Vec::new(), &start_in(&skills), false), 0);
+        assert_eq!(run_with(&args("notify --state working"), &dir.path().join("missing.sock"), Some("7"), &mut std::io::empty(), &mut Vec::new(), &start_in(&skills), false, None), 0);
+        assert_eq!(run_with(&args("notify --state nonsense"), &dir.path().join("missing.sock"), Some("7"), &mut std::io::empty(), &mut Vec::new(), &start_in(&skills), false, None), 0);
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
@@ -792,7 +830,7 @@ mod tests {
         let skills = dir.path().join("skills");
         let start = r#"{"session_id":"abc","cwd":"/p","hook_event_name":"SessionStart","source":"startup"}"#;
         let mut out = Vec::new();
-        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &start_in(&skills), true), 0);
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &start_in(&skills), true, None), 0);
         assert_eq!(String::from_utf8(out).unwrap(), CONTEXT_LINES, "the agent still learns where it is");
         assert!(matches!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::SetAgent { .. }), "the event still reaches the daemon");
         assert!(!skills.exists(), "the user's skills folder is never written from a sandbox");

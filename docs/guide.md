@@ -24,6 +24,21 @@ starts carries, and exits 0 whatever happens, so a `claude` run outside Arkos ID
 launch path; after moving it, install again. A Claude Code killed by a shutdown (its SessionEnd
 hook says `other`) keeps its record, so the recovery after the restart resumes it.
 
+A Claude Code started with a config folder of its own (`CLAUDE_CONFIG_DIR`, as an alias such as
+`claude2='CLAUDE_CONFIG_DIR="$HOME/.claude2" command claude'` sets) reads its hooks from that
+folder's `settings.json`, so the entries have to be there too. Arkos finds such a folder the
+first time a `claude` runs under it in a tab. It looks at the processes under each tab's shell
+when the window connects, when the doctor is opened, and, for a tab that reports nothing, a few
+seconds after its title changes (at most once a minute for that tab; there is no timer). The
+folder is remembered in `~/Library/Application Support/arkos/claude-folders`, and from then on
+the doctor's three Claude Code rows (wheel scrolling, the theme, the title hook) read every
+folder: a row names the folders that need its fix ("missing in ~/.claude2: tabs running there
+show no Claude Code state") and its button writes each of them. Claude Code reads its hooks when
+it starts, so a `claude` that was running when they were installed still reports nothing; the
+hook row then reads "installed; restart claude in Film for the tab to show its state", naming
+the tabs. `arkos hooks install` writes the folder of the shell it is run in, and `arkos doctor`
+lists each folder and each session that reports nothing under "Claude Code config folders".
+
 ## After a restart
 
 A shutdown or restart ends every process, and so does anything that kills the daemon while you
@@ -37,7 +52,9 @@ window open. Neither waits for the daemon to end, so they are there however it e
 A daemon that starts and finds them brings the sessions back, whoever started it: it recreates
 each shell in its folder (the home folder when that is gone) with the old output under a dim
 "resumed after restart" line and types `claude --resume <id>` into the shells that had a Claude
-Code session; each tab says "(resumed after restart)" until you type into it. So after the
+Code session (`env CLAUDE_CONFIG_DIR=<folder> claude --resume <id>` for one that ran under a
+config folder of its own, where its conversation is); each tab says "(resumed after restart)"
+until you type into it. So after the
 daemon was killed, a window still open gets its tabs back about ten seconds later (it starts a
 new daemon once it has been without one that long), and if the window went too, opening Arkos
 again does it. Histories no session shows any more are removed at the same time.
@@ -822,7 +839,8 @@ the interval it started with. `auto` and `idle_after_secs` apply at once.
 
 Claude Code tips: fast trackpad scrolling in a fullscreen `claude` jumps unless
 `wheelScrollAccelerationEnabled` is `false` in `~/.claude/settings.json`; the doctor (the
-wrench at the right of the title bar) sets it for you.
+wrench at the right of the title bar) sets it for you, there and in every other Claude config
+folder it has seen in use ([Session awareness](#session-awareness)).
 
 Claude Code takes the Arkos colours through a Claude Code theme Arkos writes,
 `~/.claude/themes/arkos.json` ("Arkos" in `/theme`, `"theme": "custom:arkos"` in the settings).
@@ -847,6 +865,8 @@ set before); any other choice (a colourblind-friendly or ANSI theme, a custom th
 stays, and the doctor's "Claude Code: follows the Arkos theme" row offers the switch. Claude Code
 watches `~/.claude/themes` only if the folder existed when a session started, so after the first
 switch the bell asks you to restart running sessions. Arkos never touches the other files there.
+Every other Claude config folder Arkos has seen in use ([Session awareness](#session-awareness))
+gets the same file and the same rule, at start and when the folder is first seen.
 
 To change a colour by hand, fork the theme under another name rather than editing `arkos.json`,
 which Arkos rewrites (so do not edit Arkos itself with Ctrl+E in `/theme` either): copy the file
@@ -1123,7 +1143,8 @@ Run `arkos doctor` (from the app: `"/Applications/Arkos IDE.app/Contents/MacOS/a
 It only reads: it prints the installed app and its version, whether a previous (`.old`) or
 half-swapped (`.new`) copy sits beside it, the running daemon's version and pid, the update
 marker and the rejected versions, the last lines of the daemon's update journal and of
-`window.log`, and any crash reports from the last day. The journal,
+`window.log`, any crash reports from the last day, and the Claude Code config folders in use
+with the sessions whose Claude Code reports nothing. The journal,
 `~/Library/Application Support/arkos/updates/journal.log`, has one timestamped line per step of
 each check, apply, relaunch, confirmation and rollback, including every Hello the daemon heard
 while it waited for the new window. A check that finds the same thing as the one before is
