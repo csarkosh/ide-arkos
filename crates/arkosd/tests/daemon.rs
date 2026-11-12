@@ -65,6 +65,14 @@ impl Daemon {
         self.dir.take().unwrap()
     }
 
+    /// SIGKILL, as an antivirus or the out-of-memory killer ends a process: no flush, no exit
+    /// code of its own. The dir is handed back so a successor can recover from it.
+    fn sigkill(mut self) -> tempfile::TempDir {
+        self.child.kill().unwrap();
+        self.child.wait().unwrap();
+        self.dir.take().unwrap()
+    }
+
     fn connect(&self) -> Conn {
         self.connect_as(std::process::id())
     }
@@ -909,7 +917,7 @@ fn hello_with_a_newer_protocol_is_refused_with_the_pkill_hint() {
     match c.request(Request::Hello { protocol_version: PROTOCOL_VERSION + 1, ui_pid: std::process::id(), ui_exe: None, ui_cwd: std::env::temp_dir() }) {
         Response::Error(e) => {
             assert!(e.starts_with("protocol version mismatch"), "the window's is_final matches this: {e}");
-            assert!(e.contains("this arkosd is older than the window") && e.contains("pkill -x arkosd (ends every session)"), "{e}");
+            assert!(e.contains("this arkosd is older than the window") && e.contains("pkill -x arkosd (restarts every session)"), "{e}");
             assert!(!e.contains("Update"), "Update now cannot reach a daemon that refused the window: {e}");
         }
         other => panic!("unexpected {other:?}"),
@@ -1574,6 +1582,140 @@ fn recover_while_a_daemon_is_listening_exits_zero_and_leaves_it() {
     let mut c = a.connect();
     let sid = c.create("/bin/sh");
     c.attach(sid);
+}
+
+/// A session with some history and an agent whose resume command is `echo RESUMED t1`, both on
+/// disk: what a daemon leaves behind when it is killed.
+fn session_with_an_agent_on_disk(d: &Daemon, c: &mut Conn) -> (SessionId, AgentRecord) {
+    let sid = c.create("/bin/sh");
+    c.attach(sid);
+    c.request(Request::Input { session: sid, bytes: b"echo before the kill\n".to_vec() });
+    c.wait_for_output(sid, "before the kill");
+    let agent = AgentRecord { kind: "test".into(), id: "t1".into(), resume: vec!["echo".into(), "RESUMED".into(), "t1".into()] };
+    assert_eq!(c.request(Request::SetAgent { session: sid, agent: agent.clone() }), Response::Ok);
+    wait_for_file_containing(&replay_file(d, sid), "before the kill");
+    // Postcard keeps a string as its UTF-8 bytes: the record has reached the manifest.
+    wait_for_file_containing(&d.sessions_dir().join("manifest.bin"), "RESUMED");
+    (sid, agent)
+}
+
+#[test]
+fn a_daemon_killed_outright_and_started_again_brings_its_sessions_back_and_resumes_their_agents() {
+    let a = Daemon::start(&["--flush-quiet-millis", "100"]);
+    let mut c = a.connect();
+    let (sid, agent) = session_with_an_agent_on_disk(&a, &mut c);
+    let dir = a.sigkill();
+    // No `--recover`: this is the daemon a window starts.
+    let b = Daemon::start_in(dir, &[]);
+    let mut c = b.connect();
+    let list = detailed(&mut c);
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].info.id, sid, "the id is kept, so the saved layout finds it");
+    assert!(list[0].recovered && list[0].info.alive);
+    assert_eq!(list[0].agent, Some(agent));
+    let Response::Attached { replay, alive: true } = c.request(Request::Attach { session: sid }) else { panic!("not attached alive") };
+    let mut text = String::from_utf8_lossy(&replay).into_owned();
+    let before = text.find("before the kill").expect("the old history comes first");
+    let divider = text.find("resumed after restart").expect("then the divider");
+    assert!(before < divider);
+    // Only the command's output has "RESUMED t1" with a single space (the typed line is quoted).
+    if !text.contains("RESUMED t1") {
+        text.push_str(&String::from_utf8_lossy(&c.wait_for_output(sid, "RESUMED t1")));
+    }
+    assert!(text.find("RESUMED t1").unwrap() > divider, "the typed resume command ran in the new shell");
+    assert!(!text.contains("not resumed"), "{text}");
+    let resumes = std::fs::read_to_string(b.sessions_dir().join("resumes")).expect("a recovery that resumes an agent is counted");
+    assert_eq!(resumes.lines().count(), 1, "{resumes:?}");
+}
+
+#[test]
+fn a_plain_start_recovers_the_sessions_and_opens_no_window() {
+    let a = Daemon::start(&["--flush-quiet-millis", "100"]);
+    let (script, marker) = relaunch_script(a.path());
+    let project = tempfile::tempdir().unwrap();
+    let manifest = a.sessions_dir().join("manifest.bin");
+    let mut w = a.connect_raw();
+    let hello = Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid: std::process::id(), ui_exe: Some(script.clone()), ui_cwd: project.path().to_path_buf() };
+    assert!(matches!(w.request(hello), Response::Hello { .. }));
+    let sid = w.create("/bin/sh");
+    wait_for_file_containing(&manifest, &project.path().to_string_lossy());
+    wait_for_file_containing(&manifest, "/bin/sh");
+    let dir = a.sigkill();
+    let b = Daemon::start_in(dir, &["--flush-quiet-millis", "100"]);
+    let mut c = b.connect();
+    let list = detailed(&mut c);
+    assert_eq!(list.len(), 1);
+    assert!(list[0].info.id == sid && list[0].recovered && list[0].info.alive);
+    // The folder is still one a restart reopens: the next manifest names it. The old file goes
+    // first, and a new session makes the daemon write one whatever it has written already.
+    let _ = std::fs::remove_file(&manifest);
+    c.create("/bin/sh");
+    wait_for_file_containing(&manifest, &project.path().to_string_lossy());
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!marker.exists(), "the window that starts the daemon is the window: none is opened for it");
+}
+
+#[test]
+fn no_recover_starts_empty_and_removes_nothing() {
+    let a = Daemon::start(&["--flush-quiet-millis", "100"]);
+    let mut c = a.connect();
+    let (sid, _) = session_with_an_agent_on_disk(&a, &mut c);
+    let dir = a.sigkill();
+    let b = Daemon::start_in(dir, &["--no-recover"]);
+    // No Hello from here on: a window's Hello is a change the manifest records, and these
+    // daemons must leave the one on disk as the first wrote it.
+    assert!(detailed(&mut b.connect_raw()).is_empty(), "a sandbox that was stopped starts with nothing");
+    assert!(replay_file(&b, sid).exists());
+    assert!(b.sessions_dir().join("manifest.bin").exists());
+    assert!(!b.sessions_dir().join("resumes").exists());
+    // The last of the two wins, either way round.
+    let dir = b.sigkill();
+    let b = Daemon::start_in(dir, &["--recover", "--no-recover"]);
+    assert!(detailed(&mut b.connect_raw()).is_empty());
+    let dir = b.sigkill();
+    let b = Daemon::start_in(dir, &["--no-recover", "--recover"]);
+    assert_eq!(detailed(&mut b.connect_raw()).len(), 1);
+}
+
+#[test]
+fn a_start_without_a_manifest_removes_the_histories_left_behind() {
+    let dir = tempfile::tempdir().unwrap();
+    let sessions = dir.path().join("sessions");
+    std::fs::create_dir(&sessions).unwrap();
+    std::fs::write(sessions.join("123.replay"), b"a history no manifest names").unwrap();
+    std::fs::write(sessions.join("notes.replay"), b"not a session's file").unwrap();
+    let d = Daemon::start_in(dir, &[]);
+    // An answer means the daemon serves, which it does only once the recovery is over.
+    assert!(detailed(&mut d.connect()).is_empty());
+    assert!(!sessions.join("123.replay").exists(), "nothing will ever read it");
+    assert!(sessions.join("notes.replay").exists(), "only `<id>.replay` is the daemon's to remove");
+}
+
+#[test]
+fn a_fourth_recovery_in_five_minutes_brings_the_sessions_back_without_resuming_their_agents() {
+    let a = Daemon::start(&["--flush-quiet-millis", "100"]);
+    let mut c = a.connect();
+    let (sid, agent) = session_with_an_agent_on_disk(&a, &mut c);
+    let dir = a.sigkill();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let three = format!("{}\n{}\n{}\n", now - 200, now - 100, now - 10);
+    std::fs::write(dir.path().join("sessions").join("resumes"), &three).unwrap();
+    let b = Daemon::start_in(dir, &[]);
+    let mut c = b.connect();
+    let list = detailed(&mut c);
+    assert_eq!(list.len(), 1);
+    assert!(list[0].info.id == sid && list[0].recovered && list[0].info.alive, "the shell and its history still come back");
+    assert_eq!(list[0].agent, Some(agent), "the record is kept: a later recovery resumes it");
+    let Response::Attached { replay, alive: true } = c.request(Request::Attach { session: sid }) else { panic!("not attached alive") };
+    let mut text = String::from_utf8_lossy(&replay).into_owned();
+    let divider = text.find("resumed after restart").expect("the divider");
+    let held = text.find("not resumed, the daemon restarted 3 times in 5 minutes: run 'echo' 'RESUMED' 't1'").expect("the command, for the user to run");
+    assert!(text.find("before the kill").unwrap() < divider && divider < held, "{text}");
+    // The shell answers, so anything typed before this has run: the resume command was not.
+    c.send(Request::Input { session: sid, bytes: b"echo marker-$((40+2))\n".to_vec() });
+    text.push_str(&String::from_utf8_lossy(&c.wait_for_output(sid, "marker-42")));
+    assert!(!text.contains("RESUMED t1"), "{text}");
+    assert_eq!(std::fs::read_to_string(b.sessions_dir().join("resumes")).unwrap(), three, "a recovery that resumes nothing is not counted");
 }
 
 /// A throwaway ed25519 pair, base64 (secret, public), as `verify.rs`'s test helpers make it.

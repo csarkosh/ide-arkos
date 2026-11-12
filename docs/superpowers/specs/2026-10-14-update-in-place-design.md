@@ -10,7 +10,7 @@ The main spec already puts every session in `arkosd`, a separate process the win
 
 ### 1.1 Non-goals
 
-- Surviving a daemon crash, a logout or a reboot. Section 2.1 of the main spec still holds: nothing survives daemon death. This milestone is replacement without death.
+- Surviving a daemon crash, a logout or a reboot. Section 2.1 of the main spec still holds: nothing survives daemon death. This milestone is replacement without death. (Section 11 below added the recovery after a reboot, and `2026-11-11-recover-on-start-design.md` the recovery after the daemon is killed or crashes.)
 - Downloading updates. Homebrew (`brew upgrade`) puts the new binaries on disk; Arkos IDE notices and switches to them.
 - Updating while a session is mid-keystroke with zero latency. A handover pauses output for well under a second; the kernel buffers it.
 

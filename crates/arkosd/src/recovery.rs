@@ -1,8 +1,10 @@
-//! Recovery after a restart (update-in-place spec, section 11): each session's replay ring goes
-//! to `<sessions dir>/<id>.replay` a couple of seconds after output stops and in full on
-//! SIGTERM, with a manifest of the sessions (folder, shell, agent record) and the windows open;
-//! `--recover` (Task 5) rebuilds everything from them. The sessions dir sits next to the socket,
-//! so tests get their own under their temp socket.
+//! Recovery after a restart (update-in-place spec, section 11) and after the daemon was killed
+//! (recover-on-start spec): each session's replay ring goes to `<sessions dir>/<id>.replay` a
+//! couple of seconds after output stops and in full on SIGTERM, with a manifest of the sessions
+//! (folder, shell, agent record) and the windows open. A fresh start rebuilds the sessions from
+//! them, whoever started it; `--recover` (the login item) reopens the windows too, and
+//! `--no-recover` leaves everything alone. The sessions dir sits next to the socket, so tests
+//! get their own under their temp socket.
 
 use crate::server::{Shared, State};
 use crate::session::{ReplayDelta, Session, SpawnSpec};
@@ -34,6 +36,72 @@ pub fn replay_path(dir: &Path, id: SessionId) -> PathBuf {
 
 pub fn manifest_path(dir: &Path) -> PathBuf {
     dir.join("manifest.bin")
+}
+
+/// What a fresh start does with the manifest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Recover {
+    /// `--no-recover`: nothing is read or removed (a sandbox's daemon, the shoot's, the tests').
+    Off,
+    /// No argument, the daemon a window starts: the sessions come back and the windows are
+    /// remembered, not opened, since the window that started the daemon is the one there is.
+    Sessions,
+    /// `--recover`, the login item: the sessions come back and the windows are reopened.
+    All,
+}
+
+/// How many recoveries in any `RESUME_WINDOW` type the agents' resume commands. A daemon killed
+/// each time it starts (a window starts a new one ten seconds after it lost the last) would
+/// otherwise start every agent again every few seconds, unattended.
+pub const RESUME_LIMIT: usize = 3;
+pub const RESUME_WINDOW: Duration = Duration::from_secs(5 * 60);
+
+/// The times of the recoveries that typed a resume command: one line of seconds since the epoch
+/// each. Read and written only by a recovery with an agent to resume; never on a timer.
+pub fn resumes_path(dir: &Path) -> PathBuf {
+    dir.join("resumes")
+}
+
+/// The recoveries on record that still count at `now`: within `RESUME_WINDOW`, the newest
+/// `RESUME_LIMIT`. A line that is not a number is no time, and neither is a time after `now`
+/// (the clock was set back), so nothing unreadable holds a resume back.
+pub fn recent_resumes(text: &str, now: u64) -> Vec<u64> {
+    let mut times: Vec<u64> = text.lines().filter_map(|l| l.trim().parse().ok()).filter(|t| *t <= now && now - *t < RESUME_WINDOW.as_secs()).collect();
+    times.sort_unstable();
+    let extra = times.len().saturating_sub(RESUME_LIMIT);
+    times.drain(..extra);
+    times
+}
+
+/// Whether this recovery may type the resume commands, recording it when it may. A file that
+/// cannot be read is no recoveries; one that cannot be written does not hold the resume back.
+fn take_resume(dir: &Path, now: u64) -> bool {
+    let path = resumes_path(dir);
+    let mut times = recent_resumes(&std::fs::read_to_string(&path).unwrap_or_default(), now);
+    if times.len() >= RESUME_LIMIT {
+        return false;
+    }
+    times.push(now);
+    let body: String = times.iter().map(|t| format!("{t}\n")).collect();
+    if let Err(e) = ensure_dir(dir).and_then(|()| crate::handover::atomic_write(&path, body.as_bytes())) {
+        eprintln!("arkosd: cannot write {}: {e}", path.display());
+    }
+    true
+}
+
+/// Removes each `<id>.replay` in `dir` whose id `keep` does not list: a history no session will
+/// show again. Anything else in the folder is not the sweep's to touch. Returns how many went.
+pub fn sweep(dir: &Path, keep: &[u64]) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let stale = name.to_string_lossy().strip_suffix(".replay").and_then(|n| n.parse::<u64>().ok()).is_some_and(|id| !keep.contains(&id));
+        if stale && std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// One session as a restart recreates it: the folder, the shell and its priority, the extra
@@ -211,12 +279,32 @@ pub fn seed_for(old: Vec<u8>, cap: usize) -> Vec<u8> {
     seed
 }
 
+/// A command for `sh` or `zsh`: every argument single-quoted.
+fn quoted(argv: &[String]) -> String {
+    argv.iter().map(|a| format!("'{}'", a.replace('\'', "'\\''"))).collect::<Vec<_>>().join(" ")
+}
+
 /// One command line for `sh` or `zsh`: every argument single-quoted, then a newline. The only
 /// thing recovery ever types into a shell.
 pub fn shell_line(argv: &[String]) -> Vec<u8> {
-    let mut line = argv.iter().map(|a| format!("'{}'", a.replace('\'', "'\\''"))).collect::<Vec<_>>().join(" ");
+    let mut line = quoted(argv);
     line.push('\n');
     line.into_bytes()
+}
+
+/// The dim line a session gets under its divider when the resume budget is used up: the command
+/// as recovery would have typed it, for the user to run. Written into the ring, never parsed.
+/// Only for a command `typeable` passes: the terminal would act on a control byte here too.
+pub fn held_line(argv: &[String]) -> Vec<u8> {
+    let minutes = RESUME_WINDOW.as_secs() / 60;
+    format!("\x1b[2m\u{2500}\u{2500} not resumed, the daemon restarted {RESUME_LIMIT} times in {minutes} minutes: run {} \u{2500}\u{2500}\x1b[0m\r\n", quoted(argv)).into_bytes()
+}
+
+/// A recovered ring that ends with `note`: the newest history that fits, the divider, the note.
+pub fn seed_with(old: Vec<u8>, cap: usize, note: &[u8]) -> Vec<u8> {
+    let mut seed = seed_for(old, cap.saturating_sub(note.len()));
+    seed.extend_from_slice(note);
+    tail(seed, cap)
 }
 
 /// Whether a resume command can be typed at all: quoting protects it from the shell, but the
@@ -233,13 +321,21 @@ pub struct Recovered {
 
 /// Rebuilds the table from the manifest: each session as a new shell in its folder (the home
 /// folder when that is gone) with its history under the divider and its agent's resume command
-/// typed in; then a window for each project that had one. Files the manifest does not name are
-/// removed. Runs once, after the socket is bound and before it is served.
-pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options) -> Recovered {
+/// typed in (or shown, once `RESUME_LIMIT` recoveries in `RESUME_WINDOW` have typed theirs);
+/// then, with `reopen_windows`, a window for each project that had one, and without it those
+/// projects are only remembered as having one. Histories the manifest does not name are removed.
+/// Runs once, after the socket is bound and before it is served.
+pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options, reopen_windows: bool) -> Recovered {
     let manifest = match read_manifest(dir) {
         Ok(Some(m)) => m,
         Ok(None) => {
-            eprintln!("arkosd: no manifest in {}: nothing to recover", dir.display());
+            // A window's start says nothing when there is nothing: most starts are that.
+            let removed = sweep(dir, &[]);
+            if removed > 0 {
+                eprintln!("arkosd: no manifest in {}: removed {removed} histories nothing names", dir.display());
+            } else if reopen_windows {
+                eprintln!("arkosd: no manifest in {}: nothing to recover", dir.display());
+            }
             return Recovered::default();
         }
         Err(e) => {
@@ -255,6 +351,15 @@ pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options) -> Rec
     };
     eprintln!("arkosd: recovering {} sessions and {} windows from a manifest written by {}", manifest.sessions.len(), manifest.windows.len(), manifest.written_by);
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()));
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let resumable = manifest.sessions.iter().filter(|m| m.agent.as_ref().is_some_and(|a| typeable(&a.resume))).count();
+    // Asked only when there is an agent to resume, so a recovery of plain shells costs no budget.
+    let held = resumable > 0 && !take_resume(dir, now);
+    if held {
+        let minutes = RESUME_WINDOW.as_secs() / 60;
+        eprintln!("arkosd: {RESUME_LIMIT} recoveries in the last {minutes} minutes resumed their agents: {resumable} resume commands are shown, not typed");
+        crate::journal::note(format_args!("recovery: {RESUME_LIMIT} recoveries in the last {minutes} minutes resumed their agents; {resumable} resume commands shown, not typed"));
+    }
     let mut done = Recovered::default();
     for m in &manifest.sessions {
         let id = SessionId(m.id);
@@ -279,7 +384,10 @@ pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options) -> Rec
             cols: m.cols,
             replay_capacity: opts.replay_capacity,
             backpressure: opts.backpressure,
-            seed: seed_for(old, opts.replay_capacity),
+            seed: match &m.agent {
+                Some(agent) if held && typeable(&agent.resume) => seed_with(old, opts.replay_capacity, &held_line(&agent.resume)),
+                _ => seed_for(old, opts.replay_capacity),
+            },
             recovered: true,
             agent: m.agent.clone(),
         };
@@ -293,6 +401,8 @@ pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options) -> Rec
                 if let Some(agent) = &m.agent {
                     if !typeable(&agent.resume) {
                         eprintln!("arkosd: session {}: the resume command has a control character, not typed", m.id);
+                    } else if held {
+                        // Shown under the divider instead; the record stays for a later recovery.
                     } else if let Err(e) = s.write(&shell_line(&agent.resume)) {
                         eprintln!("arkosd: session {}: cannot type the resume command: {e:#}", m.id);
                     }
@@ -307,20 +417,16 @@ pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options) -> Rec
             Err(e) => eprintln!("arkosd: session {}: cannot recreate its shell: {e:#}", m.id),
         }
     }
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let stale = name
-                .to_string_lossy()
-                .strip_suffix(".replay")
-                .and_then(|n| n.parse::<u64>().ok())
-                .is_some_and(|id| !manifest.sessions.iter().any(|m| m.id == id));
-            if stale {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
-    }
+    sweep(dir, &manifest.sessions.iter().map(|m| m.id).collect::<Vec<_>>());
     for w in &manifest.windows {
+        if !reopen_windows {
+            // As a window that vanished without a Goodbye stays in the list: a later restart or
+            // a rollback still reopens it. The binary is checked when it is launched, not here.
+            if crate::server::window_folder(w.cwd.clone()).is_some() && w.cwd.is_dir() {
+                state.lock().unwrap().windows.insert(w.cwd.clone(), w.exe.clone());
+            }
+            continue;
+        }
         let Some(exe) = &w.exe else {
             eprintln!("arkosd: window for {}: no binary recorded, not reopened", w.cwd.display());
             continue;
@@ -600,6 +706,59 @@ mod tests {
         assert!(!typeable(&v(&["claude", "--resume", "ab\u{15}12"])), "^U would erase the typed line");
         assert!(!typeable(&v(&["claude", "--resume", "ab\u{7f}12"])), "DEL would erase a character");
         assert!(typeable(&v(&["echo", "it's a test"])), "spaces and quotes are the quoting's job");
+    }
+
+    #[test]
+    fn three_resuming_recoveries_in_five_minutes_use_the_budget_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        let now = 1_000_000;
+        assert!(take_resume(&sessions, now), "the first, with no file and no folder yet");
+        assert!(take_resume(&sessions, now + 20));
+        assert!(take_resume(&sessions, now + 40));
+        assert!(!take_resume(&sessions, now + 60), "the fourth in five minutes");
+        assert_eq!(std::fs::read_to_string(resumes_path(&sessions)).unwrap(), format!("{}\n{}\n{}\n", now, now + 20, now + 40), "a held recovery is not recorded");
+        assert!(!take_resume(&sessions, now + 299), "the first is still inside the five minutes");
+        assert!(take_resume(&sessions, now + 300), "the first has aged out");
+        assert_eq!(std::fs::read_to_string(resumes_path(&sessions)).unwrap(), format!("{}\n{}\n{}\n", now + 20, now + 40, now + 300));
+        assert_eq!(std::fs::metadata(resumes_path(&sessions)).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn times_older_than_five_minutes_are_dropped_and_garbage_is_no_time() {
+        let now = 10_000;
+        assert_eq!(recent_resumes("", now), Vec::<u64>::new());
+        assert_eq!(recent_resumes("9700\n9701\n9999\n", now), vec![9701, 9999], "exactly five minutes ago is out");
+        assert_eq!(recent_resumes("nope\n\n 9990 \n-4\n10001\n", now), vec![9990], "not a number, or a time after now, is no recovery");
+        assert_eq!(recent_resumes("9995\n9991\n9993\n9992\n9994\n", now), vec![9993, 9994, 9995], "the newest three, in order");
+    }
+
+    #[test]
+    fn the_held_line_shows_the_command_as_it_would_have_been_typed() {
+        let argv: Vec<String> = ["claude", "--resume", "it's"].iter().map(|s| s.to_string()).collect();
+        let line = String::from_utf8(held_line(&argv)).unwrap();
+        assert_eq!(line, "\x1b[2m\u{2500}\u{2500} not resumed, the daemon restarted 3 times in 5 minutes: run 'claude' '--resume' 'it'\\''s' \u{2500}\u{2500}\x1b[0m\r\n");
+        let seed = seed_with(b"old output".to_vec(), 1024, line.as_bytes());
+        assert!(seed.starts_with(b"old output"));
+        assert!(seed.ends_with(&[DIVIDER, line.as_bytes()].concat()), "the note sits under the divider");
+        assert_eq!(seed_with(Vec::new(), 1024, line.as_bytes()), line.as_bytes(), "no history, no divider: the note alone");
+        let small = seed_with(vec![b'x'; 2000], 300, line.as_bytes());
+        assert_eq!(small.len(), 300, "history, divider and note fit the ring");
+        assert!(small.ends_with(line.as_bytes()));
+    }
+
+    #[test]
+    fn the_sweep_removes_only_the_histories_nothing_names() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["7.replay", "8.replay", "notes.replay", "manifest.bin", "resumes", "9.replay.tmp"] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        assert_eq!(sweep(dir.path(), &[8]), 1);
+        let mut left: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["8.replay", "9.replay.tmp", "manifest.bin", "notes.replay", "resumes"]);
+        assert_eq!(sweep(dir.path(), &[]), 1, "with no manifest every history goes");
+        assert_eq!(sweep(&dir.path().join("missing"), &[]), 0);
     }
 
     #[test]

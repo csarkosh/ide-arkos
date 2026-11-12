@@ -763,7 +763,8 @@ app_mode = false
 
 [daemon]
 # Read when the window starts arkosd. A daemon that is already running keeps its values until
-# `pkill -x arkosd`, which ends every session.
+# `pkill -x arkosd`, which restarts every session: what runs in the shells ends, and each comes
+# back as after a restart (see [recovery]).
 # Seconds without a heartbeat from the window before the daemon relaunches it.
 watchdog_secs = 30
 # Bytes of output kept per session, replayed when a window reattaches.
@@ -794,11 +795,13 @@ run_unfocused = true
 mode = "system"
 
 [recovery]
-# After a restart, arkosd started at login brings every session back: the same folders, the
-# history on screen under a divider, and each Claude Code conversation resumed (never continued:
-# you send the next message). Everything stays on this Mac. "ask" shows a notice at launch until
-# "Start at login" runs from the command palette; "on" installs the login item
-# (~/Library/LaunchAgents/sh.csarko.arkosd.plist) and keeps it; "off" removes it.
+# A daemon that ended (a restart, or killed while you worked) brings every session back when it
+# next starts: the same folders, the history on screen under a divider, and each Claude Code
+# conversation resumed (never continued: you send the next message). Everything stays on this
+# Mac. That happens when you next open Arkos, or at login, with the windows reopened, once the
+# login item is installed: "ask" shows a notice at launch until "Start at login" runs from the
+# command palette; "on" installs the login item (~/Library/LaunchAgents/sh.csarko.arkosd.plist)
+# and keeps it; "off" removes it.
 start_at_login = "ask"
 
 [update]

@@ -583,17 +583,23 @@ const CHECK_RESULT_AFTER: Duration = Duration::from_secs(3);
 const ANOTHER_APPLY: &str = "waiting for a window";
 
 /// What arkosd starts with when this window (or the login item) starts it; a running daemon
-/// keeps its own settings. A sandbox's daemon never checks for updates (`--check-every-secs 0`).
+/// keeps its own settings. A sandbox's daemon never checks for updates (`--check-every-secs 0`)
+/// and never brings back the sessions of the one before it (`--no-recover`): `arkos sandbox
+/// stop` ends them. A real window's daemon recovers on its own, with no argument.
 fn daemon_args(config: &config::Config, sandbox: bool) -> Vec<String> {
     let check_every_secs = if sandbox { 0 } else { config.update.check_every_secs };
-    vec![
+    let mut args = vec![
         "--watchdog-secs".to_string(),
         config.daemon.watchdog_secs.to_string(),
         "--replay-bytes".to_string(),
         config.daemon.replay_bytes.to_string(),
         "--check-every-secs".to_string(),
         check_every_secs.to_string(),
-    ]
+    ];
+    if sandbox {
+        args.push("--no-recover".to_string());
+    }
+    args
 }
 
 /// Whether the new window takes focus: not when the daemon started it (`ARKOS_RELAUNCH` set by
@@ -3143,7 +3149,7 @@ impl Root {
         if self.sessions.is_offline() {
             // A refused window never reconnects, so the daemon cannot be asked to update itself.
             let text = if connection::is_final(&self.status) {
-                "arkosd is older than this window: run pkill -x arkosd (ends every session) and open Arkos IDE again"
+                "arkosd is older than this window: run pkill -x arkosd (restarts every session) and open Arkos IDE again"
             } else {
                 "arkosd is not connected; try again once it is"
             };
@@ -5587,5 +5593,16 @@ mod tests {
         assert_eq!(poll(&daemon_args(&cfg, true)), Some("0".into()), "no daily check in a sandbox");
         assert_eq!(daemon_args(&cfg, true).iter().filter(|a| *a == "--check-every-secs").count(), 1, "said once");
         assert_eq!(daemon_args(&cfg, true)[..4], daemon_args(&cfg, false)[..4], "the other arguments are the config's");
+    }
+
+    #[test]
+    fn a_sandbox_daemon_is_told_not_to_recover() {
+        let cfg = crate::config::Config::default();
+        assert_eq!(daemon_args(&cfg, true).last().map(String::as_str), Some("--no-recover"), "a stopped sandbox's sessions stay ended");
+        let real = daemon_args(&cfg, false);
+        assert!(!real.iter().any(|a| a == "--no-recover" || a == "--recover"), "a window's daemon recovers on its own: {real:?}");
+        // The login item's line is `--recover` and then these, so the last word is never a no.
+        let plist = crate::launch_agent::plist(std::path::Path::new("/x/arkosd"), &real, std::path::Path::new("/x/arkosd.log"));
+        assert!(plist.contains("<string>--recover</string>") && !plist.contains("--no-recover"));
     }
 }

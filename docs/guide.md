@@ -26,22 +26,38 @@ hook says `other`) keeps its record, so the recovery after the restart resumes i
 
 ## After a restart
 
-A shutdown or restart ends every process; what becomes automatic is the recovery. The daemon
-writes each session's history to `~/Library/Application Support/arkos/sessions/<id>.replay`
-a couple of seconds after output stops (in full on SIGTERM, which a clean shutdown sends) and a
-manifest of the sessions (folder, shell, the Claude Code session id from its SessionStart hook)
-and of the project folders with a window open. "Start at login" from the palette installs
-`~/Library/LaunchAgents/sh.csarko.arkosd.plist`, which runs `arkosd --recover` once at login:
-it recreates each shell in its folder (the home folder when that is gone) with the old output
-under a dim "resumed after restart" line, types `claude --resume <id>` into the shells that had
-a Claude Code session, and opens a window for each project that had one; each tab says
-"(resumed after restart)" until you type into it. A window you quit yourself stays closed.
+A shutdown or restart ends every process, and so does anything that kills the daemon while you
+work (an antivirus, the system out of memory, `pkill`); what is automatic is the recovery. The
+daemon writes each session's history to
+`~/Library/Application Support/arkos/sessions/<id>.replay` a couple of seconds after output
+stops (in full on SIGTERM, which a clean shutdown sends) and a manifest of the sessions (folder,
+shell, the Claude Code session id from its SessionStart hook) and of the project folders with a
+window open. Neither waits for the daemon to end, so they are there however it ended.
+
+A daemon that starts and finds them brings the sessions back, whoever started it: it recreates
+each shell in its folder (the home folder when that is gone) with the old output under a dim
+"resumed after restart" line and types `claude --resume <id>` into the shells that had a Claude
+Code session; each tab says "(resumed after restart)" until you type into it. So after the
+daemon was killed, a window still open gets its tabs back about ten seconds later (it starts a
+new daemon once it has been without one that long), and if the window went too, opening Arkos
+again does it. Histories no session shows any more are removed at the same time.
+
+"Start at login" from the palette adds the restart: it installs
+`~/Library/LaunchAgents/sh.csarko.arkosd.plist`, which runs `arkosd --recover` once at login,
+and that also opens a window for each project that had one. A window you quit yourself stays
+closed. Without the login item the sessions come back when you next open Arkos.
+
+A daemon that is killed again and again does not start every agent each time: at most three
+recoveries in any five minutes type the resume commands. One past that still brings back every
+shell and its history, and shows the command under the divider ("not resumed, the daemon
+restarted 3 times in 5 minutes: run ...") for you to run.
 
 What does not come back: whatever was executing at that moment (a half-finished tool call, a
-running build, shell variables, background jobs). Claude Code's transcript records the
+running build, shell variables, background jobs), and the last couple of seconds of output (up to
+fifteen from a program that never paused). Claude Code's transcript records the
 unfinished tool, and the agent continues from there once asked; recovery only resumes, it never
 sends a message. Everything stays on this Mac. `[recovery] start_at_login` in the config pins
-it on or off; "ask", the default, shows a one-line notice at launch until you decide. While the
+the login item on or off; "ask", the default, shows a one-line notice at launch until you decide. While the
 login item is installed it follows the binary and the `[daemon]` settings: a moved binary or an
 edited value rewrites it. The window never unloads the login item, since after a recovery the
 running daemon is the login item's own process: a rewritten file is loaded at the next login, and
@@ -1086,17 +1102,20 @@ history. The daemon and window speak protocol 6; the daemon still serves protoco
 and reads the previous handover formats and recovery manifest, so updating from 0.2.12 or the
 update-in-place build is an ordinary "Update now". Upgrading from milestone 2b is the one
 update that needs `pkill -x arkosd` (the old daemon knows nothing of handovers), which ends
-every session.
+every session (a daemon that old writes nothing to recover from).
 
 Click the bell, then "Update now", to update at once.
 
 If the new daemon fails its check or the exec fails, the old daemon keeps running and the window
-shows the error. If the window loses the daemon for ten seconds, it starts a new one and every
-tab becomes a fresh shell with the "(restarted)" note.
+shows the error. If the window loses the daemon for ten seconds, it starts a new one, which
+brings every session back as [after a restart](#after-a-restart): a new shell with its history
+and its Claude Code conversation resumed, the tab marked "(resumed after restart)". A tab whose
+session could not be brought back becomes a fresh shell with the "(restarted)" note.
 
 A window newer than its daemon (one started from a new build while an older daemon still runs)
 is refused and stops reconnecting, so "Update now" cannot reach that daemon. The fix is the
-one-time path above: `pkill -x arkosd`, which ends every session, and open the window again.
+one-time path above: `pkill -x arkosd`, which restarts every session (what runs in the shells
+ends; each comes back with its history and its conversation resumed), and open the window again.
 
 ### When an update goes wrong
 

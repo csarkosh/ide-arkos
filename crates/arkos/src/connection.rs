@@ -259,7 +259,7 @@ async fn pump(root: &Entity<Root>, client: &Client, events: &mut UnboundedReceiv
     if !answered {
         // A daemon built before the protocol version existed cannot decode this UI's
         // Hello and hangs up without a word.
-        reason.push_str("; if arkosd is from an older build, restart it (pkill -x arkosd), which ends every session");
+        reason.push_str("; if arkosd is from an older build, restart it (pkill -x arkosd), which restarts every session");
     }
     Some(reason)
 }
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn only_a_protocol_refusal_is_final() {
-        let refused = format!("{ERROR_PREFIX}protocol version mismatch: daemon speaks 1 to 2, client 3; this arkosd is older than the window: run pkill -x arkosd (ends every session) and open Arkos IDE again; daemon closed the connection");
+        let refused = format!("{ERROR_PREFIX}protocol version mismatch: daemon speaks 1 to 2, client 3; this arkosd is older than the window: run pkill -x arkosd (restarts every session) and open Arkos IDE again; daemon closed the connection");
         assert!(is_final(&refused));
         assert!(!is_final("daemon closed the connection"));
         assert!(!is_final(&format!("{ERROR_PREFIX}no session 4; daemon closed the connection")));

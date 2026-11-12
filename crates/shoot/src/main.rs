@@ -296,7 +296,8 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
     let daemon = daemon
         .arg("--socket")
         .arg(dirs.socket())
-        .args(["--check-every-secs", "0"])
+        // A shoot starts from nothing: the sessions of one that was interrupted stay gone.
+        .args(["--check-every-secs", "0", "--no-recover"])
         .env("ARKOS_APP_SUPPORT", &dirs.state)
         .stdin(Stdio::null())
         .stdout(Stdio::null())

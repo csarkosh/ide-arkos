@@ -56,8 +56,12 @@ the folder this window already shows gets the notice "already open here". The li
 The daemon keeps running after the window closes; sessions survive the UI being killed. Logs:
 `~/Library/Application Support/arkos/arkosd.log`. A window newer than the daemon is refused
 with a banner and stops reconnecting; `pkill -x arkosd` and a relaunch fix it (see [Updating](guide.md#updating)). A
-window older than the daemon keeps working. `pkill -x arkosd` stops the daemon and ends every
-session.
+window older than the daemon keeps working. `pkill -x arkosd` stops the daemon and ends what
+runs in every session; the daemon a window starts next brings the sessions back as after a
+restart (new shells, the histories, each Claude Code conversation resumed), and so does one
+started after the daemon was killed outright. `arkosd --no-recover` starts with nothing, which
+is how a sandbox's daemon and the shoot's start (design:
+`docs/superpowers/specs/2026-11-11-recover-on-start-design.md`).
 
 Upgrading from milestone 1: the window finds milestone 1's saved session and moves it to the
 new workspace format on first launch. A daemon started by milestone 1 keeps running without
@@ -385,7 +389,8 @@ Session awareness and recovery after a restart: each tab shows what its Claude C
 doing (a breathing glyph while it works, a warm dot when it waits on you, a muted title when the
 shell ended), the tab marks show which sessions wait, and with "Start at login" on, a restart
 brings every session back on its own: the same folders, the history on screen under a divider, and
-each Claude Code conversation resumed. The sidebar shows git status in the tree and the
+each Claude Code conversation resumed. A daemon that was killed while you worked does the same when
+it next starts, with or without the login item. The sidebar shows git status in the tree and the
 worktrees, and the viewer marks a file's changes against HEAD. The browser pane shows a web page
 inside the pane (a WKWebView, 0.7; before it a Chrome window was docked over the pane). Milestone 6a made the update path and the
 launcher trustworthy: "Check for updates" waits for the check and says what it found, the chooser
@@ -779,8 +784,19 @@ Things only a person at the screen can check, in order of value:
   back to full height when the split closes
 - `pkill -x arkosd` with the window open: tabs say "reconnecting", and the bell says
   "arkosd reconnecting"; after ten
-  seconds a banner appears, a new daemon starts, and each tab comes back as a new shell marked
-  "(restarted)"
+  seconds a banner appears, a new daemon starts, and each tab comes back with its history under
+  the "resumed after restart" divider, marked "(resumed after restart)"
+- four tabs with `claude` running and the hooks installed, then `pkill -9 -x arkosd` (what an
+  antivirus does: no flush): ten seconds later every tab is back with its history, `claude
+  --resume` typed into each and the conversation there; `ls ~/Library/Application\
+  Support/arkos/sessions` shows one `.replay` per tab and none from before
+- the same, with `kill -9 $(pgrep -x arkos)` too, then Arkos opened again: the same tabs, the same
+  result, and one window, not two
+- `pkill -9 -x arkosd` four times within five minutes, waiting for the tabs each time: the fourth
+  time the tabs come back with "not resumed, the daemon restarted 3 times in 5 minutes: run
+  'claude' '--resume' ..." under the divider and no `claude` started; pasting the command resumes
+- `arkos sandbox ~/x`, a `claude` in a tab, `arkos sandbox stop`, `arkos sandbox ~/x`: a fresh
+  shell, nothing resumed
 - "Update now" when nothing changed relaunches the window and every tab comes back attached
 - push, `gh workflow run release-notarized -f version=X`, wait for the run, see "Update ready: X" in the
   bell within five minutes, stop typing for thirty seconds: the window relaunches with every

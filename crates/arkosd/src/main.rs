@@ -41,7 +41,8 @@ fn main() {
     let mut pending_cap = session::CLIENT_PENDING_CAP;
     let mut backpressure = session::Backpressure::default();
     let mut resume = None;
-    let mut recover = false;
+    // The last of `--recover` and `--no-recover` wins; neither is the daemon a window starts.
+    let mut recover = recovery::Recover::Sessions;
     // The update arguments; the staging folder's default follows `--socket`, wherever it comes.
     let mut update_url = None;
     let mut check_every_secs = None;
@@ -70,7 +71,10 @@ fn main() {
                 println!("{} {}", handover::OLDEST_READ, handover::FORMAT);
                 return;
             }
-            "--recover" => recover = true,
+            // The login item: the sessions come back and the windows are reopened.
+            "--recover" => recover = recovery::Recover::All,
+            // A sandbox's daemon, the shoot's and the tests': the manifest is left alone.
+            "--no-recover" => recover = recovery::Recover::Off,
             "--socket" => socket = PathBuf::from(args.next().expect("--socket needs a path")),
             "--resume" => resume = Some(PathBuf::from(args.next().expect("--resume needs a path"))),
             "--replay-bytes" => replay = args.next().and_then(|v| v.parse().ok()).expect("--replay-bytes needs a number"),
@@ -196,7 +200,7 @@ fn main() {
         update,
     };
     if let Err(e) = server::run_with(opts, recover) {
-        if recover && e.to_string().contains(server::ALREADY_LISTENING) {
+        if recover == recovery::Recover::All && e.to_string().contains(server::ALREADY_LISTENING) {
             eprintln!("arkosd: already running; nothing to recover");
             return;
         }

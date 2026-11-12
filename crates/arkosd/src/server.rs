@@ -269,9 +269,11 @@ fn flush_direct(state: &Shared, id: u64) {
 /// How `run_with` fails when a daemon already serves the socket; `--recover` treats it as success.
 pub const ALREADY_LISTENING: &str = "another arkosd is already listening on";
 
-/// A fresh start. `recover`: rebuild the table from the manifest before serving (the launchd
-/// agent's start).
-pub fn run_with(opts: Options, recover: bool) -> Result<()> {
+/// A fresh start. `recover`: whether the table is rebuilt from the manifest before serving, and
+/// whether the windows are reopened with it (the launchd agent's start) or only remembered (a
+/// start by a window, after the daemon was killed or ended).
+pub fn run_with(opts: Options, recover: crate::recovery::Recover) -> Result<()> {
+    use crate::recovery::Recover;
     let socket = opts.socket.as_path();
     let parent = socket.parent().ok_or_else(|| anyhow::anyhow!("socket path has no parent"))?;
     let created_parent = !parent.exists();
@@ -296,11 +298,16 @@ pub fn run_with(opts: Options, recover: bool) -> Result<()> {
     let mut st = State::new();
     st.listener_fd = listener.as_raw_fd();
     let state: Shared = Arc::new(Mutex::new(st));
-    crate::journal::note(format_args!("started {} (pid {}){}", crate::version_string(), std::process::id(), if recover { ", recovering" } else { "" }));
-    if recover {
+    crate::journal::note(format_args!("started {} (pid {}){}", crate::version_string(), std::process::id(), if recover == Recover::Off { "" } else { ", recovering" }));
+    if recover != Recover::Off {
         let dir = crate::recovery::sessions_dir(&opts.socket);
-        let done = crate::recovery::recover(&state, &dir, &opts);
-        eprintln!("arkosd: recovered {} sessions and reopened {} windows", done.sessions, done.windows);
+        let done = crate::recovery::recover(&state, &dir, &opts, recover == Recover::All);
+        if recover == Recover::All || done != crate::recovery::Recovered::default() {
+            eprintln!("arkosd: recovered {} sessions and reopened {} windows", done.sessions, done.windows);
+        }
+        if done.sessions > 0 {
+            crate::journal::note(format_args!("recovered {} sessions and reopened {} windows", done.sessions, done.windows));
+        }
     }
     crate::updates::apply::on_start(&state, opts.update.bundle.as_deref(), &opts.update.dir, opts.update.connect_grace);
     crate::updates::drop_stale_staged(&state, &opts.update.dir, &crate::updates::floor(&opts.update.running(), opts.update.bundle.as_deref()));
@@ -450,7 +457,7 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
                                 // window stops reconnecting, so the hint names a fix that needs no
                                 // connection.
                                 let hint = if protocol_version > PROTOCOL_VERSION {
-                                    "this arkosd is older than the window: run pkill -x arkosd (ends every session) and open Arkos IDE again"
+                                    "this arkosd is older than the window: run pkill -x arkosd (restarts every session) and open Arkos IDE again"
                                 } else {
                                     "this window is older than arkosd: quit it and open the installed Arkos IDE"
                                 };

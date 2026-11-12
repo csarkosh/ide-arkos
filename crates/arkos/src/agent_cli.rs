@@ -109,7 +109,7 @@ impl Reach {
     pub(crate) fn line(&self) -> String {
         match self {
             Reach::NoWindow => "no window running".into(),
-            Reach::OldDaemon => "arkosd is older than this command; use Update now in Arkos IDE, or run pkill -x arkosd (ends every session)".into(),
+            Reach::OldDaemon => "arkosd is older than this command; use Update now in Arkos IDE, or run pkill -x arkosd (restarts every session)".into(),
             Reach::Io(e) => e.clone(),
         }
     }
@@ -1217,7 +1217,7 @@ mod tests {
         let got = customize(&sock, CustomizeAction::ReportState, Duration::from_secs(1)).unwrap();
         assert_eq!((got.outcomes[0].pid, got.missing.clone(), got.too_old.clone()), (3, vec![4], vec![5]));
         assert!(matches!(customize(&sock, CustomizeAction::ReportState, Duration::from_secs(1)), Err(Reach::OldDaemon)));
-        assert_eq!(Reach::OldDaemon.line(), "arkosd is older than this command; use Update now in Arkos IDE, or run pkill -x arkosd (ends every session)");
+        assert_eq!(Reach::OldDaemon.line(), "arkosd is older than this command; use Update now in Arkos IDE, or run pkill -x arkosd (restarts every session)");
         server.join().unwrap();
         assert!(matches!(customize(&dir.path().join("absent.sock"), CustomizeAction::ReportState, Duration::from_millis(10)), Err(Reach::NoWindow)));
         let env = Env { socket: &dir.path().join("absent.sock"), config: &dir.path().join("c.toml"), themes: dir.path(), wait: Duration::from_millis(10) };
