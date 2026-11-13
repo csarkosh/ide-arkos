@@ -505,6 +505,17 @@ Things only a person at the screen can check, in order of value:
   typing narrows the rows and opens Done; "No session matches." when none does; Enter shows the
   first row's session with the keys in its terminal; Escape clears the field and the list
   returns; a click on a pane takes the keys back and leaves what was typed
+- sessions: a click on an Unread row leaves it under Unread with its dot turned to a ring; a
+  click on another row moves it to Unanswered; a right click opens "Move to" with a ▸, and
+  hovering it opens the sections beside it, level with the row: an idle row offers Unread and
+  Done, a finished one Unanswered or Unread, Later and Done, a blocked one has no "Move to";
+  each moves the row at once; an idle session's second line is its Claude Code title, not the
+  folder; under overworld the selected and hovered rows are drawn inside the sidebar's frame
+  with the bobbing cursor, as the Explorer's are
+- layouts: switching to Inbox with the sidebar hidden or on Files shows it on Sessions; "+ New
+  session" sits under the filter, above the first group; under overworld in a tall sidebar the
+  scene is twice its size and the names dim only the part of it they lie over, a short list
+  leaving the castle at full colour
 - layouts: "A session's files open" on Neighbor: with one pane an `arkos open` splits a pane
   to the right, the next goes into that pane, and from the right pane it goes to the left one
 - Settings, Appearance: two pills, Presets and Custom, the one in force selected. Presets

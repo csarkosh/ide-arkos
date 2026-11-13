@@ -8,8 +8,17 @@ use crate::tree::Rect;
 /// An art pixel's side, in points. The wash draws at `scale = 1.0`, and every art pixel is
 /// snapped to whole points from its band's origin, so its edges land on window pixels.
 pub const ART_PX: f32 = 3.0;
-/// The tallest the scene is drawn, in points: its 46 art rows and 10 more of open sky fit under it.
+/// The tallest the scene is drawn at its own size, in points: its 46 art rows and 10 more of open
+/// sky fit under it. Drawn at twice its size (`scene_px`) it may be twice as tall.
 pub const SCENE_MAX_H: f32 = 170.0;
+/// A sidebar with at least this much room inside its frame, and room across for
+/// `SCENE_TALL_COLS` art pixels of twice the size, has its scene drawn at twice its size, so the
+/// art reaches further up a tall sidebar while its pixels stay whole.
+pub const SCENE_TALL_ROOM: f32 = 640.0;
+pub const SCENE_TALL_COLS: f32 = 34.0;
+/// Under the sidebar's names the scene is softened for their contrast, and below the last of
+/// them it comes back to full colour over this many points, a row of art at a time.
+pub const SOFT_BUFFER: f32 = 24.0;
 /// A sidebar with less room than this inside its frame has no scene at all.
 pub const SCENE_MIN_H: f32 = 50.0;
 /// A frame's width in art pixels: a pane's in the gap round it (so the manifest's `gap` is two
@@ -57,8 +66,31 @@ pub fn scene_band(side: Rect) -> Option<Rect> {
     if room < SCENE_MIN_H || side.w <= 2.0 * frame {
         return None;
     }
-    let h = (room.min(SCENE_MAX_H) / ART_PX).floor() * ART_PX;
+    let px = scene_px(side);
+    let h = (room.min(SCENE_MAX_H * px / ART_PX) / px).floor() * px;
     Some(Rect { x: side.x + frame, y: side.y + side.h - frame - h, w: side.w - 2.0 * frame, h })
+}
+
+/// The side of one of the scene's art pixels in the sidebar `side`, in points: `ART_PX`, or twice
+/// that in a sidebar tall and wide enough (`SCENE_TALL_ROOM`, `SCENE_TALL_COLS`).
+pub fn scene_px(side: Rect) -> f32 {
+    let frame = FRAME_PX as f32 * ART_PX;
+    let tall = side.h - 2.0 * frame >= SCENE_TALL_ROOM && side.w - 2.0 * frame >= SCENE_TALL_COLS * 2.0 * ART_PX;
+    if tall {
+        2.0 * ART_PX
+    } else {
+        ART_PX
+    }
+}
+
+/// How far the scene's art row whose top is at `row_top` is softened toward the sidebar's colour,
+/// with the names ending at `names_end`: all the way for a row the names reach into, then less a
+/// row at a time over `SOFT_BUFFER` below them, and not at all past that.
+pub fn soft_amount(row_top: f32, names_end: f32) -> f32 {
+    if row_top < names_end {
+        return 1.0;
+    }
+    (1.0 - (row_top - names_end) / SOFT_BUFFER).clamp(0.0, 1.0)
 }
 
 /// Whether a title bar star may be drawn at `p`: outside every group grown by `STAR_CLEAR` on
@@ -214,8 +246,34 @@ mod tests {
 
     #[test]
     fn the_scene_stands_on_the_sidebar_s_frame_up_to_its_full_height() {
-        let band = scene_band(Rect { x: 0.0, y: 28.0, w: 240.0, h: 700.0 }).unwrap();
-        assert_eq!(band, Rect { x: 6.0, y: 728.0 - 6.0 - 168.0, w: 228.0, h: 168.0 }, "56 art pixels, the most under 170 points, inside the frame");
+        let band = scene_band(Rect { x: 0.0, y: 28.0, w: 240.0, h: 600.0 }).unwrap();
+        assert_eq!(band, Rect { x: 6.0, y: 628.0 - 6.0 - 168.0, w: 228.0, h: 168.0 }, "56 art pixels, the most under 170 points, inside the frame");
+    }
+
+    #[test]
+    fn a_tall_wide_sidebar_draws_the_scene_at_twice_its_size_in_whole_art_pixels() {
+        let tall = Rect { x: 0.0, y: 28.0, w: 260.0, h: 900.0 };
+        assert_eq!(scene_px(tall), 2.0 * ART_PX);
+        let band = scene_band(tall).unwrap();
+        assert_eq!(band.h, 336.0, "56 rows of six points: twice the scene's height");
+        assert_eq!(band.y + band.h, tall.y + tall.h - FRAME_PX as f32 * ART_PX, "on the frame's foot");
+        assert_eq!(band.h % (2.0 * ART_PX), 0.0);
+        // Short or narrow, the scene keeps its own size.
+        assert_eq!(scene_px(Rect { h: 600.0, ..tall }), ART_PX);
+        assert_eq!(scene_px(Rect { w: 200.0, ..tall }), ART_PX, "under 34 columns of six points across");
+        assert_eq!(scene_band(Rect { h: 600.0, ..tall }).unwrap().h, 168.0);
+    }
+
+    #[test]
+    fn the_scene_is_softened_under_the_names_and_comes_back_over_a_buffer_below_them() {
+        assert_eq!(soft_amount(100.0, 120.0), 1.0, "a row the names reach into");
+        assert_eq!(soft_amount(119.0, 120.0), 1.0);
+        assert_eq!(soft_amount(120.0, 120.0), 1.0, "the first row below starts from all the way");
+        assert_eq!(soft_amount(132.0, 120.0), 0.5);
+        assert_eq!(soft_amount(144.0, 120.0), 0.0, "past the buffer, full colour");
+        assert_eq!(soft_amount(400.0, 120.0), 0.0);
+        let steps: Vec<f32> = (0..10).map(|n| soft_amount(120.0 + 3.0 * n as f32, 120.0)).collect();
+        assert!(steps.windows(2).all(|w| w[1] <= w[0]), "it only lightens going down: {steps:?}");
     }
 
     #[test]
@@ -268,6 +326,9 @@ mod tests {
         for line in [
             format!("constant float ART_PX = {ART_PX:?};"),
             format!("constant float SCENE_MAX_H = {SCENE_MAX_H:?};"),
+            format!("constant float SCENE_TALL_ROOM = {SCENE_TALL_ROOM:?};"),
+            format!("constant float SCENE_TALL_COLS = {SCENE_TALL_COLS:?};"),
+            format!("constant float SOFT_BUFFER = {SOFT_BUFFER:?};"),
             format!("constant float SCENE_MIN_H = {SCENE_MIN_H:?};"),
             format!("constant float STAR_CLEAR = {STAR_CLEAR:?};"),
             format!("constant float DIM_CYCLE = {DIM_CYCLE:?};"),
@@ -423,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn on_the_gpu_the_scene_is_at_full_colour_until_the_names_reach_it_and_then_dims_as_one() {
+    fn on_the_gpu_the_scene_is_softened_only_under_the_names_and_a_buffer_below_them() {
         if !gpu() {
             return;
         }
@@ -435,14 +496,20 @@ mod tests {
         let lit = |names_end: f32| pixels(&render(&theme, 0.0, &window_with_names_to(names_end)), band).contains(&c.focus_ring);
         assert!(lit(band.y - 30.0), "names that end above the scene leave it at full colour");
         assert!(lit(band.y), "and ones that only reach its top");
-        // Names a row into the scene, a strip of it left below them: all of it is softened, the
-        // strip too, so no line runs across the castle and nothing below the last name is bright.
+        // Names into the scene: under them it is softened, so the dim text keeps its contrast
+        // there; below them the scene comes back, and past the buffer it is untouched.
         for names_end in [band.y + 24.0, band.y + 90.0, band.y + band.h - 12.0] {
             let frame = render(&theme, 0.0, &window_with_names_to(names_end));
-            let seen = pixels(&frame, band);
-            assert!(!seen.contains(&c.focus_ring), "softened as one with the names at {names_end}");
-            assert!(seen.iter().all(|p| contrast(c.text_dim, *p) >= 4.5), "the dim text keeps its contrast on all of it at {names_end}");
-            assert!(seen.iter().any(|p| *p != c.sidebar), "and it is still there at {names_end}");
+            let under = pixels(&frame, Rect { h: names_end - band.y, ..band });
+            assert!(!under.contains(&c.focus_ring), "softened under the names at {names_end}");
+            assert!(under.iter().all(|p| contrast(c.text_dim, *p) >= 4.5), "the dim text keeps its contrast under the names at {names_end}");
+            assert!(under.iter().any(|p| *p != c.sidebar), "and the scene is still there at {names_end}");
+            let past = names_end + SOFT_BUFFER;
+            if past < band.y + band.h {
+                let clear = Rect { y: past, h: band.y + band.h - past, ..band };
+                let full = pixels(&render(&theme, 0.0, &window_with_names_to(band.y - 30.0)), clear);
+                assert_eq!(pixels(&frame, clear), full, "past the buffer the scene is as it is with no names over it, at {names_end}");
+            }
         }
         // Above the scene the sidebar is plain, whatever the names do.
         let frame = render(&theme, 3.7, &window_with_names_to(band.y + 60.0));

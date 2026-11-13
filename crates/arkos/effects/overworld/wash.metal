@@ -36,6 +36,10 @@ constant float ART_PX = 3.0;
 // inside their own edges.
 constant int FRAME_PX = 2;
 constant float SCENE_MAX_H = 170.0;
+// A sidebar with this much room inside its frame, and room across for SCENE_TALL_COLS art pixels
+// of twice the size, has its scene drawn at twice its size (scene_px).
+constant float SCENE_TALL_ROOM = 640.0;
+constant float SCENE_TALL_COLS = 34.0;
 constant float SCENE_MIN_H = 50.0;
 constant float STAR_CLEAR = 12.0;
 
@@ -76,9 +80,9 @@ constant int HIGH_ROWS = 10;
 constant float SOFT_AWAY = 0.35;
 constant float SOFT_FLOOR = 4.6;
 constant float SOFT_STEPS[5] = {0.6, 0.75, 0.85, 0.92, 1.0};
-// Once the names reach into the scene, all of it is softened, not only the part under them, so
-// no line runs across the castle: fully once they reach SOFT_REACH points in.
-constant float SOFT_REACH = 24.0;
+// Below the last of the names the scene comes back to full colour over SOFT_BUFFER points, a row
+// of art at a time.
+constant float SOFT_BUFFER = 24.0;
 // The sky's dither runs over its first SKY_ROWS rows; its stars live in the first STAR_ROWS, one
 // in some of the cells of STAR_CELL art pixels, a few of them in the focus colour.
 constant int SKY_ROWS = 26;
@@ -314,16 +318,25 @@ bool inside_rect(float2 p, float4 r) {
     return p.x >= r.x && p.x <= r.x + r.z && p.y >= r.y && p.y <= r.y + r.w;
 }
 
+// The side of the scene's art pixels in the sidebar `side`: ART_PX, or twice it in a sidebar tall
+// and wide enough, so the art reaches further up a tall sidebar with its pixels whole.
+float scene_px(float4 side) {
+    float in = float(FRAME_PX) * ART_PX;
+    bool tall = side.w - 2.0 * in >= SCENE_TALL_ROOM && side.z - 2.0 * in >= SCENE_TALL_COLS * 2.0 * ART_PX;
+    return tall ? 2.0 * ART_PX : ART_PX;
+}
+
 // The band of the sidebar `side` the scene is drawn in: inside its frame, at most SCENE_MAX_H tall
-// in whole art pixels, standing on the frame's foot; zero height in a sidebar with under
-// SCENE_MIN_H of room inside its frame.
+// at its own size (twice that at twice the size) in whole art pixels, standing on the frame's
+// foot; zero height in a sidebar with under SCENE_MIN_H of room inside its frame.
 float4 scene_band(float4 side) {
     float in = float(FRAME_PX) * ART_PX;
     float room = side.w - 2.0 * in;
     if (room < SCENE_MIN_H || side.z <= 2.0 * in) {
         return float4(0.0);
     }
-    float h = floor(min(room, SCENE_MAX_H) / ART_PX) * ART_PX;
+    float px = scene_px(side);
+    float h = floor(min(room, SCENE_MAX_H * px / ART_PX) / px) * px;
     return float4(side.x + in, side.y + side.w - in - h, side.z - 2.0 * in, h);
 }
 
@@ -1055,18 +1068,18 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             if (band.w <= 0.0 || !inside_rect(p, band)) {
                 continue;
             }
-            int2 q = int2(floor((p - band.xy) / ART_PX));
-            int j = q.y + SCENE_ROWS + HIGH_ROWS - int(band.w / ART_PX);
-            int w = int(band.z / ART_PX);
+            float px = scene_px(r);
+            int2 q = int2(floor((p - band.xy) / px));
+            int j = q.y + SCENE_ROWS + HIGH_ROWS - int(band.w / px);
+            int w = int(band.z / px);
             float3 art = j < HIGH_ROWS ? high_sky(u, q.x, j, t) : scene(u, q.x, j - HIGH_ROWS, w, t);
             art = mix(art, mute(u, u.colors[ARKOS_TEXT].rgb), shooting(q.x, j, w, HIGH_ROWS + STAR_ROWS, 2.0, SHOOT_CYCLE, t, SHOOT_SALT));
-            // Under the names it is softened for their contrast; and once they reach into the
-            // scene the rest of it is softened with them, so it dims as one.
-            float reach = saturate((names_end - band.y) / SOFT_REACH);
-            if (p.y < names_end) {
-                art = soften(u, art, sb);
-            } else if (reach > 0.0) {
-                art = mix(art, soften(u, art, sb), reach);
+            // Under the names it is softened for their contrast, and below the last of them it
+            // comes back to full colour over SOFT_BUFFER, a row of art at a time.
+            float row_top = band.y + float(q.y) * px;
+            float amount = row_top < names_end ? 1.0 : saturate(1.0 - (row_top - names_end) / SOFT_BUFFER);
+            if (amount > 0.0) {
+                art = mix(art, soften(u, art, sb), amount);
             }
             col = mix(sb, art, k);
         } else if (kind == ARKOS_TAB_BAR_BLOCK) {

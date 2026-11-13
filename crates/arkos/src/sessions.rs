@@ -221,6 +221,9 @@ pub struct SessionManager {
     /// Each session's agent record, from the list at connect and `Event::Agent` after: how to
     /// resume the session once its tab is closed.
     pub agents: HashMap<SessionId, protocol::AgentRecord>,
+    /// The last line each session's agent gave, kept by the window and saved with its workspace:
+    /// the daemon keeps a session's line in memory only.
+    pub lines: HashMap<SessionId, String>,
     /// The session the user is looking at: its tab shown and focused in the window in front.
     /// A turn that begins there is seen at once. The root keeps it.
     pub shown: Option<SessionId>,
@@ -255,7 +258,7 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub fn new(transport: Arc<dyn Transport>, client: Option<Arc<Client>>, project: PathBuf) -> Self {
-        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashMap::new(), states: HashMap::new(), labels: HashMap::new(), attention: HashMap::new(), marks: HashMap::new(), agents: HashMap::new(), shown: None, marks_changed: false, later_checked: 0, reporting: HashSet::new(), probed: HashMap::new(), probe_wanted: false, newly_reporting: false, restoring: HashSet::new(), backlog: HashMap::new(), offline: false, kills_to_resend: Vec::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
+        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashMap::new(), states: HashMap::new(), labels: HashMap::new(), attention: HashMap::new(), marks: HashMap::new(), agents: HashMap::new(), lines: HashMap::new(), shown: None, marks_changed: false, later_checked: 0, reporting: HashSet::new(), probed: HashMap::new(), probe_wanted: false, newly_reporting: false, restoring: HashSet::new(), backlog: HashMap::new(), offline: false, kills_to_resend: Vec::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
     }
 
     /// A new connection: requests go to it from now on.
@@ -450,8 +453,10 @@ impl SessionManager {
     }
 
     pub fn acknowledge_at(&mut self, session: SessionId, now: u64) -> bool {
+        // A look reads what the user marked unread, whatever the session is doing.
+        let marked = self.marks.get_mut(&session).is_some_and(|m| std::mem::take(&mut m.unread));
         if self.states.get(&session) != Some(&ClaudeState::Waiting) {
-            return false;
+            return marked;
         }
         if self.reporting.contains(&session) {
             let m = self.marks.entry(session).or_default();
@@ -461,7 +466,7 @@ impl SessionManager {
             if m.later_until.is_some_and(|t| t <= now) {
                 m.later_until = None;
             }
-            return *m != before;
+            return marked || *m != before;
         }
         self.states.insert(session, ClaudeState::Idle);
         self.marks.entry(session).or_default().moved(now);
@@ -509,9 +514,10 @@ impl SessionManager {
         crate::attention::of(self.states.get(&session).copied(), blocked, alive, self.marks.get(&session).unwrap_or(&none), now)
     }
 
-    /// The line a list shows under `session`'s name: what its agent asks or last said.
+    /// The line a list shows under `session`'s name: what its agent asks or last said, or the
+    /// last line it gave before the daemon lost it (an update starts the daemon again with none).
     pub fn note_of(&self, session: SessionId) -> Option<&str> {
-        self.attention.get(&session).map(|a| a.note.as_str()).filter(|n| !n.is_empty())
+        self.attention.get(&session).map(|a| a.note.as_str()).filter(|n| !n.is_empty()).or_else(|| self.lines.get(&session).map(String::as_str))
     }
 
     /// Puts `session` away or brings it back. Away, it is seen too.
@@ -531,10 +537,25 @@ impl SessionManager {
         m.seen = true;
     }
 
-    /// Marks `session` unread again, or read.
+    /// Where `session` can be moved from its row's menu (`attention::move_targets`).
+    pub fn move_targets(&self, session: SessionId, now: u64, tomorrow: u64) -> Vec<(&'static str, crate::attention::MoveTo)> {
+        let alive = self.labels.get(&session).is_none_or(|l| l.alive);
+        let blocked = self.attention.get(&session).is_some_and(|a| a.blocked);
+        let marks = self.marks.get(&session).copied().unwrap_or_default();
+        crate::attention::move_targets(self.states.get(&session).copied(), blocked, alive, &marks, now, tomorrow)
+    }
+
+    /// Moves `session` to the section `to` names.
+    pub fn move_to(&mut self, session: SessionId, to: crate::attention::MoveTo) {
+        let m = self.marks.entry(session).or_default();
+        *m = m.moved_to(to);
+    }
+
+    /// Marks `session` unread, whatever it is doing, until the user next looks at it; or read.
     pub fn set_seen(&mut self, session: SessionId, seen: bool) {
         let m = self.marks.entry(session).or_default();
         m.seen = seen;
+        m.unread = !seen;
         if !seen {
             m.done = false;
             m.later_until = None;
@@ -642,6 +663,7 @@ impl SessionManager {
         self.attention.remove(&session);
         self.marks.remove(&session);
         self.agents.remove(&session);
+        self.lines.remove(&session);
         self.restoring.remove(&session);
         self.backlog.remove(&session);
     }
@@ -845,6 +867,10 @@ impl SessionManager {
                     self.note_reporting(*session);
                 }
                 Event::Attention { session, attention } => {
+                    if !attention.note.is_empty() && self.lines.get(session) != Some(&attention.note) {
+                        self.lines.insert(*session, attention.note.clone());
+                        self.marks_changed = true;
+                    }
                     let before = self.attention.insert(*session, attention.clone());
                     // A block is a new turn, as a finished answer is: what the user put away
                     // comes back.
@@ -1076,12 +1102,26 @@ mod tests {
         assert_eq!(m.attention_of(s, 3000), Attention::Unanswered);
         m.set_seen(s, false);
         assert_eq!(m.attention_of(s, 3000), Attention::Unread);
+        assert!(m.acknowledge_at(s, 3000), "a look reads it");
+        assert_eq!(m.attention_of(s, 3000), Attention::Unanswered);
+        // A session doing nothing, or working, may be marked unread too, and a look reads it.
+        m.note_events_at(&[Event::State { session: s, state: ClaudeState::Working }], 3100);
+        m.set_seen(s, false);
+        assert_eq!(m.attention_of(s, 3100), Attention::Unread);
+        assert!(m.acknowledge_at(s, 3200));
+        assert_eq!(m.attention_of(s, 3200), Attention::Working);
+        assert!(!m.acknowledge_at(s, 3300), "nothing left to read");
+        m.note_events_at(&[Event::State { session: s, state: ClaudeState::Waiting }], 3400);
+        m.set_seen(s, false);
         // A later time that comes is told once, so the window repaints as the session returns.
         m.set_later(s, Some(9000));
         assert!(!m.later_came(8000));
         assert!(m.later_came(9500));
         assert!(!m.later_came(9600), "once");
         m.set_seen(s, false);
+        // A line is kept by the window, so one the daemon has lost still shows.
+        m.attention.remove(&s);
+        assert_eq!(m.note_of(s), Some("Allow Bash: ls"));
         // The list at connect fills the attention in.
         m.list_attention();
         let id = rec.requests().len() as u32;

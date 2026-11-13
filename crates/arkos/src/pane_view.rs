@@ -702,9 +702,12 @@ fn render_session_header(root: &mut Root, pane: PaneId, p: &Pane, tabs: &[(Strin
     use crate::sessions_list::RowAction;
     let mut actions: Vec<(&'static str, RowAction)> = Vec::new();
     match attention {
-        Attention::Unanswered => actions.push(("Mark unread", RowAction::Seen(false))),
-        Attention::Later => actions.push(("Back to the list", RowAction::BackToList)),
-        _ => {}
+        Attention::Unread => actions.push(("Mark read", RowAction::Seen(true))),
+        Attention::NeedsYou => {}
+        _ => actions.push(("Mark unread", RowAction::Seen(false))),
+    }
+    if attention == Attention::Later {
+        actions.push(("Back to the list", RowAction::BackToList));
     }
     match attention {
         Attention::Done => actions.push(("Not done", RowAction::Done(false))),

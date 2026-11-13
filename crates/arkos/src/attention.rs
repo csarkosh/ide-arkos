@@ -60,6 +60,8 @@ pub struct Marks {
     pub done: bool,
     /// Put off until this time, in milliseconds since the Unix epoch.
     pub later_until: Option<u64>,
+    /// Marked unread by the user, whatever the session is doing, until they next look at it.
+    pub unread: bool,
     /// When the session's state last changed, in milliseconds since the Unix epoch; 0, unknown.
     pub since: u64,
 }
@@ -69,13 +71,56 @@ impl Marks {
     /// the last one no longer applies. `shown` is whether the user is looking at it this moment
     /// (its tab shown and focused in the window in front), in which case it is seen at once.
     pub fn turned(&mut self, shown: bool, now: u64) {
-        *self = Marks { seen: shown, done: false, later_until: None, since: now };
+        *self = Marks { seen: shown, done: false, later_until: None, unread: false, since: now };
     }
 
     /// The session's state changed at `now` in a way that is no new turn (it went to work).
     pub fn moved(&mut self, now: u64) {
         self.since = now;
     }
+}
+
+/// A section the user moves a session to from its row's "Move to" menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveTo {
+    Unread,
+    Unanswered,
+    /// Put off until this time, in milliseconds since the Unix epoch.
+    Later(u64),
+    Done,
+}
+
+impl Marks {
+    /// The marks with the session moved to `to`: each move sets what puts it there and clears
+    /// what would hold it elsewhere.
+    pub fn moved_to(self, to: MoveTo) -> Marks {
+        let since = self.since;
+        match to {
+            MoveTo::Unread => Marks { seen: false, done: false, later_until: None, unread: true, since },
+            MoveTo::Unanswered => Marks { seen: true, done: false, later_until: None, unread: false, since },
+            MoveTo::Later(until) => Marks { seen: true, done: false, later_until: Some(until), unread: false, since },
+            MoveTo::Done => Marks { seen: true, done: true, later_until: None, unread: false, since },
+        }
+    }
+}
+
+/// The sections a session can be moved to, by name, in the list's order: each that the move
+/// would really put it in (one waiting on nothing cannot be put off, a working one is never
+/// unanswered, a blocked one stays where it is), less the one it is in. `tomorrow` is the time
+/// "tomorrow at 9" names.
+pub fn move_targets(state: Option<ClaudeState>, blocked: bool, alive: bool, marks: &Marks, now: u64, tomorrow: u64) -> Vec<(&'static str, MoveTo)> {
+    let here = of(state, blocked, alive, marks, now);
+    [
+        ("Unread", MoveTo::Unread, Attention::Unread),
+        ("Unanswered", MoveTo::Unanswered, Attention::Unanswered),
+        ("Later: in an hour", MoveTo::Later(now + 3_600_000), Attention::Later),
+        ("Later: tomorrow at 9", MoveTo::Later(tomorrow), Attention::Later),
+        ("Done", MoveTo::Done, Attention::Done),
+    ]
+    .into_iter()
+    .filter(|(_, to, lands)| *lands != here && of(state, blocked, alive, &marks.moved_to(*to), now) == *lands)
+    .map(|(label, to, _)| (label, to))
+    .collect()
 }
 
 /// Where a session stands. `state` is the daemon's (None: never reported), `blocked` its agent's
@@ -87,6 +132,10 @@ pub fn of(state: Option<ClaudeState>, blocked: bool, alive: bool, marks: &Marks,
     // A block overrides whatever the user put away: nothing moves until they act.
     if blocked {
         return Attention::NeedsYou;
+    }
+    // Marked unread by the user: back as new, from wherever it was.
+    if marks.unread {
+        return Attention::Unread;
     }
     if marks.done {
         return Attention::Done;
@@ -150,12 +199,47 @@ mod tests {
         // The next turn drops both marks, and is seen at once when the user is looking at it.
         let mut m = done;
         m.turned(false, NOW);
-        assert_eq!(m, Marks { seen: false, done: false, later_until: None, since: NOW });
+        assert_eq!(m, Marks { seen: false, done: false, later_until: None, unread: false, since: NOW });
         assert_eq!(of(Some(ClaudeState::Waiting), false, true, &m, NOW), Attention::Unread);
         m.turned(true, NOW + 5);
         assert_eq!(of(Some(ClaudeState::Waiting), false, true, &m, NOW), Attention::Unanswered);
         m.moved(NOW + 9);
         assert_eq!((m.seen, m.since), (true, NOW + 9), "going to work keeps the marks and moves the time");
+    }
+
+    #[test]
+    fn a_session_the_user_marks_unread_is_unread_whatever_it_is_doing_but_a_block_still_comes_first() {
+        let marked = Marks { unread: true, ..Marks::default() };
+        for state in [Some(ClaudeState::Idle), Some(ClaudeState::Working), Some(ClaudeState::Waiting), None] {
+            assert_eq!(of(state, false, true, &marked, NOW), Attention::Unread, "{state:?}");
+        }
+        assert_eq!(of(Some(ClaudeState::Waiting), false, true, &Marks { done: true, ..marked }, NOW), Attention::Unread, "out of Done");
+        assert_eq!(of(Some(ClaudeState::Waiting), true, true, &marked, NOW), Attention::NeedsYou);
+        assert_eq!(of(Some(ClaudeState::Idle), false, false, &marked, NOW), Attention::Done, "an ended shell is done");
+        let mut next = marked;
+        next.turned(false, NOW);
+        assert!(!next.unread, "a new turn starts from what the agent says");
+    }
+
+    #[test]
+    fn move_to_offers_the_sections_the_move_would_really_put_a_session_in() {
+        let names = |state, blocked, marks: &Marks| move_targets(state, blocked, true, marks, NOW, NOW + 9).into_iter().map(|(n, _)| n).collect::<Vec<_>>();
+        let fresh = Marks::default();
+        // Finished and unread: anywhere but where it is.
+        assert_eq!(names(Some(ClaudeState::Waiting), false, &fresh), ["Unanswered", "Later: in an hour", "Later: tomorrow at 9", "Done"]);
+        assert_eq!(names(Some(ClaudeState::Waiting), false, &Marks { seen: true, ..fresh }), ["Unread", "Later: in an hour", "Later: tomorrow at 9", "Done"]);
+        // Working or idle: nothing waits to be put off or answered.
+        assert_eq!(names(Some(ClaudeState::Working), false, &fresh), ["Unread", "Done"]);
+        assert_eq!(names(None, false, &fresh), ["Unread", "Done"]);
+        assert_eq!(names(Some(ClaudeState::Idle), false, &Marks { done: true, ..fresh }), ["Unread"], "out of Done, to the one section an idle session can go");
+        // Blocked: it needs the user, and no move changes that.
+        assert!(names(Some(ClaudeState::Waiting), true, &fresh).is_empty());
+        assert!(move_targets(Some(ClaudeState::Waiting), false, false, &fresh, NOW, NOW).is_empty(), "an ended shell is done");
+        // Each move lands where it says.
+        let m = fresh.moved_to(MoveTo::Later(NOW + 5));
+        assert_eq!((of(Some(ClaudeState::Waiting), false, true, &m, NOW), of(Some(ClaudeState::Waiting), false, true, &m, NOW + 5)), (Attention::Later, Attention::Unread));
+        assert_eq!(of(Some(ClaudeState::Waiting), false, true, &Marks { done: true, ..fresh }.moved_to(MoveTo::Unanswered), NOW), Attention::Unanswered);
+        assert_eq!(fresh.moved_to(MoveTo::Done).since, fresh.since, "a move keeps the time of the session's last change");
     }
 
     #[test]

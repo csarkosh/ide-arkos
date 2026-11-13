@@ -12,6 +12,10 @@ use gpui::{div, prelude::*, px, ClickEvent, Context, Div, MouseButton, MouseDown
 use protocol::SessionId;
 use std::time::Instant;
 
+/// The keys a session row's highlight mark is reported under, apart from every other row's.
+const MARK_LIVE: u64 = 0x5E55_1000_0000_0000;
+const MARK_ENDED: u64 = 0x5E55_2000_0000_0000;
+
 /// A session's row: two lines, its name and age over its line.
 pub const ROW_H: f32 = 40.0;
 /// A group's heading.
@@ -75,6 +79,9 @@ pub struct Entry {
     /// What its agent asks or last said; for a session with nothing said, its folder.
     pub line: String,
     pub attention: Attention,
+    /// The group it is listed under: its attention, except for the session the user has just
+    /// chosen, which stays among the unread until they choose another (`hold`).
+    pub group: Attention,
     pub alive: bool,
     /// When its state last changed, in milliseconds since the Unix epoch; 0, unknown.
     pub since: u64,
@@ -88,7 +95,7 @@ pub struct Entry {
 pub fn grouped(entries: Vec<Entry>) -> Vec<(Attention, Vec<Entry>)> {
     let mut groups: Vec<(Attention, Vec<Entry>)> = Vec::new();
     for kind in Attention::ALL {
-        let mut rows: Vec<Entry> = entries.iter().filter(|e| e.attention == kind).cloned().collect();
+        let mut rows: Vec<Entry> = entries.iter().filter(|e| e.group == kind).cloned().collect();
         if rows.is_empty() {
             continue;
         }
@@ -96,6 +103,26 @@ pub fn grouped(entries: Vec<Entry>) -> Vec<(Attention, Vec<Entry>)> {
         groups.push((kind, rows));
     }
     groups
+}
+
+/// The entries with the session the user chose (`held`, and where it stood then) listed where
+/// it stood: one that was unread stays under Unread, read, until another is chosen, so the row
+/// clicked does not move from under the pointer.
+pub fn hold(mut entries: Vec<Entry>, held: Option<(SessionId, Attention)>) -> Vec<Entry> {
+    if let Some((session, Attention::Unread)) = held {
+        for e in entries.iter_mut().filter(|e| e.ended.is_none() && e.session == session && e.attention == Attention::Unanswered) {
+            e.group = Attention::Unread;
+        }
+    }
+    entries
+}
+
+/// What a terminal's title says that its name does not, for a row's second line: Claude Code
+/// titles its terminal with the conversation's topic, behind a glyph that moves while it works.
+/// None for no title, the name itself or the shell's.
+pub fn title_line(title: &str, name: &str, shell: &str) -> Option<String> {
+    let t = title.trim_start_matches(|c: char| !c.is_alphanumeric()).trim();
+    (!t.is_empty() && t != name && t != shell).then(|| t.to_string())
 }
 
 /// The entries a filter leaves: those whose name or line holds every word typed, whatever its
@@ -147,33 +174,28 @@ pub enum RowAction {
     /// A closed session: start it again, or forget it.
     Resume(usize),
     Forget(usize),
+    /// To another section, from "Move to".
+    Move(crate::attention::MoveTo),
 }
 
-/// A session row's menu, by where it stands: reading marks only where there is something to
-/// read, putting off only what waits, and End last, for a shell that still runs.
-pub fn menu_items(attention: Attention, alive: bool) -> Vec<(&'static str, RowAction)> {
+/// A row of a session's menu: something it does, or "Move to", which opens the sections the
+/// session can be moved to beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuEntry {
+    Do(RowAction),
+    MoveTo,
+}
+
+/// A session row's menu: "Move to" when there is a section to move it to (`can_move`), then
+/// Rename and End, for a shell that still runs.
+pub fn menu_items(can_move: bool, alive: bool) -> Vec<(&'static str, MenuEntry)> {
     let mut v = Vec::new();
-    match attention {
-        Attention::Unread => v.push(("Mark read", RowAction::Seen(true))),
-        Attention::Unanswered => v.push(("Mark unread", RowAction::Seen(false))),
-        _ => {}
-    }
-    if matches!(attention, Attention::Unread | Attention::Unanswered) {
-        v.push(("Later: in an hour", RowAction::LaterFor(3_600_000)));
-        v.push(("Later: tomorrow at 9", RowAction::LaterTomorrow));
-    }
-    if attention == Attention::Later {
-        v.push(("Back to the list", RowAction::BackToList));
-    }
-    match (attention, alive) {
-        (Attention::Done, true) => v.push(("Not done", RowAction::Done(false))),
-        // A block cannot be put away: it comes straight back.
-        (Attention::NeedsYou, _) | (_, false) => {}
-        _ => v.push(("Done", RowAction::Done(true))),
+    if can_move {
+        v.push(("Move to", MenuEntry::MoveTo));
     }
     if alive {
-        v.push(("Rename", RowAction::Rename));
-        v.push(("End session", RowAction::End));
+        v.push(("Rename", MenuEntry::Do(RowAction::Rename)));
+        v.push(("End session", MenuEntry::Do(RowAction::End)));
     }
     v
 }
@@ -229,14 +251,21 @@ pub fn entries(root: &Root, now: u64) -> Vec<Entry> {
                 dir.file_name().map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().into_owned())
             };
             let marks = root.sessions.marks.get(session).copied().unwrap_or_default();
+            let line = root
+                .sessions
+                .note_of(*session)
+                .map(str::to_string)
+                .or_else(|| label.and_then(|l| title_line(&l.title, &name, &root.shell_name)))
+                .unwrap_or_else(|| format!("in {}", folder()));
             Some(Entry {
                 ended: None,
                 session: *session,
                 pane,
                 idx,
                 name,
-                line: root.sessions.note_of(*session).map(str::to_string).unwrap_or_else(folder),
+                line,
                 attention: root.sessions.attention_of(*session, now),
+                group: root.sessions.attention_of(*session, now),
                 alive: label.is_none_or(|l| l.alive),
                 since: marks.since,
                 later_until: marks.later_until,
@@ -250,6 +279,7 @@ pub fn entries(root: &Root, now: u64) -> Vec<Entry> {
             name: e.name.clone(),
             line: e.line.clone(),
             attention: Attention::Done,
+            group: Attention::Done,
             alive: false,
             since: e.ended,
             later_until: None,
@@ -258,7 +288,9 @@ pub fn entries(root: &Root, now: u64) -> Vec<Entry> {
 }
 
 /// The list's rows under their groups. `width` is the list's own, for the lines' ellipses.
-pub fn render(root: &mut Root, width: f32, cx: &mut Context<Root>) -> Stateful<Div> {
+/// `report_end`: the list is the sidebar's whole column (the Inbox), so it says where its last
+/// row ends, for an effect that dims what lies under the names.
+pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Root>) -> Stateful<Div> {
     let style = root.effect_style();
     let theme = root.theme.clone();
     let c = &theme.chrome;
@@ -266,7 +298,9 @@ pub fn render(root: &mut Root, width: f32, cx: &mut Context<Root>) -> Stateful<D
     // The Inbox's filter narrows the list, and opens Done so a closed session can be found.
     let query = if root.is_inbox() { root.session_filter.text.clone() } else { String::new() };
     let filtering = !query.trim().is_empty();
-    let groups = grouped(matching(entries(root, now), &query));
+    let groups = grouped(matching(hold(entries(root, now), root.held), &query));
+    let weak = cx.weak_entity();
+    let (highlights, hovered) = (root.effect_highlights(), root.effect_hover);
     let shown = root.focused_session();
     let breath = root.breath.alpha(root.frame_now, motion::reduce_motion());
     let (selected_bg, hover_bg, dim) = (c.tab_active.hsla(), c.tab_inactive.hsla(), c.text_dim.hsla());
@@ -316,19 +350,51 @@ pub fn render(root: &mut Root, width: f32, cx: &mut Context<Root>) -> Stateful<D
             let session = e.session;
             let name_color = if muted { dim } else { c.text.hsla() };
             let line_color = if bold { c.text.hsla() } else { dim };
+            // Under an effect that paints the highlights the row reports a mark, as the
+            // Explorer's rows do, and the effect draws it inside its frame; else the app fills it.
+            let mark_key = match key {
+                RowKey::Live(s) => MARK_LIVE ^ s.0,
+                RowKey::Ended(i) => MARK_ENDED + i as u64,
+            };
+            let is_selected = key == RowKey::Live(session) && shown == Some(session);
+            let state = blocks::HighlightState::of(is_selected, hovered == Some(mark_key)).filter(|_| highlights);
             let row = div()
                 .id(match key {
                     RowKey::Live(s) => ("session-row", s.0 as usize),
                     RowKey::Ended(i) => ("ended-row", i),
                 })
+                .relative()
                 .h(px(ROW_H))
                 .flex_none()
                 .pl(px(pad))
                 .pr(px(8.0))
                 .flex()
                 .gap(px(6.0))
-                .when(key == RowKey::Live(session) && shown == Some(session), |d| d.bg(selected_bg))
-                .hover(move |s| s.bg(hover_bg))
+                .when(is_selected && !highlights, |d| d.bg(selected_bg))
+                .when(!highlights, |d| d.hover(move |s| s.bg(hover_bg)))
+                .when(highlights, |d| {
+                    let w_hover = weak.clone();
+                    d.on_hover(move |over: &bool, _window, cx| {
+                        let _ = w_hover.update(cx, |root, cx| {
+                            root.effect_hover = blocks::hover_after(root.effect_hover, mark_key, *over);
+                            cx.notify();
+                        });
+                    })
+                })
+                .when_some(state, |d, state| {
+                    let w_mark = weak.clone();
+                    d.child(
+                        gpui::canvas(
+                            move |b, _window, cx| {
+                                let rect = crate::tree::Rect { x: f32::from(b.origin.x), y: f32::from(b.origin.y), w: f32::from(b.size.width), h: f32::from(b.size.height) };
+                                let _ = w_mark.update(cx, |root, _| root.effect_marks.push(blocks::Mark { key: mark_key, rect, kind: blocks::Kind::RowHighlight, state }));
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
+                })
                 .cursor_pointer()
                 // The mark's slot, level with the name.
                 .child(div().flex_none().w(px(12.0)).h(px(style.ui(20.0))).flex().items_center().justify_center().children(mark.glyph(&theme, breath)))
@@ -367,12 +433,17 @@ pub fn render(root: &mut Root, width: f32, cx: &mut Context<Root>) -> Stateful<D
                         root.wt_menu.hide(now);
                         root.link_menu.hide(now);
                         root.view_menu.hide(now);
+                        root.session_submenu = false;
                         root.session_menu.show((key, ev.position), now);
                         cx.notify();
                     }),
                 );
             list = list.child(row);
         }
+    }
+    // Where the last row ends: the names stop there, and the scene below them is not dimmed.
+    if report_end {
+        list = list.child(crate::sidebar::sidebar_end_marker(cx));
     }
     list
 }
@@ -418,12 +489,17 @@ pub fn render_filter(root: &mut Root, cx: &mut Context<Root>) -> Div {
 pub fn render_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     let style = root.effect_style();
     let ((key, at), opacity) = root.session_menu.current(root.frame_now).map(|(m, o)| (*m, o))?;
+    let now = now_ms();
+    let targets = match key {
+        RowKey::Live(session) => root.sessions.move_targets(session, now, tomorrow_at_nine(now)),
+        RowKey::Ended(_) => Vec::new(),
+    };
     let items = match key {
         RowKey::Live(session) if root.tree.find_session(session).is_some() => {
             let alive = root.sessions.labels.get(&session).is_none_or(|l| l.alive);
-            menu_items(root.sessions.attention_of(session, now_ms()), alive)
+            menu_items(!targets.is_empty(), alive)
         }
-        RowKey::Ended(i) if i < root.ended.len() => vec![("Resume", RowAction::Resume(i)), ("Remove from the list", RowAction::Forget(i))],
+        RowKey::Ended(i) if i < root.ended.len() => vec![("Resume", MenuEntry::Do(RowAction::Resume(i))), ("Remove from the list", MenuEntry::Do(RowAction::Forget(i)))],
         _ => Vec::new(),
     };
     let session = match key {
@@ -457,17 +533,90 @@ pub fn render_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
         m = m.child(crate::chrome::menu_report(0x14, opacity, cx));
     }
     let (effect_rows, hovered) = (style.menu_edges && style.highlights, root.effect_hover);
-    for (i, (label, action)) in items.into_iter().enumerate() {
-        m = m.child(div().id(("session-menu-row", i)).px(px(10.0)).py(px(4.0)).child(label).when(live, |row| {
+    let sub_open = live && root.session_submenu;
+    let weak = cx.weak_entity();
+    for (i, (label, entry)) in items.into_iter().enumerate() {
+        let is_move = entry == MenuEntry::MoveTo;
+        let row = div()
+            .id(("session-menu-row", i))
+            .relative()
+            .px(px(10.0))
+            .py(px(4.0))
+            .flex()
+            .items_center()
+            .child(div().flex_1().child(label))
+            .when(is_move, |d| d.child(div().flex_none().pl(px(12.0)).text_color(c.text_dim.hsla()).child("\u{25b8}")))
+            // "Move to" stays lit while its sections are open beside it.
+            .when(is_move && sub_open, |d| d.bg(hover))
+            .when(is_move, |d| {
+                let w = weak.clone();
+                d.child(
+                    gpui::canvas(
+                        move |b, _window, cx| {
+                            let _ = w.update(cx, |root, _| root.session_submenu_at = Some(b));
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+            });
+        m = m.child(row.when(live, |row| {
             let key = blocks::menu_row_key(0x14, i);
-            crate::chrome::menu_row_hover(row.cursor_pointer(), key, hovered == Some(key), effect_rows, hover, cx).on_click(cx.listener(move |root, _ev: &ClickEvent, window, cx| {
-                root.session_menu.hide(Instant::now());
-                root.session_row_action(session, action, window, cx);
-                cx.notify();
-            }))
+            crate::chrome::menu_row_hover(row.cursor_pointer(), key, hovered == Some(key), effect_rows, hover, cx)
+                .on_hover(cx.listener(move |root, over: &bool, _window, cx| {
+                    // Over "Move to" its sections open; over another row they close.
+                    if *over && root.session_submenu != is_move {
+                        root.session_submenu = is_move;
+                        cx.notify();
+                    }
+                }))
+                .on_click(cx.listener(move |root, _ev: &ClickEvent, window, cx| {
+                    match entry {
+                        MenuEntry::MoveTo => root.session_submenu = true,
+                        MenuEntry::Do(action) => {
+                            root.session_menu.hide(Instant::now());
+                            root.session_submenu = false;
+                            root.session_row_action(session, action, window, cx);
+                        }
+                    }
+                    cx.notify();
+                }))
         }));
     }
-    Some(m)
+    let mut out = div().absolute().size_full().top_0().left_0().child(m);
+    // The sections, in a card beside "Move to", its top level with that row.
+    if let (true, Some(anchor)) = (sub_open && !targets.is_empty(), root.session_submenu_at) {
+        let mut sub = div()
+            .absolute()
+            .left(anchor.origin.x + anchor.size.width)
+            .top(anchor.origin.y - px(4.0))
+            .min_w(px(180.0))
+            .flex()
+            .flex_col()
+            .py(px(4.0))
+            .map(|d| crate::chrome::menu_frame(d, &root.theme, &style))
+            .font_family(root.ui_family())
+            .text_size(px(style.ui(12.0)))
+            .text_color(c.text.hsla())
+            .occlude()
+            .on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation());
+        for (i, (label, to)) in targets.into_iter().enumerate() {
+            let key = blocks::menu_row_key(0x15, i);
+            sub = sub.child(
+                crate::chrome::menu_row_hover(div().id(("session-move-row", i)).px(px(10.0)).py(px(4.0)).cursor_pointer().child(label), key, hovered == Some(key), effect_rows, hover, cx).on_click(cx.listener(
+                    move |root, _ev: &ClickEvent, window, cx| {
+                        root.session_menu.hide(Instant::now());
+                        root.session_submenu = false;
+                        root.session_row_action(session, RowAction::Move(to), window, cx);
+                        cx.notify();
+                    },
+                )),
+            );
+        }
+        out = out.child(sub);
+    }
+    Some(out)
 }
 
 #[cfg(test)]
@@ -475,7 +624,7 @@ mod tests {
     use super::*;
 
     fn entry(id: u64, attention: Attention, since: u64) -> Entry {
-        Entry { ended: None, session: SessionId(id), pane: 1, idx: 0, name: format!("s{id}"), line: String::new(), attention, alive: true, since, later_until: None }
+        Entry { ended: None, session: SessionId(id), pane: 1, idx: 0, name: format!("s{id}"), line: String::new(), attention, group: attention, alive: true, since, later_until: None }
     }
 
     #[test]
@@ -494,6 +643,27 @@ mod tests {
         assert_eq!(content_height(&groups, false), 4.0 * GROUP_H + 5.0 * ROW_H, "Done is folded");
         assert_eq!(content_height(&groups, true), 4.0 * GROUP_H + 6.0 * ROW_H);
         assert!(grouped(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn the_session_just_chosen_stays_among_the_unread_until_another_is_chosen() {
+        let list = vec![entry(1, Attention::Unanswered, 10), entry(2, Attention::Unread, 20), entry(3, Attention::Unanswered, 5)];
+        let groups = |held| grouped(hold(list.clone(), held)).into_iter().map(|(k, rows)| (k, rows.iter().map(|e| e.session.0).collect::<Vec<_>>())).collect::<Vec<_>>();
+        // Session 1 was unread when chosen: it stays there, read, among the unread.
+        assert_eq!(groups(Some((SessionId(1), Attention::Unread))), vec![(Attention::Unread, vec![2, 1]), (Attention::Unanswered, vec![3])]);
+        assert_eq!(hold(list.clone(), Some((SessionId(1), Attention::Unread)))[0].attention, Attention::Unanswered, "its mark says it was read");
+        // One that was read already, or nothing held: each where it stands.
+        assert_eq!(groups(Some((SessionId(3), Attention::Unanswered))), vec![(Attention::Unread, vec![2]), (Attention::Unanswered, vec![1, 3])]);
+        assert_eq!(groups(None), vec![(Attention::Unread, vec![2]), (Attention::Unanswered, vec![1, 3])]);
+    }
+
+    #[test]
+    fn a_row_s_second_line_is_what_its_terminal_title_adds_to_its_name() {
+        assert_eq!(title_line("✳ Arkos layouts", "IDE", "zsh").as_deref(), Some("Arkos layouts"));
+        assert_eq!(title_line("⠂ Fix the save system", "Game 2", "zsh").as_deref(), Some("Fix the save system"));
+        assert_eq!(title_line("IDE", "IDE", "zsh"), None, "the name again says nothing");
+        assert_eq!(title_line("zsh", "Film", "zsh"), None);
+        assert_eq!(title_line("  ✳  ", "Film", "zsh"), None);
     }
 
     #[test]
@@ -521,16 +691,12 @@ mod tests {
     }
 
     #[test]
-    fn a_row_s_menu_offers_what_fits_where_the_session_stands() {
-        let labels = |a, alive| menu_items(a, alive).into_iter().map(|(l, _)| l).collect::<Vec<_>>();
-        assert_eq!(labels(Attention::Unread, true), ["Mark read", "Later: in an hour", "Later: tomorrow at 9", "Done", "Rename", "End session"]);
-        assert_eq!(labels(Attention::Unanswered, true), ["Mark unread", "Later: in an hour", "Later: tomorrow at 9", "Done", "Rename", "End session"]);
-        assert_eq!(labels(Attention::NeedsYou, true), ["Rename", "End session"], "a block cannot be put away");
-        assert_eq!(labels(Attention::Working, true), ["Done", "Rename", "End session"]);
-        assert_eq!(labels(Attention::Idle, true), ["Done", "Rename", "End session"]);
-        assert_eq!(labels(Attention::Later, true), ["Back to the list", "Done", "Rename", "End session"]);
-        assert_eq!(labels(Attention::Done, true), ["Not done", "Rename", "End session"]);
-        assert!(labels(Attention::Done, false).is_empty(), "a shell that ended has nothing left to do here");
+    fn a_row_s_menu_moves_it_to_another_section_renames_it_or_ends_it() {
+        let labels = |can_move, alive| menu_items(can_move, alive).into_iter().map(|(l, _)| l).collect::<Vec<_>>();
+        assert_eq!(labels(true, true), ["Move to", "Rename", "End session"]);
+        assert_eq!(labels(false, true), ["Rename", "End session"], "nowhere to move it: a blocked session");
+        assert!(labels(false, false).is_empty(), "a shell that ended has nothing left to do here");
+        assert_eq!(menu_items(true, true)[0].1, MenuEntry::MoveTo);
     }
 
     #[test]

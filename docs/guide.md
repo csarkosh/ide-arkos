@@ -20,14 +20,20 @@ or restart `claude` in a tab:
 | the shell exits | ended | a muted title, with the exit code |
 
 Each session also carries a line: what it is doing ("Bash: cargo test"), what it asks ("Allow
-Bash: ffmpeg …", or its question), or the first line of what Claude last said. The sidebar's
+Bash: ffmpeg …", or its question), or the first line of what Claude last said, kept with the
+window so an update does not lose it; a session that has said nothing yet shows its terminal's
+title (Claude Code titles it with the conversation's topic), else the folder it runs in. The sidebar's
 Sessions section lists every session of the window under Needs you, Unread, Unanswered, Working,
 Idle, Later and Done, newest change first, each with its mark, name, age and line; a click goes
 to the session, and Shift+Cmd+U ("next session that needs you") goes to the first that is your
-move: a blocked one, then an unread one, then an unanswered one. Right click a row to end the
-session (as Cmd+W closes its tab, with the same minute in which Shift+Cmd+T brings it back),
-mark it read or unread, put it off (Later: in an hour, or tomorrow at 9; it comes back as unread
-when the time comes) or put it away (Done), or rename it. A session put off or away comes back
+move: a blocked one, then an unread one, then an unanswered one. A row you click
+stays where it was until you choose another session, so an unread one stays under Unread
+(marked read) rather than moving from under the pointer. Right click a row for "Move to", which
+lists the sections the session can go to: Unread (whatever it is doing, until you next look at
+it), Unanswered, Later (in an hour, or tomorrow at 9; it comes back as unread when the time
+comes) and Done, each only where it applies (a working or idle session has nothing to put off,
+and one that needs you stays put). The same menu renames the session or ends it (as Cmd+W
+closes its tab, with the same minute in which Shift+Cmd+T brings it back). A session put off or away comes back
 by itself when Claude next stops or needs you. The Dock icon counts the sessions that need you
 or are unread. A Claude Code session whose tab you close (End, or Cmd+W) is kept under Done,
 the last 50 of them, with its name and line: a click resumes it, in its own shell again within
@@ -77,8 +83,8 @@ and files:
   session opens with `arkos open` joins that session, also while you are looking at another
   one, whose panes are left as they are. Ending a session closes its tabs with it. The divider
   between the session and its panes stays where you put it from one session to the next. The
-  sidebar's top switches between Sessions and Files (the Explorer and Worktrees), and "+ New"
-  starts a session. Under it a filter field narrows the list as you type to the sessions whose
+  sidebar's top switches between Sessions and Files (the Explorer and Worktrees); choosing the
+  Inbox opens the sidebar on Sessions. Under the filter, "+ New session" starts one. Under it a filter field narrows the list as you type to the sessions whose
   name or line holds every word, closed ones under Done included; Enter goes to the first of
   them (a closed one is resumed) and Escape clears it. Every terminal is a session: a terminal opened among a session's panes
   joins the list instead.
@@ -608,7 +614,9 @@ bar is clear over the wash and the page is outlined; on a light theme a page tha
 background of its own sits on the paper with the wash through it, as a document does. Overworld
 keeps the bars inside a tab's body, the address bar among them, in their own colours, and leaves
 a web tab's page and borders as they are without an effect.
-Timo Purple comes with `overworld`: a pixel-art night overworld across the window. Each pane, the sidebar and the title bar are framed like a game's menu window on a night ground, the focused pane in the focus colour; a slow glint goes round the frame of a pane whose Claude session is working, and a "continue" arrow bobs in the corner of one whose session is waiting for you. The tab bars are stone ledges with a lantern on the active tab and a gem that lights on the focused pane, the title bar is a sky with stars and a cloud, and a castle stands at the foot of the sidebar, softened where file names lie over it; the selected row has a bobbing menu cursor. Behind a terminal, and behind a markdown or code file, there is a dusk, a few faint stars and a line of hills. In a file the night belongs to the page: the dusk is at the page's top and the hills at its end, they scroll with the text, and the stretch between them is plain night, so a page that fits its pane shows both and a long one shows each only where you have scrolled to it. New terminal text is typed in like dialogue, each character resolving from chunky pixels in three quick steps. The scene is alive in small ways: stars twinkle, a shooting star falls now and then, clouds drift, the castle's windows gutter and its pennant waves, fireflies rise, a bat crosses the sky and the lanterns flicker. Any theme can
+Timo Purple comes with `overworld`: a pixel-art night overworld across the window. Each pane, the sidebar and the title bar are framed like a game's menu window on a night ground, the focused pane in the focus colour; a slow glint goes round the frame of a pane whose Claude session is working, and a "continue" arrow bobs in the corner of one whose session is waiting for you. The tab bars are stone ledges with a lantern on the active tab and a gem that lights on the focused pane, the title bar is a sky with stars and a cloud, and a castle stands at the foot of the sidebar, drawn at twice its size in a tall sidebar, and
+softened only where names lie over it, coming back to full colour a little below the last of
+them; the selected row has a bobbing menu cursor. Behind a terminal, and behind a markdown or code file, there is a dusk, a few faint stars and a line of hills. In a file the night belongs to the page: the dusk is at the page's top and the hills at its end, they scroll with the text, and the stretch between them is plain night, so a page that fits its pane shows both and a long one shows each only where you have scrolled to it. New terminal text is typed in like dialogue, each character resolving from chunky pixels in three quick steps. The scene is alive in small ways: stars twinkle, a shooting star falls now and then, clouds drift, the castle's windows gutter and its pennant waves, fireflies rise, a bat crosses the sky and the lanterns flicker. Any theme can
 carry any effect, since an effect reads the theme's colours. A theme with its own effect is a
 preset, and the presets are one of the two looks Settings, Appearance offers; the other, Custom,
 puts any theme's colours in any theme's fonts under any effect or none (see [Config](#config)). `arkos effect use

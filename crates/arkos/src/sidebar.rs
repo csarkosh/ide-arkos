@@ -278,12 +278,29 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
                 root.sidebar.inbox_files = true;
                 cx.notify();
             })))
-            .child(div().flex_1())
-            .child(pill("inbox-new", "+ New", false).on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
+    });
+    // "+ New" sits over the list, just above its first group.
+    let new_row = (inbox && !files_view).then(|| {
+        let (dim, text, hover) = (c.text_dim.hsla(), c.text.hsla(), c.tab_inactive.hsla());
+        div()
+            .id("inbox-new")
+            .flex_none()
+            .h(px(22.0))
+            .mx(px(4.0 + style.sidebar_pad))
+            .px(px(6.0))
+            .flex()
+            .items_center()
+            .rounded(px(6.0))
+            .text_size(px(style.ui(12.0)))
+            .text_color(dim)
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover).text_color(text))
+            .child("+ New session")
+            .on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
                 // A new terminal joins the sessions pane, wherever the focus is.
                 let pane = root.tree.inbox_panes().map_or(root.tree.focused, |(sessions, _)| sessions);
                 root.new_terminal_tab(pane, cx);
-            })))
+            }))
     });
     if inbox && !files_view {
         // No Worktrees section to say where it starts.
@@ -306,7 +323,8 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .min_h_0()
         .when(!inbox, |d| d.border_b_1().border_color(if style.ink_borders { c.border.alpha(0.0) } else { c.border.hsla() }))
         .when(inbox && !files_view, |d| d.child(crate::sessions_list::render_filter(root, cx)))
-        .when(inbox && session_groups.is_empty(), |d| d.child(div().px(px(12.0 + style.sidebar_pad)).py(px(8.0)).text_size(px(style.ui(12.0))).text_color(c.text_dim.hsla()).child("No sessions. \u{201c}+ New\u{201d} starts one.")))
+        .children(new_row)
+        .when(inbox && session_groups.is_empty(), |d| d.child(div().px(px(12.0 + style.sidebar_pad)).py(px(8.0)).text_size(px(style.ui(12.0))).text_color(c.text_dim.hsla()).child("No sessions yet.")).child(sidebar_end_marker(cx)))
         .when(!inbox, |d| d.child(
             header("sessions-header", "Sessions", sessions_open)
                 // How many call for the user, said on the header so a closed section still tells.
@@ -317,10 +335,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
                     cx.notify();
                 })),
         ))
-        .when(sessions_open && !session_groups.is_empty() && sessions_h > 0.0, |d| d.child(crate::sessions_list::render(root, width, cx).opacity(sessions_o)))
-        // In the Inbox the list is the column: its names may reach the foot, and say so to an
-        // effect that draws there.
-        .when(inbox && !files_view, |d| d.child(sidebar_end_marker(cx)));
+        .when(sessions_open && !session_groups.is_empty() && sessions_h > 0.0, |d| d.child(crate::sessions_list::render(root, width, inbox, cx).opacity(sessions_o)));
     let (explorer_h, worktrees_h) = sidebar_split(total_h - sessions_h - switch_h, tree_rows as f32 * ROW_H, explorer_open, worktrees_open);
     let explorer = div()
         .flex()
@@ -1283,7 +1298,7 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
 
 /// A zero-height canvas that reports its top as where the sidebar's names end, for an effect's
 /// sidebar foot.
-fn sidebar_end_marker(cx: &mut Context<Root>) -> impl IntoElement {
+pub(crate) fn sidebar_end_marker(cx: &mut Context<Root>) -> impl IntoElement {
     let weak = cx.weak_entity();
     gpui::canvas(
         move |bounds, _window, cx| {

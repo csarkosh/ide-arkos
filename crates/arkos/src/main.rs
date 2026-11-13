@@ -355,6 +355,14 @@ pub struct Root {
     pub inbox: inbox::Sides,
     /// The count the Dock icon shows: this window's sessions that call for the user.
     pub dock_badge: usize,
+    /// The session the user chose and where it stood then. An unread one stays among the
+    /// unread, read, until the user chooses another session, so the row they clicked does not
+    /// move from under the pointer (`sessions_list::hold`).
+    pub held: Option<(SessionId, attention::Attention)>,
+    /// The session menu's "Move to" sections are open beside it, and where that row was last
+    /// drawn, which the sections are placed by.
+    pub session_submenu: bool,
+    pub session_submenu_at: Option<gpui::Bounds<gpui::Pixels>>,
     /// The Worktrees section's focus handle.
     pub wt_focus: FocusHandle,
     /// The pointer is over the Worktrees list (wired by the section's paint): the order holds.
@@ -733,6 +741,7 @@ impl Root {
             None => (sidebar::Sidebar::new(config.sidebar.width, config.sidebar.collapsed, true, true, cx), explorer::Explorer::new(project.clone(), Vec::new(), false), worktrees::Worktrees::new(Vec::new())),
         };
         // No saved layout: the empty screen, not a shell nobody asked for.
+        let saved_lines: HashMap<SessionId, String> = saved.as_ref().map(|w| w.lines.iter().cloned().collect()).unwrap_or_default();
         let saved_marks: HashMap<SessionId, attention::Marks> = saved.as_ref().map(|w| w.marks.iter().copied().collect()).unwrap_or_default();
         let saved_ended = saved.as_ref().map(|w| w.ended.clone()).unwrap_or_default();
         let mut grid_tree = saved.as_ref().and_then(|w| w.grid.clone());
@@ -759,6 +768,7 @@ impl Root {
         let t = &config.terminal;
         sessions.set_defaults(t.scrollback, t.shell.clone(), t.nice);
         sessions.marks = saved_marks;
+        sessions.lines = saved_lines;
         // Every keystroke counts as input for the idle rule. An interceptor runs before dispatch,
         // so keys a find bar or the Escape capture stops still count.
         let weak = cx.weak_entity();
@@ -826,6 +836,9 @@ impl Root {
             session_filter_focus: cx.focus_handle(),
             session_filter_focused: false,
             dock_badge: 0,
+            held: None,
+            session_submenu: false,
+            session_submenu_at: None,
             wt_focus: cx.focus_handle(),
             wt_hovered: false,
             wt_open: wt_open.clone(),
@@ -1988,7 +2001,9 @@ impl Root {
         sides.sort_by_key(|(session, _)| *session);
         let mut owners: Vec<(TabId, TabId)> = self.inbox.owner.iter().map(|(tab, session)| (*tab, *session)).collect();
         owners.sort();
-        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), marks, grid: self.grid_tree.clone(), ended: self.ended.clone(), sides, side_of: self.inbox.shown, side_ratio: Some(self.inbox.ratio), owners, text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone(), folds: self.folds.clone(), diagram_modes: self.diagram_modes.clone() };
+        let mut lines: Vec<(SessionId, String)> = self.sessions.lines.iter().filter(|(s, _)| shown.contains(s)).map(|(s, l)| (*s, l.clone())).collect();
+        lines.sort_by_key(|(s, _)| s.0);
+        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), marks, grid: self.grid_tree.clone(), ended: self.ended.clone(), sides, side_of: self.inbox.shown, side_ratio: Some(self.inbox.ratio), owners, lines, text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone(), folds: self.folds.clone(), diagram_modes: self.diagram_modes.clone() };
         request_save(&self.save_queue, ws, cx);
     }
 
@@ -2121,6 +2136,11 @@ impl Root {
     pub fn acknowledge_focused(&mut self, cx: &mut Context<Self>) {
         self.sync_shown();
         if let Some(s) = self.sessions.shown {
+            // Chosen now, or new again since: where it stands before the look reads it.
+            let before = self.sessions.attention_of(s, sessions::now_ms());
+            if self.held.map(|h| h.0) != Some(s) || before == attention::Attention::Unread {
+                self.held = Some((s, before));
+            }
             if self.sessions.acknowledge(s) {
                 self.save(cx);
                 cx.notify();
@@ -2208,6 +2228,9 @@ impl Root {
             if self.grid_tree.is_none() {
                 self.grid_tree = Some(self.inbox.enter(&mut self.tree));
             }
+            // The Inbox opens on its sessions, the sidebar shown.
+            self.sidebar.inbox_files = false;
+            self.sidebar.set_collapsed(false, Instant::now());
         } else {
             let grid = self.grid_tree.take();
             self.inbox.leave(&mut self.tree, grid);
@@ -2264,6 +2287,10 @@ impl Root {
     pub fn session_row_action(&mut self, session: SessionId, action: sessions_list::RowAction, window: &mut Window, cx: &mut Context<Self>) {
         use sessions_list::RowAction;
         let now = sessions::now_ms();
+        // What the user says of a session is shown at once, wherever the row was held.
+        if self.held.is_some_and(|h| h.0 == session) {
+            self.held = None;
+        }
         match action {
             RowAction::Seen(seen) => self.sessions.set_seen(session, seen),
             RowAction::Done(done) => self.sessions.set_done(session, done),
@@ -2281,6 +2308,7 @@ impl Root {
                     self.close_tab(pane, idx, cx);
                 }
             }
+            RowAction::Move(to) => self.sessions.move_to(session, to),
             RowAction::Resume(i) => self.resume_ended(i, cx),
             RowAction::Forget(i) => {
                 if i < self.ended.len() {
@@ -2296,6 +2324,14 @@ impl Root {
     /// is in front. A turn that begins there is seen as it arrives.
     fn sync_shown(&mut self) {
         self.sessions.shown = if self.window_active { self.focused_session() } else { None };
+        // A held session that has moved on (it works, it needs the user, it is put away) is
+        // listed where it now stands.
+        if let Some((s, _)) = self.held {
+            let now = self.sessions.attention_of(s, sessions::now_ms());
+            if !matches!(now, attention::Attention::Unread | attention::Attention::Unanswered) || self.tree.find_session(s).is_none() {
+                self.held = None;
+            }
+        }
     }
 
     pub fn activate_tab(&mut self, pane: PaneId, idx: usize, cx: &mut Context<Self>) {
