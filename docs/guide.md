@@ -33,7 +33,8 @@ move: a blocked one, then an unread one, then an unanswered one. A row you click
 stays where it was until you choose another session, so an unread one stays under Unread
 (marked read) rather than moving from under the pointer. Right click a row for "Move to", which
 lists every section but the one the session is in: Needs you, Unread, New, Unanswered, Working,
-Quiet, Later (in an hour, or tomorrow at 9) and Done. A moved session stays there until its
+Quiet, "Remind me in 1 hour" and "Remind me tomorrow at 9" (both put it under Later until
+then) and Done. A moved session stays there until its
 agent next does something (a new answer, a prompt, a question or a permission), and then
 follows it again; Unread lasts until you next look at it, and Later until its time, when a
 session that is waiting comes back as unread. The same menu renames the session or ends it (as Cmd+W

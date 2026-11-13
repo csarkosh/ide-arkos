@@ -482,7 +482,7 @@ Things only a person at the screen can check, in order of value:
 - sessions: the sidebar's Sessions section shows every terminal tab under its group, two lines
   a row, the second ending in an ellipsis at any sidebar width; the header closes it and still
   shows the count; a right click on a row opens its menu at the pointer; End closes the tab
-  (Shift+Cmd+T brings it back); Later: in an hour moves it under Later with "in 60 min"; Done
+  (Shift+Cmd+T brings it back); "Remind me in 1 hour" moves it under Later with "in 60 min"; Done
   folds it under Done; Rename edits the name in the tab bar (in the Inbox, in the header);
   Shift+Cmd+U goes to a blocked session first
 - sessions: End on a row whose `claude` has the hooks moves it under Done (open the group);
@@ -508,7 +508,7 @@ Things only a person at the screen can check, in order of value:
 - sessions: a click on an Unread row leaves it under Unread with its dot turned to a ring; a
   click on another row moves it to Unanswered; a right click opens "Move to" with a ▸, and
   hovering it opens the sections beside it, level with the row: every row offers every section
-  but its own (Needs you, Unread, New, Unanswered, Working, Quiet, Later twice, Done), each
+  but its own (Needs you, Unread, New, Unanswered, Working, Quiet, the two "Remind me" times, Done), each
   moves the row at once, and the next thing its agent does takes it back to where that puts it; an idle session's second line is its Claude Code title, not the
   folder; under overworld the selected and hovered rows are drawn inside the sidebar's frame
   with the bobbing cursor, as the Explorer's are

@@ -144,8 +144,9 @@ pub fn move_targets(state: Option<ClaudeState>, blocked: bool, alive: bool, mark
     for kind in Attention::ALL.into_iter().filter(|k| *k != here) {
         match kind {
             Attention::Later => {
-                out.push(("Later: in an hour", MoveTo::Later(now + 3_600_000)));
-                out.push(("Later: tomorrow at 9", MoveTo::Later(tomorrow)));
+                // Said as the reminder it is: the session is put under Later and comes back then.
+                out.push(("Remind me in 1 hour", MoveTo::Later(now + 3_600_000)));
+                out.push(("Remind me tomorrow at 9", MoveTo::Later(tomorrow)));
             }
             other => out.push((other.label(), MoveTo::To(other))),
         }
@@ -269,7 +270,7 @@ mod tests {
     fn move_to_offers_every_section_but_the_one_a_session_is_in_and_each_move_lands_there() {
         let names = |state, blocked, marks: &Marks| move_targets(state, blocked, true, marks, NOW, NOW + 9).into_iter().map(|(n, _)| n).collect::<Vec<_>>();
         let fresh = Marks::default();
-        let all = ["Needs you", "Unread", "New", "Unanswered", "Working", "Quiet", "Later: in an hour", "Later: tomorrow at 9", "Done"];
+        let all = ["Needs you", "Unread", "New", "Unanswered", "Working", "Quiet", "Remind me in 1 hour", "Remind me tomorrow at 9", "Done"];
         let but = |here: &str| all.iter().copied().filter(|n| !n.starts_with(here)).collect::<Vec<_>>();
         assert_eq!(names(None, false, &fresh), but("Quiet"), "an idle session can go anywhere but Quiet");
         assert_eq!(names(Some(ClaudeState::Working), false, &fresh), but("Working"));
@@ -281,7 +282,8 @@ mod tests {
             for blocked in [false, true] {
                 for (label, to) in move_targets(state, blocked, true, &fresh, NOW, NOW + 9) {
                     let lands = of(state, blocked, true, &fresh.moved_to(to), NOW);
-                    assert!(label.starts_with(lands.label()), "{label} from {state:?} (blocked {blocked}) landed in {lands:?}");
+                    let section = if label.starts_with("Remind me") { "Later" } else { label };
+                    assert_eq!(lands.label(), section, "{label} from {state:?} (blocked {blocked})");
                 }
             }
         }
