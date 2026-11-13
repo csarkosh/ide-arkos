@@ -345,11 +345,15 @@ impl Root {
         if elsewhere {
             self.inbox.swap(&mut self.tree, owner);
         }
-        let out = self.direct_open_here(a, cx);
+        let mut out = self.direct_open_here(a, cx);
         if elsewhere {
             match (focus && out.is_ok(), at) {
                 (true, Some((pane, idx))) => self.tree.activate_quiet(pane, idx),
                 _ => {
+                    // Answered now, from the tree that holds the tab: once the side is put
+                    // away again the tab is out of the tree, and nothing loads it until its
+                    // session is chosen.
+                    out = out.and_then(|(answer, _, _, _)| Ok((Answer::Now(self.answer_outcome(&answer, cx)?), Vec::new(), Vec::new(), false)));
                     self.inbox.swap(&mut self.tree, shown);
                     if self.tree.pane(focused).is_some() {
                         self.tree.focused = focused;
@@ -368,6 +372,7 @@ impl Root {
         if !a.wait_for_file && !a.path.exists() {
             return Err(format!("no such file: {}", a.path.display()));
         }
+        let had_side = self.tree.inbox_panes().is_some_and(|(_, side)| side.is_some());
         let step = plan_open_in(&self.tree, &a.path, &a.place, a.reuse, anchor, self.config.layout.placement, self.content)?;
         let before = self.tree.focused;
         let (pane, idx, reused, new_pane) = match step {
@@ -392,11 +397,10 @@ impl Root {
         // tree is regrouped at once, and the tab found again where it landed.
         let (pane, idx, new_pane) = if self.is_inbox() {
             let opened = self.tree.tab_id(pane, idx);
-            let had_side = self.tree.inbox_panes().is_some_and(|(_, side)| side.is_some());
             self.tree.arrange_inbox();
             let at = opened.and_then(|tab| self.tree.panes().into_iter().find_map(|p| self.tree.pane(p)?.ids.iter().position(|t| *t == tab).map(|i| (p, i))));
             let (pane, idx) = at.unwrap_or((pane, idx));
-            (pane, idx, !reused && !had_side && self.tree.inbox_panes().is_some_and(|(_, side)| side == Some(pane)))
+            (pane, idx, !reused && !had_side && self.tree.inbox_panes().is_some_and(|(sessions, _)| sessions != pane))
         } else {
             (pane, idx, new_pane)
         };
@@ -571,7 +575,12 @@ impl Root {
     }
 
     fn direct_outcome(&self, w: &Waiting, cx: &Context<Self>) -> Result<PaneOutcome, String> {
-        match &w.answer {
+        self.answer_outcome(&w.answer, cx)
+    }
+
+    /// What `answer` says of the window as it stands now.
+    fn answer_outcome(&self, answer: &Answer, cx: &Context<Self>) -> Result<PaneOutcome, String> {
+        match answer {
             Answer::Now(outcome) => Ok(outcome.clone()),
             Answer::Opened { tab, reused, reloaded, new_pane } => {
                 let (pane, idx) = self.tree.locate(*tab).ok_or(TAB_CLOSED)?;
