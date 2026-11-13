@@ -507,9 +507,9 @@ Things only a person at the screen can check, in order of value:
   returns; a click on a pane takes the keys back and leaves what was typed
 - sessions: a click on an Unread row leaves it under Unread with its dot turned to a ring; a
   click on another row moves it to Unanswered; a right click opens "Move to" with a ▸, and
-  hovering it opens the sections beside it, level with the row: a quiet row offers Unread and
-  Done, a finished one Unanswered or Unread, Later and Done, a blocked one has no "Move to";
-  each moves the row at once; an idle session's second line is its Claude Code title, not the
+  hovering it opens the sections beside it, level with the row: every row offers every section
+  but its own (Needs you, Unread, New, Unanswered, Working, Quiet, Later twice, Done), each
+  moves the row at once, and the next thing its agent does takes it back to where that puts it; an idle session's second line is its Claude Code title, not the
   folder; under overworld the selected and hovered rows are drawn inside the sidebar's frame
   with the bobbing cursor, as the Explorer's are
 - layouts: switching to Inbox with the sidebar hidden or on Files shows it on Sessions; "+ New

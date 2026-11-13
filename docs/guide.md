@@ -32,10 +32,11 @@ them all while it finds. A click on a row goes to the session, and Shift+Cmd+U (
 move: a blocked one, then an unread one, then an unanswered one. A row you click
 stays where it was until you choose another session, so an unread one stays under Unread
 (marked read) rather than moving from under the pointer. Right click a row for "Move to", which
-lists the sections the session can go to: Unread (whatever it is doing, until you next look at
-it), Unanswered, Later (in an hour, or tomorrow at 9; it comes back as unread when the time
-comes) and Done, each only where it applies (a working or idle session has nothing to put off,
-and one that needs you stays put). The same menu renames the session or ends it (as Cmd+W
+lists every section but the one the session is in: Needs you, Unread, New, Unanswered, Working,
+Quiet, Later (in an hour, or tomorrow at 9) and Done. A moved session stays there until its
+agent next does something (a new answer, a prompt, a question or a permission), and then
+follows it again; Unread lasts until you next look at it, and Later until its time, when a
+session that is waiting comes back as unread. The same menu renames the session or ends it (as Cmd+W
 closes its tab, with the same minute in which Shift+Cmd+T brings it back). A session put off or away comes back
 by itself when Claude next stops or needs you. The Dock icon counts the sessions that need you
 or are unread. A Claude Code session whose tab you close (End, or Cmd+W) is kept under Done,
