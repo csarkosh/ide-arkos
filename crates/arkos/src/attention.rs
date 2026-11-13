@@ -133,25 +133,14 @@ impl Marks {
 }
 
 /// The sections a session can be moved to, by name, in the list's order: every one but the one
-/// it is in, whatever it is doing. None for a shell that has ended. `tomorrow` is the time
-/// "tomorrow at 9" names.
-pub fn move_targets(state: Option<ClaudeState>, blocked: bool, alive: bool, marks: &Marks, now: u64, tomorrow: u64) -> Vec<(&'static str, MoveTo)> {
+/// it is in, whatever it is doing, less Later, which the row menu's "Remind me in" puts it in
+/// with a time. None for a shell that has ended.
+pub fn move_targets(state: Option<ClaudeState>, blocked: bool, alive: bool, marks: &Marks, now: u64) -> Vec<(&'static str, MoveTo)> {
     if !alive {
         return Vec::new();
     }
     let here = of(state, blocked, alive, marks, now);
-    let mut out = Vec::new();
-    for kind in Attention::ALL.into_iter().filter(|k| *k != here) {
-        match kind {
-            Attention::Later => {
-                // Said as the reminder it is: the session is put under Later and comes back then.
-                out.push(("Remind me in 1 hour", MoveTo::Later(now + 3_600_000)));
-                out.push(("Remind me tomorrow at 9", MoveTo::Later(tomorrow)));
-            }
-            other => out.push((other.label(), MoveTo::To(other))),
-        }
-    }
-    out
+    Attention::ALL.into_iter().filter(|k| *k != here && *k != Attention::Later).map(|k| (k.label(), MoveTo::To(k))).collect()
 }
 
 /// Where a session stands. `state` is the daemon's (None: never reported), `blocked` its agent's
@@ -268,22 +257,23 @@ mod tests {
 
     #[test]
     fn move_to_offers_every_section_but_the_one_a_session_is_in_and_each_move_lands_there() {
-        let names = |state, blocked, marks: &Marks| move_targets(state, blocked, true, marks, NOW, NOW + 9).into_iter().map(|(n, _)| n).collect::<Vec<_>>();
+        let names = |state, blocked, marks: &Marks| move_targets(state, blocked, true, marks, NOW).into_iter().map(|(n, _)| n).collect::<Vec<_>>();
         let fresh = Marks::default();
-        let all = ["Needs you", "Unread", "New", "Unanswered", "Working", "Quiet", "Remind me in 1 hour", "Remind me tomorrow at 9", "Done"];
+        // Later is not among them: "Remind me in" puts a session there with a time.
+        let all = ["Needs you", "Unread", "New", "Unanswered", "Working", "Quiet", "Done"];
         let but = |here: &str| all.iter().copied().filter(|n| !n.starts_with(here)).collect::<Vec<_>>();
         assert_eq!(names(None, false, &fresh), but("Quiet"), "an idle session can go anywhere but Quiet");
         assert_eq!(names(Some(ClaudeState::Working), false, &fresh), but("Working"));
         assert_eq!(names(Some(ClaudeState::Waiting), false, &fresh), but("Unread"));
         assert_eq!(names(Some(ClaudeState::Waiting), true, &fresh), but("Needs you"), "a blocked one too");
-        assert!(move_targets(Some(ClaudeState::Waiting), false, false, &fresh, NOW, NOW).is_empty(), "an ended shell is done");
+        assert!(move_targets(Some(ClaudeState::Waiting), false, false, &fresh, NOW).is_empty(), "an ended shell is done");
+        assert_eq!(names(Some(ClaudeState::Waiting), false, &fresh.moved_to(MoveTo::Later(NOW + 9))), but("Later"), "from Later, every section");
         // Every move lands where it says, from any state.
         for state in [None, Some(ClaudeState::Idle), Some(ClaudeState::Working), Some(ClaudeState::Waiting)] {
             for blocked in [false, true] {
-                for (label, to) in move_targets(state, blocked, true, &fresh, NOW, NOW + 9) {
+                for (label, to) in move_targets(state, blocked, true, &fresh, NOW) {
                     let lands = of(state, blocked, true, &fresh.moved_to(to), NOW);
-                    let section = if label.starts_with("Remind me") { "Later" } else { label };
-                    assert_eq!(lands.label(), section, "{label} from {state:?} (blocked {blocked})");
+                    assert_eq!(lands.label(), label, "{label} from {state:?} (blocked {blocked})");
                 }
             }
         }

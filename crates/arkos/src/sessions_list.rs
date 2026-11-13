@@ -1,7 +1,7 @@
 //! The window's sessions as a list sorted by what they ask of the user (layouts spec, "The
 //! session list"): the sidebar's Sessions section in the Grid, and the Inbox's own list. The
 //! grouping, the menu's items and the times are pure and tested; the rows read the root.
-use crate::attention::{self, Attention};
+use crate::attention::{self, Attention, MoveTo};
 use crate::effects::blocks;
 use crate::motion;
 use crate::pane_view::TabMark;
@@ -208,16 +208,25 @@ pub enum RowAction {
 pub enum MenuEntry {
     Do(RowAction),
     MoveTo,
+    RemindMe,
+}
+
+/// A card a session's menu opens beside a row of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sub {
+    Move = 0,
+    Remind = 1,
 }
 
 /// A session row's menu: "Move to" when there is a section to move it to (`can_move`), then
-/// Rename and End, for a shell that still runs.
+/// "Remind me in", Rename and End, for a shell that still runs.
 pub fn menu_items(can_move: bool, alive: bool) -> Vec<(&'static str, MenuEntry)> {
     let mut v = Vec::new();
     if can_move {
         v.push(("Move to", MenuEntry::MoveTo));
     }
     if alive {
+        v.push(("Remind me in", MenuEntry::RemindMe));
         v.push(("Rename", MenuEntry::Do(RowAction::Rename)));
         v.push(("End session", MenuEntry::Do(RowAction::End)));
     }
@@ -235,28 +244,108 @@ pub fn until_text(until: u64, now: u64) -> String {
     }
 }
 
-/// Nine in the morning, local time, on the day after `now` (milliseconds since the Unix epoch).
-pub fn tomorrow_at_nine(now: u64) -> u64 {
+/// `hour:min` local time, `days` days after `now`'s day (milliseconds since the Unix epoch), and
+/// the weekday of `now` (0 Sunday). None when the clock cannot be read.
+fn local_at(now: u64, days: i32, hour: i32, min: i32) -> Option<(u64, i32)> {
     let secs = (now / 1000) as libc::time_t;
     // SAFETY: `localtime_r` and `mktime` read and write only the two values passed, which live
     // for the calls; a zeroed `tm` is a valid value for `localtime_r` to fill.
-    let at = unsafe {
+    unsafe {
         let mut tm: libc::tm = std::mem::zeroed();
         if libc::localtime_r(&secs, &mut tm).is_null() {
-            return now + 24 * 3_600_000;
+            return None;
         }
-        tm.tm_mday += 1;
-        tm.tm_hour = 9;
-        tm.tm_min = 0;
+        let weekday = tm.tm_wday;
+        tm.tm_mday += days;
+        tm.tm_hour = hour;
+        tm.tm_min = min;
         tm.tm_sec = 0;
-        // Let `mktime` decide whether that morning is in daylight time.
+        // Let `mktime` decide whether that day is in daylight time.
         tm.tm_isdst = -1;
-        libc::mktime(&mut tm)
+        let at = libc::mktime(&mut tm);
+        (at >= 0).then_some((at as u64 * 1000, weekday))
+    }
+}
+
+/// Nine in the morning, local time, on the day after `now` (milliseconds since the Unix epoch).
+pub fn tomorrow_at_nine(now: u64) -> u64 {
+    match local_at(now, 1, 9, 0) {
+        Some((at, _)) if at > now => at,
+        _ => now + 24 * 3_600_000,
+    }
+}
+
+/// Nine in the morning, local time, on the Monday after `now`: a week on from a Monday.
+pub fn next_week(now: u64) -> u64 {
+    let weekday = local_at(now, 0, 0, 0).map_or(1, |(_, w)| w);
+    let days = match (8 - weekday) % 7 {
+        0 => 7,
+        d => d,
     };
-    if at <= secs {
-        now + 24 * 3_600_000
-    } else {
-        at as u64 * 1000
+    match local_at(now, days, 9, 0) {
+        Some((at, _)) if at > now => at,
+        _ => now + 7 * 24 * 3_600_000,
+    }
+}
+
+/// The row menu's "Remind me in" times, as Slack offers them: its label, a hint of when it is
+/// (blank for the ones that say it), and the time.
+pub fn remind_options(now: u64) -> Vec<(&'static str, &'static str, u64)> {
+    vec![
+        ("In 20 minutes", "", now + 20 * 60_000),
+        ("In 1 hour", "", now + 3_600_000),
+        ("In 3 hours", "", now + 3 * 3_600_000),
+        ("Tomorrow", "9:00", tomorrow_at_nine(now)),
+        ("Next week", "Mon 9:00", next_week(now)),
+    ]
+}
+
+/// What "Custom" reads as a time from `now`: a span ("45m", "2h", "3d", "1w", spelled out or
+/// not), a clock time ("14:30", "9:15am", "2pm") that is the next one to come, today or
+/// tomorrow, or "tomorrow" (at nine). None for anything else, or nothing at all.
+pub fn parse_when(text: &str, now: u64) -> Option<u64> {
+    let t = text.trim().to_lowercase();
+    if t == "tomorrow" {
+        return Some(tomorrow_at_nine(now));
+    }
+    let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let rest = t[digits.len()..].trim();
+    if let (Ok(n), false) = (digits.parse::<u64>(), digits.is_empty()) {
+        let unit = match rest {
+            "m" | "min" | "mins" | "minute" | "minutes" => Some(60_000),
+            "h" | "hr" | "hrs" | "hour" | "hours" => Some(3_600_000),
+            "d" | "day" | "days" => Some(24 * 3_600_000),
+            "w" | "wk" | "week" | "weeks" => Some(7 * 24 * 3_600_000),
+            _ => None,
+        };
+        if let Some(unit) = unit.filter(|_| n > 0) {
+            return Some(now + n * unit);
+        }
+    }
+    // A clock time: h, h:mm, either with am or pm.
+    let (clock, half) = match t.strip_suffix("am").or_else(|| t.strip_suffix("a.m.")) {
+        Some(c) => (c.trim(), Some(false)),
+        None => match t.strip_suffix("pm").or_else(|| t.strip_suffix("p.m.")) {
+            Some(c) => (c.trim(), Some(true)),
+            None => (t.as_str(), None),
+        },
+    };
+    let (h, m) = match clock.split_once(':') {
+        Some((h, m)) if m.len() == 2 => (h.parse::<i32>().ok()?, m.parse::<i32>().ok()?),
+        None if half.is_some() => (clock.parse::<i32>().ok()?, 0),
+        _ => return None,
+    };
+    let hour = match half {
+        Some(pm) if (1..=12).contains(&h) => (h % 12) + if pm { 12 } else { 0 },
+        None if (0..=23).contains(&h) => h,
+        _ => return None,
+    };
+    if !(0..=59).contains(&m) {
+        return None;
+    }
+    match local_at(now, 0, hour, m) {
+        Some((at, _)) if at > now => Some(at),
+        _ => local_at(now, 1, hour, m).map(|(at, _)| at),
     }
 }
 
@@ -459,7 +548,8 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
                         root.wt_menu.hide(now);
                         root.link_menu.hide(now);
                         root.view_menu.hide(now);
-                        root.session_submenu = false;
+                        root.session_submenu = None;
+                        root.remind_custom = None;
                         root.session_menu.show((key, ev.position), now);
                         cx.notify();
                     }),
@@ -511,13 +601,14 @@ pub fn render_filter(root: &mut Root, cx: &mut Context<Root>) -> Div {
     )
 }
 
-/// The right-click menu of a session's row, while one is open or fading out.
+/// The right-click menu of a session's row, while one is open or fading out: its rows, and beside
+/// "Move to" or "Remind me in" the card of what that row opens.
 pub fn render_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     let style = root.effect_style();
     let ((key, at), opacity) = root.session_menu.current(root.frame_now).map(|(m, o)| (*m, o))?;
     let now = now_ms();
     let targets = match key {
-        RowKey::Live(session) => root.sessions.move_targets(session, now, tomorrow_at_nine(now)),
+        RowKey::Live(session) => root.sessions.move_targets(session, now),
         RowKey::Ended(_) => Vec::new(),
     };
     let items = match key {
@@ -541,28 +632,29 @@ pub fn render_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     let live = root.session_menu.value().is_some();
     let c = &root.theme.chrome;
     let hover = crate::chrome::menu_colors(&root.theme, style.menus).hover;
-    let mut m = div()
-        .absolute()
-        .left(at.x)
-        .top(at.y - px(motion::lift(opacity, motion::MENU_LIFT)))
-        .opacity(opacity)
-        .min_w(px(200.0))
-        .flex()
-        .flex_col()
-        .py(px(4.0))
-        .map(|d| crate::chrome::menu_frame(d, &root.theme, &style))
-        .font_family(root.ui_family())
-        .text_size(px(style.ui(12.0)))
-        .text_color(c.text.hsla())
+    let card = |d: Div| {
+        d.flex()
+            .flex_col()
+            .py(px(4.0))
+            .map(|d| crate::chrome::menu_frame(d, &root.theme, &style))
+            .font_family(root.ui_family())
+            .text_size(px(style.ui(12.0)))
+            .text_color(c.text.hsla())
+    };
+    let mut m = card(div().absolute().left(at.x).top(at.y - px(motion::lift(opacity, motion::MENU_LIFT))).opacity(opacity).min_w(px(200.0)))
         .when(live, |m| m.occlude().on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation()));
     if style.menu_edges {
         m = m.child(crate::chrome::menu_report(0x14, opacity, cx));
     }
     let (effect_rows, hovered) = (style.menu_edges && style.highlights, root.effect_hover);
-    let sub_open = live && root.session_submenu;
+    let open = if live { root.session_submenu } else { None };
     let weak = cx.weak_entity();
     for (i, (label, entry)) in items.into_iter().enumerate() {
-        let is_move = entry == MenuEntry::MoveTo;
+        let sub = match entry {
+            MenuEntry::MoveTo => Some(Sub::Move),
+            MenuEntry::RemindMe => Some(Sub::Remind),
+            MenuEntry::Do(_) => None,
+        };
         let row = div()
             .id(("session-menu-row", i))
             .relative()
@@ -571,15 +663,15 @@ pub fn render_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
             .flex()
             .items_center()
             .child(div().flex_1().child(label))
-            .when(is_move, |d| d.child(div().flex_none().pl(px(12.0)).text_color(c.text_dim.hsla()).child("\u{25b8}")))
-            // "Move to" stays lit while its sections are open beside it.
-            .when(is_move && sub_open, |d| d.bg(hover))
-            .when(is_move, |d| {
+            .when(sub.is_some(), |d| d.child(div().flex_none().pl(px(12.0)).text_color(c.text_dim.hsla()).child("\u{25b8}")))
+            // A row stays lit while what it opens is open beside it.
+            .when(sub.is_some() && open == sub, |d| d.bg(hover))
+            .when_some(sub, |d, which| {
                 let w = weak.clone();
                 d.child(
                     gpui::canvas(
                         move |b, _window, cx| {
-                            let _ = w.update(cx, |root, _| root.session_submenu_at = Some(b));
+                            let _ = w.update(cx, |root, _| root.session_submenu_at[which as usize] = Some(b));
                         },
                         |_, _, _, _| {},
                     )
@@ -591,18 +683,18 @@ pub fn render_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
             let key = blocks::menu_row_key(0x14, i);
             crate::chrome::menu_row_hover(row.cursor_pointer(), key, hovered == Some(key), effect_rows, hover, cx)
                 .on_hover(cx.listener(move |root, over: &bool, _window, cx| {
-                    // Over "Move to" its sections open; over another row they close.
-                    if *over && root.session_submenu != is_move {
-                        root.session_submenu = is_move;
+                    // Over a row with a card it opens; over another row it closes.
+                    if *over && root.session_submenu != sub {
+                        root.session_submenu = sub;
+                        root.remind_custom = None;
                         cx.notify();
                     }
                 }))
                 .on_click(cx.listener(move |root, _ev: &ClickEvent, window, cx| {
                     match entry {
-                        MenuEntry::MoveTo => root.session_submenu = true,
+                        MenuEntry::MoveTo | MenuEntry::RemindMe => root.session_submenu = sub,
                         MenuEntry::Do(action) => {
-                            root.session_menu.hide(Instant::now());
-                            root.session_submenu = false;
+                            root.close_session_menu();
                             root.session_row_action(session, action, window, cx);
                         }
                     }
@@ -611,37 +703,86 @@ pub fn render_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
         }));
     }
     let mut out = div().absolute().size_full().top_0().left_0().child(m);
-    // The sections, in a card beside "Move to", its top level with that row.
-    if let (true, Some(anchor)) = (sub_open && !targets.is_empty(), root.session_submenu_at) {
-        let mut sub = div()
-            .absolute()
-            .left(anchor.origin.x + anchor.size.width)
-            .top(anchor.origin.y - px(4.0))
-            .min_w(px(180.0))
-            .flex()
-            .flex_col()
-            .py(px(4.0))
-            .map(|d| crate::chrome::menu_frame(d, &root.theme, &style))
-            .font_family(root.ui_family())
-            .text_size(px(style.ui(12.0)))
-            .text_color(c.text.hsla())
-            .occlude()
-            .on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation());
-        for (i, (label, to)) in targets.into_iter().enumerate() {
-            let key = blocks::menu_row_key(0x15, i);
-            sub = sub.child(
-                crate::chrome::menu_row_hover(div().id(("session-move-row", i)).px(px(10.0)).py(px(4.0)).cursor_pointer().child(label), key, hovered == Some(key), effect_rows, hover, cx).on_click(cx.listener(
-                    move |root, _ev: &ClickEvent, window, cx| {
-                        root.session_menu.hide(Instant::now());
-                        root.session_submenu = false;
-                        root.session_row_action(session, RowAction::Move(to), window, cx);
-                        cx.notify();
-                    },
-                )),
-            );
+    // The card beside the open row, its top level with that row.
+    let Some(which) = open else { return Some(out) };
+    let Some(anchor) = root.session_submenu_at[which as usize] else { return Some(out) };
+    let mut sub = card(div().absolute().left(anchor.origin.x + anchor.size.width).top(anchor.origin.y - px(4.0)).min_w(px(190.0)))
+        .occlude()
+        .on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation());
+    let pick = |id: (&'static str, usize), label: &'static str, hint: &'static str, to: MoveTo, cx: &mut Context<Root>| {
+        let key = blocks::menu_row_key(if id.0 == "session-move-row" { 0x15 } else { 0x16 }, id.1);
+        crate::chrome::menu_row_hover(
+            div()
+                .id(id)
+                .px(px(10.0))
+                .py(px(4.0))
+                .flex()
+                .items_center()
+                .gap(px(16.0))
+                .cursor_pointer()
+                .child(div().flex_1().child(label))
+                .when(!hint.is_empty(), |d| d.child(div().flex_none().text_color(c.text_dim.hsla()).child(hint))),
+            key,
+            hovered == Some(key),
+            effect_rows,
+            hover,
+            cx,
+        )
+        .on_click(cx.listener(move |root, _ev: &ClickEvent, window, cx| {
+            root.close_session_menu();
+            root.session_row_action(session, RowAction::Move(to), window, cx);
+            cx.notify();
+        }))
+    };
+    match which {
+        Sub::Move => {
+            for (i, (label, to)) in targets.into_iter().enumerate() {
+                sub = sub.child(pick(("session-move-row", i), label, "", to, cx));
+            }
         }
-        out = out.child(sub);
+        Sub::Remind => {
+            for (i, (label, hint, at)) in remind_options(now).into_iter().enumerate() {
+                sub = sub.child(pick(("session-remind-row", i), label, hint, MoveTo::Later(at), cx));
+            }
+            // Custom: a time typed in place, read by `parse_when`.
+            match root.remind_custom.clone() {
+                None => {
+                    let key = blocks::menu_row_key(0x16, 9);
+                    sub = sub.child(
+                        crate::chrome::menu_row_hover(div().id("session-remind-custom").px(px(10.0)).py(px(4.0)).cursor_pointer().child("Custom\u{2026}"), key, hovered == Some(key), effect_rows, hover, cx).on_click(cx.listener(
+                            |root, _ev: &ClickEvent, _window, cx| {
+                                root.remind_custom = Some(crate::line_edit::LineEdit::new());
+                                root.remind_custom_bad = false;
+                                cx.notify();
+                            },
+                        )),
+                    );
+                }
+                Some(edit) => {
+                    let bad = root.remind_custom_bad;
+                    sub = sub.child(
+                        div()
+                            .id("session-remind-field")
+                            .key_context("RemindCustom")
+                            .track_focus(&root.remind_focus)
+                            .mx(px(8.0))
+                            .my(px(2.0))
+                            .h(px(22.0))
+                            .px(px(6.0))
+                            .flex()
+                            .items_center()
+                            .rounded(px(4.0))
+                            .border_1()
+                            .border_color(c.focus_ring.hsla())
+                            .on_key_down(cx.listener(move |root, ev: &gpui::KeyDownEvent, window, cx| root.remind_custom_key(session, &ev.keystroke, window, cx)))
+                            .child(crate::line_edit::render(&edit, "45m, 2h, 3d, 14:30", &root.theme, root.ui_family(), style.ui(12.0))),
+                    );
+                    sub = sub.child(div().px(px(10.0)).pb(px(2.0)).text_size(px(style.ui(11.0))).text_color(c.text_dim.hsla()).child(if bad { "Try 45m, 2h, 3d, 1w, 14:30 or 2pm" } else { "Enter sets it, Escape goes back" }));
+                }
+            }
+        }
     }
+    out = out.child(sub);
     Some(out)
 }
 
@@ -735,8 +876,8 @@ mod tests {
     #[test]
     fn a_row_s_menu_moves_it_to_another_section_renames_it_or_ends_it() {
         let labels = |can_move, alive| menu_items(can_move, alive).into_iter().map(|(l, _)| l).collect::<Vec<_>>();
-        assert_eq!(labels(true, true), ["Move to", "Rename", "End session"]);
-        assert_eq!(labels(false, true), ["Rename", "End session"], "nowhere to move it: a blocked session");
+        assert_eq!(labels(true, true), ["Move to", "Remind me in", "Rename", "End session"]);
+        assert_eq!(labels(false, true), ["Remind me in", "Rename", "End session"]);
         assert!(labels(false, false).is_empty(), "a shell that ended has nothing left to do here");
         assert_eq!(menu_items(true, true)[0].1, MenuEntry::MoveTo);
     }
@@ -756,6 +897,34 @@ mod tests {
         assert_eq!(list[0].session, 100 + MAX_ENDED as u64 + 4, "newest first");
         let line = resume_line(&["env".into(), "CLAUDE_CONFIG_DIR=/Users/me/My Claude".into(), "claude".into(), "--resume".into(), "it's".into()]);
         assert_eq!(String::from_utf8(line).unwrap(), "'env' 'CLAUDE_CONFIG_DIR=/Users/me/My Claude' 'claude' '--resume' 'it'\\''s'\r");
+    }
+
+    #[test]
+    fn remind_me_in_offers_slack_s_times_and_custom_reads_a_span_or_a_clock_time() {
+        let now = 1_794_000_000_000u64;
+        let labels: Vec<&str> = remind_options(now).iter().map(|o| o.0).collect();
+        assert_eq!(labels, ["In 20 minutes", "In 1 hour", "In 3 hours", "Tomorrow", "Next week"]);
+        let at: Vec<u64> = remind_options(now).iter().map(|o| o.2).collect();
+        assert_eq!(&at[..3], &[now + 1_200_000, now + 3_600_000, now + 10_800_000]);
+        assert!(at.windows(2).all(|w| w[0] < w[1]), "each later than the one before: {at:?}");
+        let week = next_week(now);
+        assert!(week > now && week - now <= 8 * 24 * 3_600_000 && week - now > 24 * 3_600_000 - 1);
+        // Spans.
+        for (text, ms) in [("45m", 45 * 60_000), ("45 min", 45 * 60_000), ("2h", 7_200_000), ("2 hours", 7_200_000), ("3d", 3 * 86_400_000), ("1w", 7 * 86_400_000), (" 10 MINUTES ", 600_000)] {
+            assert_eq!(parse_when(text, now), Some(now + ms), "{text}");
+        }
+        // Clock times: the next one to come, within a day.
+        for text in ["14:30", "2:30pm", "2:30 PM", "2pm", "9:15am", "0:05", "12am", "12pm"] {
+            let at = parse_when(text, now).unwrap_or_else(|| panic!("{text}"));
+            assert!(at > now && at - now <= 24 * 3_600_000, "{text}: {}", at.saturating_sub(now));
+        }
+        assert_eq!(parse_when("2pm", now), parse_when("14:00", now));
+        assert_eq!(parse_when("12am", now), parse_when("0:00", now));
+        assert_eq!(parse_when("tomorrow", now), Some(tomorrow_at_nine(now)));
+        // Anything else is refused.
+        for text in ["", "soon", "0m", "-5m", "25:00", "13pm", "9:7", "9:60", "h", "5 parsecs"] {
+            assert_eq!(parse_when(text, now), None, "{text}");
+        }
     }
 
     #[test]

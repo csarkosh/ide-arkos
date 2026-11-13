@@ -546,11 +546,11 @@ impl SessionManager {
     }
 
     /// Where `session` can be moved from its row's menu (`attention::move_targets`).
-    pub fn move_targets(&self, session: SessionId, now: u64, tomorrow: u64) -> Vec<(&'static str, crate::attention::MoveTo)> {
+    pub fn move_targets(&self, session: SessionId, now: u64) -> Vec<(&'static str, crate::attention::MoveTo)> {
         let alive = self.labels.get(&session).is_none_or(|l| l.alive);
         let blocked = self.attention.get(&session).is_some_and(|a| a.blocked);
         let marks = self.marks.get(&session).copied().unwrap_or_default();
-        crate::attention::move_targets(self.states.get(&session).copied(), blocked, alive, &marks, now, tomorrow)
+        crate::attention::move_targets(self.states.get(&session).copied(), blocked, alive, &marks, now)
     }
 
     /// Moves `session` to the section `to` names.

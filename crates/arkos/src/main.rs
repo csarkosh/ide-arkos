@@ -362,8 +362,13 @@ pub struct Root {
     pub held: Option<(SessionId, attention::Attention)>,
     /// The session menu's "Move to" sections are open beside it, and where that row was last
     /// drawn, which the sections are placed by.
-    pub session_submenu: bool,
-    pub session_submenu_at: Option<gpui::Bounds<gpui::Pixels>>,
+    pub session_submenu: Option<sessions_list::Sub>,
+    pub session_submenu_at: [Option<gpui::Bounds<gpui::Pixels>>; 2],
+    /// "Remind me in"'s Custom field while it is open, whether what was typed last could not be
+    /// read as a time, and the field's focus.
+    pub remind_custom: Option<line_edit::LineEdit>,
+    pub remind_custom_bad: bool,
+    pub remind_focus: FocusHandle,
     /// The Worktrees section's focus handle.
     pub wt_focus: FocusHandle,
     /// The pointer is over the Worktrees list (wired by the section's paint): the order holds.
@@ -839,8 +844,11 @@ impl Root {
             session_filter_focused: false,
             dock_badge: 0,
             held: None,
-            session_submenu: false,
-            session_submenu_at: None,
+            session_submenu: None,
+            session_submenu_at: [None, None],
+            remind_custom: None,
+            remind_custom_bad: false,
+            remind_focus: cx.focus_handle(),
             wt_focus: cx.focus_handle(),
             wt_hovered: false,
             wt_open: wt_open.clone(),
@@ -2215,6 +2223,41 @@ impl Root {
             line_edit::Edit::Changed => cx.notify(),
             _ => {}
         }
+    }
+
+    /// Closes a session row's menu and whatever it has open beside it.
+    pub fn close_session_menu(&mut self) {
+        self.session_menu.hide(Instant::now());
+        self.session_submenu = None;
+        self.remind_custom = None;
+    }
+
+    /// A key in "Remind me in"'s Custom field: Enter sets the reminder when what is typed reads
+    /// as a time (`sessions_list::parse_when`) and says how to write one when it does not;
+    /// Escape goes back to the list of times.
+    pub fn remind_custom_key(&mut self, session: SessionId, ks: &gpui::Keystroke, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(edit) = self.remind_custom.as_mut() else { return };
+        if ks.modifiers.platform && ks.key == "v" {
+            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                edit.insert_str(text.lines().next().unwrap_or(""));
+                cx.notify();
+            }
+            return;
+        }
+        match edit.handle(ks) {
+            line_edit::Edit::Submit | line_edit::Edit::SubmitBack => match sessions_list::parse_when(&edit.text, sessions::now_ms()) {
+                Some(at) => {
+                    self.close_session_menu();
+                    self.session_row_action(session, sessions_list::RowAction::Move(attention::MoveTo::Later(at)), window, cx);
+                }
+                None => self.remind_custom_bad = true,
+            },
+            line_edit::Edit::Cancel => self.remind_custom = None,
+            line_edit::Edit::Changed => self.remind_custom_bad = false,
+            _ => {}
+        }
+        cx.stop_propagation();
+        cx.notify();
     }
 
     /// Whether the window is in the Inbox layout.
@@ -4855,6 +4898,8 @@ impl Render for Root {
             Some(self.url_prompt_focus.clone())
         } else if self.tab_rename.is_some() {
             Some(self.tab_rename_focus.clone())
+        } else if self.remind_custom.is_some() && self.session_menu.value().is_some() {
+            Some(self.remind_focus.clone())
         } else if self.session_filter_focused && self.is_inbox() {
             Some(self.session_filter_focus.clone())
         } else if self.wt_focused {
