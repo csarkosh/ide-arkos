@@ -98,6 +98,22 @@ pub fn grouped(entries: Vec<Entry>) -> Vec<(Attention, Vec<Entry>)> {
     groups
 }
 
+/// The entries a filter leaves: those whose name or line holds every word typed, whatever its
+/// case. A blank filter leaves them all.
+pub fn matching(entries: Vec<Entry>, query: &str) -> Vec<Entry> {
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    if words.is_empty() {
+        return entries;
+    }
+    entries
+        .into_iter()
+        .filter(|e| {
+            let text = format!("{} {}", e.name, e.line).to_lowercase();
+            words.iter().all(|w| text.contains(w.as_str()))
+        })
+        .collect()
+}
+
 /// The session to go to for "the next session that needs you": the first of Needs you, then of
 /// Unread, then of Unanswered that is not `current`, and `current` itself when it is the only
 /// one. None when no session is the user's move.
@@ -247,13 +263,19 @@ pub fn render(root: &mut Root, width: f32, cx: &mut Context<Root>) -> Stateful<D
     let theme = root.theme.clone();
     let c = &theme.chrome;
     let now = now_ms();
-    let groups = grouped(entries(root, now));
+    // The Inbox's filter narrows the list, and opens Done so a closed session can be found.
+    let query = if root.is_inbox() { root.session_filter.text.clone() } else { String::new() };
+    let filtering = !query.trim().is_empty();
+    let groups = grouped(matching(entries(root, now), &query));
     let shown = root.focused_session();
     let breath = root.breath.alpha(root.frame_now, motion::reduce_motion());
     let (selected_bg, hover_bg, dim) = (c.tab_active.hsla(), c.tab_inactive.hsla(), c.text_dim.hsla());
-    let done_open = root.sessions_done_open;
+    let done_open = root.sessions_done_open || filtering;
     let pad = 10.0 + style.sidebar_pad;
     let mut list = div().id("session-rows").flex_1().min_h_0().overflow_y_scroll().flex().flex_col();
+    if filtering && groups.is_empty() {
+        list = list.child(div().px(px(pad)).py(px(8.0)).text_size(px(style.ui(12.0))).text_color(dim).child("No session matches."));
+    }
     for (kind, rows) in groups {
         let folded = kind == Attention::Done && !done_open;
         let heading = div()
@@ -355,6 +377,43 @@ pub fn render(root: &mut Root, width: f32, cx: &mut Context<Root>) -> Stateful<D
     list
 }
 
+/// The Inbox's filter field over its list: a click puts the keys in it, typing narrows the
+/// list to the sessions whose name or line holds every word, Enter goes to the first of them
+/// and Escape clears it.
+pub fn render_filter(root: &mut Root, cx: &mut Context<Root>) -> Div {
+    let style = root.effect_style();
+    let theme = root.theme.clone();
+    let c = &theme.chrome;
+    let focused = root.session_filter_focused;
+    div().flex_none().px(px(8.0 + style.sidebar_pad)).pr(px(8.0)).pb(px(6.0)).child(
+        div()
+            .id("session-filter")
+            .key_context("SessionFilter")
+            .track_focus(&root.session_filter_focus)
+            .h(px(24.0))
+            .px(px(8.0))
+            .flex()
+            .items_center()
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(if focused { c.focus_ring.hsla() } else { c.border.hsla() })
+            .overflow_hidden()
+            .cursor_text()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|root, _: &MouseDownEvent, _window, cx| {
+                    cx.stop_propagation();
+                    root.sidebar_focused = false;
+                    root.wt_focused = false;
+                    root.session_filter_focused = true;
+                    cx.notify();
+                }),
+            )
+            .on_key_down(cx.listener(|root, ev: &gpui::KeyDownEvent, _window, cx| root.session_filter_key(&ev.keystroke, cx)))
+            .child(crate::line_edit::render_with(&root.session_filter, "Filter sessions", &theme, root.ui_family(), style.ui(12.0), focused)),
+    )
+}
+
 /// The right-click menu of a session's row, while one is open or fading out.
 pub fn render_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     let style = root.effect_style();
@@ -435,6 +494,19 @@ mod tests {
         assert_eq!(content_height(&groups, false), 4.0 * GROUP_H + 5.0 * ROW_H, "Done is folded");
         assert_eq!(content_height(&groups, true), 4.0 * GROUP_H + 6.0 * ROW_H);
         assert!(grouped(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn the_filter_keeps_the_sessions_whose_name_or_line_holds_every_word() {
+        let named = |id: u64, name: &str, line: &str| Entry { name: name.into(), line: line.into(), ..entry(id, Attention::Working, 0) };
+        let all = vec![named(1, "Film", "Allow Bash: ffmpeg -i shot-04.mov"), named(2, "Phone Farm", "Which device pool should I use?"), named(3, "Game 2", "The save system passes all 14 tests.")];
+        let ids = |q: &str| matching(all.clone(), q).iter().map(|e| e.session.0).collect::<Vec<_>>();
+        assert_eq!(ids(""), [1, 2, 3]);
+        assert_eq!(ids("   "), [1, 2, 3]);
+        assert_eq!(ids("farm"), [2]);
+        assert_eq!(ids("FFMPEG"), [1], "a line matches too, whatever the case");
+        assert_eq!(ids("game tests"), [3], "every word, in any order and from either line");
+        assert_eq!(ids("game ffmpeg"), Vec::<u64>::new());
     }
 
     #[test]

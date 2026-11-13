@@ -78,7 +78,9 @@ and files:
   one, whose panes are left as they are. Ending a session closes its tabs with it. The divider
   between the session and its panes stays where you put it from one session to the next. The
   sidebar's top switches between Sessions and Files (the Explorer and Worktrees), and "+ New"
-  starts a session. Every terminal is a session: a terminal opened among a session's panes
+  starts a session. Under it a filter field narrows the list as you type to the sessions whose
+  name or line holds every word, closed ones under Done included; Enter goes to the first of
+  them (a closed one is resumed) and Escape clears it. Every terminal is a session: a terminal opened among a session's panes
   joins the list instead.
 
 Switching layouts moves nothing out of the window: the same sessions and files are regrouped,

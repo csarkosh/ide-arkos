@@ -164,7 +164,7 @@ sessions from other windows.
 
 ## As built, 13 November
 
-Built and tested headless: the placement, the attention (hooks, daemon, marks), the list in
+Built and tested headless: the filter field, the placement, the attention (hooks, daemon, marks), the list in
 both layouts with its menu, Shift+Cmd+U, the Dock count, closed Claude Code sessions kept
 under Done and resumed, the layout switch and the Inbox's window, Settings' Layout section.
 
@@ -173,7 +173,6 @@ Not built yet, with why:
 - **The macOS notification.** It can be posted only from the bundled app, so it cannot be
   tried from a `target` build; it waits for a pass with a local bundle (`packaging/test.sh`).
   The `layout.notify` key is not in the config until then.
-- **The filter field** over the Inbox's list.
 
 After Cyrus tried it, the same day: "when i click on a new session, all the tab panes should
 be replaced. they only exist within the session." So the side is the session's own

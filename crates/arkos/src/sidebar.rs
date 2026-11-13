@@ -305,6 +305,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .h(px(sessions_h))
         .min_h_0()
         .when(!inbox, |d| d.border_b_1().border_color(if style.ink_borders { c.border.alpha(0.0) } else { c.border.hsla() }))
+        .when(inbox && !files_view, |d| d.child(crate::sessions_list::render_filter(root, cx)))
         .when(inbox && session_groups.is_empty(), |d| d.child(div().px(px(12.0 + style.sidebar_pad)).py(px(8.0)).text_size(px(style.ui(12.0))).text_color(c.text_dim.hsla()).child("No sessions. \u{201c}+ New\u{201d} starts one.")))
         .when(!inbox, |d| d.child(
             header("sessions-header", "Sessions", sessions_open)

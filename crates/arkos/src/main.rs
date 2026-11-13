@@ -342,6 +342,11 @@ pub struct Root {
     pub resume_input: HashMap<TabId, Vec<u8>>,
     /// Whether the session list's Done group shows its rows. Not saved: it opens folded.
     pub sessions_done_open: bool,
+    /// The Inbox's filter over its session list: what is typed, its focus, and whether the
+    /// keys are in it.
+    pub session_filter: line_edit::LineEdit,
+    pub session_filter_focus: FocusHandle,
+    pub session_filter_focused: bool,
     /// The Grid layout's arrangement while the Inbox layout is on (`Tree::regridded` brings it
     /// back); None while the Grid is on.
     pub grid_tree: Option<Tree>,
@@ -817,6 +822,9 @@ impl Root {
             ended: saved_ended,
             resume_input: HashMap::new(),
             sessions_done_open: false,
+            session_filter: line_edit::LineEdit::new(),
+            session_filter_focus: cx.focus_handle(),
+            session_filter_focused: false,
             dock_badge: 0,
             wt_focus: cx.focus_handle(),
             wt_hovered: false,
@@ -2088,6 +2096,7 @@ impl Root {
     pub fn focus_pane(&mut self, pane: PaneId, cx: &mut Context<Self>) {
         self.sidebar_focused = false;
         self.wt_focused = false;
+        self.session_filter_focused = false;
         if self.tree.pane(pane).is_none() {
             return;
         }
@@ -2152,6 +2161,38 @@ impl Root {
         }
         self.save(cx);
         cx.notify();
+    }
+
+    /// A key in the Inbox's filter field: typing narrows the list, Enter goes to the first
+    /// session left (a closed one is resumed), Escape clears the filter; either hands the keys
+    /// back to the panes.
+    pub fn session_filter_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
+        if ks.modifiers.platform && ks.key == "v" {
+            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                self.session_filter.insert_str(text.lines().next().unwrap_or(""));
+                cx.notify();
+            }
+            return;
+        }
+        match self.session_filter.handle(ks) {
+            line_edit::Edit::Submit | line_edit::Edit::SubmitBack => {
+                let found = sessions_list::matching(sessions_list::entries(self, sessions::now_ms()), &self.session_filter.text);
+                let first = sessions_list::grouped(found).into_iter().flat_map(|(_, rows)| rows).next();
+                self.session_filter_focused = false;
+                match first.map(|e| (e.ended, e.session)) {
+                    Some((Some(i), _)) => self.resume_ended(i, cx),
+                    Some((None, session)) => self.show_session(session, cx),
+                    None => cx.notify(),
+                }
+            }
+            line_edit::Edit::Cancel => {
+                self.session_filter.clear();
+                self.session_filter_focused = false;
+                cx.notify();
+            }
+            line_edit::Edit::Changed => cx.notify(),
+            _ => {}
+        }
     }
 
     /// Whether the window is in the Inbox layout.
@@ -2260,6 +2301,7 @@ impl Root {
     pub fn activate_tab(&mut self, pane: PaneId, idx: usize, cx: &mut Context<Self>) {
         self.sidebar_focused = false;
         self.wt_focused = false;
+        self.session_filter_focused = false;
         self.tree.activate(pane, idx);
         self.drop_unseen_view_menu();
         self.acknowledge_focused(cx);
@@ -2929,6 +2971,7 @@ impl Root {
         }
         self.sidebar_focused = false;
         self.wt_focused = false;
+        self.session_filter_focused = false;
         cx.notify();
     }
 
@@ -3055,6 +3098,7 @@ impl Root {
         if (self.sidebar_focused || self.wt_focused) && !keeps_tree_focus(&cmd) {
             self.sidebar_focused = false;
             self.wt_focused = false;
+            self.session_filter_focused = false;
             cx.notify();
         }
         match cmd {
@@ -3258,6 +3302,7 @@ impl Root {
                 if self.sidebar.collapsed {
                     self.sidebar_focused = false;
                     self.wt_focused = false;
+                    self.session_filter_focused = false;
                 }
                 // The panes change width: measurements taken before are stale, as on a resize.
                 self.grids.clear();
@@ -3276,6 +3321,7 @@ impl Root {
                 }
                 self.sidebar_focused = true;
                 self.wt_focused = false;
+                self.session_filter_focused = false;
                 cx.notify();
             }
             NextCallingSession => self.next_calling_session(cx),
@@ -4318,6 +4364,7 @@ impl Root {
         if let Some(pane) = focus {
             self.sidebar_focused = false;
             self.wt_focused = false;
+            self.session_filter_focused = false;
             self.tree.focus(pane);
         }
     }
@@ -4766,6 +4813,8 @@ impl Render for Root {
             Some(self.url_prompt_focus.clone())
         } else if self.tab_rename.is_some() {
             Some(self.tab_rename_focus.clone())
+        } else if self.session_filter_focused && self.is_inbox() {
+            Some(self.session_filter_focus.clone())
         } else if self.wt_focused {
             Some(self.wt_focus.clone())
         } else if self.sidebar_focused && self.new_file.value().is_some() {
