@@ -258,13 +258,20 @@ pub struct AppearanceConfig {
     pub look: Option<Look>,
 }
 
-/// The custom look: any theme's colours (and fonts) under any effect.
+/// What `custom.font` says for no theme's fonts: the config's own `[font] family`.
+pub const PLAIN_FONT: &str = "default";
+
+/// The custom look: any theme's colours in any theme's fonts under any effect.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CustomConfig {
     /// A theme's name. Unset, the colours are the preset the mode picks.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// A theme's name, for its fonts, or `default` for none of a theme's (`PLAIN_FONT`). Unset,
+    /// the fonts are the colour's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font: Option<String>,
     /// `none`, an effect's name, or `theme` for the colour's own. Unset, the old `effect.name`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effect: Option<EffectChoice>,
@@ -341,6 +348,12 @@ impl Config {
             (Look::Custom, Some(color)) => color,
             _ => crate::theme::pick_name(self.appearance.mode, system_is_dark, &self.theme),
         }
+    }
+
+    /// The custom look's font, while that look is in force and names one: a theme's name, or
+    /// `PLAIN_FONT`. `None`: the fonts are those of the theme showing, as under the presets.
+    pub fn font_choice(&self) -> Option<&str> {
+        self.custom.font.as_deref().filter(|_| self.look() == Look::Custom)
     }
 
     /// The effect in force: each preset's own, or the custom look's (the old `effect.name` when
@@ -536,13 +549,13 @@ pub fn retire_navy_light(text: &str, themes_dir: &Path) -> Option<String> {
 }
 
 /// A built-in theme was renamed (`theme::RENAMED`). When `text` names one by its old name as
-/// `theme.light`, `theme.dark` or `custom.color` and the user has no theme file of that old name in `themes_dir`
+/// `theme.light`, `theme.dark`, `custom.color` or `custom.font` and the user has no theme file of that old name in `themes_dir`
 /// (such a file is theirs and keeps its name), returns the text with the name now, every comment
 /// kept. `None` when there is nothing to change or the text is not TOML.
 pub fn rename_themes(text: &str, themes_dir: &Path) -> Option<String> {
     let doc = text.parse::<toml_edit::DocumentMut>().ok()?;
     let mut edits: Vec<(&[&str], toml_edit::Value)> = Vec::new();
-    let named: [&[&str]; 3] = [&["theme", "dark"], &["theme", "light"], &["custom", "color"]];
+    let named: [&[&str]; 4] = [&["theme", "dark"], &["theme", "light"], &["custom", "color"], &["custom", "font"]];
     for path in named {
         let Some(old) = doc.get(path[0]).and_then(|t| t.as_table_like()).and_then(|t| t.get(path[1])).and_then(|v| v.as_str()) else { continue };
         let now = crate::theme::current_name(old);
@@ -851,18 +864,20 @@ run_unfocused = true
 # offered: both fail their controlled trials.
 mode = "system"
 # Which of the two looks is in force. "presets": the mode above picks the dark or the light
-# preset of [theme], each a finished look with its own effect and fonts. "custom": the colour and
-# the effect of [custom], chosen apart. Settings, Appearance switches between them; neither
+# preset of [theme], each a finished look with its own effect and fonts. "custom": the colour,
+# the font and the effect of [custom], chosen apart. Settings, Appearance switches between them; neither
 # forgets its choices. Commented out, a config says which by its older keys: the presets unless
 # [effect] name puts one effect over every theme.
 # look = "presets"
 
 [custom]
-# The custom look: any theme's colours and fonts (a built-in's name or a file's in the themes
-# folder) under any effect ("none", a built-in or a folder in ~/.config/arkos/effects/, or
-# "theme" for the colour's own). It does not follow macOS's light and dark. Both lines are
-# commented out until Settings or `arkos effect use` writes them.
+# The custom look: any theme's colours (a built-in's name or a file's in the themes folder), in
+# any theme's fonts (a theme's name, or "default" for the [font] family above; commented out,
+# the colour's own), under any effect ("none", a built-in or a folder in
+# ~/.config/arkos/effects/, or "theme" for the colour's own). It does not follow macOS's light
+# and dark. The lines are commented out until Settings or `arkos effect use` writes them.
 # color = "navy"
+# font = "default"
 # effect = "none"
 
 [recovery]
@@ -966,10 +981,21 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_renamed_theme_is_moved_as_a_custom_colour_too() {
+    fn a_renamed_theme_is_moved_as_a_custom_colour_and_font_too() {
         let dir = tempfile::tempdir().unwrap();
-        let moved = rename_themes("[custom]\ncolor = \"navy-runic\" # mine\n", dir.path()).unwrap();
-        assert_eq!(moved, "[custom]\ncolor = \"tokyo-rain\" # mine\n");
+        let moved = rename_themes("[custom]\ncolor = \"navy-runic\" # mine\nfont = \"navy-runic\"\n", dir.path()).unwrap();
+        assert_eq!(moved, "[custom]\ncolor = \"tokyo-rain\" # mine\nfont = \"tokyo-rain\"\n");
+    }
+
+    #[test]
+    fn the_custom_look_names_its_font_apart_from_its_colour_and_only_while_it_is_in_force() {
+        let custom = |font: &str| parse(&format!("[appearance]\nlook = \"custom\"\n[custom]\ncolor = \"material\"\n{font}effect = \"overworld\"\n")).unwrap();
+        assert_eq!(custom("font = \"timo-purple\"\n").font_choice(), Some("timo-purple"));
+        assert_eq!(custom("font = \"default\"\n").font_choice(), Some(PLAIN_FONT));
+        assert_eq!(custom("").font_choice(), None, "unset, the colour's own fonts");
+        // Under the presets each theme draws in its own fonts, and the custom font is kept.
+        let c = parse("[appearance]\nlook = \"presets\"\n[custom]\nfont = \"timo-purple\"\n").unwrap();
+        assert_eq!((c.font_choice(), c.custom.font.as_deref()), (None, Some("timo-purple")));
     }
 
     #[test]

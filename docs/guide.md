@@ -554,7 +554,7 @@ a web tab's page and borders as they are without an effect.
 Timo Purple comes with `overworld`: a pixel-art night overworld across the window. Each pane, the sidebar and the title bar are framed like a game's menu window on a night ground, the focused pane in the focus colour; a slow glint goes round the frame of a pane whose Claude session is working, and a "continue" arrow bobs in the corner of one whose session is waiting for you. The tab bars are stone ledges with a lantern on the active tab and a gem that lights on the focused pane, the title bar is a sky with stars and a cloud, and a castle stands at the foot of the sidebar, softened where file names lie over it; the selected row has a bobbing menu cursor. Behind a terminal, and behind a markdown or code file, there is a dusk, a few faint stars and a line of hills. In a file the night belongs to the page: the dusk is at the page's top and the hills at its end, they scroll with the text, and the stretch between them is plain night, so a page that fits its pane shows both and a long one shows each only where you have scrolled to it. New terminal text is typed in like dialogue, each character resolving from chunky pixels in three quick steps. The scene is alive in small ways: stars twinkle, a shooting star falls now and then, clouds drift, the castle's windows gutter and its pennant waves, fireflies rise, a bat crosses the sky and the lanterns flicker. Any theme can
 carry any effect, since an effect reads the theme's colours. A theme with its own effect is a
 preset, and the presets are one of the two looks Settings, Appearance offers; the other, Custom,
-puts any theme's colours under any effect or none (see [Config](#config)). `arkos effect use
+puts any theme's colours in any theme's fonts under any effect or none (see [Config](#config)). `arkos effect use
 <name>` does the same from a shell. Each preset's own effect: `watercolor`
 for Peach Watercolor and Lavender Watercolor, `runic` for Matrix and Tokyo Rain, `material` for Material and Lavender Material, `notebook` for Composition Notebook, `overworld` for Timo Purple and Arabia Solar, and none for Navy (the default).
 Effects stay out of About, Settings, Keybindings and the chooser, which keep their plain look.
@@ -765,12 +765,14 @@ window, as Keybindings (Cmd+/) does.
     asks "Replace the existing {name}?" before overwriting a theme file or shadowing a built-in
     of that name. A new preset is set as the dark or light one by the mode in force. A
     configured preset that is neither built in nor a file is listed first as "(not installed)".
-  - Custom: Color and Effect side by side. Color lists every theme, the dark ones first, each
-    marked dark or light: its colours are used. Effect lists "None" and every effect
-    installed, built in or a folder. The fonts go with the effect when it names its own, as
-    `overworld` (its pixel face) and `notebook` (its handwriting) do, so they stay as you change
-    the colour; under an effect that names none, or under None, they are the colour's. In the
-    Effect list, one that does not load is "(invalid)" and one named that
+  - Custom: Color on the left, Font and under it Effect on the right, each chosen apart. Color
+    lists every theme, the dark ones first, each marked dark or light: its colours are used.
+    Font lists "Default" (the Text section's family) and each set of fonts a theme names, by
+    its families ("Baskerville, Optima, PT Mono"; the pixel face Departure Mono; a set shared
+    by two themes is one row); a set this Mac has none of is "(not installed)". The font stays
+    as you change the colour. To offer your own, name the families in a theme file's `[font]`
+    table and add it with "Add color…". Effect lists "None" and every effect
+    installed, built in or a folder; one that does not load is "(invalid)" and one named that
     is missing "(not installed)". The custom look is one look: it does not follow macOS's
     light and dark. The first time it is put in force it starts as what is on screen. "Add
     color…" takes a theme's `.toml` file and "Add effect…" an effect's folder (copied into the
@@ -1034,7 +1036,7 @@ that does not parse keeps the last good theme on screen and puts the error in th
 back), or when the window closes; ending one while the configured theme's file is broken keeps
 the preview's colours with the error shown.
 
-`arkos settings set` takes `appearance.mode` (system, dark, light), `appearance.look` (presets, custom), `custom.color` (a theme's name), `custom.effect` (theme, none, or an installed effect's name), `theme.dark`, `theme.light`,
+`arkos settings set` takes `appearance.mode` (system, dark, light), `appearance.look` (presets, custom), `custom.color` (a theme's name), `custom.font` (a theme's name for its fonts, or default), `custom.effect` (theme, none, or an installed effect's name), `theme.dark`, `theme.light`,
 `font.family`, `font.preset`, `font.presets.<name>.size` (8 to 48),
 `font.presets.<name>.line_height` (1.0 to 2.5), `effect.name` (the older key: `theme` puts the presets in force, `none` or an
 effect's name the custom look with that effect), `effect.intensity` (0.0 to 1.0), `effect.run_unfocused` (true, false),

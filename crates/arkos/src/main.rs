@@ -401,8 +401,7 @@ pub struct Root {
     base_theme: Arc<theme::Theme>,
     /// Whether a frame has been drawn: a theme set before the first one shows at once.
     pub painted: bool,
-    /// The look's fonts, its theme's or its effect's (`theme::fonts_for`), less any family this
-    /// Mac lacks (`ThemeFont::installed`).
+    /// The look's fonts (`look_fonts`), less any family this Mac lacks (`ThemeFont::installed`).
     pub fonts: theme::ThemeFont,
     /// Syntax colours for viewer tabs in the theme's `viewer` colours. `None` until the grammars
     /// finish loading on the background executor after launch; a theme change rethemes it.
@@ -721,7 +720,7 @@ impl Root {
         })
         .detach();
         // The theme's fonts that are installed, and the preset's size on the font's grid.
-        let fonts = installed_fonts(&format!("theme {}", theme.name), &theme.font, cx);
+        let fonts = look_fonts(&config, &theme, cx);
         Self {
             tree,
             sessions,
@@ -1545,21 +1544,10 @@ impl Root {
         self.fade_theme_to(shown, cx);
     }
 
-    /// Takes the fonts `theme` and the effect that is on draw with (`theme::fonts_for`: under a
-    /// custom look the effect's own stay whatever the colour). They change at once, since a
-    /// font cannot fade; an effect on its way out no longer counts.
+    /// Takes the fonts the look draws in over `theme` (`look_fonts`): the custom look's own
+    /// choice, else the theme's. They change at once, since a font cannot fade.
     fn refresh_fonts(&mut self, theme: &theme::Theme, cx: &mut Context<Self>) {
-        let theme_fonts = installed_fonts(&format!("theme {}", theme.name), &theme.font, cx);
-        // The effect `theme` will be under: on a switch the old theme's effect is still on until
-        // `resolve_effect` runs, and its fonts must not show for the frames between.
-        let wanted = effects::resolve(&self.config.effect_choice(), theme);
-        let on = self.effect.as_ref().filter(|e| !e.leaving() && wanted.as_deref() == Some(e.effect.manifest.name.as_str()));
-        let effect_fonts = on.map(|e| {
-            let m = &e.effect.manifest;
-            installed_fonts(&format!("effect {}", m.name), &m.font, cx)
-        });
-        let custom = self.config.look() == config::Look::Custom;
-        let fonts = theme::fonts_for(custom, &theme_fonts, effect_fonts.as_ref());
+        let fonts = look_fonts(&self.config, theme, cx);
         if fonts == self.fonts {
             return;
         }
@@ -1754,6 +1742,9 @@ impl Root {
             aux::push_keybindings(cx, &self.config.keybindings);
         }
         self.switch_theme(cx);
+        // The custom look's font may have changed under the same colours.
+        let theme = self.base_theme.clone();
+        self.refresh_fonts(&theme, cx);
         // In step with the theme's fade when both change; the intensity is read every frame.
         self.resolve_effect(cx);
         // `[effect] run_unfocused` may have changed: an unfocused window pauses or resumes now.
@@ -4124,13 +4115,6 @@ impl Root {
     /// before the first frame. An effect that is missing or whose shader does not compile is a
     /// notice, and the window stays plain.
     pub fn set_effect(&mut self, name: Option<String>, cx: &mut Context<Self>) {
-        self.put_effect(name, cx);
-        // The effect that is on, or the look it is part of, may have changed: so may the fonts.
-        let theme = self.base_theme.clone();
-        self.refresh_fonts(&theme, cx);
-    }
-
-    fn put_effect(&mut self, name: Option<String>, cx: &mut Context<Self>) {
         let now = Instant::now();
         let cut = motion::reduce_motion() || !self.painted;
         let Some(name) = name else {
@@ -4845,13 +4829,20 @@ fn fade_target<'a>(fade: Option<&'a ThemeFade>, shown: &'a Arc<theme::Theme>) ->
     fade.map_or(shown, |f| &f.to)
 }
 
-/// The fonts of `owner` (a theme or an effect) that this Mac has; each missing one is said on
-/// stderr and its slot falls back as if it had not been named.
-fn installed_fonts(owner: &str, font: &theme::ThemeFont, cx: &App) -> theme::ThemeFont {
+/// The fonts the look draws in over `theme` that this Mac has: the custom look's font when it
+/// names one (`theme::font_for`; a named theme that does not load is said on stderr and the
+/// theme's own stand), else the theme's. Each missing family is said on stderr and its slot
+/// falls back as if it had not been named.
+fn look_fonts(config: &config::Config, theme: &theme::Theme, cx: &App) -> theme::ThemeFont {
+    let choice = config.font_choice();
+    let named = theme::font_for(choice, theme, &paths::themes_dir()).unwrap_or_else(|e| {
+        eprintln!("arkos: custom.font: {e}");
+        theme.font.clone()
+    });
     let families: std::collections::HashSet<String> = cx.text_system().all_font_names().into_iter().collect();
-    let (fonts, missing) = font.installed(&families);
+    let (fonts, missing) = named.installed(&families);
     for name in missing {
-        eprintln!("arkos: {owner}: the font {name:?} is not installed; using the default for that slot");
+        eprintln!("arkos: theme {}: the font {name:?} is not installed; using the default for that slot", choice.unwrap_or(&theme.name));
     }
     fonts
 }

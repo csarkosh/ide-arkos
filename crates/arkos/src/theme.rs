@@ -89,29 +89,28 @@ pub fn snap_to(grid: Option<f32>, size: f32) -> f32 {
     }
 }
 
-/// The fonts a window draws with, from its theme's and its effect's (each already less what is
-/// not installed). Under a custom look the effect's stand whatever colour is under it, and a
-/// colour's show only where the effect names none; a preset is a finished look, so what its
-/// theme names stands, and a theme that names none takes its effect's.
-pub fn fonts_for(custom: bool, theme: &ThemeFont, effect: Option<&ThemeFont>) -> ThemeFont {
-    let effect = effect.filter(|f| !f.is_default());
-    match effect {
-        Some(e) if custom || theme.is_default() => e.clone(),
-        _ => theme.clone(),
+/// The fonts a look draws in. `choice` is the custom look's font (`Config::font_choice`): a
+/// theme's name gives that theme's fonts whatever colours show, `config::PLAIN_FONT` none of a
+/// theme's, and no choice the fonts of `theme`, the one showing. A named theme that does not
+/// load is the error.
+pub fn font_for(choice: Option<&str>, theme: &Theme, themes_dir: &Path) -> Result<ThemeFont, String> {
+    match choice {
+        None => Ok(theme.font.clone()),
+        Some(crate::config::PLAIN_FONT) => Ok(ThemeFont::default()),
+        Some(name) if name == theme.name => Ok(theme.font.clone()),
+        Some(name) => load(name, themes_dir).map(|t| t.font),
     }
 }
 
-impl ThemeFont {
-    fn is_default(&self) -> bool {
-        *self == ThemeFont::default()
-    }
+/// Every theme that loads, of `themes_dir` and the built-ins in `list`'s order, with its fonts:
+/// what a custom look's font may be picked from.
+pub fn fonts(themes_dir: &Path) -> Vec<(String, ThemeFont)> {
+    list(themes_dir).into_iter().filter_map(|(name, _)| load(&name, themes_dir).ok().map(|t| (name, t.font))).collect()
+}
 
-    /// Refuses a `grid` out of range, naming the key.
-    pub fn check(&self) -> Result<(), String> {
-        match self.grid.filter(|g| !(1.0..=24.0).contains(g)) {
-            Some(grid) => Err(format!("font.grid must be 1.0 to 24.0 (was {grid:?})")),
-            None => Ok(()),
-        }
+impl ThemeFont {
+    pub fn is_default(&self) -> bool {
+        *self == ThemeFont::default()
     }
 
     /// The same fonts with every family that is not installed left out, and those families'
@@ -255,7 +254,9 @@ pub fn parse(text: &str) -> Result<Theme, String> {
             ));
         }
     }
-    theme.font.check()?;
+    if let Some(grid) = theme.font.grid.filter(|g| !(1.0..=24.0).contains(g)) {
+        return Err(format!("font.grid must be 1.0 to 24.0 (was {grid:?})"));
+    }
     Ok(theme)
 }
 
@@ -867,20 +868,30 @@ mod tests {
     }
 
     #[test]
-    fn a_custom_look_draws_with_its_effect_s_fonts_and_a_preset_with_its_theme_s_own() {
-        let named = |f: &str, grid: Option<f32>| ThemeFont { prose: Some(f.into()), ui: Some(f.into()), terminal: Some(f.into()), grid };
-        let (pixel, serif, none) = (named("Departure Mono", Some(5.5)), named("Baskerville", None), ThemeFont::default());
-        // Custom: the effect's fonts stay whatever colour is under it.
-        assert_eq!(fonts_for(true, &serif, Some(&pixel)), pixel);
-        assert_eq!(fonts_for(true, &none, Some(&pixel)), pixel);
-        // An effect that names none, and no effect at all, leave the colour's.
-        assert_eq!(fonts_for(true, &serif, Some(&none)), serif);
-        assert_eq!(fonts_for(true, &serif, None), serif);
-        // A preset is a finished look: what its theme names stands, and one that names none
-        // takes its effect's.
-        assert_eq!(fonts_for(false, &serif, Some(&pixel)), serif);
-        assert_eq!(fonts_for(false, &none, Some(&pixel)), pixel);
-        assert_eq!(fonts_for(false, &none, None), none);
+    fn a_custom_look_s_font_is_a_named_theme_s_whatever_colours_show() {
+        let dir = tempfile::tempdir().unwrap();
+        let (peach, material) = (load("peach-watercolor", dir.path()).unwrap(), load("material", dir.path()).unwrap());
+        // No choice: the fonts of the theme showing, as under the presets.
+        assert_eq!(font_for(None, &material, dir.path()).unwrap(), material.font);
+        // A theme's name: its fonts over another theme's colours, the pixel face's grid with it.
+        let pixel = font_for(Some("timo-purple"), &material, dir.path()).unwrap();
+        assert_eq!((pixel.terminal.as_deref(), pixel.grid), (Some("Departure Mono"), Some(5.5)));
+        assert_eq!(font_for(Some("peach-watercolor"), &peach, dir.path()).unwrap(), peach.font);
+        // `default`: none of a theme's, so the config's family shows.
+        assert_eq!(font_for(Some("default"), &peach, dir.path()).unwrap(), ThemeFont::default());
+        assert!(font_for(Some("nope"), &peach, dir.path()).is_err());
+    }
+
+    #[test]
+    fn every_theme_that_loads_is_listed_with_its_fonts() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("broken.toml"), "name = \"broken\"\n").unwrap();
+        let all = fonts(dir.path());
+        assert_eq!(all.len(), BUILTIN.len(), "a file that does not load names no fonts");
+        let of = |name: &str| all.iter().find(|(n, _)| n == name).map(|(_, f)| f.clone()).unwrap();
+        assert_eq!(of("navy"), ThemeFont::default());
+        assert_eq!(of("timo-purple"), of("arabia-solar"));
+        assert_eq!(of("peach-watercolor").prose.as_deref(), Some("Baskerville"));
     }
 
     #[test]

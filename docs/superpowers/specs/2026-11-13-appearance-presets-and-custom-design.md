@@ -20,8 +20,8 @@ The look of the window is one of two things, and only one is in force:
 - **Presets.** A preset is a finished look: colours, the effect made for them and its fonts.
   It is what a theme file has always been. The user picks a Mode (System, Dark, Light), a dark
   preset and a light preset, and each preset draws with its own effect.
-- **Custom.** A colour and an effect, chosen apart: any theme's colours under any effect, or
-  none. The fonts go with the effect when it names its own (see "Fonts" below). There is one custom look: it does not follow macOS's light and dark.
+- **Custom.** A colour, a font and an effect, chosen apart: any theme's colours, in any
+  theme's fonts, under any effect or none (the font is its own choice since "Fonts" below). There is one custom look: it does not follow macOS's light and dark.
   (My call from "Custom includes Color and Effects", which names no Mode.)
 
 Switching between the two never loses the other's choices.
@@ -38,7 +38,8 @@ dark = "navy"
 light = "peach-watercolor"
 
 [custom]               # the custom look
-color = "navy"         # a theme's name: its colours (and its fonts, under an effect with none)
+color = "navy"         # a theme's name: its colours
+font = "default"       # a theme's name: its fonts; "default": the [font] family
 effect = "none"        # "none" or an effect's name
 ```
 
@@ -59,7 +60,7 @@ other puts it in force. Under them, only the selected one's controls:
   today; "Add preset…" (a theme file, as "Add theme…" was) and "Show presets folder". (A row
   does not name its preset's effect yet: the list has only names and kinds.)
 - **Custom**: "Color", one list of every theme, dark ones first, each marked dark or light;
-  "Effect", "None" and then every effect installed, built in or a folder, an invalid one marked
+  "Font" (see "Fonts"); "Effect", "None" and then every effect installed, built in or a folder, an invalid one marked
   and not clickable; "Add color…" (a theme file, selected as the colour), "Add effect…" (an
   effect's folder, copied into the effects folder and selected) and the two "Show … folder"
   buttons.
@@ -71,18 +72,24 @@ picks something.
 ## Fonts
 
 Cyrus, 13 November, on the first build: "why doesn't the effect's font remain when I change
-colors for Custom". Fonts were a theme's alone, so the pixel face left with Timo Purple's
-colours while overworld stayed. Now an effect's manifest may carry a `[font]` table, the
-theme's own keys, and `theme::fonts_for` picks:
+colors for Custom", and then: "I'm thinking to separate the font into it's own option so we
+have Color, Font, and Effect."
 
-- Custom: the effect's fonts when it names any, whatever the colour; else the colour's.
-- Presets: the theme's own when it names any (a preset is a finished look); else its effect's.
+Fonts were a theme's alone, so in Custom they left with the colour. Now the custom look names
+its font apart: `custom.font` is a theme's name, for that theme's `[font]` table (its grid
+with it) over whatever colour shows, or `default` for none of a theme's, so the config's
+`[font] family`. Unset, as in a config from before this, the fonts are the colour's own.
+(My calls: a font is named by the theme that carries it, as a colour is, rather than by a
+new kind of file; and there is no "Add font…", since a theme file with a `[font]` table,
+added with "Add color…", is how a set of one's own gets in.)
 
-`overworld` names Departure Mono on its 5.5 grid and `notebook` Chalkboard SE and Monaspace
-Radon. `watercolor` and `material` name none: each has two presets with different faces, and
-naming one would change a font on the first click on Custom, so under them the font is still
-the colour's. (My call.) The theme files keep their `[font]` tables, so nothing changes for a
-preset or for a config from before the two looks.
+Settings lists Color on the left and Font above Effect on the right, so three lists fit the
+window's width. The Font list is "Default (family)" and then each distinct set the themes
+name, labelled by its families, written as the first theme that names it; a set this Mac
+has none of is marked and not clickable. The first click on Custom writes the preset
+showing as the font too, and a colour picked while the font is still unset writes the fonts
+on screen first, so a colour never changes the font. Presets are untouched: each draws in
+its theme's own fonts.
 
 ## The commands
 
@@ -93,7 +100,7 @@ The agent guide's commands keep working, in the new terms:
   only an effect keeps it over the theme named, so someone who turned effects off keeps them off.
 - `arkos effect use <name|none>` puts custom in force with that effect, over its own colour or,
   when it has none, the theme showing. `arkos effect use theme` puts presets in force.
-- `arkos settings set` takes `appearance.look`, `custom.color` and `custom.effect`; it still
+- `arkos settings set` takes `appearance.look`, `custom.color`, `custom.font` and `custom.effect`; it still
   takes `effect.name`, as `effect use` does.
 - `arkos theme current` and `arkos effect current` say which is in force.
 

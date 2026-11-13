@@ -473,14 +473,15 @@ Things only a person at the screen can check, in order of value:
 - effects: a `glyphs.metal` in the effects folder that fails to compile shows a notice
   `effect <name>: glyphs.metal: …`, and the wash stays on with plain glyphs
 - Settings, Appearance: two pills, Presets and Custom, the one in force selected. Presets
-  shows Mode and the dark and the light preset lists; a click on Custom shows Color and Effect
-  instead and changes nothing on screen the first time (it starts as what is showing); picking
-  another colour or effect switches the window with the usual fade; back on Presets the mode's
+  shows Mode and the dark and the light preset lists; a click on Custom shows Color on the
+  left and Font above Effect on the right instead, every row readable at the window's
+  narrowest, and changes nothing on screen the first time (it starts as what is showing);
+  picking another colour or effect switches the window with the usual fade and keeps the font;
+  picking another font changes the text at once, the pixel face on its grid (sharp) under any
+  colour, and "Default" is the Text section's family; a font set that is not installed is
+  marked and cannot be clicked; back on Presets the mode's
   preset and its own effect return, and Custom again brings the custom look back as it was; in
-  Custom the window keeps its colour when macOS switches between light and dark; in Custom
-  with `overworld` ticked, every colour picked keeps the pixel font (and with `notebook` the
-  handwriting), while with `watercolor`, `material` or None the font changes with the colour,
-  and nothing lingers for a frame on the way; "Add
+  Custom the window keeps its colour when macOS switches between light and dark; "Add
   effect…" with a folder that is no effect shows the error and copies nothing; an effect set
   with `arkos effect use runic` puts Custom in force with runic ticked; a click switches
   the window with a fade, and "Show effects folder" creates and reveals the folder

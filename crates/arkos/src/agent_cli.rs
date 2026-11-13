@@ -62,6 +62,7 @@ pub const SETTABLE: &[&str] = &[
     "appearance.mode",
     "appearance.look",
     "custom.color",
+    "custom.font",
     "custom.effect",
     "theme.dark",
     "theme.light",
@@ -690,12 +691,14 @@ fn look_name(look: config::Look) -> &'static str {
 }
 
 /// What `theme current` adds to its config line while the custom look is in force: its colour
-/// (the preset showing, when it has none of its own) and its effect. Nothing under the presets.
+/// (the preset showing, when it has none of its own), its effect, and its font when it names one
+/// (a theme's name, or `default`). Nothing under the presets.
 fn custom_words(c: &config::Config) -> String {
     if c.look() != config::Look::Custom {
         return String::new();
     }
-    format!(", custom {} with {}", c.custom.color.as_deref().unwrap_or("the preset's colours"), crate::effects::cli::choice_name(&c.effect_choice()))
+    let font = c.custom.font.as_ref().map(|f| format!(", font {f}")).unwrap_or_default();
+    format!(", custom {} with {}{font}", c.custom.color.as_deref().unwrap_or("the preset's colours"), crate::effects::cli::choice_name(&c.effect_choice()))
 }
 
 fn mode_name(mode: AppearanceMode) -> &'static str {
@@ -775,7 +778,7 @@ fn current(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
     let shown = answer.as_ref().unwrap_or(&empty);
     if a.has("--json") {
         let config = match &file {
-            Ok(c) => json!({ "dark": c.theme.dark, "light": c.theme.light, "mode": mode_name(c.appearance.mode), "look": look_name(c.look()), "custom": { "color": c.custom.color, "effect": c.custom.effect.as_ref().map(crate::effects::cli::choice_name) } }),
+            Ok(c) => json!({ "dark": c.theme.dark, "light": c.theme.light, "mode": mode_name(c.appearance.mode), "look": look_name(c.look()), "custom": { "color": c.custom.color, "font": c.custom.font, "effect": c.custom.effect.as_ref().map(crate::effects::cli::choice_name) } }),
             Err(e) => json!({ "error": e }),
         };
         let windows: Vec<Json> = shown.outcomes.iter().map(report_json).collect();
@@ -960,7 +963,8 @@ fn settings_set(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn W
         Ok(v) => v,
         Err(e) => return fail(err, &e),
     };
-    if matches!(*key, "theme.dark" | "theme.light" | "custom.color") {
+    // A name that must be a theme that loads; the custom font may also be none of a theme's.
+    if matches!(*key, "theme.dark" | "theme.light" | "custom.color") || (*key == "custom.font" && *raw != config::PLAIN_FONT) {
         if let Err(e) = load_name(raw, env.themes) {
             return fail(err, &e);
         }
@@ -1034,7 +1038,7 @@ fn settings_set(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn W
         let _ = writeln!(out, "deleted {cleared} queued session report{s} recorded before usage reports were on");
     }
     // A key that picks the theme fails on a theme error too; the others only on a config error.
-    let picks_theme = matches!(*key, "appearance.mode" | "appearance.look" | "custom.color" | "theme.dark" | "theme.light");
+    let picks_theme = matches!(*key, "appearance.mode" | "appearance.look" | "custom.color" | "custom.font" | "theme.dark" | "theme.light");
     let judge = |r: &Report| match (&r.config_error, &r.theme_error) {
         (Some(e), _) => Err(e.clone()),
         (None, Some(e)) if picks_theme => Err(e.clone()),
@@ -1181,6 +1185,13 @@ mod tests {
         let mut out = Vec::new();
         assert_eq!(theme_cli_to(&["current".into()], &env, &mut out, &mut Vec::new()), 0);
         assert!(String::from_utf8(out).unwrap().starts_with("config: dark timo-purple, light peach-watercolor, mode dark, custom arabia-solar with none\n"));
+        // The custom font is a theme that loads, or `default` for none of a theme's.
+        assert_eq!(settings_cli_to(&["set".into(), "custom.font".into(), "nope".into()], &settings, &mut Vec::new(), &mut Vec::new()), 1);
+        assert_eq!(settings_cli_to(&["set".into(), "custom.font".into(), "default".into()], &settings, &mut Vec::new(), &mut Vec::new()), 0);
+        assert_eq!(settings_cli_to(&["set".into(), "custom.font".into(), "timo-purple".into()], &settings, &mut Vec::new(), &mut Vec::new()), 0);
+        let mut out = Vec::new();
+        assert_eq!(theme_cli_to(&["current".into()], &env, &mut out, &mut Vec::new()), 0);
+        assert!(String::from_utf8(out).unwrap().starts_with("config: dark timo-purple, light peach-watercolor, mode dark, custom arabia-solar with none, font timo-purple\n"));
     }
 
     #[test]
@@ -1302,7 +1313,7 @@ mod tests {
     fn settings_set_accepts_effect_name_and_effect_intensity_and_refuses_bad_values() {
         assert!(settable("effect.name") && settable("effect.intensity") && !settable("effect.speed"));
         // The two looks' own keys.
-        assert!(settable("appearance.look") && settable("custom.color") && settable("custom.effect") && !settable("custom.font"));
+        assert!(settable("appearance.look") && settable("custom.color") && settable("custom.font") && settable("custom.effect") && !settable("custom.size"));
         assert_eq!(typed_value("appearance.look", "custom").unwrap().as_str(), Some("custom"));
         assert!(typed_value("appearance.look", "both").is_err());
         assert_eq!(typed_value("custom.effect", "none").unwrap().as_str(), Some("none"));

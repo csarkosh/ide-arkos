@@ -479,10 +479,11 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
   window closes. Ending one while the
   configured theme's file is broken keeps the preview's colours on screen with a theme error set.
 - `arkos theme current [--json]`: `config: dark {d}, light {l}, mode {m}` (ending
-  `, custom {colour} with {effect}` while the custom look is in force), then per window
+  `, custom {colour} with {effect}` while the custom look is in force, and `, font {name}`
+  after that when it names a font of its own), then per window
   `window {pid} ({project}): {theme} ({dark|light}, system is {dark|light}), preset {preset}, family {family}`,
   plus `, preview {name}`, `, config error: {text}` and `, theme error: {text}` when set. Exit 0
-  with no window. JSON `{ "config": { "dark", "light", "mode", "look": "presets" | "custom", "custom": { "color", "effect" } } | { "error" }, "windows": [...], "missing", "too_old" }`,
+  with no window. JSON `{ "config": { "dark", "light", "mode", "look": "presets" | "custom", "custom": { "color", "font", "effect" } } | { "error" }, "windows": [...], "missing", "too_old" }`,
   each window `{ "pid", "project", "theme", "dark", "system_is_dark", "preset", "family", "preview", "config_error", "theme_error" }`.
 - `arkos settings get [<key>] [--json]`: no key prints the config file verbatim, then the window
   lines as `current` does (JSON `{ "file", "windows" }`). A dotted key prints its value bare
@@ -490,8 +491,11 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
   `no such key` (exit 1).
 - `arkos settings set <key> <value> [--json]`: the keys are `appearance.mode`
   (system, dark, light), `appearance.look` (presets, custom: which of the two looks is in
-  force, the mode's dark or light theme with its own effect, or the colour and the effect of
-  `custom.color` and `custom.effect`), `custom.color` (a theme's name, which must load),
+  force, the mode's dark or light theme with its own effect, or the colour, the font and the
+  effect of `custom.color`, `custom.font` and `custom.effect`), `custom.color` (a theme's name,
+  which must load), `custom.font` (a theme's name, for its `[font]` table over whatever colour
+  shows, or `default` for none of a theme's, so the config's `font.family`; never set, the
+  fonts are the colour's own),
   `custom.effect` (theme, none, or an installed effect's name), `theme.dark`, `theme.light`, `font.family`, `font.preset`,
   `font.presets.<name>.size` (8 to 48), `font.presets.<name>.line_height` (1.0 to 2.5),
   `effect.name` (the older key, kept: `theme` puts the presets in force; `none` or an installed
@@ -725,7 +729,6 @@ key and the range.
 | `body_bars_alpha` | 0.0 to 1.0 | `chrome_alpha` | The bars inside a tab's body over the wash: a grid's banner, a spreadsheet's sheet strip, a video's bar and a web tab's address bar. |
 | `active_tab_alpha` | 0.0 to 1.0 | 0.55 | The active tab over the wash. |
 | `text_contrast` | 0.0 to 1.0 | 0.0 | How far the text moves towards ink (black on a light theme, white on a dark one): `chrome.text` that far, `chrome.text_dim` three quarters and `terminal.foreground` nine tenths of the way. |
-| `[font]` | a table: `prose`, `ui`, `terminal`, `grid` | absent | The fonts the effect is drawn for, with a theme's own `[font]` keys and rules (each an installed family, `terminal` monospaced, `grid` 1 to 24; a family that is not installed is left out). It goes last in the file, after every key above. Under the custom look these are the window's fonts whatever colour is chosen; a preset keeps the fonts its theme names and takes the effect's only when the theme names none. An effect that names none leaves the colour's fonts. `overworld` names Departure Mono on a 5.5 grid and `notebook` Chalkboard SE with Monaspace Radon; `watercolor` and `material` name none, since each has two presets with different faces. |
 
 Changing effects fades the wash and the surfaces' alphas in and out over 200 ms (it cuts under
 Reduce Motion); the glyph shader, the text size, the borders, the highlights, the menus and the text

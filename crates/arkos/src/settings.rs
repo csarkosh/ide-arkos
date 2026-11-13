@@ -267,14 +267,83 @@ pub fn custom_effect_rows(choice: &EffectChoice, own: Option<&str>, listed: &[(S
     rows
 }
 
+/// The families a font set names, each once, in the order prose, UI, terminal:
+/// "Baskerville, Optima, PT Mono".
+pub fn families(font: &theme::ThemeFont) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::new();
+    for f in [&font.prose, &font.ui, &font.terminal].into_iter().flatten() {
+        if !out.contains(&f.as_str()) {
+            out.push(f);
+        }
+    }
+    out
+}
+
+/// The custom look's Font list: "Default" (the config's own family, `plain`), then each distinct
+/// set of fonts the themes name, by its families, under the first theme that names it. `choice`
+/// is the custom look's own (`custom.font`); with none the fonts in force are `shown`, those of
+/// the theme showing. A set none of whose families `has` finds is marked and not clickable; a
+/// theme named that is not installed is listed first, so the list always shows what is in force.
+pub fn font_rows(fonts: &[(String, theme::ThemeFont)], choice: Option<&str>, shown: &theme::ThemeFont, plain: &str, has: &dyn Fn(&str) -> bool) -> Vec<Row> {
+    let none = theme::ThemeFont::default();
+    let in_force: Option<&theme::ThemeFont> = match choice {
+        None => Some(shown),
+        Some(config::PLAIN_FONT) => Some(&none),
+        Some(name) => fonts.iter().find(|(n, _)| n == name).map(|(_, f)| f),
+    };
+    let mut rows = Vec::new();
+    if let (None, Some(name)) = (in_force, choice) {
+        rows.push(Row { label: format!("{name} (not installed)"), value: None, current: true });
+    }
+    rows.push(Row { label: format!("Default ({plain})"), value: Some(config::PLAIN_FONT.into()), current: in_force.is_some_and(|f| f.is_default()) });
+    let mut seen: Vec<&theme::ThemeFont> = Vec::new();
+    for (name, font) in fonts {
+        if font.is_default() || seen.contains(&font) {
+            continue;
+        }
+        seen.push(font);
+        let named = families(font);
+        let (label, current) = (named.join(", "), in_force == Some(font));
+        rows.push(if named.iter().any(|f| has(f)) {
+            Row { label, value: Some(name.clone()), current }
+        } else {
+            Row { label: format!("{label} (not installed)"), value: None, current }
+        });
+    }
+    rows
+}
+
+/// What `custom.font` says for the fonts of the theme showing: its name, or with no fonts of
+/// its own, the plain ones' word.
+fn font_word(shown: &str, plain_font: bool) -> String {
+    if plain_font { config::PLAIN_FONT } else { shown }.to_string()
+}
+
+/// What a click on a Color row writes: the colour, and the first time, the fonts on screen as
+/// the custom look's font (`shown` the theme showing, `plain_font` whether it names no fonts),
+/// so a new colour changes the colours alone.
+pub fn color_edits(cfg: &Config, color: &str, shown: &str, plain_font: bool) -> Vec<(Vec<&'static str>, String)> {
+    let mut edits = vec![(vec!["custom", "color"], color.to_string())];
+    if cfg.custom.font.is_none() {
+        edits.push((vec!["custom", "font"], font_word(shown, plain_font)));
+    }
+    edits
+}
+
 /// What a click on a look's pill writes: the look itself, and for the custom look, the first
-/// time, what is on screen as its colour and its effect (`shown` the theme showing, `own` that
-/// theme's own effect), so putting it in force changes nothing until something is picked.
-pub fn look_edits(cfg: &Config, which: Look, shown: &str, own: Option<&str>) -> Vec<(Vec<&'static str>, String)> {
+/// time, what is on screen as its colour, its font and its effect (`shown` the theme showing,
+/// `plain_font` whether it names no fonts, `own` its own effect), so putting it in force changes
+/// nothing until something is picked.
+pub fn look_edits(cfg: &Config, which: Look, shown: &str, plain_font: bool, own: Option<&str>) -> Vec<(Vec<&'static str>, String)> {
     let mut edits = vec![(vec!["appearance", "look"], if which == Look::Presets { "presets" } else { "custom" }.to_string())];
     if which == Look::Custom {
         if cfg.custom.color.is_none() {
             edits.push((vec!["custom", "color"], shown.to_string()));
+            // With a colour already chosen the theme showing may be a preset, not that colour:
+            // its font is pinned when a colour is next picked (`color_edits`).
+            if cfg.custom.font.is_none() {
+                edits.push((vec!["custom", "font"], font_word(shown, plain_font)));
+            }
         }
         if cfg.custom.effect.is_none() {
             // Under the presets the effect on screen is the preset's own; an older config's
@@ -329,6 +398,10 @@ pub struct SettingsWindow {
     themes: Vec<(String, theme::Source, Option<theme::Appearance>)>,
     /// The effects folder and the built-ins, as `effects::manifest::list` reads them.
     effects: Vec<(String, effects::manifest::Source)>,
+    /// Every theme that loads with its fonts (`theme::fonts`), for the custom look's Font list.
+    theme_fonts: Vec<(String, theme::ThemeFont)>,
+    /// Every family installed, to mark a font set this Mac has none of.
+    families: std::collections::HashSet<String>,
     fonts: Vec<String>,
     /// Why the last "Add …" failed, shown under the buttons.
     import_error: Option<String>,
@@ -420,6 +493,8 @@ pub fn open(cx: &mut App, over: Option<Retained<NSWindow>>, shown: Shown, theme:
                 section: Section::Appearance,
                 themes: theme::kinds(&paths::themes_dir()),
                 effects: effects::manifest::list(&effects::effects_dir()),
+                theme_fonts: theme::fonts(&paths::themes_dir()),
+                families: cx.text_system().all_font_names().into_iter().collect(),
                 fonts,
                 import_error: None,
                 pending_replace: None,
@@ -580,6 +655,7 @@ impl SettingsWindow {
         self.shown = shown;
         self.privacy.forget();
         self.themes = theme::kinds(&paths::themes_dir());
+        self.theme_fonts = theme::fonts(&paths::themes_dir());
         self.effects = effects::manifest::list(&effects::effects_dir());
         cx.notify();
     }
@@ -641,10 +717,11 @@ impl SettingsWindow {
         match copied {
             Ok(name) => {
                 self.themes = theme::kinds(&paths::themes_dir());
+                self.theme_fonts = theme::fonts(&paths::themes_dir());
                 self.effects = effects::manifest::list(&effects::effects_dir());
                 let edits = match adding {
                     Adding::Preset => vec![edit(&["theme", theme_key_for(self.shown.config.appearance.mode, system_is_dark)], name.as_str())],
-                    Adding::Color => vec![edit(&["custom", "color"], name.as_str())],
+                    Adding::Color => color_edits(&self.shown.config, &name, &self.theme.name, self.theme.font.is_default()).into_iter().map(|(keys, value)| edit(&keys, value.as_str())).collect(),
                     Adding::Effect => vec![edit(&["custom", "effect"], name.as_str())],
                 };
                 self.change(edits, cx);
@@ -765,14 +842,14 @@ impl SettingsWindow {
             let current = look == which;
             let mut p = pill(("look", ix), label, current, enabled, c);
             if enabled && !current {
-                let edits: Vec<Edit> = look_edits(cfg, which, &self.theme.name, self.theme.recommended_effect()).into_iter().map(|(keys, value)| edit(&keys, value.as_str())).collect();
+                let edits: Vec<Edit> = look_edits(cfg, which, &self.theme.name, self.theme.font.is_default(), self.theme.recommended_effect()).into_iter().map(|(keys, value)| edit(&keys, value.as_str())).collect();
                 p = p.on_click(cx.listener(move |w, _, _, cx| w.change(edits.clone(), cx)));
             }
             looks = looks.child(p);
         }
         let says = match look {
             Look::Presets => "A finished look for dark and one for light: colours, effect and fonts together.",
-            Look::Custom => "Any colours under any effect. One look, day and night.",
+            Look::Custom => "Any colours in any fonts under any effect. One look, day and night.",
         };
         let mut out = vec![heading("Look", c).into_any_element(), looks.into_any_element(), div().pt(px(6.0)).text_color(c.dim).child(says).into_any_element()];
         out.extend(match look {
@@ -857,28 +934,39 @@ impl SettingsWindow {
         out
     }
 
-    /// The custom look's controls: the Color and the Effect, side by side, and adding either.
+    /// One of the custom look's lists under its heading: a click on a row that is not the one in
+    /// force writes what `edits` gives for its value.
+    #[allow(clippy::too_many_arguments)]
+    fn rows_list(&self, title: &'static str, list_id: &'static str, rows: Vec<Row>, enabled: bool, c: Colors, cx: &mut Context<Self>, edits: impl Fn(&str) -> Vec<Edit>) -> gpui::Div {
+        let mut list = div().flex().flex_col().child(heading(title, c));
+        for (ix, r) in rows.into_iter().enumerate() {
+            let clickable = enabled && r.value.is_some();
+            let mut row = list_row((list_id, ix), r.label, r.current, clickable, c);
+            if let (true, false, Some(value)) = (clickable, r.current, r.value) {
+                let edits = edits(&value);
+                row = row.on_click(cx.listener(move |w, _, _, cx| w.change(edits.clone(), cx)));
+            }
+            list = list.child(row);
+        }
+        list
+    }
+
+    /// The custom look's controls: the Color on the left, the Font and under it the Effect on
+    /// the right, and adding a colour or an effect.
     fn custom(&self, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let cfg = &self.shown.config;
         // The colour in force is the theme showing: the custom look's own, or with none of its
-        // own, the preset the mode picks.
-        let lists: [(&'static str, &'static str, [&'static str; 2], Vec<Row>); 2] = [
-            ("Color", "custom-color", ["custom", "color"], color_rows(&self.themes, cfg.custom.color.as_deref().unwrap_or(&self.theme.name))),
-            ("Effect", "custom-effect", ["custom", "effect"], custom_effect_rows(&cfg.effect_choice(), self.theme.recommended_effect(), &self.effects)),
-        ];
-        let mut columns = div().flex().gap(px(16.0));
-        for (title, list_id, keys, rows) in lists {
-            let mut list = div().flex_1().min_w_0().flex().flex_col().child(heading(title, c));
-            for (ix, r) in rows.into_iter().enumerate() {
-                let clickable = enabled && r.value.is_some();
-                let mut row = list_row((list_id, ix), r.label, r.current, clickable, c);
-                if let (true, false, Some(value)) = (clickable, r.current, r.value) {
-                    row = row.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&keys, value.as_str())], cx)));
-                }
-                list = list.child(row);
-            }
-            columns = columns.child(list);
-        }
+        // own, the preset the mode picks. A new colour pins the fonts on screen the first time.
+        let (shown, plain_font) = (self.theme.name.clone(), self.theme.font.is_default());
+        let pinned = cfg.clone();
+        let color = self.rows_list("Color", "custom-color", color_rows(&self.themes, cfg.custom.color.as_deref().unwrap_or(&self.theme.name)), enabled, c, cx, move |value| {
+            color_edits(&pinned, value, &shown, plain_font).into_iter().map(|(keys, value)| edit(&keys, value.as_str())).collect()
+        });
+        let font_rows = font_rows(&self.theme_fonts, cfg.custom.font.as_deref(), &self.theme.font, &cfg.font.family, &|f| self.families.contains(f));
+        let font = self.rows_list("Font", "custom-font", font_rows, enabled, c, cx, |value| vec![edit(&["custom", "font"], value)]);
+        let effect_rows = custom_effect_rows(&cfg.effect_choice(), self.theme.recommended_effect(), &self.effects);
+        let effect = self.rows_list("Effect", "custom-effect", effect_rows, enabled, c, cx, |value| vec![edit(&["custom", "effect"], value)]);
+        let columns = div().flex().gap(px(16.0)).child(color.flex_1().min_w_0()).child(div().flex_1().min_w_0().flex().flex_col().child(font).child(effect));
         let mut out = vec![columns.into_any_element()];
         let (color, effect) = (self.add_pill("add-color", "Add color…", Adding::Color, enabled, c, cx), self.add_pill("add-effect", "Add effect…", Adding::Effect, enabled, c, cx));
         out.push(div().pt(px(10.0)).flex().gap(px(6.0)).child(color).child(effect).into_any_element());
@@ -1267,18 +1355,62 @@ mod tests {
         // From the presets, the first time: the preset showing and its own effect.
         let presets = Config::default();
         assert_eq!(
-            look_edits(&presets, Look::Custom, "timo-purple", Some("overworld")),
-            own(&[(&["appearance", "look"], "custom"), (&["custom", "color"], "timo-purple"), (&["custom", "effect"], "overworld")])
+            look_edits(&presets, Look::Custom, "timo-purple", false, Some("overworld")),
+            own(&[(&["appearance", "look"], "custom"), (&["custom", "color"], "timo-purple"), (&["custom", "font"], "timo-purple"), (&["custom", "effect"], "overworld")])
         );
-        assert_eq!(look_edits(&presets, Look::Custom, "navy", None)[2], (vec!["custom", "effect"], "none".to_string()), "a preset with no effect");
+        assert_eq!(look_edits(&presets, Look::Custom, "navy", true, None)[2..], own(&[(&["custom", "font"], "default"), (&["custom", "effect"], "none")]), "a preset with no fonts and no effect");
         // A custom look already chosen is put back as it was, and the presets as they were.
         let chosen = parse("[appearance]\nlook = \"presets\"\n[custom]\ncolor = \"matrix\"\neffect = \"material\"\n").unwrap();
-        assert_eq!(look_edits(&chosen, Look::Custom, "timo-purple", Some("overworld")), own(&[(&["appearance", "look"], "custom")]));
-        assert_eq!(look_edits(&chosen, Look::Presets, "matrix", Some("runic")), own(&[(&["appearance", "look"], "presets")]));
+        assert_eq!(look_edits(&chosen, Look::Custom, "timo-purple", false, Some("overworld")), own(&[(&["appearance", "look"], "custom")]));
+        assert_eq!(look_edits(&chosen, Look::Presets, "matrix", true, Some("runic")), own(&[(&["appearance", "look"], "presets")]));
         // An older config's one effect over every theme becomes the custom look's effect.
         let old = parse("[effect]\nname = \"material\"\n").unwrap();
         assert_eq!(old.look(), Look::Custom);
-        assert_eq!(look_edits(&old, Look::Custom, "navy", None), own(&[(&["appearance", "look"], "custom"), (&["custom", "color"], "navy"), (&["custom", "effect"], "material")]));
+        assert_eq!(look_edits(&old, Look::Custom, "navy", true, None), own(&[(&["appearance", "look"], "custom"), (&["custom", "color"], "navy"), (&["custom", "font"], "default"), (&["custom", "effect"], "material")]));
+    }
+
+    #[test]
+    fn the_font_list_offers_the_plain_family_and_each_distinct_set_of_a_theme_s_fonts() {
+        use crate::theme::ThemeFont;
+        let row = |label: &str, value: Option<&str>, current: bool| Row { label: label.into(), value: value.map(str::to_string), current };
+        let set = |prose: &str, ui: &str, terminal: &str| ThemeFont { prose: Some(prose.into()), ui: Some(ui.into()), terminal: Some(terminal.into()), grid: None };
+        let (pixel, serif, hand) = (set("Departure Mono", "Departure Mono", "Departure Mono"), set("Baskerville", "Optima", "PT Mono"), set("Chalkboard SE", "Chalkboard SE", "Monaspace Radon"));
+        let fonts = vec![
+            ("navy".to_string(), ThemeFont::default()),
+            ("timo-purple".to_string(), pixel.clone()),
+            ("peach-watercolor".to_string(), serif.clone()),
+            ("arabia-solar".to_string(), pixel.clone()),
+            ("composition-notebook".to_string(), hand),
+        ];
+        let has = |f: &str| !f.starts_with("Chalkboard") && !f.starts_with("Monaspace");
+        // The pixel face is one row though two themes name it, and a set this Mac has none of
+        // is marked and cannot be picked.
+        assert_eq!(
+            font_rows(&fonts, Some("arabia-solar"), &serif, "Menlo", &has),
+            vec![
+                row("Default (Menlo)", Some("default"), false),
+                row("Departure Mono", Some("timo-purple"), true),
+                row("Baskerville, Optima, PT Mono", Some("peach-watercolor"), false),
+                row("Chalkboard SE, Monaspace Radon (not installed)", None, false),
+            ]
+        );
+        // `default`, and a theme that names no fonts, are the plain family.
+        assert!(font_rows(&fonts, Some("default"), &serif, "Menlo", &has)[0].current);
+        assert!(font_rows(&fonts, Some("navy"), &serif, "Menlo", &has)[0].current);
+        // With no font of its own the custom look draws in the fonts of the theme showing.
+        assert!(font_rows(&fonts, None, &serif, "Menlo", &has)[2].current);
+        assert_eq!(font_rows(&fonts, Some("gone"), &serif, "Menlo", &has)[0], row("gone (not installed)", None, true));
+    }
+
+    #[test]
+    fn a_new_colour_pins_the_fonts_on_screen_the_first_time_and_leaves_a_chosen_font_alone() {
+        use crate::config::parse;
+        let own = |pairs: &[(&[&'static str], &str)]| -> Vec<(Vec<&'static str>, String)> { pairs.iter().map(|(k, v)| (k.to_vec(), v.to_string())).collect() };
+        let unpinned = parse("[appearance]\nlook = \"custom\"\n[custom]\ncolor = \"timo-purple\"\neffect = \"overworld\"\n").unwrap();
+        assert_eq!(color_edits(&unpinned, "material", "timo-purple", false), own(&[(&["custom", "color"], "material"), (&["custom", "font"], "timo-purple")]));
+        assert_eq!(color_edits(&unpinned, "material", "navy", true), own(&[(&["custom", "color"], "material"), (&["custom", "font"], "default")]));
+        let pinned = parse("[appearance]\nlook = \"custom\"\n[custom]\ncolor = \"timo-purple\"\nfont = \"peach-watercolor\"\n").unwrap();
+        assert_eq!(color_edits(&pinned, "material", "timo-purple", false), own(&[(&["custom", "color"], "material")]));
     }
 
     #[test]
