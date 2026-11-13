@@ -35,11 +35,7 @@ constant float ART_PX = 3.0;
 // A frame's width in art pixels: a pane's in the gap round it, the sidebar's and the title bar's
 // inside their own edges.
 constant int FRAME_PX = 2;
-constant float SCENE_MAX_H = 170.0;
-// A sidebar with this much room inside its frame, and room across for SCENE_TALL_COLS art pixels
-// of twice the size, has its scene drawn at twice its size (scene_px).
-constant float SCENE_TALL_ROOM = 640.0;
-constant float SCENE_TALL_COLS = 34.0;
+constant float SCENE_MAX_H = 260.0;
 constant float SCENE_MIN_H = 50.0;
 constant float STAR_CLEAR = 12.0;
 
@@ -72,7 +68,11 @@ constant float MUTE = 0.1;
 
 // The scene, in art pixels: SCENE_ROWS rows from the top of the full scene (the band shows its
 // lowest ones), laid out across the band's width, under HIGH_ROWS more of open sky with stars.
-constant int SCENE_ROWS = 46;
+// Its first TALL_ROWS are the far country: the sky with its moon and stars, and the tops of the
+// mountains (by day the mesas) that stand behind the castle; the castle, the hills and all
+// below them are in the SCENE_ROWS - TALL_ROWS under them.
+constant int SCENE_ROWS = 76;
+constant int TALL_ROWS = 30;
 constant int HIGH_ROWS = 10;
 // Where the sidebar's names lie over the scene it is softened into the sidebar's colour: what
 // leans away from the text's colour by SOFT_AWAY, and what leans toward it by the least of
@@ -83,6 +83,24 @@ constant float SOFT_STEPS[5] = {0.6, 0.75, 0.85, 0.92, 1.0};
 // Below the last of the names the scene comes back to full colour over SOFT_BUFFER points, a row
 // of art at a time.
 constant float SOFT_BUFFER = 24.0;
+// The mountains behind the castle, by night: each peak's column as a share of the band's width
+// and its height in rows above HILL_BASE; a slope falls PEAK_SLOPE rows a column, with a step in
+// it now and then; the far ridge is the sky's glow (the banner colour) MOUNTAIN_GLOW of the way
+// from the sidebar's colour, so it stands behind the dark castle, its snow the top SNOW_ROWS rows
+// of a peak over SNOW_ABOVE rows tall, SNOW_TONE of the way to the text. On the tallest stands a
+// watchtower, TOWER_H rows, its window lit in the focus colour. By day mesas stand there
+// instead: flat tops MESA_HALF columns either side of the peak's column, a shoulder a column out,
+// banded every MESA_BAND rows, the sand MESA_TONE toward the terminal's red.
+constant float4 PEAKS[4] = {float4(0.1, 30.0, 0.0, 0.0), float4(0.28, 46.0, 0.0, 0.0), float4(0.72, 38.0, 0.0, 0.0), float4(0.93, 27.0, 0.0, 0.0)};
+constant float PEAK_SLOPE = 1.4;
+constant float MOUNTAIN_GLOW = 0.55;
+constant int SNOW_ROWS = 3;
+constant float SNOW_ABOVE = 34.0;
+constant float SNOW_TONE = 0.3;
+constant int TOWER_H = 5;
+constant int MESA_HALF = 3;
+constant int MESA_BAND = 4;
+constant float MESA_TONE = 0.16;
 // The sky's dither runs over its first SKY_ROWS rows; its stars live in the first STAR_ROWS, one
 // in some of the cells of STAR_CELL art pixels, a few of them in the focus colour.
 constant int SKY_ROWS = 26;
@@ -318,26 +336,51 @@ bool inside_rect(float2 p, float4 r) {
     return p.x >= r.x && p.x <= r.x + r.z && p.y >= r.y && p.y <= r.y + r.w;
 }
 
-// The side of the scene's art pixels in the sidebar `side`: ART_PX, or twice it in a sidebar tall
-// and wide enough, so the art reaches further up a tall sidebar with its pixels whole.
-float scene_px(float4 side) {
-    float in = float(FRAME_PX) * ART_PX;
-    bool tall = side.w - 2.0 * in >= SCENE_TALL_ROOM && side.z - 2.0 * in >= SCENE_TALL_COLS * 2.0 * ART_PX;
-    return tall ? 2.0 * ART_PX : ART_PX;
-}
-
 // The band of the sidebar `side` the scene is drawn in: inside its frame, at most SCENE_MAX_H tall
-// at its own size (twice that at twice the size) in whole art pixels, standing on the frame's
-// foot; zero height in a sidebar with under SCENE_MIN_H of room inside its frame.
+// in whole art pixels, standing on the frame's foot; zero height in a sidebar with under
+// SCENE_MIN_H of room inside its frame. A shorter sidebar shows the scene's lowest rows.
 float4 scene_band(float4 side) {
     float in = float(FRAME_PX) * ART_PX;
     float room = side.w - 2.0 * in;
     if (room < SCENE_MIN_H || side.z <= 2.0 * in) {
         return float4(0.0);
     }
-    float px = scene_px(side);
-    float h = floor(min(room, SCENE_MAX_H * px / ART_PX) / px) * px;
+    float h = floor(min(room, SCENE_MAX_H) / ART_PX) * ART_PX;
     return float4(side.x + in, side.y + side.w - in - h, side.z - 2.0 * in, h);
+}
+
+// The far country's height at column i of w, in rows above HILL_BASE: the highest of the peaks'
+// slopes there, each falling PEAK_SLOPE rows a column with a row's step on some columns. Which
+// peak it is comes back in `peak`.
+float ridge(int i, int w, thread int& peak) {
+    float best = 0.0;
+    peak = -1;
+    for (int n = 0; n < 4; n++) {
+        float d = abs(float(i) - floor(PEAKS[n].x * float(w)));
+        float h = PEAKS[n].y - floor(d * PEAK_SLOPE) - (hash01(uint(i) * 7u + uint(n)) < 0.3 ? 1.0 : 0.0);
+        if (h > best) {
+            best = h;
+            peak = n;
+        }
+    }
+    return best;
+}
+
+// A mesa's height at column i of w, in rows above HILL_BASE: flat over its top, a shoulder three
+// rows lower a column either side, and nothing past that. Which mesa it is comes back in `peak`.
+float mesa(int i, int w, thread int& peak) {
+    float best = 0.0;
+    peak = -1;
+    for (int n = 0; n < 4; n++) {
+        int d = abs(i - int(floor(PEAKS[n].x * float(w))));
+        float top = floor(PEAKS[n].y * 0.75);
+        float h = d <= MESA_HALF ? top : d == MESA_HALF + 1 ? top - 3.0 : 0.0;
+        if (h > best) {
+            best = h;
+            peak = n;
+        }
+    }
+    return best;
 }
 
 // Whether p is on the plate pl: inside it and not in one of its four corner art pixels.
@@ -513,23 +556,27 @@ int palace_at(int d, int j) {
 }
 
 // The scene's colour at art pixel (i, j): column i of w across the band, row j of the full scene.
-float3 scene(constant ArkosInputs& u, int i, int j, int w, float t) {
+float3 scene(constant ArkosInputs& u, int i, int full, int w, float t) {
     float3 sb = u.colors[ARKOS_SIDEBAR].rgb;
     float3 text = u.colors[ARKOS_TEXT].rgb;
     float3 green = u.colors[ARKOS_ANSI + 2].rgb;
-    bool even = ((i + j) & 1) == 0;
+    // `full` counts from the top of the far country; `j` from the top of the near one, the
+    // castle's, where everything below the sky is laid out.
+    int j = full - TALL_ROWS;
+    bool even = ((i + full) & 1) == 0;
     float3 col = sb;
-    // The sky: plain at the top, dithered toward the banner colour lower down, then solid.
-    if (j < SKY_ROWS && float(j) / float(SKY_ROWS) > (even ? 0.25 : 0.75)) {
+    // The sky: plain at the top, dithered toward the banner colour near the hills, then solid.
+    if (j >= 0 && j < SKY_ROWS && float(j) / float(SKY_ROWS) > (even ? 0.25 : 0.75)) {
         col = mute(u, u.colors[ARKOS_BANNER].rgb);
     }
-    // The stars, each in a cell of its own.
-    if (j < STAR_ROWS) {
-        int2 cell = int2(i / STAR_CELL.x, j / STAR_CELL.y);
+    // The stars, each in a cell of its own, over the far country's sky.
+    if (full < STAR_ROWS + TALL_ROWS / 2) {
+        int jj = full;
+        int2 cell = int2(i / STAR_CELL.x, jj / STAR_CELL.y);
         uint id = (uint(cell.y) * 64u + uint(cell.x)) ^ STAR_SALT;
         int sx = cell.x * STAR_CELL.x + int(hash01(id + 1u) * float(STAR_CELL.x));
         int sy = cell.y * STAR_CELL.y + int(hash01(id + 2u) * float(STAR_CELL.y));
-        if (i == sx && j == sy && hash01(id) < STAR_CHANCE) {
+        if (i == sx && jj == sy && hash01(id) < STAR_CHANCE) {
             float3 star = hash01(id + 3u) < STAR_FOCUS ? u.colors[ARKOS_FOCUS_RING].rgb : text;
             col = mix(col, mute(u, star), twinkle(float(cell.y * 64 + cell.x), t));
         }
@@ -537,13 +584,13 @@ float3 scene(constant ArkosInputs& u, int i, int j, int w, float t) {
     // A cloud drifting across the sky, behind the moon and the castle.
     int span = w + CLOUD_W;
     int sc = i + CLOUD_W - int(fmod(0.3 * float(span) + t * SKY_CLOUD_SPEED, float(span)));
-    int sr = j - SKY_CLOUD_ROW;
+    int sr = full - SKY_CLOUD_ROW;
     if (sr >= 0 && sr < 3 && sc >= (sr == 0 ? 3 : 0) && sc < (sr == 0 ? CLOUD_W - 3 : CLOUD_W)) {
         col = mix(col, mute(u, u.colors[ARKOS_BANNER].rgb), 0.7);
     }
     // The crescent moon; by day, on a light theme, the sun in its place: a whole disc in the
     // focus colour, with four rays that come and go with the stars.
-    float2 m = float2(float(i - (w - MOON_AT.x)), float(j - MOON_AT.y));
+    float2 m = float2(float(i - (w - MOON_AT.x)), float(full - MOON_AT.y));
     if (u.dark > 0.5) {
         if (dot(m, m) <= MOON_R2 && dot(m - MOON_BITE, m - MOON_BITE) > MOON_BITE_R2) {
             col = mute(u, text);
@@ -553,10 +600,40 @@ float3 scene(constant ArkosInputs& u, int i, int j, int w, float t) {
     } else if ((abs(m.x) == SUN_RAY && m.y == 0.0) || (abs(m.y) == SUN_RAY && m.x == 0.0)) {
         col = mix(col, mute(u, u.colors[ARKOS_FOCUS_RING].rgb), twinkle(77.0, t));
     }
-    // The hills, the full width; by day two lines of long dunes.
+    // The far country behind the castle: a mountain range with snow on its tallest peaks and a
+    // watchtower on the highest; by day mesas of banded red sand, a minaret on the tallest.
     bool day = u.dark < 0.5;
     float3 sand = u.colors[ARKOS_ANSI + 3].rgb;
     float fi = float(i);
+    {
+        int peak = -1;
+        float h = day ? mesa(i, w, peak) : ridge(i, w, peak);
+        int top = HILL_BASE - int(h);
+        if (h > 0.0 && j >= top) {
+            if (day) {
+                float3 rock = mix(mix(sb, sand, SAND_FAR), u.colors[ARKOS_ANSI + 1].rgb, MESA_TONE);
+                bool band = (j - top) % MESA_BAND == MESA_BAND - 1;
+                col = mute(u, darker(u, rock, band ? 0.12 : 0.04));
+            } else {
+                float3 rock = mix(sb, u.colors[ARKOS_BANNER].rgb, MOUNTAIN_GLOW);
+                bool snow = j - top < SNOW_ROWS && h >= SNOW_ABOVE;
+                col = mute(u, snow ? mix(rock, text, SNOW_TONE) : rock);
+            }
+        }
+        // By night a watchtower stands on the tallest peak, two columns wide and as dark as the
+        // castle, its window lit; a crenel on its left column a row above.
+        int tc = int(floor(PEAKS[1].x * float(w)));
+        int tower_top = HILL_BASE - int(PEAKS[1].y) - TOWER_H;
+        bool tower = (i == tc || i == tc + 1) && j >= tower_top && j < HILL_BASE - int(PEAKS[1].y) + 2;
+        if (!day && (tower || (i == tc && j == tower_top - 1))) {
+            float3 stone = mute(u, darker(u, sb, CASTLE_STEP));
+            col = stone;
+            if (i == tc + 1 && j == tower_top + 1) {
+                col = mix(u.colors[ARKOS_FOCUS_RING].rgb, stone, WINDOW_GUTTER * hash01(uint(floor(t * WINDOW_FLICKERS)) ^ DIM_SALT));
+            }
+        }
+    }
+    // The hills, the full width; by day two lines of long dunes.
     if (day) {
         if (j >= HILL_BASE - int(rint(4.0 + 3.0 * sin(fi / 11.0 + 1.0)))) {
             col = mute(u, mix(sb, sand, SAND_FAR));
@@ -932,7 +1009,9 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             if (!inside_rect(p, full) || (kind == ARKOS_TAB_HIGHLIGHT_BLOCK && on_active)) {
                 continue;
             }
-            if (kind == ARKOS_ROW_HIGHLIGHT_BLOCK && in_side && !inside_rect(p, side)) {
+            // And inside the sidebar's frame: a row's mark spans the column, frame and all.
+            float frame_in = float(FRAME_PX) * ART_PX;
+            if (kind == ARKOS_ROW_HIGHLIGHT_BLOCK && in_side && (!inside_rect(p, side) || p.x >= side.x + side.z - frame_in || p.x < side.x + frame_in)) {
                 continue;
             }
             if (kind == ARKOS_TAB_HIGHLIGHT_BLOCK) {
@@ -1068,7 +1147,7 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             if (band.w <= 0.0 || !inside_rect(p, band)) {
                 continue;
             }
-            float px = scene_px(r);
+            float px = ART_PX;
             int2 q = int2(floor((p - band.xy) / px));
             int j = q.y + SCENE_ROWS + HIGH_ROWS - int(band.w / px);
             int w = int(band.z / px);

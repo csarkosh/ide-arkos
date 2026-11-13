@@ -513,9 +513,10 @@ Things only a person at the screen can check, in order of value:
   folder; under overworld the selected and hovered rows are drawn inside the sidebar's frame
   with the bobbing cursor, as the Explorer's are
 - layouts: switching to Inbox with the sidebar hidden or on Files shows it on Sessions; "+ New
-  session" sits under the filter, above the first group; under overworld in a tall sidebar the
-  scene is twice its size and the names dim only the part of it they lie over, a short list
-  leaving the castle at full colour
+  session" sits under the filter, above the first group; under overworld the
+  sidebar's scene has mountains (by day mesas) above the castle, at the same pixel size as the
+  castle, and the names dim only the part of it they lie over, a short list leaving the castle
+  at full colour; a selected session row's highlight stops at the sidebar's frame on both sides
 - layouts: "A session's files open" on Neighbor: with one pane an `arkos open` splits a pane
   to the right, the next goes into that pane, and from the right pane it goes to the left one
 - Settings, Appearance: two pills, Presets and Custom, the one in force selected. Presets
