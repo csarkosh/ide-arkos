@@ -117,14 +117,14 @@ Optional. A shader effect drawn under the window's text.
 
 | Key | What it sets |
 | --- | --- |
-| `name` | The effect the theme was designed with; the user's `effect.name` in `config.toml` or Settings may choose another. `peach-watercolor` and `lavender-watercolor` set `watercolor`, `matrix` and `tokyo-rain` set `runic`, `composition-notebook` sets `notebook`, `timo-purple` and `arabia-solar` set `overworld`, and `material`, `peach-watercolor` and `lavender-material` set `material`; `navy`, the default, sets none and draws plain. |
+| `name` | The effect the theme was designed with; as a preset it draws with this one; the custom look (Settings, Appearance, or `arkos effect use`) puts any effect over its colours. `peach-watercolor` and `lavender-watercolor` set `watercolor`, `matrix` and `tokyo-rain` set `runic`, `composition-notebook` sets `notebook`, `timo-purple` and `arabia-solar` set `overworld`, and `material`, `peach-watercolor` and `lavender-material` set `material`; `navy`, the default, sets none and draws plain. |
 
 ## Adding a theme
 
 1. Copy a built-in as a starting point. "Extract built-in themes" in the command palette writes them into the themes folder (`~/.config/arkos/themes/`), or copy one from `crates/arkos/themes/`.
 2. Give the copy its own `name` and edit the colours.
 3. Check it with `arkos theme validate <file>`. It prints `ok: <name>` when the file parses and names the problem otherwise. `arkos theme list` shows every theme and marks a broken file as invalid.
-4. Put the file in the themes folder as `<name>.toml`, or use "Add theme…" in Settings, which does the same copy and asks "Replace the existing <name>?" first when a theme of that name is installed, a built-in included.
+4. Put the file in the themes folder as `<name>.toml`, or use "Add preset…" in Settings, which does the same copy and asks "Replace the existing <name>?" first when a theme of that name is installed, a built-in included.
 5. Pick it in Settings, or set `dark` or `light` under `[theme]` in `config.toml`. A file in the folder with a built-in's name replaces that built-in.
 
 A coding agent does the same from a shell with `arkos theme template`, `contrast`, `preview` and `use`; `arkos guide` prints the steps, written for an agent.

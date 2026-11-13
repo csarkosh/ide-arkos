@@ -472,9 +472,14 @@ Things only a person at the screen can check, in order of value:
   the About, Settings and Keybindings windows and the chooser keep gpui's plain glyphs
 - effects: a `glyphs.metal` in the effects folder that fails to compile shows a notice
   `effect <name>: glyphs.metal: …`, and the wash stays on with plain glyphs
-- effects: Settings, Appearance lists Effect under the themes as None, "Theme's choice
-  (watercolor)" under Lavender Watercolor, and Material, with no Intensity stepper or battery
-  switch; an effect set with `arkos effect use runic` shows after them, ticked; a click switches
+- Settings, Appearance: two pills, Presets and Custom, the one in force selected. Presets
+  shows Mode and the dark and the light preset lists; a click on Custom shows Color and Effect
+  instead and changes nothing on screen the first time (it starts as what is showing); picking
+  another colour or effect switches the window with the usual fade; back on Presets the mode's
+  preset and its own effect return, and Custom again brings the custom look back as it was; in
+  Custom the window keeps its colour when macOS switches between light and dark; "Add
+  effect…" with a folder that is no effect shows the error and copies nothing; an effect set
+  with `arkos effect use runic` puts Custom in force with runic ticked; a click switches
   the window with a fade, and "Show effects folder" creates and reveals the folder
 - settings: Appearance shows the dark and light theme lists side by side, each readable at the
   window's narrowest; Settings and Keybindings (Cmd+, and Cmd+/) open centred on the IDE window,
@@ -688,8 +693,8 @@ Things only a person at the screen can check, in order of value:
 - colours: Claude Code's colours after a restart in Matrix are the theme's greens
 - effects: Tokyo Rain: the rain, the pane edges and the glowing text in Navy's blue, the hints
   and comments plain; a config with `effect.name = "matrix"` still draws the runic effect
-- themes: Settings, Appearance: Dark theme lists navy, timo-purple, matrix and tokyo-rain, Light
-  theme lists peach-watercolor, lavender-watercolor, lavender-material, composition-notebook and
+- themes: Settings, Appearance, Presets: Dark preset lists navy, timo-purple, matrix and tokyo-rain, Light
+  preset lists peach-watercolor, lavender-watercolor, lavender-material, composition-notebook and
   material; a dark theme set under `[theme] light` shows there
   marked "(a dark theme)"
 - sandbox: `arkos sandbox ~/Projects/x` opens a second window titled "Arkos IDE (sandbox)" with
@@ -991,8 +996,8 @@ Things only a person at the screen can check, in order of value:
   and one `label: value` line per row; under "Made by Cyrus Sarkosh", the "Buy me tokens" line's
   pixel heart is sharp, as tall as the words and level with them, and a click opens
   donate.csarko.sh/arkos
-- Settings: Dark theme or Mode switches the window and `config.toml` keeps its comments;
-  "Add theme…" with a broken file shows the error and copies nothing, and with a file named
+- Settings: a preset or Mode switches the window and `config.toml` keeps its comments;
+  "Add preset…" with a broken file shows the error and copies nothing, and with a file named
   like an installed theme asks "Replace the existing ..." first
 - switch themes in Settings, with `arkos theme use`, and by flipping macOS appearance: the chrome
   and the terminals fade over 200 ms, the syntax colours in code viewers and markdown code blocks

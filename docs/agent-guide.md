@@ -460,7 +460,8 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
 - `arkos theme use <name-or-file> [--dark|--light] [--replace] [--json]`: a `.toml` path is added
   first (`exists: {name}; pass --replace`, exit 1, when that name is already in the themes
   folder: running `use draft.toml` again after more edits needs `--replace`); the name must load (else `unknown theme: {name}` or the file's error, exit 1, nothing
-  written); then `[theme] dark` or `light` is written (the key from the flag, else from
+  written); then `[theme] dark` or `light` is written (with `appearance.look = "presets"` when the custom
+  look had a colour of its own, which would otherwise go on showing; the key from the flag, else from
   `[appearance] mode`, else from the window's system appearance, else dark) and every window
   reloads. Lines: `window {pid} ({project}): {name} applied`; a window whose active key is the
   other one prints `window {pid} ({project}): saved for {key} mode; shows {theme} in {active} mode`
@@ -477,19 +478,24 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
   `--end`, at the next config or theme reload, when the system appearance changes, or when the
   window closes. Ending one while the
   configured theme's file is broken keeps the preview's colours on screen with a theme error set.
-- `arkos theme current [--json]`: `config: dark {d}, light {l}, mode {m}`, then per window
+- `arkos theme current [--json]`: `config: dark {d}, light {l}, mode {m}` (ending
+  `, custom {colour} with {effect}` while the custom look is in force), then per window
   `window {pid} ({project}): {theme} ({dark|light}, system is {dark|light}), preset {preset}, family {family}`,
   plus `, preview {name}`, `, config error: {text}` and `, theme error: {text}` when set. Exit 0
-  with no window. JSON `{ "config": { "dark", "light", "mode" } | { "error" }, "windows": [...], "missing", "too_old" }`,
+  with no window. JSON `{ "config": { "dark", "light", "mode", "look": "presets" | "custom", "custom": { "color", "effect" } } | { "error" }, "windows": [...], "missing", "too_old" }`,
   each window `{ "pid", "project", "theme", "dark", "system_is_dark", "preset", "family", "preview", "config_error", "theme_error" }`.
 - `arkos settings get [<key>] [--json]`: no key prints the config file verbatim, then the window
   lines as `current` does (JSON `{ "file", "windows" }`). A dotted key prints its value bare
   (JSON `{ "key", "value" }`). It reads the file only, so a key left at its default answers
   `no such key` (exit 1).
 - `arkos settings set <key> <value> [--json]`: the keys are `appearance.mode`
-  (system, dark, light), `theme.dark`, `theme.light`, `font.family`, `font.preset`,
+  (system, dark, light), `appearance.look` (presets, custom: which of the two looks is in
+  force, the mode's dark or light theme with its own effect, or the colour and the effect of
+  `custom.color` and `custom.effect`), `custom.color` (a theme's name, which must load),
+  `custom.effect` (theme, none, or an installed effect's name), `theme.dark`, `theme.light`, `font.family`, `font.preset`,
   `font.presets.<name>.size` (8 to 48), `font.presets.<name>.line_height` (1.0 to 2.5),
-  `effect.name` (theme, none, or an installed effect's name), `effect.intensity` (0.0 to 1.0),
+  `effect.name` (the older key, kept: `theme` puts the presets in force; `none` or an installed
+  effect's name puts the custom look in force with that effect), `effect.intensity` (0.0 to 1.0),
   `effect.run_unfocused` (true, false: false pauses a window's effects while it is not in
   focus), `viewer.wide_tables` (wrap, scroll), `viewer.page_width` (full, letter), `viewer.image_destination` (the folder pasted
   and dropped images go in, relative to the document's; empty is beside it), `update.auto` (true, false),
@@ -893,7 +899,10 @@ window open; `bench` and `current` ask the running windows, and `use` asks them 
   compile. JSON `{ "name", "ms", "size": [w, h], "theme", "frame_rate", "share", "verdict" }`,
   `share` in percent.
 - `arkos effect use <name|none|theme> [--json]`: an effect's name must load (else its error,
-  exit 1, nothing written); then it is `arkos settings set effect.name <value>`, with its lines,
+  exit 1, nothing written); then it is `arkos settings set effect.name <value>`: a name or
+  `none` puts the custom look in force with that effect, over its own colour or, when it has
+  none, over the theme showing, and `theme` puts the presets back in force, each theme with
+  its own effect. Its lines,
   exit codes and JSON `{ "key": "effect.name", "value", "saved", "windows", "missing", "too_old" }`:
   `window {pid} ({project}): effect.name applied`, or `saved; no window running`.
 - `arkos effect current [--json]`: `config: effect {theme|none|name}, intensity {i}`, then per

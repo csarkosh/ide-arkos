@@ -266,6 +266,30 @@ pub fn load(name: &str, dir: &Path) -> Result<Effect, String> {
     load_builtin(name).ok_or_else(|| format!("effect {name:?} is not built in and {} does not exist", folder.display()))
 }
 
+/// Copies the effect in the folder `src` into the effects folder `dir`, under its own name, and
+/// returns that name. The folder must hold an effect that loads (its manifest naming the folder,
+/// its shader files beside it). A name already in `dir` is `Err("exists")` unless `replace`.
+/// Only the folder's own files are copied, not what lies in folders inside it.
+pub fn import_folder(src: &Path, dir: &Path, replace: bool) -> Result<String, String> {
+    let name = load_folder(src)?.manifest.name;
+    let dest = dir.join(&name);
+    if dest.exists() {
+        if !replace {
+            return Err("exists".into());
+        }
+        std::fs::remove_dir_all(&dest).map_err(|e| format!("cannot replace {}: {e}", dest.display()))?;
+    }
+    std::fs::create_dir_all(&dest).map_err(|e| format!("cannot create {}: {e}", dest.display()))?;
+    let entries = std::fs::read_dir(src).map_err(|e| format!("cannot read {}: {e}", src.display()))?;
+    for entry in entries.flatten() {
+        let from = entry.path();
+        if from.is_file() {
+            std::fs::copy(&from, dest.join(entry.file_name())).map_err(|e| format!("cannot copy {}: {e}", from.display()))?;
+        }
+    }
+    load_folder(&dest).map(|_| name)
+}
+
 /// Every effect by name: the built-ins first, then the folder's others sorted. A folder that
 /// shadows a built-in is listed once, in the built-in's place, as a folder. A hidden built-in
 /// (`BuiltIn::hidden`) is left out unless a folder shadows it.
@@ -602,6 +626,20 @@ mod tests {
         assert_eq!(m.document_paper_alpha(), 0.92);
         assert_eq!(m.glyph_rate(), 10);
         assert_eq!(m.glyphs.as_deref(), Some("glyphs.metal"));
+    }
+
+    #[test]
+    fn an_effect_s_folder_is_imported_under_its_own_name_and_asks_before_replacing() {
+        let (from, to) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let src = folder(from.path(), "neon", "name = \"neon\"\nwash = \"wash.metal\"\n", &["wash.metal"]);
+        assert_eq!(import_folder(&src, to.path(), false), Ok("neon".to_string()));
+        assert!(load("neon", to.path()).is_ok() && to.path().join("neon/wash.metal").is_file());
+        assert_eq!(import_folder(&src, to.path(), false), Err("exists".to_string()));
+        assert_eq!(import_folder(&src, to.path(), true), Ok("neon".to_string()));
+        // A folder that is no effect is refused and nothing is written.
+        let bad = folder(from.path(), "bad", "name = \"other\"\nwash = \"wash.metal\"\n", &["wash.metal"]);
+        assert!(import_folder(&bad, to.path(), false).is_err());
+        assert!(!to.path().join("bad").exists() && !to.path().join("other").exists());
     }
 
     #[test]

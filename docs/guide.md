@@ -552,9 +552,10 @@ background of its own sits on the paper with the wash through it, as a document 
 keeps the bars inside a tab's body, the address bar among them, in their own colours, and leaves
 a web tab's page and borders as they are without an effect.
 Timo Purple comes with `overworld`: a pixel-art night overworld across the window. Each pane, the sidebar and the title bar are framed like a game's menu window on a night ground, the focused pane in the focus colour; a slow glint goes round the frame of a pane whose Claude session is working, and a "continue" arrow bobs in the corner of one whose session is waiting for you. The tab bars are stone ledges with a lantern on the active tab and a gem that lights on the focused pane, the title bar is a sky with stars and a cloud, and a castle stands at the foot of the sidebar, softened where file names lie over it; the selected row has a bobbing menu cursor. Behind a terminal, and behind a markdown or code file, there is a dusk, a few faint stars and a line of hills. In a file the night belongs to the page: the dusk is at the page's top and the hills at its end, they scroll with the text, and the stretch between them is plain night, so a page that fits its pane shows both and a long one shows each only where you have scrolled to it. New terminal text is typed in like dialogue, each character resolving from chunky pixels in three quick steps. The scene is alive in small ways: stars twinkle, a shooting star falls now and then, clouds drift, the castle's windows gutter and its pennant waves, fireflies rise, a bat crosses the sky and the lanterns flicker. Any theme can
-carry any effect, since an effect reads the theme's colours. Settings, Appearance offers None,
-"Theme's choice" and Material; any other effect is chosen with `arkos effect use <name>` or
-`[effect] name` in the config file. "Theme's choice" follows the theme's own recommendation: `watercolor`
+carry any effect, since an effect reads the theme's colours. A theme with its own effect is a
+preset, and the presets are one of the two looks Settings, Appearance offers; the other, Custom,
+puts any theme's colours under any effect or none (see [Config](#config)). `arkos effect use
+<name>` does the same from a shell. Each preset's own effect: `watercolor`
 for Peach Watercolor and Lavender Watercolor, `runic` for Matrix and Tokyo Rain, `material` for Material and Lavender Material, `notebook` for Composition Notebook, `overworld` for Timo Purple and Arabia Solar, and none for Navy (the default).
 Effects stay out of About, Settings, Keybindings and the chooser, which keep their plain look.
 Under Reduce Motion the wash holds still and draws only when something changes, no letter
@@ -755,16 +756,23 @@ tokens" after a small pixel heart, which opens Arkos IDE's tip page, donate.csar
 Settings (menu or Cmd+,) has the shared title bar and six sections. It opens centred on the IDE
 window, as Keybindings (Cmd+/) does.
 
-- Appearance: Mode (System, Dark, Light), the dark and light theme lists side by side, "Add
-  theme…" and "Show themes folder". "Add theme…" takes a `.toml` file (anything else is refused), names the copy after
-  the file's own `name`, shows the error under the button for a bad file, and asks "Replace the
-  existing {name}?" before overwriting a theme file or shadowing a built-in of that name. A new
-  theme is set as the dark or light theme by the mode in force. "Show themes folder" creates the
-  folder, then reveals it. A configured theme that is neither built in nor a file is listed
-  first as "(not installed)". Under the themes: Effect, a list of "None", "Theme's choice" (the
-  default: the theme's recommendation, named, as in "Theme's choice (watercolor)") and
-  "Material". An effect chosen in the config file or with `arkos effect use` is listed after
-  them as the current one ("(not installed)" when it is missing, "(invalid)" when it is broken).
+- Appearance: two looks, as pills, **Presets** and **Custom**; the one in force is selected,
+  a click on the other puts it in force, and neither forgets its choices.
+  - Presets: a preset is a finished look, a theme with its own effect and fonts. Mode (System,
+    Dark, Light), the dark and the light preset lists side by side, "Add preset…" and "Show
+    presets folder". "Add preset…" takes a theme's `.toml` file (anything else is refused), names
+    the copy after the file's own `name`, shows the error under the button for a bad file, and
+    asks "Replace the existing {name}?" before overwriting a theme file or shadowing a built-in
+    of that name. A new preset is set as the dark or light one by the mode in force. A
+    configured preset that is neither built in nor a file is listed first as "(not installed)".
+  - Custom: Color and Effect side by side. Color lists every theme, the dark ones first, each
+    marked dark or light: its colours and fonts are used. Effect lists "None" and every effect
+    installed, built in or a folder; one that does not load is "(invalid)" and one named that
+    is missing "(not installed)". The custom look is one look: it does not follow macOS's
+    light and dark. The first time it is put in force it starts as what is on screen. "Add
+    color…" takes a theme's `.toml` file and "Add effect…" an effect's folder (copied into the
+    effects folder under its own name); each asks before replacing one of that name, and what is
+    added is selected. "Show colors folder" and "Show effects folder" create and reveal them.
   The effect's intensity and `run_unfocused` are set in the config file only. Then "Show effects
   folder", which creates the folder, then reveals it. A change fades in or out
   over a fifth of a second, or cuts under Reduce Motion.
@@ -1023,10 +1031,10 @@ that does not parse keeps the last good theme on screen and puts the error in th
 back), or when the window closes; ending one while the configured theme's file is broken keeps
 the preview's colours with the error shown.
 
-`arkos settings set` takes `appearance.mode` (system, dark, light), `theme.dark`, `theme.light`,
+`arkos settings set` takes `appearance.mode` (system, dark, light), `appearance.look` (presets, custom), `custom.color` (a theme's name), `custom.effect` (theme, none, or an installed effect's name), `theme.dark`, `theme.light`,
 `font.family`, `font.preset`, `font.presets.<name>.size` (8 to 48),
-`font.presets.<name>.line_height` (1.0 to 2.5), `effect.name` (theme, none, or an installed
-effect's name), `effect.intensity` (0.0 to 1.0), `effect.run_unfocused` (true, false),
+`font.presets.<name>.line_height` (1.0 to 2.5), `effect.name` (the older key: `theme` puts the presets in force, `none` or an
+effect's name the custom look with that effect), `effect.intensity` (0.0 to 1.0), `effect.run_unfocused` (true, false),
 `viewer.wide_tables` (wrap, scroll), `viewer.image_destination` (a folder, empty for beside the file), `viewer.page_width` (full, letter),
 `update.auto` (true, false), `recovery.start_at_login` (ask, on, off), `telemetry.usage` (off, local, on) and
 `telemetry.crashes` (never, ask, always). Any other key exits 2 and lists these. A bad value is

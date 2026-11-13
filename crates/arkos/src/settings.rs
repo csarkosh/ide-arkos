@@ -3,7 +3,7 @@
 //! project window's `reload_config`, or in the launch chooser the write alone). It shows what it
 //! was last handed (`set_shown`), so an edit made in an editor shows here too.
 use crate::chrome::{self, TITLE_BAR_H, UI_FONT};
-use crate::config::{self, AppearanceMode, Config, EffectChoice, FontConfig, PageWidth, StartAtLogin, WideTables};
+use crate::config::{self, AppearanceMode, Config, EffectChoice, FontConfig, Look, PageWidth, StartAtLogin, WideTables};
 use crate::theme::{self, Theme};
 use crate::{aux, effects, keymap, paths, telemetry_cli};
 use ::telemetry::visits_app::{Crashes, Mode, Usage};
@@ -214,43 +214,80 @@ pub fn slot_rows(themes: &[(String, theme::Source, Option<theme::Appearance>)], 
         .collect()
 }
 
-/// One row of the Effect list: its label, the `effect.name` a click writes (`None`: not
-/// clickable), and whether it is the configured choice.
+/// One row of a list: its label, the value a click writes (`None`: not clickable), and whether
+/// it is the choice in force.
 #[derive(Debug, Clone, PartialEq)]
-pub struct EffectRow {
+pub struct Row {
     pub label: String,
     pub value: Option<String>,
     pub current: bool,
 }
 
-/// The effect Settings offers besides none and the theme's choice.
-const MATERIAL: &str = "material";
-
-/// The Effect list: "None", "Theme's choice" naming what the theme recommends, then "Material".
-/// Any other effect is chosen in the config file or with `arkos effect use`; when one is, it is
-/// listed after the three as the current choice (not installed or invalid said so), so the list
-/// always shows what is in force. A `material` folder that does not load shadows the built-in
-/// and is shown as invalid, not choosable.
-pub fn effect_rows(choice: &EffectChoice, recommended: Option<&str>, listed: &[(String, effects::manifest::Source)]) -> Vec<EffectRow> {
-    let row = |label: String, value: Option<&str>, current: bool| EffectRow { label, value: value.map(str::to_string), current };
-    let invalid = |name: &str| listed.iter().any(|(n, source)| n == name && matches!(source, effects::manifest::Source::Invalid(_)));
-    let is_material = *choice == EffectChoice::Named(MATERIAL.into());
-    let mut rows = vec![
-        row("None".into(), Some("none"), *choice == EffectChoice::None),
-        row(format!("Theme's choice ({})", recommended.unwrap_or("none")), Some("theme"), *choice == EffectChoice::Theme),
-        if invalid(MATERIAL) { row("Material (invalid)".into(), None, is_material) } else { row("Material".into(), Some(MATERIAL), is_material) },
-    ];
-    if let EffectChoice::Named(name) = choice {
-        if name != MATERIAL {
-            let names: Vec<String> = listed.iter().map(|(n, _)| n.clone()).collect();
-            rows.push(match not_installed(name, &names) {
-                Some(label) => row(label, None, true),
-                None if invalid(name) => row(format!("{name} (invalid)"), None, true),
-                None => row(name.clone(), Some(name), true),
-            });
+/// The custom look's Color list: every theme, the dark ones first, each saying which it is; a
+/// file that does not load is marked and not clickable; a colour named that is not installed is
+/// listed first, so the list always shows what is in force.
+pub fn color_rows(themes: &[(String, theme::Source, Option<theme::Appearance>)], current: &str) -> Vec<Row> {
+    let mut rows = Vec::new();
+    if !themes.iter().any(|(name, _, _)| name == current) {
+        rows.push(Row { label: format!("{current} (not installed)"), value: None, current: true });
+    }
+    for slot in [Some(theme::Appearance::Dark), Some(theme::Appearance::Light), None] {
+        for (name, source, kind) in themes {
+            let broken = matches!(source, theme::Source::Invalid(_)) || kind.is_none();
+            match (slot, broken) {
+                (None, true) => rows.push(Row { label: format!("{name} (invalid)"), value: None, current: name == current }),
+                (Some(k), false) if *kind == Some(k) => rows.push(Row { label: format!("{name} ({})", k.word()), value: Some(name.clone()), current: name == current }),
+                _ => {}
+            }
         }
     }
     rows
+}
+
+/// The custom look's Effect list: "None", then every effect installed, built in or a folder; one
+/// that does not load is marked and not clickable; one named that is not installed is listed
+/// last. `choice` is the custom look's own, and `theme` is the colour's own effect (`own`).
+pub fn custom_effect_rows(choice: &EffectChoice, own: Option<&str>, listed: &[(String, effects::manifest::Source)]) -> Vec<Row> {
+    let named: Option<&str> = match choice {
+        EffectChoice::None => None,
+        EffectChoice::Theme => own,
+        EffectChoice::Named(name) => Some(name),
+    };
+    let mut rows = vec![Row { label: "None".into(), value: Some("none".into()), current: named.is_none() }];
+    for (name, source) in listed {
+        let current = named == Some(name.as_str());
+        rows.push(match source {
+            effects::manifest::Source::Invalid(_) => Row { label: format!("{name} (invalid)"), value: None, current },
+            _ => Row { label: name.clone(), value: Some(name.clone()), current },
+        });
+    }
+    if let Some(name) = named.filter(|n| !listed.iter().any(|(l, _)| l == n)) {
+        rows.push(Row { label: format!("{name} (not installed)"), value: None, current: true });
+    }
+    rows
+}
+
+/// What a click on a look's pill writes: the look itself, and for the custom look, the first
+/// time, what is on screen as its colour and its effect (`shown` the theme showing, `own` that
+/// theme's own effect), so putting it in force changes nothing until something is picked.
+pub fn look_edits(cfg: &Config, which: Look, shown: &str, own: Option<&str>) -> Vec<(Vec<&'static str>, String)> {
+    let mut edits = vec![(vec!["appearance", "look"], if which == Look::Presets { "presets" } else { "custom" }.to_string())];
+    if which == Look::Custom {
+        if cfg.custom.color.is_none() {
+            edits.push((vec!["custom", "color"], shown.to_string()));
+        }
+        if cfg.custom.effect.is_none() {
+            // Under the presets the effect on screen is the preset's own; an older config's
+            // `effect.name` says otherwise.
+            let on_screen = match (cfg.look(), &cfg.effect.name) {
+                (Look::Custom, EffectChoice::None) => "none".to_string(),
+                (Look::Custom, EffectChoice::Named(name)) => name.clone(),
+                _ => own.unwrap_or("none").to_string(),
+            };
+            edits.push((vec!["custom", "effect"], on_screen));
+        }
+    }
+    edits
 }
 
 /// Which `[theme]` key an imported theme is selected under: the mode's, or with the mode System,
@@ -293,11 +330,11 @@ pub struct SettingsWindow {
     /// The effects folder and the built-ins, as `effects::manifest::list` reads them.
     effects: Vec<(String, effects::manifest::Source)>,
     fonts: Vec<String>,
-    /// Why the last "Add theme…" failed, shown under the button.
+    /// Why the last "Add …" failed, shown under the buttons.
     import_error: Option<String>,
-    /// A picked theme file whose name is already in the themes folder, and that name, while the
-    /// window asks whether to replace it.
-    pending_replace: Option<(PathBuf, String)>,
+    /// A picked theme file or effect folder whose name is already taken, that name and what it
+    /// was picked as, while the window asks whether to replace it.
+    pending_replace: Option<(PathBuf, String, Adding)>,
     /// The file picker is up.
     picking: bool,
     focus: FocusHandle,
@@ -306,6 +343,15 @@ pub struct SettingsWindow {
     on_update: OnUpdate,
     /// The Privacy section's rows read from the folder, kept between renders.
     privacy: PrivacyCache,
+}
+
+/// What an "Add …" button of the Appearance section adds: a preset for the slot showing, a
+/// colour for the custom look, or an effect for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Adding {
+    Preset,
+    Color,
+    Effect,
 }
 
 /// Opens the Settings window centred on the IDE window `over` (on the main display when there
@@ -549,13 +595,20 @@ impl SettingsWindow {
         });
     }
 
-    /// "Add theme…": the native picker for one file; the file chosen is imported.
-    fn add_theme(&mut self, system_is_dark: bool, cx: &mut Context<Self>) {
+    /// "Add preset…", "Add color…" and "Add effect…": the native picker for one theme file, or
+    /// for one effect's folder; what is chosen is imported.
+    fn add(&mut self, adding: Adding, system_is_dark: bool, cx: &mut Context<Self>) {
         if self.picking {
             return;
         }
         self.picking = true;
-        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Add theme".into()) });
+        let folder = adding == Adding::Effect;
+        let prompt = match adding {
+            Adding::Preset => "Add preset",
+            Adding::Color => "Add color",
+            Adding::Effect => "Add effect",
+        };
+        let rx = cx.prompt_for_paths(PathPromptOptions { files: !folder, directories: folder, multiple: false, prompt: Some(prompt.into()) });
         cx.spawn(async move |view, cx| {
             let picked = rx.await;
             let _ = view.update(cx, |w, cx| {
@@ -563,7 +616,7 @@ impl SettingsWindow {
                 match picked {
                     Ok(Ok(Some(paths))) => {
                         if let Some(src) = paths.into_iter().next() {
-                            w.import(src, false, system_is_dark, cx);
+                            w.import(src, adding, false, system_is_dark, cx);
                         }
                     }
                     Ok(Err(e)) => w.import_error = Some(format!("cannot show the file picker: {e}")),
@@ -575,19 +628,29 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// Copies a theme file into the themes folder and selects it for the current mode; a name
-    /// already there asks first.
-    fn import(&mut self, src: PathBuf, replace: bool, system_is_dark: bool, cx: &mut Context<Self>) {
+    /// Copies a theme file into the themes folder, or an effect's folder into the effects
+    /// folder, and selects it: a preset for the mode showing, a colour or an effect for the
+    /// custom look. A name already there asks first.
+    fn import(&mut self, src: PathBuf, adding: Adding, replace: bool, system_is_dark: bool, cx: &mut Context<Self>) {
         self.pending_replace = None;
         self.import_error = None;
-        match theme::import_file(&src, &paths::themes_dir(), replace) {
-            Ok((name, _)) => {
+        let (copied, named) = match adding {
+            Adding::Effect => (effects::manifest::import_folder(&src, &effects::effects_dir(), replace), effects::manifest::load_folder(&src).map(|e| e.manifest.name)),
+            _ => (theme::import_file(&src, &paths::themes_dir(), replace).map(|(name, _)| name), theme::validate_file(&src)),
+        };
+        match copied {
+            Ok(name) => {
                 self.themes = theme::kinds(&paths::themes_dir());
-                let key = theme_key_for(self.shown.config.appearance.mode, system_is_dark);
-                self.change(vec![edit(&["theme", key], name.as_str())], cx);
+                self.effects = effects::manifest::list(&effects::effects_dir());
+                let edits = match adding {
+                    Adding::Preset => vec![edit(&["theme", theme_key_for(self.shown.config.appearance.mode, system_is_dark)], name.as_str())],
+                    Adding::Color => vec![edit(&["custom", "color"], name.as_str())],
+                    Adding::Effect => vec![edit(&["custom", "effect"], name.as_str())],
+                };
+                self.change(edits, cx);
             }
-            Err(e) if e == "exists" => match theme::validate_file(&src) {
-                Ok(name) => self.pending_replace = Some((src, name)),
+            Err(e) if e == "exists" => match named {
+                Ok(name) => self.pending_replace = Some((src, name, adding)),
                 Err(e) => self.import_error = Some(e),
             },
             Err(e) => self.import_error = Some(e),
@@ -668,6 +731,20 @@ fn list_row(id: impl Into<ElementId>, label: impl Into<SharedString>, current: b
 }
 
 /// A control's label above it.
+/// A pill that shows `dir` in Finder, making it first when it is not there yet.
+fn folder_pill(id: &'static str, label: &'static str, dir: PathBuf, enabled: bool, c: Colors) -> Stateful<gpui::Div> {
+    let mut p = pill(id, label, false, enabled, c);
+    if enabled {
+        p = p.on_click(move |_, _, cx| {
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                eprintln!("arkos: cannot create {}: {e}", dir.display());
+            }
+            cx.reveal_path(&dir);
+        });
+    }
+    p
+}
+
 fn heading(text: &'static str, c: Colors) -> gpui::Div {
     div().pt(px(6.0)).text_color(c.dim).text_size(px(12.0)).child(text)
 }
@@ -678,7 +755,60 @@ fn number(v: f64) -> String {
 }
 
 impl SettingsWindow {
+    /// The Appearance section: the two looks as pills, the one in force selected, and under
+    /// them that look's controls alone.
     fn appearance(&self, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let cfg = &self.shown.config;
+        let look = cfg.look();
+        let mut looks = div().flex().gap(px(6.0));
+        for (ix, (label, which)) in [("Presets", Look::Presets), ("Custom", Look::Custom)].into_iter().enumerate() {
+            let current = look == which;
+            let mut p = pill(("look", ix), label, current, enabled, c);
+            if enabled && !current {
+                let edits: Vec<Edit> = look_edits(cfg, which, &self.theme.name, self.theme.recommended_effect()).into_iter().map(|(keys, value)| edit(&keys, value.as_str())).collect();
+                p = p.on_click(cx.listener(move |w, _, _, cx| w.change(edits.clone(), cx)));
+            }
+            looks = looks.child(p);
+        }
+        let says = match look {
+            Look::Presets => "A finished look for dark and one for light: colours, effect and fonts together.",
+            Look::Custom => "Any colours under any effect. One look, day and night.",
+        };
+        let mut out = vec![heading("Look", c).into_any_element(), looks.into_any_element(), div().pt(px(6.0)).text_color(c.dim).child(says).into_any_element()];
+        out.extend(match look {
+            Look::Presets => self.presets(enabled, c, cx),
+            Look::Custom => self.custom(enabled, c, cx),
+        });
+        if let Some((src, name, adding)) = &self.pending_replace {
+            let (src, adding) = (src.clone(), *adding);
+            let (mut replace, mut keep) = (pill("replace", "Replace", false, enabled, c), pill("keep", "Keep", false, enabled, c));
+            if enabled {
+                replace = replace.on_click(cx.listener(move |w, _, window, cx| w.import(src.clone(), adding, true, theme::is_dark(window.appearance()), cx)));
+                keep = keep.on_click(cx.listener(|w, _, _, cx| {
+                    w.pending_replace = None;
+                    cx.notify();
+                }));
+            }
+            out.push(div().flex().items_center().gap(px(6.0)).child(format!("Replace the existing {name}?")).child(replace).child(keep).into_any_element());
+        }
+        if let Some(e) = &self.import_error {
+            out.push(div().text_color(c.dim).child(e.clone()).into_any_element());
+        }
+        out
+    }
+
+    /// A pill that runs the picker for `adding`.
+    fn add_pill(&self, id: &'static str, label: &'static str, adding: Adding, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Stateful<gpui::Div> {
+        let live = enabled && !self.picking;
+        let mut p = pill(id, label, false, live, c);
+        if live {
+            p = p.on_click(cx.listener(move |w, _, window, cx| w.add(adding, theme::is_dark(window.appearance()), cx)));
+        }
+        p
+    }
+
+    /// The presets' controls: the Mode, the dark and the light preset, and adding one.
+    fn presets(&self, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let cfg = &self.shown.config;
         let mut out = vec![heading("Mode", c).into_any_element()];
         let mut modes = div().flex().gap(px(6.0));
@@ -694,8 +824,8 @@ impl SettingsWindow {
         // The dark and the light lists side by side, each half the width.
         let mut columns = div().flex().gap(px(16.0));
         for (key, slot, title, list_id, current) in [
-            ("dark", theme::Appearance::Dark, "Dark theme", "theme-dark", &cfg.theme.dark),
-            ("light", theme::Appearance::Light, "Light theme", "theme-light", &cfg.theme.light),
+            ("dark", theme::Appearance::Dark, "Dark preset", "theme-dark", &cfg.theme.dark),
+            ("light", theme::Appearance::Light, "Light preset", "theme-light", &cfg.theme.light),
         ] {
             let mut list = div().flex_1().min_w_0().flex().flex_col().child(heading(title, c));
             let names: Vec<String> = self.themes.iter().map(|(n, _, _)| n.clone()).collect();
@@ -722,67 +852,45 @@ impl SettingsWindow {
             columns = columns.child(list);
         }
         out.push(columns.into_any_element());
-        let mut add = pill("add-theme", "Add theme…", false, enabled && !self.picking, c);
-        if enabled && !self.picking {
-            add = add.on_click(cx.listener(|w, _, window, cx| w.add_theme(theme::is_dark(window.appearance()), cx)));
-        }
-        let mut folder = pill("themes-folder", "Show themes folder", false, enabled, c);
-        if enabled {
-            folder = folder.on_click(|_, _, cx| {
-                let dir = paths::themes_dir();
-                if let Err(e) = std::fs::create_dir_all(&dir) {
-                    eprintln!("arkos: cannot create {}: {e}", dir.display());
-                }
-                cx.reveal_path(&dir);
-            });
-        }
-        out.push(div().pt(px(10.0)).flex().gap(px(6.0)).child(add).child(folder).into_any_element());
-        if let Some((src, name)) = &self.pending_replace {
-            let src = src.clone();
-            let (mut replace, mut keep) = (pill("replace", "Replace", false, enabled, c), pill("keep", "Keep", false, enabled, c));
-            if enabled {
-                replace = replace.on_click(cx.listener(move |w, _, window, cx| w.import(src.clone(), true, theme::is_dark(window.appearance()), cx)));
-                keep = keep.on_click(cx.listener(|w, _, _, cx| {
-                    w.pending_replace = None;
-                    cx.notify();
-                }));
-            }
-            out.push(div().flex().items_center().gap(px(6.0)).child(format!("Replace the existing {name}?")).child(replace).child(keep).into_any_element());
-        }
-        if let Some(e) = &self.import_error {
-            out.push(div().text_color(c.dim).child(e.clone()).into_any_element());
-        }
-        out.extend(self.effect_controls(enabled, c, cx));
+        let add = self.add_pill("add-preset", "Add preset…", Adding::Preset, enabled, c, cx);
+        out.push(div().pt(px(10.0)).flex().gap(px(6.0)).child(add).child(folder_pill("presets-folder", "Show presets folder", paths::themes_dir(), enabled, c)).into_any_element());
         out
     }
 
-    /// The Appearance section's effect controls, under the themes: the Effect list and "Show
-    /// effects folder". An effect's intensity and whether it runs while another app is in front
-    /// are set in the config file (`effect.intensity`, `effect.run_unfocused`).
-    fn effect_controls(&self, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let cfg = &self.shown.config.effect;
-        let mut out = vec![heading("Effect", c).into_any_element()];
-        let mut list = div().flex().flex_col();
-        for (ix, r) in effect_rows(&cfg.name, self.theme.recommended_effect(), &self.effects).into_iter().enumerate() {
-            let clickable = enabled && r.value.is_some();
-            let mut row = list_row(("effect", ix), r.label, r.current, clickable, c);
-            if let (true, false, Some(value)) = (clickable, r.current, r.value) {
-                row = row.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&["effect", "name"], value.as_str())], cx)));
-            }
-            list = list.child(row);
-        }
-        out.push(list.into_any_element());
-        let mut folder = pill("effects-folder", "Show effects folder", false, enabled, c);
-        if enabled {
-            folder = folder.on_click(|_, _, cx| {
-                let dir = effects::effects_dir();
-                if let Err(e) = std::fs::create_dir_all(&dir) {
-                    eprintln!("arkos: cannot create {}: {e}", dir.display());
+    /// The custom look's controls: the Color and the Effect, side by side, and adding either.
+    fn custom(&self, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let cfg = &self.shown.config;
+        // The colour in force is the theme showing: the custom look's own, or with none of its
+        // own, the preset the mode picks.
+        let lists: [(&'static str, &'static str, [&'static str; 2], Vec<Row>); 2] = [
+            ("Color", "custom-color", ["custom", "color"], color_rows(&self.themes, cfg.custom.color.as_deref().unwrap_or(&self.theme.name))),
+            ("Effect", "custom-effect", ["custom", "effect"], custom_effect_rows(&cfg.effect_choice(), self.theme.recommended_effect(), &self.effects)),
+        ];
+        let mut columns = div().flex().gap(px(16.0));
+        for (title, list_id, keys, rows) in lists {
+            let mut list = div().flex_1().min_w_0().flex().flex_col().child(heading(title, c));
+            for (ix, r) in rows.into_iter().enumerate() {
+                let clickable = enabled && r.value.is_some();
+                let mut row = list_row((list_id, ix), r.label, r.current, clickable, c);
+                if let (true, false, Some(value)) = (clickable, r.current, r.value) {
+                    row = row.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&keys, value.as_str())], cx)));
                 }
-                cx.reveal_path(&dir);
-            });
+                list = list.child(row);
+            }
+            columns = columns.child(list);
         }
-        out.push(div().pt(px(10.0)).flex().gap(px(6.0)).child(folder).into_any_element());
+        let mut out = vec![columns.into_any_element()];
+        let (color, effect) = (self.add_pill("add-color", "Add color…", Adding::Color, enabled, c, cx), self.add_pill("add-effect", "Add effect…", Adding::Effect, enabled, c, cx));
+        out.push(div().pt(px(10.0)).flex().gap(px(6.0)).child(color).child(effect).into_any_element());
+        out.push(
+            div()
+                .pt(px(6.0))
+                .flex()
+                .gap(px(6.0))
+                .child(folder_pill("colors-folder", "Show colors folder", paths::themes_dir(), enabled, c))
+                .child(folder_pill("effects-folder", "Show effects folder", effects::effects_dir(), enabled, c))
+                .into_any_element(),
+        );
         out
     }
 
@@ -1118,36 +1226,59 @@ mod tests {
     }
 
     #[test]
-    fn the_effect_list_offers_none_the_theme_s_choice_and_material_in_that_order() {
+    fn the_custom_look_lists_every_colour_dark_first_and_every_effect_after_none() {
         use crate::config::EffectChoice;
         use crate::effects::manifest::Source;
+        use crate::theme::{Appearance, Source as ThemeSource};
+        let themes = vec![
+            ("navy".to_string(), ThemeSource::BuiltIn, Some(Appearance::Dark)),
+            ("arabia-solar".to_string(), ThemeSource::BuiltIn, Some(Appearance::Light)),
+            ("tokyo-rain".to_string(), ThemeSource::BuiltIn, Some(Appearance::Dark)),
+            ("broken".to_string(), ThemeSource::Invalid("bad".into()), None),
+        ];
+        let row = |label: &str, value: Option<&str>, current: bool| Row { label: label.to_string(), value: value.map(str::to_string), current };
+        assert_eq!(
+            color_rows(&themes, "tokyo-rain"),
+            vec![row("navy (dark)", Some("navy"), false), row("tokyo-rain (dark)", Some("tokyo-rain"), true), row("arabia-solar (light)", Some("arabia-solar"), false), row("broken (invalid)", None, false)]
+        );
+        // A colour that is not installed is still shown as the one in force.
+        assert_eq!(color_rows(&themes, "gone")[0], row("gone (not installed)", None, true));
         let listed = vec![
             ("watercolor".to_string(), Source::BuiltIn),
-            ("material".to_string(), Source::BuiltIn),
+            ("overworld".to_string(), Source::BuiltIn),
             ("neon".to_string(), Source::Folder("/e/neon".into())),
             ("broken".to_string(), Source::Invalid("scale must be 0.1 to 1.0".into())),
         ];
-        let rows = |choice: &EffectChoice, recommended: Option<&str>, listed: &[(String, Source)]| -> Vec<(String, Option<String>, bool)> {
-            effect_rows(choice, recommended, listed).into_iter().map(|r| (r.label, r.value, r.current)).collect()
-        };
-        let row = |label: &str, value: Option<&str>, current: bool| (label.to_string(), value.map(str::to_string), current);
-        // The default choice is the theme's, and no other installed effect is offered.
-        assert_eq!(EffectChoice::default(), EffectChoice::Theme);
         assert_eq!(
-            rows(&EffectChoice::Theme, Some("watercolor"), &listed),
-            vec![row("None", Some("none"), false), row("Theme's choice (watercolor)", Some("theme"), true), row("Material", Some("material"), false)]
+            custom_effect_rows(&EffectChoice::Named("neon".into()), Some("overworld"), &listed),
+            vec![row("None", Some("none"), false), row("watercolor", Some("watercolor"), false), row("overworld", Some("overworld"), false), row("neon", Some("neon"), true), row("broken (invalid)", None, false)]
         );
-        assert_eq!(rows(&EffectChoice::None, None, &listed)[0], row("None", Some("none"), true));
-        assert_eq!(rows(&EffectChoice::Theme, None, &listed)[1], row("Theme's choice (none)", Some("theme"), true));
-        assert_eq!(rows(&EffectChoice::Named("material".into()), None, &listed)[2], row("Material", Some("material"), true));
-        // An effect chosen in the config file stays visible as the current one, after the three.
-        assert_eq!(rows(&EffectChoice::Named("neon".into()), None, &listed)[3], row("neon", Some("neon"), true));
-        assert_eq!(rows(&EffectChoice::Named("gone".into()), None, &listed)[3], row("gone (not installed)", None, true));
-        assert_eq!(rows(&EffectChoice::Named("broken".into()), None, &listed)[3], row("broken (invalid)", None, true));
-        assert_eq!(rows(&EffectChoice::Named("neon".into()), None, &listed).len(), 4);
-        // A material folder that does not load shadows the built-in: shown, not choosable.
-        let shadowed = vec![("material".to_string(), Source::Invalid("bad".into()))];
-        assert_eq!(rows(&EffectChoice::Theme, None, &shadowed)[2], row("Material (invalid)", None, false));
+        assert!(custom_effect_rows(&EffectChoice::None, Some("overworld"), &listed)[0].current);
+        // `theme` is the colour's own effect, or none when it has none.
+        assert!(custom_effect_rows(&EffectChoice::Theme, Some("overworld"), &listed)[2].current);
+        assert!(custom_effect_rows(&EffectChoice::Theme, None, &listed)[0].current);
+        assert_eq!(custom_effect_rows(&EffectChoice::Named("gone".into()), None, &listed)[5], row("gone (not installed)", None, true));
+    }
+
+    #[test]
+    fn putting_the_custom_look_in_force_starts_from_what_is_on_screen_and_never_loses_either_look() {
+        use crate::config::{parse, Look};
+        let own = |pairs: &[(&[&'static str], &str)]| -> Vec<(Vec<&'static str>, String)> { pairs.iter().map(|(k, v)| (k.to_vec(), v.to_string())).collect() };
+        // From the presets, the first time: the preset showing and its own effect.
+        let presets = Config::default();
+        assert_eq!(
+            look_edits(&presets, Look::Custom, "timo-purple", Some("overworld")),
+            own(&[(&["appearance", "look"], "custom"), (&["custom", "color"], "timo-purple"), (&["custom", "effect"], "overworld")])
+        );
+        assert_eq!(look_edits(&presets, Look::Custom, "navy", None)[2], (vec!["custom", "effect"], "none".to_string()), "a preset with no effect");
+        // A custom look already chosen is put back as it was, and the presets as they were.
+        let chosen = parse("[appearance]\nlook = \"presets\"\n[custom]\ncolor = \"matrix\"\neffect = \"material\"\n").unwrap();
+        assert_eq!(look_edits(&chosen, Look::Custom, "timo-purple", Some("overworld")), own(&[(&["appearance", "look"], "custom")]));
+        assert_eq!(look_edits(&chosen, Look::Presets, "matrix", Some("runic")), own(&[(&["appearance", "look"], "presets")]));
+        // An older config's one effect over every theme becomes the custom look's effect.
+        let old = parse("[effect]\nname = \"material\"\n").unwrap();
+        assert_eq!(old.look(), Look::Custom);
+        assert_eq!(look_edits(&old, Look::Custom, "navy", None), own(&[(&["appearance", "look"], "custom"), (&["custom", "color"], "navy"), (&["custom", "effect"], "material")]));
     }
 
     #[test]

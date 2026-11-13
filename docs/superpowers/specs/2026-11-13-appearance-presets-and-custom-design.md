@@ -42,13 +42,13 @@ color = "navy"         # a theme's name: its colours and fonts
 effect = "none"        # "none" or an effect's name
 ```
 
-- `appearance.look` is new and defaults to `presets`. `[custom]` is new.
-- `effect.name` goes. Under presets the effect is the preset's own; under custom it is
-  `custom.effect`. A config that still has `effect.name` loads: `theme` means nothing more, and
-  `none` or a name is read as the old meaning (that effect over the picked theme) until the
-  window rewrites the file at launch, as it does a renamed theme's name: `look = "custom"`,
-  `custom.color` the theme that was showing, `custom.effect` the old value, and `effect.name`
-  removed. `effect.intensity` and `effect.run_unfocused` stay where they are.
+- `appearance.look` and `[custom]` are new. `custom.color` unset means the colours are the
+  preset the mode picks; `custom.effect` may also be `theme`, the colour's own.
+- `effect.name` stays readable. A config with no `look` says which look by it: `theme` is the
+  presets; `none` or a name was that effect over whichever theme showed, which is a custom look
+  with no colour of its own (so it still follows macOS, as it did). Nothing is rewritten at
+  launch. Once a look is written, `effect.name` says nothing more. `effect.intensity` and
+  `effect.run_unfocused` stay where they are.
 
 ## Settings, Appearance
 
@@ -56,8 +56,8 @@ Two pills at the top, **Presets** and **Custom**. The one in force is selected; 
 other puts it in force. Under them, only the selected one's controls:
 
 - **Presets**: Mode (System, Dark, Light); "Dark preset" and "Light preset", the two lists as
-  today, each row naming the preset's effect after its name; "Add preset…" (a theme file, as
-  "Add theme…" was) and "Show presets folder".
+  today; "Add preset…" (a theme file, as "Add theme…" was) and "Show presets folder". (A row
+  does not name its preset's effect yet: the list has only names and kinds.)
 - **Custom**: "Color", one list of every theme, dark ones first, each marked dark or light;
   "Effect", "None" and then every effect installed, built in or a folder, an invalid one marked
   and not clickable; "Add color…" (a theme file, selected as the colour), "Add effect…" (an
@@ -72,9 +72,11 @@ picks something.
 
 The agent guide's commands keep working, in the new terms:
 
-- `arkos theme use <name> [--dark|--light]` sets that preset and puts presets in force.
-- `arkos effect use <name|none>` puts custom in force with that effect, over the colours on
-  screen when custom had none of its own. `arkos effect use theme` puts presets in force.
+- `arkos theme use <name> [--dark|--light]` sets that preset. When the custom look has a colour
+  of its own, which would go on showing, it also puts the presets in force; a custom look with
+  only an effect keeps it over the theme named, so someone who turned effects off keeps them off.
+- `arkos effect use <name|none>` puts custom in force with that effect, over its own colour or,
+  when it has none, the theme showing. `arkos effect use theme` puts presets in force.
 - `arkos settings set` takes `appearance.look`, `custom.color` and `custom.effect`; it still
   takes `effect.name`, as `effect use` does.
 - `arkos theme current` and `arkos effect current` say which is in force.
