@@ -530,6 +530,9 @@ pub enum Event {
     /// A session's attention changed. Sent to the windows attached to it that are on
     /// `ATTENTION_FROM` or later.
     Attention { session: SessionId, attention: Attention },
+    /// A session's agent record was set or cleared (its hooks' SessionStart and SessionEnd).
+    /// Sent as `Attention` is, so a window knows how to resume a session it later closes.
+    Agent { session: SessionId, agent: Option<AgentRecord> },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -738,6 +741,7 @@ mod tests {
         assert_eq!(first_byte(&set), 30);
         assert_eq!(first_byte(&Request::ListAttention), 31);
         assert_eq!(first_byte(&Event::Attention { session: SessionId(3), attention: a.clone() }), 6);
+        assert_eq!(first_byte(&Event::Agent { session: SessionId(3), agent: None }), 7);
         assert_eq!(first_byte(&Response::Attention(vec![(SessionId(3), a.clone())])), 13);
         let bytes = postcard::to_allocvec(&set).unwrap();
         assert_eq!(postcard::from_bytes::<Request>(&bytes).unwrap(), set);

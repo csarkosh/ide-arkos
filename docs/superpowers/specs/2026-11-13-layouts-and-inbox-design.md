@@ -162,6 +162,26 @@ do in the Grid.
 Not in this version: a Changes tab listing what a session modified (the sketch showed one), and
 sessions from other windows.
 
+## As built, 13 November
+
+Built and tested headless: the placement, the attention (hooks, daemon, marks), the list in
+both layouts with its menu, Shift+Cmd+U, the Dock count, closed Claude Code sessions kept
+under Done and resumed, the layout switch and the Inbox's window, Settings' Layout section.
+
+Not built yet, with why:
+
+- **The macOS notification.** It can be posted only from the bundled app, so it cannot be
+  tried from a `target` build; it waits for a pass with a local bundle (`packaging/test.sh`).
+  The `layout.notify` key is not in the config until then.
+- **The filter field** over the Inbox's list.
+- A side pane **per session**: the side pane is one pane, and choosing a session brings
+  forward the tab it opened last (kept for the run, not saved).
+
+Differences from the text above: a session's row says its folder only when it has no line of
+its own; a kept session is recorded when its tab closes (not when its shell exits, whose tab
+stays as an ended row until closed); an agent's record reaches the window by a new
+`Event::Agent`.
+
 ## Constraints
 
 - Tests first, headless, named as sentences; the tree's regrouping, `attention::of`, the

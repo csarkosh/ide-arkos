@@ -17,9 +17,56 @@ pub const ROW_H: f32 = 40.0;
 /// A group's heading.
 pub const GROUP_H: f32 = 20.0;
 
+/// How many closed sessions the list keeps for resuming; an older one is forgotten.
+pub const MAX_ENDED: usize = 50;
+
+/// A Claude Code session whose tab was closed, kept so it can be resumed: what the list showed
+/// of it, and the command that resumes it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Ended {
+    /// The daemon's session it ran in: within the closed tab's minute that shell comes back
+    /// itself instead of a resume in a new one.
+    pub session: u64,
+    pub name: String,
+    pub line: String,
+    /// The folder its shell ran in, when that was not the project.
+    #[serde(default)]
+    pub cwd: Option<std::path::PathBuf>,
+    /// The command that resumes it, as argv.
+    pub resume: Vec<String>,
+    /// When its tab closed, in milliseconds since the Unix epoch.
+    pub ended: u64,
+}
+
+/// `list` with `new` at its head: an earlier entry for the same conversation (the same resume
+/// command) is replaced, and the list is cut to `MAX_ENDED`.
+pub fn keep_ended(list: &mut Vec<Ended>, new: Ended) {
+    list.retain(|e| e.resume != new.resume);
+    list.insert(0, new);
+    list.truncate(MAX_ENDED);
+}
+
+/// One command line for a shell that types `argv`: every word single-quoted, then Enter.
+pub fn resume_line(argv: &[String]) -> Vec<u8> {
+    let mut line = argv.iter().map(|a| format!("'{}'", a.replace('\'', "'\\''"))).collect::<Vec<_>>().join(" ");
+    line.push('\r');
+    line.into_bytes()
+}
+
+/// Which row a menu or a click is for: a session the window shows, or a closed one kept for
+/// resuming, by its place in the kept list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowKey {
+    Live(SessionId),
+    Ended(usize),
+}
+
 /// One session of the window as the list shows it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
+    /// A closed session kept for resuming, by its place in the kept list; None for a session
+    /// the window shows.
+    pub ended: Option<usize>,
     pub session: SessionId,
     pub pane: PaneId,
     pub idx: usize,
@@ -81,6 +128,9 @@ pub enum RowAction {
     BackToList,
     Rename,
     End,
+    /// A closed session: start it again, or forget it.
+    Resume(usize),
+    Forget(usize),
 }
 
 /// A session row's menu, by where it stands: reading marks only where there is something to
@@ -164,6 +214,7 @@ pub fn entries(root: &Root, now: u64) -> Vec<Entry> {
             };
             let marks = root.sessions.marks.get(session).copied().unwrap_or_default();
             Some(Entry {
+                ended: None,
                 session: *session,
                 pane,
                 idx,
@@ -175,6 +226,18 @@ pub fn entries(root: &Root, now: u64) -> Vec<Entry> {
                 later_until: marks.later_until,
             })
         })
+        .chain(root.ended.iter().enumerate().map(|(i, e)| Entry {
+            ended: Some(i),
+            session: SessionId(e.session),
+            pane: 0,
+            idx: 0,
+            name: e.name.clone(),
+            line: e.line.clone(),
+            attention: Attention::Done,
+            alive: false,
+            since: e.ended,
+            later_until: None,
+        }))
         .collect()
 }
 
@@ -224,18 +287,25 @@ pub fn render(root: &mut Root, width: f32, cx: &mut Context<Root>) -> Stateful<D
                 (Attention::Later, Some(until)) => until_text(until, now),
                 _ => attention::age(e.since, now),
             };
-            let (session, pane, idx) = (e.session, e.pane, e.idx);
+            let key = match e.ended {
+                Some(i) => RowKey::Ended(i),
+                None => RowKey::Live(e.session),
+            };
+            let session = e.session;
             let name_color = if muted { dim } else { c.text.hsla() };
             let line_color = if bold { c.text.hsla() } else { dim };
             let row = div()
-                .id(("session-row", session.0 as usize))
+                .id(match key {
+                    RowKey::Live(s) => ("session-row", s.0 as usize),
+                    RowKey::Ended(i) => ("ended-row", i),
+                })
                 .h(px(ROW_H))
                 .flex_none()
                 .pl(px(pad))
                 .pr(px(8.0))
                 .flex()
                 .gap(px(6.0))
-                .when(shown == Some(session), |d| d.bg(selected_bg))
+                .when(key == RowKey::Live(session) && shown == Some(session), |d| d.bg(selected_bg))
                 .hover(move |s| s.bg(hover_bg))
                 .cursor_pointer()
                 // The mark's slot, level with the name.
@@ -261,7 +331,10 @@ pub fn render(root: &mut Root, width: f32, cx: &mut Context<Root>) -> Stateful<D
                         // ellipsis rather than be clipped.
                         .child(div().w(px((width - pad - 26.0).max(0.0))).line_height(px(style.ui(15.0))).overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(style.ui(11.0))).text_color(line_color).child(e.line)),
                 )
-                .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.show_session(session, cx)))
+                .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| match key {
+                    RowKey::Live(session) => root.show_session(session, cx),
+                    RowKey::Ended(i) => root.resume_ended(i, cx),
+                }))
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |root, ev: &MouseDownEvent, _window, cx| {
@@ -272,11 +345,10 @@ pub fn render(root: &mut Root, width: f32, cx: &mut Context<Root>) -> Stateful<D
                         root.wt_menu.hide(now);
                         root.link_menu.hide(now);
                         root.view_menu.hide(now);
-                        root.session_menu.show((session, ev.position), now);
+                        root.session_menu.show((key, ev.position), now);
                         cx.notify();
                     }),
                 );
-            let _ = (pane, idx);
             list = list.child(row);
         }
     }
@@ -286,10 +358,19 @@ pub fn render(root: &mut Root, width: f32, cx: &mut Context<Root>) -> Stateful<D
 /// The right-click menu of a session's row, while one is open or fading out.
 pub fn render_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     let style = root.effect_style();
-    let ((session, at), opacity) = root.session_menu.current(root.frame_now).map(|(m, o)| (*m, o))?;
-    let alive = root.sessions.labels.get(&session).is_none_or(|l| l.alive);
-    let shown = root.tree.find_session(session).is_some();
-    let items = if shown { menu_items(root.sessions.attention_of(session, now_ms()), alive) } else { Vec::new() };
+    let ((key, at), opacity) = root.session_menu.current(root.frame_now).map(|(m, o)| (*m, o))?;
+    let items = match key {
+        RowKey::Live(session) if root.tree.find_session(session).is_some() => {
+            let alive = root.sessions.labels.get(&session).is_none_or(|l| l.alive);
+            menu_items(root.sessions.attention_of(session, now_ms()), alive)
+        }
+        RowKey::Ended(i) if i < root.ended.len() => vec![("Resume", RowAction::Resume(i)), ("Remove from the list", RowAction::Forget(i))],
+        _ => Vec::new(),
+    };
+    let session = match key {
+        RowKey::Live(session) => session,
+        RowKey::Ended(_) => SessionId(0),
+    };
     if items.is_empty() {
         // The session went away: the menu goes too, at once, since nothing is left to draw.
         root.session_menu.clear();
@@ -335,7 +416,7 @@ mod tests {
     use super::*;
 
     fn entry(id: u64, attention: Attention, since: u64) -> Entry {
-        Entry { session: SessionId(id), pane: 1, idx: 0, name: format!("s{id}"), line: String::new(), attention, alive: true, since, later_until: None }
+        Entry { ended: None, session: SessionId(id), pane: 1, idx: 0, name: format!("s{id}"), line: String::new(), attention, alive: true, since, later_until: None }
     }
 
     #[test]
@@ -378,6 +459,23 @@ mod tests {
         assert_eq!(labels(Attention::Later, true), ["Back to the list", "Done", "Rename", "End session"]);
         assert_eq!(labels(Attention::Done, true), ["Not done", "Rename", "End session"]);
         assert!(labels(Attention::Done, false).is_empty(), "a shell that ended has nothing left to do here");
+    }
+
+    #[test]
+    fn a_closed_session_is_kept_once_newest_first_and_its_resume_line_is_quoted() {
+        let ended = |session: u64, id: &str, at: u64| Ended { session, name: format!("s{session}"), line: String::new(), cwd: None, resume: vec!["claude".into(), "--resume".into(), id.into()], ended: at };
+        let mut list = Vec::new();
+        keep_ended(&mut list, ended(1, "a", 10));
+        keep_ended(&mut list, ended(2, "b", 20));
+        keep_ended(&mut list, ended(3, "a", 30));
+        assert_eq!(list.iter().map(|e| e.session).collect::<Vec<_>>(), [3, 2], "the same conversation closed again replaces its entry");
+        for i in 0..(MAX_ENDED as u64 + 5) {
+            keep_ended(&mut list, ended(100 + i, &format!("c{i}"), 100 + i));
+        }
+        assert_eq!(list.len(), MAX_ENDED);
+        assert_eq!(list[0].session, 100 + MAX_ENDED as u64 + 4, "newest first");
+        let line = resume_line(&["env".into(), "CLAUDE_CONFIG_DIR=/Users/me/My Claude".into(), "claude".into(), "--resume".into(), "it's".into()]);
+        assert_eq!(String::from_utf8(line).unwrap(), "'env' 'CLAUDE_CONFIG_DIR=/Users/me/My Claude' 'claude' '--resume' 'it'\\''s'\r");
     }
 
     #[test]

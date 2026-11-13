@@ -29,7 +29,10 @@ session (as Cmd+W closes its tab, with the same minute in which Shift+Cmd+T brin
 mark it read or unread, put it off (Later: in an hour, or tomorrow at 9; it comes back as unread
 when the time comes) or put it away (Done), or rename it. A session put off or away comes back
 by itself when Claude next stops or needs you. The Dock icon counts the sessions that need you
-or are unread. What you did with each session (seen, done, later) is this window's own and is
+or are unread. A Claude Code session whose tab you close (End, or Cmd+W) is kept under Done,
+the last 50 of them, with its name and line: a click resumes it, in its own shell again within
+the closed tab's minute and after that in a new tab that runs `claude --resume` for it; its
+right click has Resume and "Remove from the list". What you did with each session (seen, done, later) is this window's own and is
 saved with it; another window on another folder keeps its own list.
 
 No hook says a permission or a question was answered, so Enter or a digit typed into a session

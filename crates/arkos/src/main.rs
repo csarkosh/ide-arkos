@@ -333,7 +333,12 @@ pub struct Root {
     /// A worktree row's right-click menu while it is open: the worktree and the click.
     pub wt_menu: Transient<(PathBuf, gpui::Point<gpui::Pixels>)>,
     /// The right-click menu of a session's row in the list (`sessions_list`), and where.
-    pub session_menu: Transient<(SessionId, gpui::Point<gpui::Pixels>)>,
+    pub session_menu: Transient<(sessions_list::RowKey, gpui::Point<gpui::Pixels>)>,
+    /// Claude Code sessions whose tabs were closed, newest first, kept under the list's Done so
+    /// a click resumes them; saved with the workspace.
+    pub ended: Vec<sessions_list::Ended>,
+    /// The command to type into a tab's shell once it has started: a resumed session's.
+    pub resume_input: HashMap<TabId, Vec<u8>>,
     /// Whether the session list's Done group shows its rows. Not saved: it opens folded.
     pub sessions_done_open: bool,
     /// The Grid layout's arrangement while the Inbox layout is on (`Tree::regridded` brings it
@@ -723,6 +728,7 @@ impl Root {
         };
         // No saved layout: the empty screen, not a shell nobody asked for.
         let saved_marks: HashMap<SessionId, attention::Marks> = saved.as_ref().map(|w| w.marks.iter().copied().collect()).unwrap_or_default();
+        let saved_ended = saved.as_ref().map(|w| w.ended.clone()).unwrap_or_default();
         let mut grid_tree = saved.as_ref().and_then(|w| w.grid.clone());
         let mut tree = saved.map(|ws| ws.tree).unwrap_or_else(Tree::empty);
         // The config's layout over what was saved: the Inbox's shape, with the Grid's
@@ -803,6 +809,8 @@ impl Root {
             wt_focused: false,
             wt_menu: Transient::Hidden,
             session_menu: Transient::Hidden,
+            ended: saved_ended,
+            resume_input: HashMap::new(),
             sessions_done_open: false,
             dock_badge: 0,
             wt_focus: cx.focus_handle(),
@@ -1961,7 +1969,7 @@ impl Root {
         let shown: HashSet<SessionId> = self.tree.tabs().into_iter().filter_map(|(_, _, tab)| if let Tab::Terminal { session, .. } = tab { Some(*session) } else { None }).collect();
         let mut marks: Vec<(SessionId, attention::Marks)> = self.sessions.marks.iter().filter(|(s, m)| shown.contains(s) && **m != attention::Marks::default()).map(|(s, m)| (*s, *m)).collect();
         marks.sort_by_key(|(s, _)| s.0);
-        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), marks, grid: self.grid_tree.clone(), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone(), folds: self.folds.clone(), diagram_modes: self.diagram_modes.clone() };
+        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), marks, grid: self.grid_tree.clone(), ended: self.ended.clone(), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone(), folds: self.folds.clone(), diagram_modes: self.diagram_modes.clone() };
         request_save(&self.save_queue, ws, cx);
     }
 
@@ -2115,6 +2123,33 @@ impl Root {
         self.focus_pane(pane, cx);
     }
 
+    /// Brings back the closed session at `i` of the kept list. Within its closed tab's minute
+    /// the same shell comes back as it was; after it, a new tab in its folder types the command
+    /// that resumes the conversation. Either way it leaves the kept list.
+    pub fn resume_ended(&mut self, i: usize, cx: &mut Context<Self>) {
+        if i >= self.ended.len() {
+            return;
+        }
+        let e = self.ended.remove(i);
+        let pane = self.tree.inbox_panes().filter(|_| self.is_inbox()).map_or(self.tree.focused, |(sessions, _)| sessions);
+        let session = SessionId(e.session);
+        match self.closed.take_session(session).filter(|c| c.in_grace(Instant::now())) {
+            Some(_) => self.reopen_session(pane, session, e.cwd, cx),
+            None => {
+                let idx = self.tree.add_tab(pane, Tab::Terminal { session: SessionId(0), cwd: e.cwd.clone() });
+                telemetry::pane_open(telemetry::PaneKind::Terminal, telemetry::Opened::Click);
+                self.tree.focus(pane);
+                if let Some(id) = self.tree.tab_id(pane, idx) {
+                    self.tree.set_tab_name(id, Some(e.name));
+                    self.resume_input.insert(id, sessions_list::resume_line(&e.resume));
+                    self.start_shell(id, e.cwd, false);
+                }
+            }
+        }
+        self.save(cx);
+        cx.notify();
+    }
+
     /// Whether the window is in the Inbox layout.
     pub fn is_inbox(&self) -> bool {
         self.config.layout.name == config::LayoutName::Inbox
@@ -2181,6 +2216,12 @@ impl Root {
                     self.close_tab(pane, idx, cx);
                 }
             }
+            RowAction::Resume(i) => self.resume_ended(i, cx),
+            RowAction::Forget(i) => {
+                if i < self.ended.len() {
+                    self.ended.remove(i);
+                }
+            }
         }
         self.save(cx);
         cx.notify();
@@ -2242,6 +2283,14 @@ impl Root {
             let (at, loop_range) = video.read(cx).saved_state();
             self.tree.set_video_state(pane, idx, at, loop_range);
             video.update(cx, |v, cx| v.pause(cx));
+        }
+        // A Claude Code session is kept under the list's Done, to be resumed from there.
+        if let Some(Tab::Terminal { session, cwd }) = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).cloned() {
+            if let Some(agent) = self.sessions.agents.get(&session).cloned() {
+                let name = self.tree.tab_name(id).map(str::to_string).or_else(|| self.sessions.labels.get(&session).map(|l| l.title.clone()).filter(|t| !t.is_empty())).unwrap_or_else(|| self.shell_name.clone());
+                let line = self.sessions.note_of(session).unwrap_or_default().to_string();
+                sessions_list::keep_ended(&mut self.ended, sessions_list::Ended { session: session.0, name, line, cwd, resume: agent.resume, ended: sessions::now_ms() });
+            }
         }
         let Some(tab) = self.tree.close_tab(pane, idx) else { return };
         telemetry::pane_close(&tab);
@@ -3062,7 +3111,11 @@ impl Root {
                         self.tree.focus(pane);
                         self.activate_tab(pane, idx, cx);
                     }
-                    Closed::Session(session, cwd) if in_grace => self.reopen_session(pane, session, cwd, cx),
+                    Closed::Session(session, cwd) if in_grace => {
+                        // Back as it was: no longer a closed session to resume.
+                        self.ended.retain(|e| e.session != session.0);
+                        self.reopen_session(pane, session, cwd, cx)
+                    }
                     Closed::Session(session, cwd) => {
                         eprintln!("arkos: session {} closed more than {}s ago, ending it and opening a new shell", session.0, CLOSE_GRACE.as_secs());
                         self.sessions.kill(session);
@@ -3924,6 +3977,10 @@ impl Root {
                 // The tab keeps the folder its shell was started in.
                 let cwd = self.tab_cwd(tab);
                 self.tree.replace_tab(pane, idx, Tab::Terminal { session, cwd });
+                // A resumed session: its shell types the command that resumes it.
+                if let Some(bytes) = self.resume_input.remove(&tab) {
+                    self.sessions.transport.send(Request::Input { session, bytes });
+                }
                 if note {
                     self.sessions.notes.insert(session, sessions::Note::Restarted);
                 }

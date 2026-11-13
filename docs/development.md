@@ -485,6 +485,10 @@ Things only a person at the screen can check, in order of value:
   (Shift+Cmd+T brings it back); Later: in an hour moves it under Later with "in 60 min"; Done
   folds it under Done; Rename edits the name in the tab bar (in the Inbox, in the header);
   Shift+Cmd+U goes to a blocked session first
+- sessions: End on a row whose `claude` has the hooks moves it under Done (open the group);
+  a click on it within a minute brings the same shell back with its screen; after a minute a
+  click opens a new tab of the same name that types `claude --resume …` and the conversation
+  continues; "Remove from the list" drops the row; the kept rows are there after a relaunch
 - layouts: Settings, Layout, Inbox regroups the window with no tab lost: one pane with a header
   (mark, name, folder, the buttons) in the tab bar's place and no tab bar, the sidebar with
   Sessions and Files and "+ New"; a click on a row shows that session at full size with the keys

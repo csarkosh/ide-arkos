@@ -175,7 +175,7 @@ pub fn group_by_session(events: &[Event]) -> Vec<(SessionId, Vec<Event>)> {
             Event::Output { session, .. } | Event::Exited { session, .. } | Event::State { session, .. } => *session,
             // Not a session's terminal's: the root shows it (`Root::route_events`), or
             // `note_events` has recorded it.
-            Event::UpdateStaged { .. } | Event::Customize { .. } | Event::Direct { .. } | Event::Attention { .. } => continue,
+            Event::UpdateStaged { .. } | Event::Customize { .. } | Event::Direct { .. } | Event::Attention { .. } | Event::Agent { .. } => continue,
         };
         match out.iter_mut().find(|(s, _)| *s == sid) {
             Some((_, list)) => list.push(ev.clone()),
@@ -218,6 +218,9 @@ pub struct SessionManager {
     /// What the user did with each session's present turn (`attention::Marks`): saved with the
     /// workspace, since only this window knows it.
     pub marks: HashMap<SessionId, Marks>,
+    /// Each session's agent record, from the list at connect and `Event::Agent` after: how to
+    /// resume the session once its tab is closed.
+    pub agents: HashMap<SessionId, protocol::AgentRecord>,
     /// The session the user is looking at: its tab shown and focused in the window in front.
     /// A turn that begins there is seen at once. The root keeps it.
     pub shown: Option<SessionId>,
@@ -252,7 +255,7 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub fn new(transport: Arc<dyn Transport>, client: Option<Arc<Client>>, project: PathBuf) -> Self {
-        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashMap::new(), states: HashMap::new(), labels: HashMap::new(), attention: HashMap::new(), marks: HashMap::new(), shown: None, marks_changed: false, later_checked: 0, reporting: HashSet::new(), probed: HashMap::new(), probe_wanted: false, newly_reporting: false, restoring: HashSet::new(), backlog: HashMap::new(), offline: false, kills_to_resend: Vec::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
+        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashMap::new(), states: HashMap::new(), labels: HashMap::new(), attention: HashMap::new(), marks: HashMap::new(), agents: HashMap::new(), shown: None, marks_changed: false, later_checked: 0, reporting: HashSet::new(), probed: HashMap::new(), probe_wanted: false, newly_reporting: false, restoring: HashSet::new(), backlog: HashMap::new(), offline: false, kills_to_resend: Vec::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
     }
 
     /// A new connection: requests go to it from now on.
@@ -385,6 +388,7 @@ impl SessionManager {
                 self.note_reporting(d.info.id);
             }
             if let Some(agent) = &d.agent {
+                self.agents.insert(d.info.id, agent.clone());
                 crate::telemetry::agent_listed(d.info.id.0, &agent.kind, d.recovered);
             }
             if d.recovered {
@@ -637,6 +641,7 @@ impl SessionManager {
         self.states.remove(&session);
         self.attention.remove(&session);
         self.marks.remove(&session);
+        self.agents.remove(&session);
         self.restoring.remove(&session);
         self.backlog.remove(&session);
     }
@@ -760,7 +765,7 @@ impl SessionManager {
     pub fn stash_if_restoring(&mut self, ev: &Event) -> bool {
         let sid = match ev {
             Event::Output { session, .. } | Event::Exited { session, .. } | Event::State { session, .. } => *session,
-            Event::UpdateStaged { .. } | Event::Customize { .. } | Event::Direct { .. } | Event::Attention { .. } => return false,
+            Event::UpdateStaged { .. } | Event::Customize { .. } | Event::Direct { .. } | Event::Attention { .. } | Event::Agent { .. } => return false,
         };
         if !self.restoring.contains(&sid) {
             return false;
@@ -849,6 +854,12 @@ impl SessionManager {
                         self.marks.entry(*session).or_default().turned(shown, now);
                     }
                     changed |= before.as_ref() != Some(attention);
+                }
+                Event::Agent { session, agent } => {
+                    match agent {
+                        Some(agent) => self.agents.insert(*session, agent.clone()),
+                        None => self.agents.remove(session),
+                    };
                 }
                 Event::Exited { session, .. } => {
                     changed |= self.states.remove(session).is_some();

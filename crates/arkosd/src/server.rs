@@ -182,6 +182,15 @@ pub fn send_attention(st: &State, session: SessionId, attention: protocol::Atten
     }
 }
 
+/// Tells the windows attached to `session` its agent record, as `send_attention` tells its
+/// attention.
+pub fn send_agent(st: &State, session: SessionId, agent: Option<protocol::AgentRecord>) {
+    let event = Event::Agent { session, agent };
+    for rec in st.clients.values().filter(|r| r.connected && r.protocol >= ATTENTION_FROM && r.attached.contains(&session)) {
+        rec.tx.send(ServerMessage::Event(event.clone()));
+    }
+}
+
 /// The clients a `Customize` is relayed to, as (client, pid), in connection order, and the pids
 /// of the project windows too old to be asked. A project window said Hello with a pid and a
 /// folder: the launch chooser (whose empty folder `window_folder` keeps as None), `arkos
@@ -750,8 +759,10 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
         }
         Request::SetAgent { session: sid, agent } => match session(sid) {
             Some(s) => {
-                s.set_agent(agent);
-                state.lock().unwrap().manifest_dirty = true;
+                s.set_agent(agent.clone());
+                let mut st = state.lock().unwrap();
+                st.manifest_dirty = true;
+                send_agent(&st, sid, Some(agent));
                 Response::Ok
             }
             None => Response::Error(format!("no session {}", sid.0)),
@@ -759,7 +770,9 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
         Request::ClearAgent { session: sid, id: agent_id } => match session(sid) {
             Some(s) => {
                 if s.clear_agent(&agent_id) {
-                    state.lock().unwrap().manifest_dirty = true;
+                    let mut st = state.lock().unwrap();
+                    st.manifest_dirty = true;
+                    send_agent(&st, sid, None);
                 }
                 Response::Ok
             }

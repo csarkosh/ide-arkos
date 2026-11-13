@@ -95,6 +95,13 @@ impl ClosedStack {
         self.entries.drain(..).filter_map(|e| e.session()).collect()
     }
 
+    /// Takes `session`'s closed tab out of the stack, wherever it is in it: the tab is being
+    /// brought back another way than Cmd+Shift+T.
+    pub fn take_session(&mut self, session: SessionId) -> Option<ClosedTab> {
+        let at = self.entries.iter().position(|e| e.session() == Some(session))?;
+        Some(self.entries.remove(at))
+    }
+
     pub fn contains(&self, session: SessionId) -> bool {
         self.entries.iter().any(|e| e.session() == Some(session))
     }
