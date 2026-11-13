@@ -76,6 +76,9 @@ pub const SETTABLE: &[&str] = &[
     "viewer.wide_tables",
     "viewer.image_destination",
     "viewer.page_width",
+    "layout.name",
+    "layout.placement",
+    "layout.notify",
     "update.auto",
     "recovery.start_at_login",
     "telemetry.usage",
@@ -896,7 +899,7 @@ pub fn typed_value(key: &str, raw: &str) -> Result<toml_edit::Value, String> {
         return Err(format!("not settable: {key}"));
     }
     match key {
-        "update.auto" | "effect.run_unfocused" => match raw {
+        "update.auto" | "effect.run_unfocused" | "layout.notify" => match raw {
             "true" => Ok(true.into()),
             "false" => Ok(false.into()),
             _ => Err(format!("{key} must be true or false, not {raw:?}")),
@@ -907,6 +910,8 @@ pub fn typed_value(key: &str, raw: &str) -> Result<toml_edit::Value, String> {
         "custom.effect" => Err(format!("custom.effect must be theme, none or an effect's bare name, not {raw:?}")),
         "viewer.wide_tables" => one_of(key, raw, &["wrap", "scroll"]),
         "viewer.page_width" => one_of(key, raw, &["full", "letter"]),
+        "layout.name" => one_of(key, raw, &["grid", "inbox"]),
+        "layout.placement" => one_of(key, raw, &["inplace", "neighbor"]),
         // Empty puts images beside the document.
         "viewer.image_destination" => Ok(raw.trim().into()),
         "recovery.start_at_login" => one_of(key, raw, &["ask", "on", "off"]),
@@ -1239,6 +1244,10 @@ mod tests {
         assert!(typed_value("viewer.wide_tables", "sideways").is_err());
         assert_eq!(typed_value("viewer.image_destination", "").unwrap().as_str(), Some(""), "empty is beside the document");
         assert!(typed_value("viewer.page_width", "letter").is_ok() && typed_value("viewer.page_width", "a4").is_err());
+        // The layout's three keys.
+        assert!(typed_value("layout.name", "inbox").is_ok() && typed_value("layout.name", "journal").is_err());
+        assert!(typed_value("layout.placement", "neighbor").is_ok() && typed_value("layout.placement", "right").is_err());
+        assert_eq!(typed_value("layout.notify", "false").unwrap().as_bool(), Some(false));
         assert_eq!(typed_value("viewer.image_destination", " images ").unwrap().as_str(), Some("images"));
         assert_eq!(typed_value("update.auto", "true").unwrap().as_bool(), Some(true));
         assert_eq!(typed_value("font.presets.big.size", "18").unwrap().as_float(), Some(18.0));

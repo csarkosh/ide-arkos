@@ -987,7 +987,10 @@ commands, and change the common settings the same way. `arkos guide` prints what
 
 `arkos open <file>` puts a video, a markdown file or any other text file in a pane of the window
 the agent runs in: by default as a new tab in the agent's own pane, made active, so it appears
-where you are working. `--split right|down|left|up` shows it side by side instead (the guide tells
+where you are working. With `[layout] placement = "neighbor"` in the config it goes beside the
+agent instead: a new tab in the pane to the right of the agent's, else the one to its left, else
+a new pane split off to its right, so the agent's own pane stays as it was. `--split
+right|down|left|up` shows it side by side whatever the setting (the guide tells
 agents to split only when you ask for that), and `--pane N` (numbered as Cmd+1 to Cmd+9) puts it
 in that pane. A file already open is shown where it is rather than opened twice or moved. The keyboard focus stays where you are typing unless the agent passes `--focus`. A video
 opens paused unless the agent asks otherwise, and `--at 0:12`, `--loop 0:12-0:18` and `--playing`

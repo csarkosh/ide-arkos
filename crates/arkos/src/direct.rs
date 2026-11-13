@@ -3,7 +3,8 @@
 //! placement rules are pure functions over the tree; `Root::handle_direct` applies them.
 
 use crate::telemetry::{self, AgentCommand};
-use crate::tree::{PaneId, Side, Tab, TabId, Tree, ViewMode};
+use crate::config::OpenPlacement;
+use crate::tree::{PaneId, Rect, Side, Tab, TabId, Tree, ViewMode};
 use crate::video::PlayerState;
 use crate::Root;
 use gpui::Context;
@@ -41,7 +42,15 @@ pub enum OpenStep {
 /// the window is shown where it is instead, whatever the placement asked (ruling 3, any kind):
 /// the one in the pane the open aims at when that pane has one, else the first in reading order.
 /// Nothing is ever moved.
+#[cfg(test)]
 pub fn plan_open(tree: &Tree, path: &Path, place: &Placement, reuse: bool, anchor: Option<PaneId>) -> Result<OpenStep, String> {
+    plan_open_in(tree, path, place, reuse, anchor, OpenPlacement::Inplace, Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 })
+}
+
+/// `plan_open` under the config's `layout.placement`, which says where a plain open (`Here`)
+/// lands: `Inplace` in the anchor, `Neighbor` beside it (`neighbor_step`; `bounds` is the
+/// panes' area, to tell which pane is beside which).
+pub fn plan_open_in(tree: &Tree, path: &Path, place: &Placement, reuse: bool, anchor: Option<PaneId>, placement: OpenPlacement, bounds: Rect) -> Result<OpenStep, String> {
     let from = anchor.unwrap_or(tree.focused);
     if reuse {
         let aimed = match *place {
@@ -54,6 +63,7 @@ pub fn plan_open(tree: &Tree, path: &Path, place: &Placement, reuse: bool, ancho
         }
     }
     match *place {
+        Placement::Here if placement == OpenPlacement::Neighbor => Ok(neighbor_step(tree, from, bounds)),
         Placement::Here => Ok(OpenStep::AddTo { pane: from }),
         Placement::Pane(n) => {
             let count = tree.panes().len();
@@ -61,6 +71,16 @@ pub fn plan_open(tree: &Tree, path: &Path, place: &Placement, reuse: bool, ancho
             pane.map(|pane| OpenStep::AddTo { pane }).ok_or_else(|| format!("pane {n} does not exist; this window has {count}"))
         }
         Placement::Split(side) => Ok(OpenStep::SplitFrom { pane: from, side: side_of(side) }),
+    }
+}
+
+/// Where a plain open lands beside `from`: a new tab in the pane to its right, else in the one
+/// to its left, else (a single pane, or panes only above and below) a new pane split off to its
+/// right.
+pub fn neighbor_step(tree: &Tree, from: PaneId, bounds: Rect) -> OpenStep {
+    match tree.neighbor(from, Side::Right, bounds).or_else(|| tree.neighbor(from, Side::Left, bounds)) {
+        Some(pane) => OpenStep::AddTo { pane },
+        None => OpenStep::SplitFrom { pane: from, side: Side::Right },
     }
 }
 
@@ -320,7 +340,7 @@ impl Root {
         if !a.wait_for_file && !a.path.exists() {
             return Err(format!("no such file: {}", a.path.display()));
         }
-        let step = plan_open(&self.tree, &a.path, &a.place, a.reuse, anchor)?;
+        let step = plan_open_in(&self.tree, &a.path, &a.place, a.reuse, anchor, self.config.layout.placement, self.content)?;
         let before = self.tree.focused;
         let (pane, idx, reused, new_pane) = match step {
             OpenStep::Reuse { pane, idx } => {
@@ -620,6 +640,32 @@ mod tests {
         assert_eq!(p.active, 1, "the new tab is the one the pane shows");
         assert_eq!(apply_focus(before, pane, false), other, "the keys stay where they were");
         assert_eq!(apply_focus(before, pane, true), agent, "--focus hands them to the tab");
+    }
+
+    #[test]
+    fn a_neighbor_open_goes_to_the_pane_on_the_right_then_the_left_and_splits_right_with_neither() {
+        let bounds = Rect { x: 0.0, y: 0.0, w: 1200.0, h: 800.0 };
+        let plan = |tree: &Tree, from: PaneId, place: Placement| plan_open_in(tree, Path::new("/p/a.md"), &place, true, Some(from), OpenPlacement::Neighbor, bounds).unwrap();
+        // A single pane: a new pane to its right, and from then on that pane takes the tabs.
+        let mut tree = Tree::new(terminal(1));
+        let agent = tree.panes()[0];
+        let step = plan(&tree, agent, Placement::Here);
+        assert_eq!(step, OpenStep::SplitFrom { pane: agent, side: Side::Right });
+        let right = apply(&mut tree, step, viewer("/p/a.md"));
+        assert_eq!(plan_open_in(&tree, Path::new("/p/b.md"), &Placement::Here, true, Some(agent), OpenPlacement::Neighbor, bounds), Ok(OpenStep::AddTo { pane: right }));
+        // From the rightmost pane the neighbour is the one on its left.
+        assert_eq!(plan_open_in(&tree, Path::new("/p/b.md"), &Placement::Here, true, Some(right), OpenPlacement::Neighbor, bounds), Ok(OpenStep::AddTo { pane: agent }));
+        // A file already open is shown where it is, and `--pane` and `--split` say their own.
+        assert_eq!(plan(&tree, agent, Placement::Here), OpenStep::Reuse { pane: right, idx: 0 });
+        assert_eq!(plan_open_in(&tree, Path::new("/p/b.md"), &Placement::Pane(1), true, Some(agent), OpenPlacement::Neighbor, bounds), Ok(OpenStep::AddTo { pane: agent }));
+        assert_eq!(plan_open_in(&tree, Path::new("/p/b.md"), &Placement::Split(SplitSide::Bottom), true, Some(agent), OpenPlacement::Neighbor, bounds), Ok(OpenStep::SplitFrom { pane: agent, side: Side::Bottom }));
+        // Panes only above and below have no neighbour beside them: a split to the right.
+        let mut stacked = Tree::new(terminal(1));
+        let top = stacked.panes()[0];
+        stacked.split(top, Side::Bottom, terminal(2)).unwrap();
+        assert_eq!(plan_open_in(&stacked, Path::new("/p/b.md"), &Placement::Here, true, Some(top), OpenPlacement::Neighbor, bounds), Ok(OpenStep::SplitFrom { pane: top, side: Side::Right }));
+        // In place, the config's default, is the session's own pane as before.
+        assert_eq!(plan_open_in(&tree, Path::new("/p/b.md"), &Placement::Here, true, Some(agent), OpenPlacement::Inplace, bounds), Ok(OpenStep::AddTo { pane: agent }));
     }
 
     #[test]

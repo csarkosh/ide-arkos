@@ -111,7 +111,11 @@ Where the tab goes:
 
 - With neither `--pane` nor `--split`, the tab is a new tab in your own pane (the one holding your
   session), made its active tab. This is the default: the user asked you to show them something,
-  and your pane is where they are looking. No pane is split.
+  and your pane is where they are looking. No pane is split. The user may have chosen otherwise:
+  with `layout.placement = "neighbor"` in their config a plain open goes to the pane to the right
+  of yours, else the one to its left, else a new pane split off to your right (the answer then
+  says `(new pane)`). Either way a plain open is right; do not pass `--pane` or `--split` to
+  work round the user's choice.
 - `--split right|down|left|up`: your own pane is split on that side and the tab is the new pane's
   first tab. Use it only when the user asks to see the file side by side with you ("beside you",
   "next to this", "in a split"). A later file for the same place goes in with `--pane N`, the number
@@ -497,6 +501,8 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
   shows, or `default` for none of a theme's, so the config's `font.family`; never set, the
   fonts are the colour's own),
   `custom.effect` (theme, none, or an installed effect's name), `theme.dark`, `theme.light`, `font.family`, `font.preset`,
+  `layout.name` (grid, inbox), `layout.placement` (inplace, neighbor: where a plain `arkos open`
+  from a session lands), `layout.notify` (true, false),
   `font.presets.<name>.size` (8 to 48), `font.presets.<name>.line_height` (1.0 to 2.5),
   `effect.name` (the older key, kept: `theme` puts the presets in force; `none` or an installed
   effect's name puts the custom look in force with that effect), `effect.intensity` (0.0 to 1.0),

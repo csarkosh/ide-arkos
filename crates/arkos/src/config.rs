@@ -13,6 +13,7 @@ pub struct Config {
     /// Action name (see `keymap::ACTIONS`) to keystrokes in gpui syntax. `""` unbinds.
     pub keybindings: BTreeMap<String, String>,
     pub sidebar: SidebarConfig,
+    pub layout: LayoutConfig,
     pub viewer: ViewerConfig,
     pub browser: BrowserConfig,
     pub daemon: DaemonConfig,
@@ -101,6 +102,46 @@ pub struct SidebarConfig {
 impl Default for SidebarConfig {
     fn default() -> Self {
         Self { width: 260.0, collapsed: false }
+    }
+}
+
+/// How a window arranges its sessions and files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LayoutName {
+    /// Panes of tabs the user splits and arranges.
+    #[default]
+    Grid,
+    /// The sessions as a list sorted by what needs the user, one shown at full size, and a
+    /// side pane for the files they open.
+    Inbox,
+}
+
+/// Where a tab goes that a session opens with a plain `arkos open`, in the Grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OpenPlacement {
+    /// A new tab in the session's own pane.
+    #[default]
+    Inplace,
+    /// A new tab in the pane to the right of the session's, else the one to its left, else a
+    /// new pane split off to its right.
+    Neighbor,
+}
+
+/// The window's layout, where a session's files open, and whether a session that needs the
+/// user says so with a macOS notification while the window is not in front.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LayoutConfig {
+    pub name: LayoutName,
+    pub placement: OpenPlacement,
+    pub notify: bool,
+}
+
+impl Default for LayoutConfig {
+    fn default() -> Self {
+        Self { name: LayoutName::Grid, placement: OpenPlacement::Inplace, notify: true }
     }
 }
 
@@ -318,6 +359,7 @@ impl Default for Config {
             terminal: TerminalConfig::default(),
             keybindings: BTreeMap::new(),
             sidebar: SidebarConfig::default(),
+            layout: LayoutConfig::default(),
             viewer: ViewerConfig::default(),
             browser: BrowserConfig::default(),
             daemon: DaemonConfig::default(),
@@ -809,6 +851,19 @@ option_as_meta = true
 # Width in px and whether it starts collapsed, for a folder opened for the first time; each folder then remembers its own.
 width = 260.0
 collapsed = false
+
+[layout]
+# How a window arranges its sessions and files. "grid": panes of tabs you split and arrange.
+# "inbox": the sessions as a list sorted by what needs you (needs you, unread, unanswered,
+# working, done), one shown at full size, and a side pane for the files they open.
+name = "grid"
+# Where a tab goes that a Claude Code session opens with a plain `arkos open`, in the grid.
+# "inplace": a new tab in the session's own pane. "neighbor": a new tab in the pane to its
+# right, else the one to its left, else a new pane split off to its right.
+placement = "inplace"
+# A macOS notification when a session needs you (a permission, a question) while the window is
+# not in front.
+notify = true
 
 [viewer]
 # Files larger than this open in the viewer without syntax colours; binaries show a notice.
