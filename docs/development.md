@@ -515,7 +515,8 @@ Things only a person at the screen can check, in order of value:
 - layouts: switching to Inbox with the sidebar hidden or on Files shows it on Sessions; "+ New
   session" sits under the filter, above the first group; under overworld the
   sidebar's scene has mountains (by day mesas) above the castle, at the same pixel size as the
-  castle, and the names dim only the part of it they lie over, a short list leaving the castle
+  castle, its sky reaching half the sidebar's height in a tall window with the stars thinning
+  to none at its top and the sun where it was, and the names dim only the part of it they lie over, a short list leaving the castle
   at full colour; a selected session row's highlight stops at the sidebar's frame on both sides
 - sessions: every group's heading has a chevron and folds or opens its rows on a click, Quiet
   and Done folded on a first open; the Unread heading is visibly heavier than the others, in

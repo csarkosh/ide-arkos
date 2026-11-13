@@ -11,6 +11,9 @@ pub const ART_PX: f32 = 3.0;
 /// The tallest the scene is drawn, in points: its 76 art rows (30 of them the far country of
 /// mountains or mesas above the castle) and 10 more of open sky fit under it.
 pub const SCENE_MAX_H: f32 = 260.0;
+/// A tall sidebar's scene reaches up to this share of the sidebar's height, the rows past
+/// `SCENE_MAX_H` being open sky whose stars thin out going up.
+pub const SKY_TO: f32 = 0.5;
 /// Under the sidebar's names the scene is softened for their contrast, and below the last of
 /// them it comes back to full colour over this many points, a row of art at a time.
 pub const SOFT_BUFFER: f32 = 24.0;
@@ -61,7 +64,7 @@ pub fn scene_band(side: Rect) -> Option<Rect> {
     if room < SCENE_MIN_H || side.w <= 2.0 * frame {
         return None;
     }
-    let h = (room.min(SCENE_MAX_H) / ART_PX).floor() * ART_PX;
+    let h = (room.min(SCENE_MAX_H.max(side.h * SKY_TO)) / ART_PX).floor() * ART_PX;
     Some(Rect { x: side.x + frame, y: side.y + side.h - frame - h, w: side.w - 2.0 * frame, h })
 }
 
@@ -228,10 +231,13 @@ mod tests {
 
     #[test]
     fn the_scene_stands_on_the_sidebar_s_frame_up_to_its_full_height() {
-        let band = scene_band(Rect { x: 0.0, y: 28.0, w: 240.0, h: 600.0 }).unwrap();
-        assert_eq!(band, Rect { x: 6.0, y: 628.0 - 6.0 - 258.0, w: 228.0, h: 258.0 }, "86 art pixels, the most under 260 points, inside the frame");
-        // The art pixel is the same at any height: a taller scene is more of it, not larger.
-        assert_eq!(scene_band(Rect { x: 0.0, y: 28.0, w: 260.0, h: 900.0 }).unwrap().h, 258.0);
+        let band = scene_band(Rect { x: 0.0, y: 28.0, w: 240.0, h: 500.0 }).unwrap();
+        assert_eq!(band, Rect { x: 6.0, y: 528.0 - 6.0 - 258.0, w: 228.0, h: 258.0 }, "86 art pixels, the most under 260 points, inside the frame");
+        // Taller, it reaches half the sidebar with more sky, in whole art pixels on the same foot.
+        let tall = scene_band(Rect { x: 0.0, y: 28.0, w: 260.0, h: 900.0 }).unwrap();
+        assert_eq!((tall.h, tall.y + tall.h), (450.0, 928.0 - 6.0));
+        assert_eq!(scene_band(Rect { x: 0.0, y: 28.0, w: 260.0, h: 601.0 }).unwrap().h, 300.0, "300.5 cut to whole art pixels");
+        assert_eq!(scene_band(Rect { x: 0.0, y: 28.0, w: 260.0, h: 520.0 }).unwrap().h, 258.0, "never less than the scene itself");
     }
 
     #[test]
@@ -296,6 +302,7 @@ mod tests {
         for line in [
             format!("constant float ART_PX = {ART_PX:?};"),
             format!("constant float SCENE_MAX_H = {SCENE_MAX_H:?};"),
+            format!("constant float SKY_TO = {SKY_TO:?};"),
             format!("constant float SOFT_BUFFER = {SOFT_BUFFER:?};"),
             format!("constant float SCENE_MIN_H = {SCENE_MIN_H:?};"),
             format!("constant float STAR_CLEAR = {STAR_CLEAR:?};"),
@@ -890,4 +897,5 @@ mod tests {
         }
     }
 }
+
 

@@ -36,6 +36,8 @@ constant float ART_PX = 3.0;
 // inside their own edges.
 constant int FRAME_PX = 2;
 constant float SCENE_MAX_H = 260.0;
+// A tall sidebar's scene reaches up to this share of the sidebar's height with more open sky.
+constant float SKY_TO = 0.5;
 constant float SCENE_MIN_H = 50.0;
 constant float STAR_CLEAR = 12.0;
 
@@ -336,16 +338,17 @@ bool inside_rect(float2 p, float4 r) {
     return p.x >= r.x && p.x <= r.x + r.z && p.y >= r.y && p.y <= r.y + r.w;
 }
 
-// The band of the sidebar `side` the scene is drawn in: inside its frame, at most SCENE_MAX_H tall
-// in whole art pixels, standing on the frame's foot; zero height in a sidebar with under
-// SCENE_MIN_H of room inside its frame. A shorter sidebar shows the scene's lowest rows.
+// The band of the sidebar `side` the scene is drawn in: inside its frame, as tall as half the
+// sidebar and never less than SCENE_MAX_H (what is past the scene is open sky above it), in whole
+// art pixels, standing on the frame's foot; zero height in a sidebar with under SCENE_MIN_H of
+// room inside its frame. A shorter sidebar shows the scene's lowest rows.
 float4 scene_band(float4 side) {
     float in = float(FRAME_PX) * ART_PX;
     float room = side.w - 2.0 * in;
     if (room < SCENE_MIN_H || side.z <= 2.0 * in) {
         return float4(0.0);
     }
-    float h = floor(min(room, SCENE_MAX_H) / ART_PX) * ART_PX;
+    float h = floor(min(room, max(SCENE_MAX_H, side.w * SKY_TO)) / ART_PX) * ART_PX;
     return float4(side.x + in, side.y + side.w - in - h, side.z - 2.0 * in, h);
 }
 
@@ -882,15 +885,19 @@ float3 soften(constant ArkosInputs& u, float3 c, float3 sb) {
     return sb;
 }
 
-// The open sky above the scene at art pixel (i, j) of its HIGH_ROWS: the sidebar's colour and a
-// scatter of stars.
-float3 high_sky(constant ArkosInputs& u, int i, int j, float t) {
+// The open sky above the scene at art pixel (i, j) of its HIGH_ROWS, and above them in a tall
+// sidebar (j below 0, `extra` rows of it): the sidebar's colour and a scatter of stars, thinning
+// out going up the extra rows until there are none at their top.
+float3 high_sky(constant ArkosInputs& u, int i, int j, int extra, float t) {
     float3 col = u.colors[ARKOS_SIDEBAR].rgb;
-    int2 cell = int2(i / STAR_CELL.x, j / STAR_CELL.y);
+    // Whole cells above the scene's sky too: rows below 0 count down in cells of their own.
+    int cy = j >= 0 ? j / STAR_CELL.y : -((STAR_CELL.y - 1 - j) / STAR_CELL.y);
+    float keep = j >= 0 || extra <= 0 ? 1.0 : saturate(1.0 - float(-j) / float(extra));
+    int2 cell = int2(i / STAR_CELL.x, cy);
     uint id = (uint(cell.y) * 64u + uint(cell.x) + 4096u) ^ STAR_SALT;
     int sx = cell.x * STAR_CELL.x + int(hash01(id + 1u) * float(STAR_CELL.x));
     int sy = cell.y * STAR_CELL.y + int(hash01(id + 2u) * float(STAR_CELL.y));
-    if (i == sx && j == sy && hash01(id) < STAR_CHANCE) {
+    if (i == sx && j == sy && hash01(id) < STAR_CHANCE * keep) {
         float3 star = hash01(id + 3u) < STAR_FOCUS ? u.colors[ARKOS_FOCUS_RING].rgb : u.colors[ARKOS_TEXT].rgb;
         col = mix(col, mute(u, star), twinkle(float(4096 + cell.y * 64 + cell.x), t));
     }
@@ -1151,7 +1158,8 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             int2 q = int2(floor((p - band.xy) / px));
             int j = q.y + SCENE_ROWS + HIGH_ROWS - int(band.w / px);
             int w = int(band.z / px);
-            float3 art = j < HIGH_ROWS ? high_sky(u, q.x, j, t) : scene(u, q.x, j - HIGH_ROWS, w, t);
+            int extra = int(band.w / px) - SCENE_ROWS - HIGH_ROWS;
+            float3 art = j < HIGH_ROWS ? high_sky(u, q.x, j, extra, t) : scene(u, q.x, j - HIGH_ROWS, w, t);
             art = mix(art, mute(u, u.colors[ARKOS_TEXT].rgb), shooting(q.x, j, w, HIGH_ROWS + STAR_ROWS, 2.0, SHOOT_CYCLE, t, SHOOT_SALT));
             // Under the names it is softened for their contrast, and below the last of them it
             // comes back to full colour over SOFT_BUFFER, a row of art at a time.
