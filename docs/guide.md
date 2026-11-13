@@ -7,7 +7,7 @@ install; [development.md](development.md) is for building, testing and releasing
 
 Claude Code tells the IDE what it is doing through its hooks. Run "Install Claude Code hooks"
 from the command palette (or `arkos hooks install`), or the doctor's "Claude Code title hook"
-row, which merges six entries into `~/.claude/settings.json` after writing a `.bak`, then start
+row, which merges eight entries into `~/.claude/settings.json` after writing a `.bak`, then start
 or restart `claude` in a tab:
 
 | Claude Code event | The tab |

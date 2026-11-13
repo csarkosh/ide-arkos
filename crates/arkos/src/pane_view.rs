@@ -2,6 +2,7 @@
 //! tab's placeholder, a busy notice while a shell starts or a replay is parsed, or the empty
 //! state), and the URL prompt over the focused pane.
 
+use crate::attention::Attention;
 use crate::effects::active::Style;
 use crate::drag;
 use crate::effects::blocks;
@@ -106,24 +107,50 @@ pub fn glow_width(w: f32, h: f32, breath: f32) -> f32 {
     (GLOW_W * (1.0 + GLOW_BREATH_REACH * breath)).min(w / 2.0).min(h / 2.0).max(0.0)
 }
 
-/// What a tab shows before its title (spec 5): a breathing glyph, a warm dot, nothing, or a
-/// muted title for a shell that ended.
+/// What a tab shows before its title (spec 5, and the layouts spec's states): a breathing
+/// glyph for work, the warm dot in a ring for a session blocked on the user, the warm dot for
+/// one that finished and has not been looked at, a warm ring for one looked at and not
+/// answered, nothing, or a muted title for a shell that ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabMark {
     None,
     Working,
-    Waiting,
+    NeedsYou,
+    Unread,
+    Unanswered,
     Dead,
 }
 
 impl TabMark {
-    pub fn of(state: Option<protocol::ClaudeState>, alive: bool) -> TabMark {
-        use protocol::ClaudeState::*;
-        match (alive, state) {
+    pub fn of(attention: Attention, alive: bool) -> TabMark {
+        match (alive, attention) {
             (false, _) => TabMark::Dead,
-            (true, Some(Working)) => TabMark::Working,
-            (true, Some(Waiting)) => TabMark::Waiting,
-            _ => TabMark::None,
+            (true, Attention::Working) => TabMark::Working,
+            (true, Attention::NeedsYou) => TabMark::NeedsYou,
+            (true, Attention::Unread) => TabMark::Unread,
+            (true, Attention::Unanswered) => TabMark::Unanswered,
+            // Idle, and what the user put off or away.
+            (true, Attention::Idle | Attention::Later | Attention::Done) => TabMark::None,
+        }
+    }
+
+    /// The mark drawn: nothing for `None` and `Dead` (a dead tab's title is muted instead).
+    /// `breath` is the working glyph's alpha this frame. The three waiting marks share the
+    /// theme's `waiting` colour and differ by shape, so no theme names a new colour for them.
+    pub fn glyph(self, theme: &Theme, breath: f32) -> Option<Div> {
+        let warm = theme.semantic.waiting.hsla();
+        match self {
+            TabMark::Working => {
+                let mut c = theme.semantic.working.hsla();
+                c.a = breath;
+                Some(div().size(px(7.0)).flex_none().rounded_full().bg(c))
+            }
+            TabMark::NeedsYou => Some(
+                div().size(px(11.0)).flex_none().rounded_full().border_1().border_color(warm).flex().items_center().justify_center().child(div().size(px(5.0)).rounded_full().bg(warm)),
+            ),
+            TabMark::Unread => Some(div().size(px(7.0)).flex_none().rounded_full().bg(warm)),
+            TabMark::Unanswered => Some(div().size(px(7.0)).flex_none().rounded_full().border_1().border_color(warm)),
+            TabMark::None | TabMark::Dead => None,
         }
     }
 }
@@ -407,7 +434,7 @@ fn automatic_label(root: &Root, p: &Pane, idx: usize, tab: &Tab) -> (String, Tab
             // The label kept beside the terminal, never the terminal itself (`TermLabel`).
             match root.sessions.labels.get(session) {
                 Some(t) => {
-                    let mark = TabMark::of(root.sessions.states.get(session).copied(), t.alive);
+                    let mark = TabMark::of(root.sessions.attention_of(*session, crate::sessions::now_ms()), t.alive);
                     (tab_label(&t.title, &root.shell_name, t.alive, t.exit_code, note, busy), mark)
                 }
                 None => (tab_label("", &root.shell_name, true, None, note, busy.or(Some("starting shell"))), TabMark::None),
@@ -703,15 +730,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
         let is_active = idx == p.active;
         // A preview tab stays dim even when active, so it reads as temporary (ruling 4).
         let is_preview = root.preview_tab.is_some() && p.ids.get(idx).copied() == root.preview_tab;
-        let glyph = match mark {
-            TabMark::Working => {
-                let mut c = theme.semantic.working.hsla();
-                c.a = alpha;
-                Some(div().size(px(7.0)).rounded_full().bg(c))
-            }
-            TabMark::Waiting => Some(div().size(px(7.0)).rounded_full().bg(theme.semantic.waiting.hsla())),
-            TabMark::None | TabMark::Dead => None,
-        };
+        let glyph = mark.glyph(&theme, alpha);
         let text = match mark {
             TabMark::Dead => muted,
             _ if is_active && !is_preview => fg.hsla(),
@@ -948,7 +967,10 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 return;
             }
             let session = t_keys.read(cx).session;
-            if root.sessions.notes.remove(&session).is_some() | root.sessions.acknowledge(session) {
+            // Enter or a digit answers a permission or a question; any other key is a look.
+            let answers = ks.key == "enter" || (ks.key.len() == 1 && ks.key.as_bytes()[0].is_ascii_digit());
+            if root.sessions.notes.remove(&session).is_some() | root.sessions.typed(session, answers) {
+                root.save(cx);
                 cx.notify();
             }
             let option_as_meta = root.config.terminal.option_as_meta;
@@ -1794,12 +1816,14 @@ mod tests {
 
     #[test]
     fn a_tab_mark_is_the_state_unless_the_shell_ended() {
-        use protocol::ClaudeState;
-        assert_eq!(TabMark::of(Some(ClaudeState::Working), true), TabMark::Working);
-        assert_eq!(TabMark::of(Some(ClaudeState::Waiting), true), TabMark::Waiting);
-        assert_eq!(TabMark::of(Some(ClaudeState::Idle), true), TabMark::None);
-        assert_eq!(TabMark::of(None, true), TabMark::None);
-        assert_eq!(TabMark::of(Some(ClaudeState::Working), false), TabMark::Dead, "ended outranks a stale state");
+        assert_eq!(TabMark::of(Attention::Working, true), TabMark::Working);
+        assert_eq!(TabMark::of(Attention::NeedsYou, true), TabMark::NeedsYou);
+        assert_eq!(TabMark::of(Attention::Unread, true), TabMark::Unread);
+        assert_eq!(TabMark::of(Attention::Unanswered, true), TabMark::Unanswered);
+        for quiet in [Attention::Idle, Attention::Later, Attention::Done] {
+            assert_eq!(TabMark::of(quiet, true), TabMark::None, "{quiet:?}");
+        }
+        assert_eq!(TabMark::of(Attention::Working, false), TabMark::Dead, "ended outranks a stale state");
     }
 
     #[test]

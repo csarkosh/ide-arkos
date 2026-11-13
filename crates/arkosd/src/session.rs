@@ -315,6 +315,10 @@ pub struct Session {
     /// The agent inside, from its SessionStart hook; its SessionEnd hook clears it. A leaf lock:
     /// never taken while `state` or `child` is held, and neither of those is taken under it.
     agent: Mutex<Option<AgentRecord>>,
+    /// Whether the agent is blocked on the user and the line it last gave, from its hooks. A
+    /// leaf lock, as `agent` is. Kept in memory only: after an upgrade the next hook says it
+    /// again.
+    attention: Mutex<protocol::Attention>,
     /// Recreated by `--recover`, until the user first types into it (the window's note clears
     /// at that moment too, and must not come back with the next list).
     recovered: AtomicBool,
@@ -417,6 +421,7 @@ impl Session {
             nice: spec.nice,
             env: spec.env,
             agent: Mutex::new(spec.agent),
+            attention: Mutex::new(protocol::Attention::default()),
             recovered: AtomicBool::new(spec.recovered),
         });
         if start_reader {
@@ -822,6 +827,7 @@ impl Session {
             nice: record.nice,
             env: record.env.clone(),
             agent: Mutex::new(record.agent.clone()),
+            attention: Mutex::new(protocol::Attention::default()),
             recovered: AtomicBool::new(record.recovered),
         });
         if let Some(ms) = record.grace_left_ms {
@@ -890,6 +896,26 @@ impl Session {
             }
             _ => false,
         }
+    }
+
+    /// Sets whether the agent is blocked and, with a `note`, its line (cut to
+    /// `ATTENTION_NOTE_MAX` bytes at a character). The attention now, when this changed it.
+    pub fn set_attention(&self, blocked: bool, note: Option<&str>) -> Option<protocol::Attention> {
+        let mut a = self.attention.lock().unwrap_or_else(|p| p.into_inner());
+        let before = a.clone();
+        a.blocked = blocked;
+        if let Some(note) = note {
+            let mut end = note.len().min(protocol::ATTENTION_NOTE_MAX);
+            while !note.is_char_boundary(end) {
+                end -= 1;
+            }
+            a.note = note[..end].to_string();
+        }
+        (*a != before).then(|| a.clone())
+    }
+
+    pub fn attention(&self) -> protocol::Attention {
+        self.attention.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     pub fn agent(&self) -> Option<AgentRecord> {
@@ -1285,6 +1311,15 @@ mod tests {
         assert_eq!(s.detail().agent, None);
         // The seed is the ring's first content.
         assert_eq!(s.snapshot().replay, b"old output");
+        // Attention: a block and a line, changed only when something differs, the line kept
+        // when none is given and cut at a character when too long.
+        assert_eq!(s.attention(), protocol::Attention::default());
+        assert_eq!(s.set_attention(true, Some("Allow Bash: ls")), Some(protocol::Attention { blocked: true, note: "Allow Bash: ls".into() }));
+        assert_eq!(s.set_attention(true, None), None, "nothing changed");
+        assert_eq!(s.set_attention(false, None), Some(protocol::Attention { blocked: false, note: "Allow Bash: ls".into() }));
+        let long = "é".repeat(protocol::ATTENTION_NOTE_MAX);
+        let cut = s.set_attention(false, Some(&long)).unwrap().note;
+        assert!(cut.len() <= protocol::ATTENTION_NOTE_MAX && cut.chars().all(|c| c == 'é'));
         let _ = s.kill();
     }
 

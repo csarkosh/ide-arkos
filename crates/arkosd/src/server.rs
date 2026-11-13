@@ -4,7 +4,7 @@ use crate::handover::Handover;
 use crate::session::{Backpressure, ClientId, ClientSink, Session, SpawnSpec};
 use anyhow::{Context, Result};
 use protocol::codec::{read_frame, write_frame};
-use protocol::{ClientMessage, CustomizeOutcome, Event, OpenKind, PaneAction, Request, Response, ServerMessage, SessionId, StagedUpdate, WindowDetail, WindowTarget, CUSTOMIZE_FROM, CUSTOMIZE_WAIT, DIRECT_FROM, PROTOCOL_MIN, PROTOCOL_VERSION, WEB_OPEN_FROM};
+use protocol::{ClientMessage, CustomizeOutcome, Event, OpenKind, PaneAction, Request, Response, ServerMessage, SessionId, StagedUpdate, WindowDetail, WindowTarget, CUSTOMIZE_FROM, CUSTOMIZE_WAIT, DIRECT_FROM, ATTENTION_FROM, PROTOCOL_MIN, PROTOCOL_VERSION, WEB_OPEN_FROM};
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter};
 use std::os::fd::{AsRawFd, RawFd};
@@ -169,6 +169,15 @@ fn status_parts(st: &State, running: &crate::updates::version::Version) -> (Opti
 /// already removing it.
 pub fn broadcast(st: &State, event: Event) {
     for rec in st.clients.values().filter(|r| r.connected && r.protocol >= UPDATE_EVENTS_FROM) {
+        rec.tx.send(ServerMessage::Event(event.clone()));
+    }
+}
+
+/// Tells the windows attached to `session` its attention, those on `ATTENTION_FROM` or later:
+/// an older window cannot decode the variant and would drop its connection.
+pub fn send_attention(st: &State, session: SessionId, attention: protocol::Attention) {
+    let event = Event::Attention { session, attention };
+    for rec in st.clients.values().filter(|r| r.connected && r.protocol >= ATTENTION_FROM && r.attached.contains(&session)) {
         rec.tx.send(ServerMessage::Event(event.clone()));
     }
 }
@@ -1019,10 +1028,30 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
         Request::SetState { session: sid, state: claude } => match session(sid) {
             Some(s) => {
                 s.set_state(claude);
+                // A state said plainly (an older hook, a window's own) ends a block.
+                if let Some(now) = s.set_attention(false, None) {
+                    send_attention(&state.lock().unwrap(), sid, now);
+                }
                 Response::Ok
             }
             None => Response::Error(format!("no session {}", sid.0)),
         },
+        Request::SetAttention { session: sid, state: claude, blocked, note } => match session(sid) {
+            Some(s) => {
+                s.set_state(claude);
+                if let Some(now) = s.set_attention(blocked, note.as_deref()) {
+                    send_attention(&state.lock().unwrap(), sid, now);
+                }
+                Response::Ok
+            }
+            None => Response::Error(format!("no session {}", sid.0)),
+        },
+        Request::ListAttention => {
+            let st = state.lock().unwrap();
+            let mut list: Vec<_> = st.sessions.values().map(|s| (s.id, s.attention())).filter(|(_, a)| *a != protocol::Attention::default()).collect();
+            list.sort_by_key(|(id, _)| id.0);
+            Response::Attention(list)
+        }
         // Relayed to every project window under one lock; the answer goes later through `tx`
         // with this message's id, when every window has answered or `CUSTOMIZE_WAIT` is over.
         Request::Customize { id: customize_id, action } | Request::CustomizeDetailed { id: customize_id, action } => {

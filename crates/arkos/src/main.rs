@@ -4,6 +4,7 @@ mod agent_probe;
 mod app_nap;
 mod aux;
 mod bounded;
+mod attention;
 mod av_player;
 mod cache;
 mod chooser_sessions;
@@ -708,10 +709,12 @@ impl Root {
             None => (sidebar::Sidebar::new(config.sidebar.width, config.sidebar.collapsed, true, true, cx), explorer::Explorer::new(project.clone(), Vec::new(), false), worktrees::Worktrees::new(Vec::new())),
         };
         // No saved layout: the empty screen, not a shell nobody asked for.
+        let saved_marks: HashMap<SessionId, attention::Marks> = saved.as_ref().map(|w| w.marks.iter().copied().collect()).unwrap_or_default();
         let tree = saved.map(|ws| ws.tree).unwrap_or_else(Tree::empty);
         let mut sessions = SessionManager::new(client.clone(), Some(client), project.clone());
         let t = &config.terminal;
         sessions.set_defaults(t.scrollback, t.shell.clone(), t.nice);
+        sessions.marks = saved_marks;
         // Every keystroke counts as input for the idle rule. An interceptor runs before dispatch,
         // so keys a find bar or the Escape capture stops still count.
         let weak = cx.weak_entity();
@@ -1915,7 +1918,11 @@ impl Root {
 
     pub fn save(&mut self, cx: &mut App) {
         let sidebar = SidebarSaved { width: self.sidebar.width, collapsed: self.sidebar.collapsed, show_ignored: self.explorer.show_ignored, expanded: self.explorer.expanded_dirs(), worktrees_expanded: self.worktrees.expanded.iter().cloned().collect(), explorer_open: self.sidebar.explorer_open, worktrees_open: self.sidebar.worktrees_open };
-        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone(), folds: self.folds.clone(), diagram_modes: self.diagram_modes.clone() };
+        // The marks of the sessions the window still shows, in a steady order.
+        let shown: HashSet<SessionId> = self.tree.tabs().into_iter().filter_map(|(_, _, tab)| if let Tab::Terminal { session, .. } = tab { Some(*session) } else { None }).collect();
+        let mut marks: Vec<(SessionId, attention::Marks)> = self.sessions.marks.iter().filter(|(s, m)| shown.contains(s) && **m != attention::Marks::default()).map(|(s, m)| (*s, *m)).collect();
+        marks.sort_by_key(|(s, _)| s.0);
+        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), marks, text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone(), folds: self.folds.clone(), diagram_modes: self.diagram_modes.clone() };
         request_save(&self.save_queue, ws, cx);
     }
 
@@ -2041,13 +2048,23 @@ impl Root {
         focused_session_of(&self.tree)
     }
 
-    /// Clears the waiting dot of the focused tab (the user is looking at it).
+    /// The user is looking at the focused tab: a session waiting there is seen (and one that
+    /// only rang the bell is idle again). Nothing while the window is behind another: a tab
+    /// focused in a window nobody is looking at has not been looked at.
     pub fn acknowledge_focused(&mut self, cx: &mut Context<Self>) {
-        if let Some(s) = self.focused_session() {
+        self.sync_shown();
+        if let Some(s) = self.sessions.shown {
             if self.sessions.acknowledge(s) {
+                self.save(cx);
                 cx.notify();
             }
         }
+    }
+
+    /// Tells the sessions which one the user is looking at: the focused tab's, while the window
+    /// is in front. A turn that begins there is seen as it arrives.
+    fn sync_shown(&mut self) {
+        self.sessions.shown = if self.window_active { self.focused_session() } else { None };
     }
 
     pub fn activate_tab(&mut self, pane: PaneId, idx: usize, cx: &mut Context<Self>) {
@@ -3745,7 +3762,11 @@ impl Root {
                 self.show_notice(format!("update failed: {e}"), cx);
             }
             Outcome::CheckFailed(e) => self.show_notice(e, cx),
+            Outcome::Attention => cx.notify(),
             Outcome::Sessions(list) => {
+                if self.daemon_protocol_max >= protocol::ATTENTION_FROM {
+                    self.sessions.list_attention();
+                }
                 if self.status == CONNECTING {
                     // The banner goes away, so every pane grows: forget measurements taken under
                     // it so restores wait for the next frame's grid.
@@ -4414,6 +4435,7 @@ impl Render for Root {
         self.effect_shapes.clear();
         self.effect_menus.clear();
         self.window_active = window.is_window_active();
+        self.sync_shown();
         self.note_focus();
         let now = Instant::now();
         // Before the clocks are read: a change of focus or of Settings' focus re-renders.
@@ -5306,6 +5328,9 @@ fn open_project_window(
                             if root.window_active {
                                 root.recheck_invitation(cx);
                             }
+                            // Coming back to the window is a look at its focused tab; leaving
+                            // it means the next answer there arrives unseen.
+                            root.acknowledge_focused(cx);
                             if !root.window_active && root.close_popovers(Instant::now()) {
                                 cx.notify();
                             }

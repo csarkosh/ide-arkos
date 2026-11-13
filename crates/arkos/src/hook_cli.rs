@@ -14,6 +14,11 @@ use std::time::Duration;
 const TIMEOUT: Duration = Duration::from_secs(2);
 /// A hook's stdin is a small JSON object; more than this is not one.
 const STDIN_CAP: u64 = 64 * 1024;
+/// The most of a `--hook`'s stdin that is read: a tool's input can be a whole file being written,
+/// and a Stop's the whole of a long answer.
+const HOOK_STDIN_CAP: u64 = 8 * 1024 * 1024;
+/// The longest line a report carries, in characters.
+const NOTE_CHARS: usize = 200;
 
 /// What the SessionStart hook prints inside Arkos when `arkos` resolves on its PATH. Claude Code
 /// adds a SessionStart hook's standard output to the agent's context, so the agent learns where
@@ -50,6 +55,17 @@ pub enum HookEvent {
 pub enum Notify {
     State(ClaudeState),
     Event(HookEvent),
+    /// `notify --hook`: the event's own JSON on stdin says which event it is.
+    Hook,
+}
+
+/// What one hook event says about its session (layouts spec, "The states"): its state, whether
+/// the agent is blocked on the user, and a new line for it (None keeps the line it has).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookReport {
+    pub state: ClaudeState,
+    pub blocked: bool,
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,8 +77,9 @@ pub struct HookInput {
 
 /// `notify --state <working|waiting|idle>` or `notify --event <session-start|session-end>`.
 pub fn parse_notify(args: &[String]) -> Result<Notify, String> {
-    let usage = "usage: arkos notify --state <working|waiting|idle> | --event <session-start|session-end>";
+    let usage = "usage: arkos notify --hook | --state <working|waiting|idle> | --event <session-start|session-end>";
     match (args.first().map(String::as_str), args.get(1).map(String::as_str), args.get(2).map(String::as_str)) {
+        (Some("notify"), Some("--hook"), None) => Ok(Notify::Hook),
         (Some("notify"), Some("--state"), Some("working")) => Ok(Notify::State(ClaudeState::Working)),
         (Some("notify"), Some("--state"), Some("waiting")) => Ok(Notify::State(ClaudeState::Waiting)),
         (Some("notify"), Some("--state"), Some("idle")) => Ok(Notify::State(ClaudeState::Idle)),
@@ -80,6 +97,88 @@ pub fn parse_hook_input(stdin: &str) -> Option<HookInput> {
     let id = v.get("session_id")?.as_str()?.trim();
     let reason = v.get("reason").and_then(|r| r.as_str()).map(str::to_string);
     (!id.is_empty()).then(|| HookInput { session_id: id.to_string(), reason })
+}
+
+/// One line of `text` for a list row: its first line with anything on it, less the markdown
+/// marks that would read as noise (a heading's hashes, a bullet, emphasis, backticks), its spaces
+/// collapsed, and cut to `NOTE_CHARS` characters. None when nothing is left.
+pub fn note_line(text: &str) -> Option<String> {
+    let line = text.lines().map(|l| l.trim().trim_start_matches(['#', '>', '-', '*', ' '])).find(|l| l.chars().any(char::is_alphanumeric))?;
+    let plain = line.replace("**", "").replace('`', "");
+    let mut out = plain.split_whitespace().collect::<Vec<_>>().join(" ");
+    if out.chars().count() > NOTE_CHARS {
+        out = out.chars().take(NOTE_CHARS - 1).collect::<String>() + "…";
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// A tool call as a row's line: the tool and the part of its input that says what it is doing
+/// (a command, a file's name, a pattern, an agent's task), or the tool's name alone.
+pub fn tool_line(tool: &str, input: &serde_json::Value) -> String {
+    let text = |key: &str| input.get(key).and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
+    let file = |key: &str| text(key).map(|p| Path::new(p).file_name().map_or(p.to_string(), |n| n.to_string_lossy().into_owned()));
+    let detail = match tool {
+        "Bash" => text("command").map(str::to_string),
+        "Read" | "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => file("file_path").or_else(|| file("notebook_path")),
+        "Grep" | "Glob" => text("pattern").map(str::to_string),
+        "WebFetch" => text("url").map(str::to_string),
+        "WebSearch" => text("query").map(str::to_string),
+        "Task" | "Agent" => text("description").map(str::to_string),
+        _ => None,
+    };
+    let line = match detail {
+        Some(d) => format!("{tool}: {d}"),
+        None => tool.to_string(),
+    };
+    note_line(&line).unwrap_or_else(|| tool.to_string())
+}
+
+/// What a hook event's JSON says about its session, or None for an event that says nothing
+/// (one this does not know, or a notification that is no call on the user). A prompt sent or a
+/// tool starting or ending is work; a permission dialog, a question put to the user and a plan
+/// to approve block; a stop waits with the agent's last words.
+pub fn hook_report(v: &serde_json::Value) -> Option<HookReport> {
+    let text = |key: &str| v.get(key).and_then(|x| x.as_str());
+    let tool = text("tool_name").unwrap_or("");
+    let none = serde_json::Value::Null;
+    let input = v.get("tool_input").unwrap_or(&none);
+    let working = |note: Option<String>| Some(HookReport { state: ClaudeState::Working, blocked: false, note });
+    let blocked = |note: Option<String>| Some(HookReport { state: ClaudeState::Waiting, blocked: true, note });
+    match text("hook_event_name")? {
+        "UserPromptSubmit" | "PostToolUse" | "PostToolUseFailure" => working(None),
+        "PreToolUse" => match tool {
+            "AskUserQuestion" => {
+                let question = input.pointer("/questions/0/question").and_then(|q| q.as_str()).and_then(note_line);
+                blocked(Some(question.unwrap_or_else(|| "Asks you a question".to_string())))
+            }
+            "ExitPlanMode" => blocked(Some("Plan ready for review".to_string())),
+            "" => working(None),
+            _ => working(Some(tool_line(tool, input))),
+        },
+        "PermissionRequest" => blocked(Some(format!("Allow {}", tool_line(if tool.is_empty() { "this" } else { tool }, input)))),
+        "Notification" => match text("notification_type") {
+            // The permission's own event said which tool; this one says only that it waits.
+            Some("permission_prompt") => blocked(None),
+            Some("elicitation_dialog" | "agent_needs_input") => blocked(text("message").and_then(note_line)),
+            _ => None,
+        },
+        "Stop" => Some(HookReport { state: ClaudeState::Waiting, blocked: false, note: text("last_assistant_message").and_then(note_line) }),
+        _ => None,
+    }
+}
+
+/// `hook_report` from a hook's stdin as text. JSON that does not parse (cut off at the cap) still
+/// gives its event's state, found by name, so a very long answer or file never leaves a session
+/// looking as if it were still working.
+pub fn hook_report_from(stdin: &str) -> Option<HookReport> {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(stdin) {
+        return hook_report(&v);
+    }
+    let named = |event: &str| stdin.contains(&format!("\"hook_event_name\":\"{event}\"")) || stdin.contains(&format!("\"hook_event_name\": \"{event}\""));
+    ["Stop", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest"]
+        .into_iter()
+        .find(|e| named(e))
+        .and_then(|event| hook_report(&serde_json::json!({ "hook_event_name": event })))
 }
 
 /// The command that resumes an agent's session, as argv. Claude Code: `claude --resume <id>`
@@ -106,6 +205,8 @@ pub fn config_dir_env() -> Option<PathBuf> {
 pub fn request_for(notify: &Notify, session: SessionId, input: Option<&HookInput>, config_dir: Option<&Path>) -> Option<Request> {
     match notify {
         Notify::State(state) => Some(Request::SetState { session, state: *state }),
+        // A hook's request is made from its report (`run_with`), not from here.
+        Notify::Hook => None,
         Notify::Event(HookEvent::SessionStart) => {
             let id = input?.session_id.clone();
             Some(Request::SetAgent { session, agent: AgentRecord { kind: "claude".into(), resume: resume_command("claude", &id, config_dir), id } })
@@ -179,13 +280,25 @@ pub fn run_with(args: &[String], socket: &Path, session_env: Option<&str>, stdin
         let _ = out.write_all(lines.as_bytes());
         let _ = out.flush();
     }
+    if notify == Notify::Hook {
+        let mut text = String::new();
+        let _ = stdin.take(HOOK_STDIN_CAP).read_to_string(&mut text);
+        let Some(report) = hook_report_from(&text) else { return 0 };
+        let attention = Request::SetAttention { session, state: report.state, blocked: report.blocked, note: report.note };
+        // A daemon from before `ATTENTION_FROM` cannot decode that and drops the connection:
+        // the state alone is said again in the form it knows.
+        if !matches!(send_one(socket, attention), Ok(Response::Ok | Response::Error(_))) {
+            let _ = send_one(socket, Request::SetState { session, state: report.state });
+        }
+        return 0;
+    }
     let input = match notify {
         Notify::Event(_) => {
             let mut text = String::new();
             let _ = stdin.take(STDIN_CAP).read_to_string(&mut text);
             parse_hook_input(&text)
         }
-        Notify::State(_) => None,
+        Notify::State(_) | Notify::Hook => None,
     };
     let Some(request) = request_for(&notify, session, input.as_ref(), config_dir) else {
         if input.is_none() {
@@ -214,7 +327,9 @@ pub(crate) fn shell_quote(path: &Path) -> String {
 }
 
 /// The settings block Claude Code needs (spec 5's table, plus the two lifecycle events the agent
-/// record comes from). `exe` is this binary's launch path: through Homebrew's link it survives
+/// record comes from). Every event that says something of the session's state runs the one
+/// command `notify --hook`, which reads the event from its stdin: Claude Code runs an event's
+/// hooks side by side, so two entries for one event would race. `exe` is this binary's launch path: through Homebrew's link it survives
 /// upgrades; a build in a worktree needs `arkos hooks install` again after moving.
 pub fn hooks_json(exe: &Path) -> serde_json::Value {
     let cmd = |tail: &str| serde_json::json!({ "type": "command", "command": format!("{} notify {tail}", shell_quote(exe)), "timeout": 5 });
@@ -222,10 +337,12 @@ pub fn hooks_json(exe: &Path) -> serde_json::Value {
         "hooks": {
             "SessionStart": [{ "hooks": [cmd("--event session-start")] }],
             "SessionEnd": [{ "hooks": [cmd("--event session-end")] }],
-            "UserPromptSubmit": [{ "hooks": [cmd("--state working")] }],
-            "PreToolUse": [{ "hooks": [cmd("--state working")] }],
-            "Notification": [{ "matcher": "permission_prompt|idle_prompt", "hooks": [cmd("--state waiting")] }],
-            "Stop": [{ "hooks": [cmd("--state waiting")] }],
+            "UserPromptSubmit": [{ "hooks": [cmd("--hook")] }],
+            "PreToolUse": [{ "hooks": [cmd("--hook")] }],
+            "PostToolUse": [{ "hooks": [cmd("--hook")] }],
+            "PermissionRequest": [{ "hooks": [cmd("--hook")] }],
+            "Notification": [{ "matcher": "permission_prompt|elicitation_dialog|agent_needs_input", "hooks": [cmd("--hook")] }],
+            "Stop": [{ "hooks": [cmd("--hook")] }],
         }
     })
 }
@@ -676,23 +793,107 @@ mod tests {
     }
 
     #[test]
-    fn the_hook_entries_cover_the_six_events_with_the_notification_matcher() {
+    fn the_hook_entries_cover_the_eight_events_with_the_notification_matcher() {
         let v = hooks_json(Path::new("/opt/homebrew/bin/arkos"));
         let hooks = v["hooks"].as_object().unwrap();
         let mut events: Vec<&String> = hooks.keys().collect();
         events.sort();
-        assert_eq!(events, ["Notification", "PreToolUse", "SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"]);
-        assert_eq!(hooks["Notification"][0]["matcher"], "permission_prompt|idle_prompt");
-        assert_eq!(hooks["Notification"][0]["hooks"][0]["command"], "/opt/homebrew/bin/arkos notify --state waiting");
-        assert_eq!(hooks["Stop"][0]["hooks"][0]["command"], "/opt/homebrew/bin/arkos notify --state waiting");
-        assert_eq!(hooks["UserPromptSubmit"][0]["hooks"][0]["command"], "/opt/homebrew/bin/arkos notify --state working");
-        assert_eq!(hooks["PreToolUse"][0]["hooks"][0]["command"], "/opt/homebrew/bin/arkos notify --state working");
+        assert_eq!(events, ["Notification", "PermissionRequest", "PostToolUse", "PreToolUse", "SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"]);
+        assert_eq!(hooks["Notification"][0]["matcher"], "permission_prompt|elicitation_dialog|agent_needs_input");
+        for event in ["Notification", "PermissionRequest", "PostToolUse", "PreToolUse", "Stop", "UserPromptSubmit"] {
+            assert_eq!(hooks[event].as_array().unwrap().len(), 1, "{event}: one entry, since an event's hooks run side by side");
+            assert_eq!(hooks[event][0]["hooks"][0]["command"], "/opt/homebrew/bin/arkos notify --hook", "{event}");
+        }
         assert!(hooks["PreToolUse"][0].get("matcher").is_none(), "every tool");
         assert_eq!(hooks["SessionStart"][0]["hooks"][0]["command"], "/opt/homebrew/bin/arkos notify --event session-start");
         assert_eq!(hooks["SessionEnd"][0]["hooks"][0]["command"], "/opt/homebrew/bin/arkos notify --event session-end");
         assert_eq!(hooks["Stop"][0]["hooks"][0]["timeout"], 5);
         let spaced = hooks_json(Path::new("/Users/me/My Apps/arkos"));
-        assert_eq!(spaced["hooks"]["Stop"][0]["hooks"][0]["command"], "'/Users/me/My Apps/arkos' notify --state waiting");
+        assert_eq!(spaced["hooks"]["Stop"][0]["hooks"][0]["command"], "'/Users/me/My Apps/arkos' notify --hook");
+    }
+
+    #[test]
+    fn a_hook_event_says_whether_its_session_works_waits_or_is_blocked_and_gives_its_line() {
+        let report = |json: &str| hook_report_from(json);
+        let says = |state, blocked, note: Option<&str>| Some(HookReport { state, blocked, note: note.map(str::to_string) });
+        // Work: a prompt sent, a tool starting (its line says what it does) or ending.
+        assert_eq!(report(r#"{"hook_event_name":"UserPromptSubmit","prompt":"fix it"}"#), says(ClaudeState::Working, false, None));
+        assert_eq!(
+            report(r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"cargo test --workspace\necho done"}}"#),
+            says(ClaudeState::Working, false, Some("Bash: cargo test --workspace"))
+        );
+        assert_eq!(report(r#"{"hook_event_name":"PreToolUse","tool_name":"Edit","tool_input":{"file_path":"/p/src/main.rs"}}"#), says(ClaudeState::Working, false, Some("Edit: main.rs")));
+        assert_eq!(report(r#"{"hook_event_name":"PreToolUse","tool_name":"mcp__x__y","tool_input":{}}"#), says(ClaudeState::Working, false, Some("mcp__x__y")));
+        assert_eq!(report(r#"{"hook_event_name":"PostToolUse","tool_name":"Bash"}"#), says(ClaudeState::Working, false, None));
+        // Blocked: a permission dialog, a question, a plan to approve, a dialog from a server.
+        assert_eq!(
+            report(r#"{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"ffmpeg -i shot-04.mov"}}"#),
+            says(ClaudeState::Waiting, true, Some("Allow Bash: ffmpeg -i shot-04.mov"))
+        );
+        assert_eq!(
+            report(r#"{"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which device pool should I use?"}]}}"#),
+            says(ClaudeState::Waiting, true, Some("Which device pool should I use?"))
+        );
+        assert_eq!(report(r#"{"hook_event_name":"PreToolUse","tool_name":"ExitPlanMode","tool_input":{}}"#), says(ClaudeState::Waiting, true, Some("Plan ready for review")));
+        assert_eq!(report(r#"{"hook_event_name":"Notification","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}"#), says(ClaudeState::Waiting, true, None));
+        assert_eq!(report(r#"{"hook_event_name":"Notification","notification_type":"elicitation_dialog","message":"Pick a workspace"}"#), says(ClaudeState::Waiting, true, Some("Pick a workspace")));
+        // Finished: waiting, with the first line of what it last said, its markdown marks off.
+        assert_eq!(
+            report(r#"{"hook_event_name":"Stop","last_assistant_message":"\n## Done\n\nThe **save system** passes all `14` tests."}"#),
+            says(ClaudeState::Waiting, false, Some("Done"))
+        );
+        assert_eq!(report(r#"{"hook_event_name":"Stop"}"#), says(ClaudeState::Waiting, false, None));
+        // Nothing to say: an idle reminder, a sign-in, an event this does not know.
+        assert_eq!(report(r#"{"hook_event_name":"Notification","notification_type":"idle_prompt"}"#), None);
+        assert_eq!(report(r#"{"hook_event_name":"Notification","notification_type":"auth_success"}"#), None);
+        assert_eq!(report(r#"{"hook_event_name":"PreCompact"}"#), None);
+        // Input cut off at the cap still gives its event's state.
+        assert_eq!(report(r#"{"hook_event_name":"Stop","last_assistant_message":"a very long ans"#), says(ClaudeState::Waiting, false, None));
+        assert_eq!(report(r#"{"tool_input":{"content":"half a fi"#), None);
+        // A line is one line, its spaces collapsed, cut with an ellipsis.
+        assert_eq!(note_line("- **Fixed**   the   `parser`\nand more").as_deref(), Some("Fixed the parser"));
+        assert_eq!(note_line(&"word ".repeat(100)).map(|l| l.chars().count()), Some(NOTE_CHARS));
+        assert_eq!(note_line("\n\n```\n"), None);
+    }
+
+    #[test]
+    fn a_hook_notify_sends_the_attention_and_falls_back_to_the_state_for_an_older_daemon() {
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, rx) = fake_daemon(dir.path());
+        let unresolved = || -> (Option<PathBuf>, String) { panic!("a hook resolves no skills folder") };
+        let mut stdin = std::io::Cursor::new(r#"{"session_id":"abc","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"ls"}}"#);
+        let mut out = Vec::new();
+        assert_eq!(run_with(&args("notify --hook"), &socket, Some("7"), &mut stdin, &mut out, &unresolved, false, None), 0);
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Request::SetAttention { session: SessionId(7), state: ClaudeState::Waiting, blocked: true, note: Some("Allow Bash: ls".into()) }
+        );
+        assert!(out.is_empty(), "a hook prints nothing");
+        // An event that says nothing sends nothing.
+        let mut idle = std::io::Cursor::new(r#"{"hook_event_name":"Notification","notification_type":"idle_prompt"}"#);
+        assert_eq!(run_with(&args("notify --hook"), &socket, Some("7"), &mut idle, &mut out, &unresolved, false, None), 0);
+        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
+        assert_eq!(parse_notify(&args("notify --hook")), Ok(Notify::Hook));
+        // A daemon that drops the connection at a request it cannot decode is told the state.
+        let old = dir.path().join("old.sock");
+        let listener = UnixListener::bind(&old).unwrap();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (first, _) = listener.accept().unwrap();
+            let _ = read_frame::<_, ClientMessage>(&mut BufReader::new(first.try_clone().unwrap()));
+            drop(first);
+            let (stream, _) = listener.accept().unwrap();
+            let mut r = BufReader::new(stream.try_clone().unwrap());
+            let mut w = BufWriter::new(stream);
+            if let Ok(Some(msg)) = read_frame::<_, ClientMessage>(&mut r) {
+                tx.send(msg.request).unwrap();
+                write_frame(&mut w, &ServerMessage::Response { id: msg.id, response: Response::Ok }).unwrap();
+                w.flush().unwrap();
+            }
+        });
+        let mut stop = std::io::Cursor::new(r#"{"hook_event_name":"Stop","last_assistant_message":"Done."}"#);
+        assert_eq!(run_with(&args("notify --hook"), &old, Some("7"), &mut stop, &mut out, &unresolved, false, None), 0);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::SetState { session: SessionId(7), state: ClaudeState::Waiting });
     }
 
     #[test]
@@ -706,14 +907,14 @@ mod tests {
         )
         .unwrap();
         let (merged, added, replaced) = merge_hooks(existing, &ours);
-        assert_eq!((added, replaced), (6, 1));
+        assert_eq!((added, replaced), (8, 1));
         assert_eq!(merged["model"], "opus");
         let stop = merged["hooks"]["Stop"].as_array().unwrap();
         assert_eq!(stop.len(), 2);
         assert_eq!(stop[0]["hooks"][0]["command"], "say done", "the other hook stays, first");
-        assert_eq!(stop[1]["hooks"][0]["command"], "/new/arkos notify --state waiting");
+        assert_eq!(stop[1]["hooks"][0]["command"], "/new/arkos notify --hook", "the older form is replaced by the one command");
         let (again, added, replaced) = merge_hooks(merged.clone(), &ours);
-        assert_eq!((added, replaced), (6, 6), "a second install replaces its own entries");
+        assert_eq!((added, replaced), (8, 8), "a second install replaces its own entries");
         assert_eq!(again, merged);
     }
 
@@ -723,14 +924,14 @@ mod tests {
         let path = dir.path().join("settings.json");
         std::fs::write(&path, r#"{"model":"opus"}"#).unwrap();
         let (p, added, replaced) = install_hooks_at(&path, Path::new("/x/arkos"), false).unwrap();
-        assert_eq!((p, added, replaced), (path.clone(), 6, 0));
+        assert_eq!((p, added, replaced), (path.clone(), 8, 0));
         assert_eq!(std::fs::read_to_string(dir.path().join("settings.json.bak")).unwrap(), r#"{"model":"opus"}"#);
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["model"], "opus");
-        assert_eq!(v["hooks"]["Stop"][0]["hooks"][0]["command"], "/x/arkos notify --state waiting");
+        assert_eq!(v["hooks"]["Stop"][0]["hooks"][0]["command"], "/x/arkos notify --hook");
         // A missing file is created; a broken one is left alone.
         let fresh = dir.path().join("sub").join("settings.json");
-        assert_eq!(install_hooks_at(&fresh, Path::new("/x/arkos"), false).unwrap().1, 6);
+        assert_eq!(install_hooks_at(&fresh, Path::new("/x/arkos"), false).unwrap().1, 8);
         std::fs::write(&path, "{ not json").unwrap();
         assert!(install_hooks_at(&path, Path::new("/x/arkos"), false).unwrap_err().contains("cannot parse"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");

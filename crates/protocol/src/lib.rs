@@ -21,8 +21,10 @@ use std::time::Duration;
 /// `Direct`, the window's `Event::Direct` and `DirectDone`, and the `Directed` answer. Version 9
 /// adds the web page. Version 10 adds the detailed customize relay: a tool client's
 /// `CustomizeDetailed`, the window's `CustomizeDoneDetailed` with what it draws (its effect and
-/// size), and the `CustomizedDetailed` answer.
-pub const PROTOCOL_VERSION: u32 = 10;
+/// size), and the `CustomizedDetailed` answer. Version 11 adds a session's attention: whether
+/// its agent is blocked on the user and the line that says what it last said or asks
+/// (`SetAttention`, `ListAttention`, `Event::Attention`).
+pub const PROTOCOL_VERSION: u32 = 11;
 /// The oldest window a daemon still serves. Version 1 is milestone 2b's.
 pub const PROTOCOL_MIN: u32 = 1;
 /// The first protocol with `UpdateStatus` and `Event::UpdateStaged`.
@@ -46,6 +48,11 @@ pub const WEB_OPEN_FROM: u32 = 9;
 /// The first protocol whose windows answer a `Customize` with `CustomizeDoneDetailed` when the
 /// daemon speaks it too. An older window's `CustomizeDone` is relayed with an empty detail.
 pub const EFFECT_REPORT_FROM: u32 = 10;
+/// The first protocol with a session's attention. An older window is never sent
+/// `Event::Attention`, and an older daemon is never asked `ListAttention`.
+pub const ATTENTION_FROM: u32 = 11;
+/// The longest line a session's attention carries, in bytes; a longer one is cut by the daemon.
+pub const ATTENTION_NOTE_MAX: usize = 400;
 /// How long the daemon waits for the windows' answers to a `Customize` before it replies with
 /// the silent ones as `missing`.
 pub const CUSTOMIZE_WAIT: Duration = Duration::from_secs(2);
@@ -82,6 +89,17 @@ pub struct AgentRecord {
     pub id: String,
     /// The command that resumes it, as argv.
     pub resume: Vec<String>,
+}
+
+/// What a session's agent last said about needing the user (layouts spec, "The states"):
+/// `blocked` while it cannot go on until the user acts (a permission, a question), and `note`,
+/// the line a list shows under the session's name (the question, or the agent's last words).
+/// `ClaudeState` is unchanged by it: a blocked session is `Waiting` to a window that knows no
+/// better.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Attention {
+    pub blocked: bool,
+    pub note: String,
 }
 
 /// `SessionInfo` plus what milestone 3 adds. A new struct, because `SessionInfo` never changes
@@ -419,6 +437,12 @@ pub enum Request {
     /// `CustomizeDone` with what the window draws. Sent instead of `CustomizeDone` by a window on
     /// `EFFECT_REPORT_FROM` to a daemon that speaks it; answered `Ok` as that one is.
     CustomizeDoneDetailed { id: u64, outcome: CustomizeOutcome, detail: WindowDetail },
+    /// From an agent's hooks through `arkos notify --hook`: `SetState`, with whether the agent is
+    /// blocked on the user and, when `note` is given, the line to show for the session (None
+    /// keeps the line it has). Answered as `SetState` is. A plain `SetState` ends a block.
+    SetAttention { session: SessionId, state: ClaudeState, blocked: bool, note: Option<String> },
+    /// Every session's attention that is not the default. Answered `Attention`.
+    ListAttention,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -485,6 +509,8 @@ pub enum Response {
     /// The answer to `CustomizeDetailed`: `Customized` with each window's detail beside its
     /// outcome, an empty one for a window older than `EFFECT_REPORT_FROM`.
     CustomizedDetailed { outcomes: Vec<(CustomizeOutcome, WindowDetail)>, missing: Vec<u32>, too_old: Vec<u32> },
+    /// The answer to `ListAttention`, by session id.
+    Attention(Vec<(SessionId, Attention)>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -501,6 +527,9 @@ pub enum Event {
     /// `DIRECT_FROM` or later. `session` is the tool client's own session when it gave one. The
     /// window answers with `Request::DirectDone` carrying the same `id`.
     Direct { id: u64, action: PaneAction, session: Option<SessionId> },
+    /// A session's attention changed. Sent to the windows attached to it that are on
+    /// `ATTENTION_FROM` or later.
+    Attention { session: SessionId, attention: Attention },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -520,7 +549,7 @@ mod tests {
     /// postcard writes an enum's variant index first; appended variants keep every older index.
     #[test]
     fn new_variants_are_appended_after_the_old_ones() {
-        assert_eq!(PROTOCOL_VERSION, 10);
+        assert_eq!(PROTOCOL_VERSION, 11);
         assert_eq!(PROTOCOL_MIN, 1);
         assert_eq!(postcard::to_allocvec(&Request::RelaunchClient { exe: "/x".into(), cwd: "/y".into() }).unwrap()[0], 11);
         assert_eq!(postcard::to_allocvec(&Request::Goodbye).unwrap()[0], 12);
@@ -570,7 +599,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<Event>(&serde_json::to_string(&ev).unwrap()).unwrap(), ev);
         let resp = Response::Customized { outcomes: vec![o.clone()], missing: vec![8], too_old: vec![] };
         assert_eq!(serde_json::from_str::<Response>(&serde_json::to_string(&resp).unwrap()).unwrap(), resp);
-        assert_eq!(PROTOCOL_VERSION, 10);
+        assert_eq!(PROTOCOL_VERSION, 11);
         assert_eq!(CUSTOMIZE_FROM, 6);
         assert_eq!(CUSTOMIZE_WAIT, Duration::from_secs(2));
         assert_eq!(first_byte(&Request::Customize { id: 9, action: a }), 21);
@@ -584,7 +613,7 @@ mod tests {
 
     #[test]
     fn telemetry_messages_round_trip_and_sit_at_the_end_of_their_enums() {
-        assert_eq!(PROTOCOL_VERSION, 10);
+        assert_eq!(PROTOCOL_VERSION, 11);
         assert_eq!(TELEMETRY_FROM, 7);
         let session = Request::Session { sid: "0123456789abcdef0123456789abcdef".into() };
         let status = Response::TelemetryStatus {
@@ -631,7 +660,7 @@ mod tests {
 
     #[test]
     fn direct_messages_sit_at_the_end_of_their_enums() {
-        assert_eq!(PROTOCOL_VERSION, 10);
+        assert_eq!(PROTOCOL_VERSION, 11);
         assert_eq!(DIRECT_FROM, 8);
         assert_eq!(WEB_OPEN_FROM, 9);
         assert_eq!(first_byte(&OpenKind::Web), 3, "the web kind sits after the three of protocol 8");
@@ -702,8 +731,25 @@ mod tests {
     }
 
     #[test]
+    fn a_session_s_attention_round_trips_and_its_messages_sit_at_the_end_of_their_enums() {
+        assert_eq!(ATTENTION_FROM, 11);
+        let a = Attention { blocked: true, note: "Allow Bash: cargo test".into() };
+        let set = Request::SetAttention { session: SessionId(3), state: ClaudeState::Waiting, blocked: true, note: Some(a.note.clone()) };
+        assert_eq!(first_byte(&set), 30);
+        assert_eq!(first_byte(&Request::ListAttention), 31);
+        assert_eq!(first_byte(&Event::Attention { session: SessionId(3), attention: a.clone() }), 6);
+        assert_eq!(first_byte(&Response::Attention(vec![(SessionId(3), a.clone())])), 13);
+        let bytes = postcard::to_allocvec(&set).unwrap();
+        assert_eq!(postcard::from_bytes::<Request>(&bytes).unwrap(), set);
+        let bytes = postcard::to_allocvec(&Response::Attention(vec![(SessionId(3), a.clone())])).unwrap();
+        assert_eq!(postcard::from_bytes::<Response>(&bytes).unwrap(), Response::Attention(vec![(SessionId(3), a)]));
+        // The states a window before this knows are untouched: blocked is not one of them.
+        assert_eq!(first_byte(&ClaudeState::Waiting), 2);
+    }
+
+    #[test]
     fn detailed_customize_messages_carry_what_a_window_draws_and_sit_at_the_end_of_their_enums() {
-        assert_eq!(PROTOCOL_VERSION, 10);
+        assert_eq!(PROTOCOL_VERSION, 11);
         assert_eq!(EFFECT_REPORT_FROM, 10);
         let o = CustomizeOutcome { pid: 7, project: "/p".into(), result: Ok(Report::default()) };
         let drawn = WindowDetail { effect: Some(("watercolor".into(), Some(2.5))), size: Some((1200.0, 800.0)) };

@@ -11,6 +11,7 @@ use crate::tree::{PaneId, Tab, TabId, Tree};
 use gpui::{App, Entity};
 use protocol::ClaudeState;
 use protocol::{Event, Request, Response, SessionDetail, SessionId, SessionInfo, StagedUpdate};
+use crate::attention::{Attention, Marks};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -61,6 +62,8 @@ pub enum Pending {
     StatusAfterCheck,
     /// A check for a new release now; answered `Ok`, or refused when checks are off.
     Check,
+    /// Every session's attention (`Request::ListAttention`).
+    Attention,
     /// The daemon swapping in the staged bundle.
     Apply,
     #[allow(dead_code)] // In Task 4's interface; nothing in milestone 2a sends an untracked request yet
@@ -71,6 +74,8 @@ pub enum Pending {
 pub enum Outcome {
     None,
     Sessions(Vec<SessionDetail>),
+    /// The sessions' attention was read from the daemon's list: the window repaints.
+    Attention,
     Created { tab: TabId, session: SessionId, note: bool },
     Attached { session: SessionId, tab: TabId, replay: Vec<u8>, alive: bool, note: bool },
     Killed { session: SessionId },
@@ -156,6 +161,11 @@ pub fn reconcile(tree: &Tree, list: &[SessionInfo], project: &Path) -> Vec<Recon
         .collect()
 }
 
+/// Now, in milliseconds since the Unix epoch: the clock a session's marks are kept on.
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
 /// Groups a batch by session, keeping each session's events in arrival order and sessions in
 /// order of first appearance.
 pub fn group_by_session(events: &[Event]) -> Vec<(SessionId, Vec<Event>)> {
@@ -163,8 +173,9 @@ pub fn group_by_session(events: &[Event]) -> Vec<(SessionId, Vec<Event>)> {
     for ev in events {
         let sid = match ev {
             Event::Output { session, .. } | Event::Exited { session, .. } | Event::State { session, .. } => *session,
-            // Not a session's: the root shows it (`Root::route_events`).
-            Event::UpdateStaged { .. } | Event::Customize { .. } | Event::Direct { .. } => continue,
+            // Not a session's terminal's: the root shows it (`Root::route_events`), or
+            // `note_events` has recorded it.
+            Event::UpdateStaged { .. } | Event::Customize { .. } | Event::Direct { .. } | Event::Attention { .. } => continue,
         };
         match out.iter_mut().find(|(s, _)| *s == sid) {
             Some((_, list)) => list.push(ev.clone()),
@@ -201,6 +212,15 @@ pub struct SessionManager {
     pub states: HashMap<SessionId, ClaudeState>,
     /// Each shown terminal's label (`TermLabel`), there exactly when its terminal is.
     pub labels: HashMap<SessionId, TermLabel>,
+    /// Whether each session's agent is blocked on the user and the line it last gave, from the
+    /// list at connect and `Event::Attention` after. A session not here is neither.
+    pub attention: HashMap<SessionId, protocol::Attention>,
+    /// What the user did with each session's present turn (`attention::Marks`): saved with the
+    /// workspace, since only this window knows it.
+    pub marks: HashMap<SessionId, Marks>,
+    /// The session the user is looking at: its tab shown and focused in the window in front.
+    /// A turn that begins there is seen at once. The root keeps it.
+    pub shown: Option<SessionId>,
     /// Sessions whose Claude Code has reported itself: an agent record in the list, or a
     /// `State` event. A terminal bell is not a report: it rings without hooks.
     reporting: HashSet<SessionId>,
@@ -227,7 +247,7 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub fn new(transport: Arc<dyn Transport>, client: Option<Arc<Client>>, project: PathBuf) -> Self {
-        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashMap::new(), states: HashMap::new(), labels: HashMap::new(), reporting: HashSet::new(), probed: HashMap::new(), probe_wanted: false, newly_reporting: false, restoring: HashSet::new(), backlog: HashMap::new(), offline: false, kills_to_resend: Vec::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
+        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashMap::new(), states: HashMap::new(), labels: HashMap::new(), attention: HashMap::new(), marks: HashMap::new(), shown: None, reporting: HashSet::new(), probed: HashMap::new(), probe_wanted: false, newly_reporting: false, restoring: HashSet::new(), backlog: HashMap::new(), offline: false, kills_to_resend: Vec::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
     }
 
     /// A new connection: requests go to it from now on.
@@ -340,11 +360,22 @@ impl SessionManager {
         self.pending.insert(id, Pending::List);
     }
 
+    /// Asks a daemon on `ATTENTION_FROM` or later for every session's attention.
+    pub fn list_attention(&mut self) {
+        let id = self.transport.send(Request::ListAttention);
+        self.pending.insert(id, Pending::Attention);
+    }
+
     /// Records what the daemon's list says about each session. A "resumed" note comes back only
     /// until the user types into the session: the daemon clears its `recovered` on that Input.
     pub fn note_list(&mut self, list: &[SessionDetail]) {
         for d in list {
             self.states.insert(d.info.id, d.info.state);
+            // A session with no time of its own yet takes the daemon's last activity.
+            let m = self.marks.entry(d.info.id).or_default();
+            if m.since == 0 {
+                m.since = d.info.last_activity_unix_ms;
+            }
             if d.agent.is_some() {
                 self.note_reporting(d.info.id);
             }
@@ -401,15 +432,91 @@ impl SessionManager {
         std::mem::take(&mut self.newly_reporting)
     }
 
-    /// The user looked at or typed into a waiting tab: idle now, and the daemon is told so a
-    /// reconnect or another window agrees. True when there was something to acknowledge.
+    /// The user looked at a waiting tab. A session whose agent reports through its hooks stays
+    /// waiting, now seen: it is the user's move until they answer, and the next prompt's hook
+    /// says so. A session that only rang the bell has no such hook: idle now, and the daemon is
+    /// told so a reconnect or another window agrees. True when something changed.
     pub fn acknowledge(&mut self, session: SessionId) -> bool {
+        self.acknowledge_at(session, now_ms())
+    }
+
+    pub fn acknowledge_at(&mut self, session: SessionId, now: u64) -> bool {
         if self.states.get(&session) != Some(&ClaudeState::Waiting) {
             return false;
         }
+        if self.reporting.contains(&session) {
+            let m = self.marks.entry(session).or_default();
+            let before = *m;
+            m.seen = true;
+            // A later time that has come brought it back; looking at it ends that.
+            if m.later_until.is_some_and(|t| t <= now) {
+                m.later_until = None;
+            }
+            return *m != before;
+        }
         self.states.insert(session, ClaudeState::Idle);
+        self.marks.entry(session).or_default().moved(now);
         self.transport.send(Request::SetState { session, state: ClaudeState::Idle });
         true
+    }
+
+    /// The user typed into a session. `answers` is whether the key could answer a dialog (Enter
+    /// or a digit): no hook says a permission or a question was answered, so that key in a
+    /// blocked session ends the block and puts it to work, and the daemon is told. Any other
+    /// key is a look (`acknowledge`). True when something changed.
+    pub fn typed(&mut self, session: SessionId, answers: bool) -> bool {
+        let now = now_ms();
+        if answers && self.attention.get(&session).is_some_and(|a| a.blocked) {
+            if let Some(a) = self.attention.get_mut(&session) {
+                a.blocked = false;
+            }
+            self.states.insert(session, ClaudeState::Working);
+            self.marks.entry(session).or_default().moved(now);
+            self.transport.send(Request::SetState { session, state: ClaudeState::Working });
+            return true;
+        }
+        self.acknowledge_at(session, now)
+    }
+
+    /// Where `session` stands with the user at `now` (`attention::of`). A session with no label
+    /// yet (its shell is starting) counts as alive.
+    pub fn attention_of(&self, session: SessionId, now: u64) -> Attention {
+        let alive = self.labels.get(&session).is_none_or(|l| l.alive);
+        let blocked = self.attention.get(&session).is_some_and(|a| a.blocked);
+        let none = Marks::default();
+        crate::attention::of(self.states.get(&session).copied(), blocked, alive, self.marks.get(&session).unwrap_or(&none), now)
+    }
+
+    /// The line a list shows under `session`'s name: what its agent asks or last said.
+    pub fn note_of(&self, session: SessionId) -> Option<&str> {
+        self.attention.get(&session).map(|a| a.note.as_str()).filter(|n| !n.is_empty())
+    }
+
+    /// Puts `session` away or brings it back. Away, it is seen too.
+    pub fn set_done(&mut self, session: SessionId, done: bool) {
+        let m = self.marks.entry(session).or_default();
+        m.done = done;
+        m.later_until = None;
+        m.seen |= done;
+    }
+
+    /// Puts `session` off until `until` (milliseconds since the Unix epoch), or with None back
+    /// in the list.
+    pub fn set_later(&mut self, session: SessionId, until: Option<u64>) {
+        let m = self.marks.entry(session).or_default();
+        m.later_until = until;
+        m.done = false;
+        m.seen = true;
+    }
+
+    /// Marks `session` unread again, or read.
+    pub fn set_seen(&mut self, session: SessionId, seen: bool) {
+        let m = self.marks.entry(session).or_default();
+        m.seen = seen;
+        if !seen {
+            m.done = false;
+            m.later_until = None;
+        }
     }
 
     /// Whether a terminal tab in the tree shows a working agent. The list carries every
@@ -429,15 +536,15 @@ impl SessionManager {
             .collect()
     }
 
-    /// The panes whose active tab is a terminal whose Claude session waits for the user, in the
-    /// tree's order: the panes an effect shows as waiting. A waiting session turns idle when the
-    /// user looks at it (`acknowledge`), so a pane is in this list only until then.
+    /// The panes whose active tab is a terminal whose Claude session calls for the user (it is
+    /// blocked, or finished and not yet looked at), in the tree's order: the panes an effect
+    /// shows as waiting. A finished session stops calling when the user looks at it
+    /// (`acknowledge`), so its pane is in this list only until then.
     pub fn waiting_panes(&self, tree: &Tree) -> Vec<PaneId> {
+        let now = now_ms();
         tree.panes()
             .into_iter()
-            .filter(|&id| {
-                tree.pane(id).and_then(|p| p.tabs.get(p.active)).is_some_and(|tab| matches!(tab, Tab::Terminal { session, .. } if self.states.get(session) == Some(&ClaudeState::Waiting)))
-            })
+            .filter(|&id| tree.pane(id).and_then(|p| p.tabs.get(p.active)).is_some_and(|tab| matches!(tab, Tab::Terminal { session, .. } if self.attention_of(*session, now).calls())))
             .collect()
     }
 
@@ -510,6 +617,8 @@ impl SessionManager {
         // No tab shows it now and no `State` event reaches it: a reopen starts from idle rather
         // than from a stale state.
         self.states.remove(&session);
+        self.attention.remove(&session);
+        self.marks.remove(&session);
         self.restoring.remove(&session);
         self.backlog.remove(&session);
     }
@@ -585,6 +694,10 @@ impl SessionManager {
         }
         match (pending.clone(), response.clone()) {
             (Some(Pending::List), Response::SessionsDetailed(list)) => Outcome::Sessions(list),
+            (Some(Pending::Attention), Response::Attention(list)) => {
+                self.attention = list.into_iter().collect();
+                Outcome::Attention
+            }
             (Some(Pending::Create { tab, note }), Response::SessionCreated { id: session }) => {
                 self.busy.remove(&tab);
                 Outcome::Created { tab, session, note }
@@ -629,7 +742,7 @@ impl SessionManager {
     pub fn stash_if_restoring(&mut self, ev: &Event) -> bool {
         let sid = match ev {
             Event::Output { session, .. } | Event::Exited { session, .. } | Event::State { session, .. } => *session,
-            Event::UpdateStaged { .. } | Event::Customize { .. } | Event::Direct { .. } => return false,
+            Event::UpdateStaged { .. } | Event::Customize { .. } | Event::Direct { .. } | Event::Attention { .. } => return false,
         };
         if !self.restoring.contains(&sid) {
             return false;
@@ -694,16 +807,34 @@ impl SessionManager {
     /// The window's half of a batch: what each session's agent is doing. Recorded at once, even
     /// for a session mid-restore or with no terminal yet; a shell that ended runs no agent.
     pub fn note_events(&mut self, events: &[Event]) -> bool {
+        self.note_events_at(events, now_ms())
+    }
+
+    /// `note_events` at `now`, milliseconds since the Unix epoch: the time a state that changed
+    /// is said to have changed.
+    pub fn note_events_at(&mut self, events: &[Event], now: u64) -> bool {
         let mut changed = false;
         for ev in events {
             match ev {
                 Event::State { session, state } => {
                     crate::telemetry::agent_state(session.0, *state);
-                    changed |= self.states.insert(*session, *state) != Some(*state);
+                    changed |= self.note_state_at(*session, *state, now);
                     self.note_reporting(*session);
+                }
+                Event::Attention { session, attention } => {
+                    let before = self.attention.insert(*session, attention.clone());
+                    // A block is a new turn, as a finished answer is: what the user put away
+                    // comes back.
+                    if attention.blocked && !before.as_ref().is_some_and(|a| a.blocked) {
+                        let shown = self.shown == Some(*session);
+                        self.marks.entry(*session).or_default().turned(shown, now);
+                    }
+                    changed |= before.as_ref() != Some(attention);
                 }
                 Event::Exited { session, .. } => {
                     changed |= self.states.remove(session).is_some();
+                    self.attention.remove(session);
+                    self.marks.entry(*session).or_default().moved(now);
                     self.reporting.remove(session);
                     self.probed.remove(session);
                 }
@@ -712,6 +843,23 @@ impl SessionManager {
             }
         }
         changed
+    }
+
+    /// Records `session`'s state at `now`. Beginning to wait is a new turn for the user
+    /// (`Marks::turned`); any other change only moves the time. True when the state differs.
+    fn note_state_at(&mut self, session: SessionId, state: ClaudeState, now: u64) -> bool {
+        let before = self.states.insert(session, state);
+        if before == Some(state) {
+            return false;
+        }
+        let shown = self.shown == Some(session);
+        let m = self.marks.entry(session).or_default();
+        if state == ClaudeState::Waiting {
+            m.turned(shown, now);
+        } else {
+            m.moved(now);
+        }
+        true
     }
 
     /// Applies a batch of daemon events: one grid update and at most one notify per terminal.
@@ -729,7 +877,7 @@ impl SessionManager {
                 });
                 if rang {
                     // Spec 5: a BEL means "needs you" even without hooks.
-                    changed |= self.states.insert(session, ClaudeState::Waiting) != Some(ClaudeState::Waiting);
+                    changed |= self.note_state_at(session, ClaudeState::Waiting, now_ms());
                 }
                 changed |= self.sync_label(session, cx);
             }
@@ -836,6 +984,72 @@ mod tests {
         assert!(!m.note_events(&[Event::Output { session: s, bytes: b"x".to_vec() }]), "output is not a state");
         assert!(m.note_events(&[Event::Exited { session: s, code: Some(0) }]), "an ended shell drops its state");
         assert!(!m.note_events(&[Event::Exited { session: s, code: Some(0) }]));
+    }
+
+    #[test]
+    fn a_hooked_session_the_user_looks_at_stays_waiting_as_seen_and_a_bell_only_one_goes_idle() {
+        let rec = Recorder::new();
+        let mut m = SessionManager::new(rec.clone(), None, PathBuf::from("/p"));
+        let (hooked, bell) = (SessionId(1), SessionId(2));
+        // A state event is a report from the hooks; a state set from a bell is not.
+        m.note_events_at(&[Event::State { session: hooked, state: ClaudeState::Working }, Event::State { session: hooked, state: ClaudeState::Waiting }], 1000);
+        m.note_state_at(bell, ClaudeState::Waiting, 1000);
+        assert_eq!((m.attention_of(hooked, 2000), m.attention_of(bell, 2000)), (Attention::Unread, Attention::Unread));
+        let sent = rec.requests().len();
+        assert!(m.acknowledge_at(hooked, 2000));
+        assert_eq!(m.attention_of(hooked, 2000), Attention::Unanswered, "still the user's move");
+        assert_eq!(m.states.get(&hooked), Some(&ClaudeState::Waiting));
+        assert_eq!(rec.requests().len(), sent, "the daemon is told nothing: the session still waits");
+        assert!(!m.acknowledge_at(hooked, 2000), "a second look changes nothing");
+        assert!(m.acknowledge_at(bell, 2000));
+        assert_eq!(m.attention_of(bell, 2000), Attention::Idle);
+        assert_eq!(rec.requests().last(), Some(&Request::SetState { session: bell, state: ClaudeState::Idle }));
+        // The next answer is a new turn: unread again, unless the user is looking at it.
+        m.note_events_at(&[Event::State { session: hooked, state: ClaudeState::Working }], 3000);
+        assert_eq!(m.attention_of(hooked, 3000), Attention::Working);
+        m.note_events_at(&[Event::State { session: hooked, state: ClaudeState::Waiting }], 4000);
+        assert_eq!(m.attention_of(hooked, 4000), Attention::Unread);
+        assert_eq!(m.marks[&hooked].since, 4000);
+        m.shown = Some(hooked);
+        m.note_events_at(&[Event::State { session: hooked, state: ClaudeState::Working }, Event::State { session: hooked, state: ClaudeState::Waiting }], 5000);
+        assert_eq!(m.attention_of(hooked, 5000), Attention::Unanswered, "seen as it arrives");
+    }
+
+    #[test]
+    fn a_block_needs_the_user_until_a_key_that_answers_it_and_brings_back_what_was_put_away() {
+        let rec = Recorder::new();
+        let mut m = SessionManager::new(rec.clone(), None, PathBuf::from("/p"));
+        let s = SessionId(1);
+        m.note_events_at(&[Event::State { session: s, state: ClaudeState::Working }], 1000);
+        m.set_done(s, true);
+        assert_eq!(m.attention_of(s, 1000), Attention::Done);
+        let ask = protocol::Attention { blocked: true, note: "Allow Bash: ls".into() };
+        assert!(m.note_events_at(&[Event::State { session: s, state: ClaudeState::Waiting }, Event::Attention { session: s, attention: ask.clone() }], 2000));
+        assert_eq!(m.attention_of(s, 2000), Attention::NeedsYou);
+        assert_eq!(m.note_of(s), Some("Allow Bash: ls"));
+        assert!(!m.note_events_at(&[Event::Attention { session: s, attention: ask }], 2000), "the same again repaints nothing");
+        // A look, or a key that answers nothing, leaves the block.
+        m.typed(s, false);
+        assert_eq!(m.attention_of(s, 2000), Attention::NeedsYou);
+        // Enter or a digit answers the dialog: to work, and the daemon is told.
+        assert!(m.typed(s, true));
+        assert_eq!(m.attention_of(s, 2000), Attention::Working);
+        assert_eq!(rec.requests().last(), Some(&Request::SetState { session: s, state: ClaudeState::Working }));
+        assert_eq!(m.note_of(s), Some("Allow Bash: ls"), "the line stays until the next one");
+        // Later, mark unread and done are the user's own.
+        m.note_events_at(&[Event::State { session: s, state: ClaudeState::Waiting }], 3000);
+        m.set_later(s, Some(9000));
+        assert_eq!((m.attention_of(s, 3000), m.attention_of(s, 9000)), (Attention::Later, Attention::Unread));
+        m.set_seen(s, true);
+        m.set_later(s, None);
+        assert_eq!(m.attention_of(s, 3000), Attention::Unanswered);
+        m.set_seen(s, false);
+        assert_eq!(m.attention_of(s, 3000), Attention::Unread);
+        // The list at connect fills the attention in.
+        m.list_attention();
+        let id = rec.requests().len() as u32;
+        assert_eq!(m.handle_response(id, Response::Attention(vec![(SessionId(4), protocol::Attention { blocked: true, note: "q".into() })])), Outcome::Attention);
+        assert_eq!(m.attention_of(SessionId(4), 0), Attention::NeedsYou);
     }
 
     #[test]

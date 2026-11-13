@@ -57,44 +57,51 @@ In the Inbox layout a session's files always go to the side pane, whatever this 
 
 ## The states
 
-`ClaudeState` gains `Blocked`: Claude cannot go on until the user acts. The hooks become one
-command for every event, `arkos notify --hook`, which reads the event's JSON and decides:
+A session gains an **attention** beside its `ClaudeState`: whether its agent is **blocked**
+(it cannot go on until the user acts) and a **line** that says what it asks or last said.
+`ClaudeState` itself is unchanged, so a window or a daemon from before this still reads a
+blocked session as `Waiting`. The hooks become one command for every event that says something
+of the state, `arkos notify --hook`, which reads the event's JSON and decides:
 
-| Claude Code event | State | The row's line |
-| --- | --- | --- |
-| `UserPromptSubmit`, `PreToolUse`, `PostToolUse` | `Working` | kept |
-| `PreToolUse` of `AskUserQuestion` or `ExitPlanMode` | `Blocked` | the question, or "Plan ready for review" |
-| `PermissionRequest` | `Blocked` | "Allow {tool}: {its command or path}" |
-| `Notification` (`permission_prompt`, `elicitation_dialog`, `agent_needs_input`) | `Blocked` | its `message` |
-| `Notification` (`idle_prompt`) | `Waiting` | kept |
-| `Stop` | `Waiting` | `last_assistant_message`, its first lines |
-| `SessionStart`, `SessionEnd` | as today | |
+| Claude Code event | State | Blocked | The line |
+| --- | --- | --- | --- |
+| `UserPromptSubmit`, `PostToolUse` | `Working` | no | kept |
+| `PreToolUse` | `Working` | no | the tool and what it does: "Bash: cargo test" |
+| `PreToolUse` of `AskUserQuestion` or `ExitPlanMode` | `Waiting` | yes | the question, or "Plan ready for review" |
+| `PermissionRequest` | `Waiting` | yes | "Allow {tool}: {its command or file}" |
+| `Notification` (`permission_prompt`) | `Waiting` | yes | kept (the event above said which tool) |
+| `Notification` (`elicitation_dialog`, `agent_needs_input`) | `Waiting` | yes | its `message` |
+| `Stop` | `Waiting` | no | the first line of `last_assistant_message` |
+| `SessionStart`, `SessionEnd` | as today | | |
 
-One command per event, because Claude Code runs an event's hooks in parallel and two entries
-for `PreToolUse` would race. The old `--state` and `--event` forms still work, so hooks installed
-before this keep reporting (blocked and finished both as `waiting`) until the doctor's row,
-which already compares the entries, reinstalls them. No hook says a permission was answered, so
-a key typed into a `Blocked` session makes it `Working`.
+One command per event, because Claude Code runs an event's hooks side by side and two entries
+for `PreToolUse` would race. The `idle_prompt` notification is no longer listened for: `Stop`
+already says the turn ended. The old `--state` and `--event` forms still work, so hooks
+installed before this keep reporting (blocked and finished both as `waiting`) until the
+doctor's row, which already compares the entries, reinstalls them. No hook says a permission
+was answered, so Enter or a digit typed into a blocked session puts it to work.
 
-The line travels with the state: `Request::SetAttention { session, state, note }`, kept by the
-daemon per session, sent on as `Event::Note`, and listed for a connecting window by
-`Request::ListNotes`. All appended; the protocol becomes version 11.
+The line travels with the state: `Request::SetAttention { session, state, blocked, note }`,
+kept by the daemon per session in memory, sent on as `Event::Attention` to the attached
+windows on protocol 11, and listed for a connecting window by `Request::ListAttention`. All
+appended; the protocol becomes version 11. A hook that finds a daemon from before it (the
+connection drops) says the state alone in the old form. A plain `SetState` ends a block.
 
 A window adds what only it knows, per session, saved with its workspace:
 
-- **seen**: the user has looked since the state last became `Waiting` or `Blocked`. Set when
+- **seen**: the user has looked since the session last began to wait or was blocked. Set when
   the session is shown and focused (a state that arrives while it is shown, focused and the
   window is in front is seen at once). A hooked session is no longer set to `Idle` by a click:
   it stays `Waiting`, seen. A session with no agent record (a shell that rang the bell) is
   cleared to `Idle` as today.
 - **done** and **later until**: set by the user; both are dropped when the session next becomes
-  `Waiting` or `Blocked`, so a session put away comes back when there is something new.
+  `Waiting` or is blocked, so a session put away comes back when there is something new.
 
 What a row shows, `attention::of(state, alive, marks, now)`:
 
 | Attention | When | Mark |
 | --- | --- | --- |
-| Needs you | `Blocked` | the warm dot inside a ring |
+| Needs you | blocked | the warm dot inside a ring |
 | Unread | `Waiting`, not seen | the warm dot (today's) |
 | Unanswered | `Waiting`, seen | a warm ring |
 | Working | `Working` | the breathing dot (today's) |
