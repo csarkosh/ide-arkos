@@ -6,7 +6,7 @@ frame_rate = 30               # 1 to 60; the wash's frames per second while anyt
                               # art is slow, but the wash paints the chrome and the active tab, so
                               # a tab click, a hover, a sidebar drag and Cmd+B keep up with the app
 scale = 1.0                   # 0.1 to 1.0; full size, so every 3 point art pixel stays crisp
-title_pad = 6                 # 0 to 24 points inside the title bar at both ends: its words and
+title_pad = 9                 # 0 to 24 points inside the title bar at both ends: its words and
                               # icons sit that far in from its frame, on their plates
 sidebar_pad = 12              # 0 to 24 points before each row and header of the sidebar: room for
                               # its frame (two art pixels) and the cursor bobbing inside it

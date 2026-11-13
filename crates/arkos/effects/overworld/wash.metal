@@ -158,7 +158,7 @@ constant float LANTERN_TONE = 0.55;
 constant float LANTERN_GLOW = 0.18;
 
 // The title bar's sky, inside its frame: dithered over its SKY_BAR_ROWS art rows from SKY_DEEP
-// away from the text's colour at the top to the bar's own colour. Its stars: none before
+// darker than the bar at the top to the bar's own colour. Its stars: none before
 // TITLE_LEFT, the traffic lights' end; one in most of the cells of TITLE_CELL columns, on a row
 // from 2 to 6 of the bar, inside the frame, the whole length of the bar. Within STAR_CLEAR of the
 // bar's words and icons a star, a cloud, a shooting star and the bird are softened into the bar's
@@ -168,7 +168,7 @@ constant float LANTERN_GLOW = 0.18;
 // side, as tall as the inside of the frame, its corners notched. The lights' plate runs from
 // the frame to an art pixel short of the words' plate, and is there only when the words start
 // past LIGHTS_END, where the lights are (a full-screen window has none).
-constant float PLATE_PAD = 6.0;
+constant float PLATE_PAD = 9.0;
 constant float LIGHTS_END = 60.0;
 constant float TITLE_LEFT = 80.0;
 constant int TITLE_CELL = 8;
@@ -984,10 +984,11 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             if (plated(p, r, u, nb)) {
                 continue;
             }
-            // The sky, away from the text's colour at the top.
+            // The sky, darkest at the top.
             if (1.0 - float(q.y) / float(SKY_BAR_ROWS) > (((q.x + q.y) & 1) == 0 ? 0.25 : 0.75)) {
-                // Away from the text's colour, so the title's words read as well on a light theme.
-                col = mix(bar, away(u, bar, SKY_DEEP), k);
+                // A step darker than the bar on any theme, so the plates stand out from it: the
+                // words, the icons and the lights are on their plates, never on the sky.
+                col = mix(bar, darker(u, bar, SKY_DEEP), k);
             }
             int cell = q.x / TITLE_CELL;
             uint id = uint(cell) ^ TITLE_SALT;

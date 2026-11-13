@@ -76,7 +76,7 @@ pub fn star_clear(p: (f32, f32), groups: &[Rect]) -> bool {
 pub const TITLE_LEFT: f32 = 80.0;
 /// The bar's words, its icons and the traffic lights each sit on a plate of the bar's plain
 /// colour, `PLATE_PAD` points wider than what it holds on each side.
-pub const PLATE_PAD: f32 = 6.0;
+pub const PLATE_PAD: f32 = 9.0;
 pub const TITLE_CELL: i32 = 8;
 pub const TITLE_STAR_CHANCE: f32 = 0.6;
 /// A salt that gives the title bar's stars hashes of their own.
@@ -332,7 +332,7 @@ mod tests {
     const GAP: f32 = 15.0;
     const NAMES_END: f32 = 200.0;
     const WORDS: Rect = Rect { x: 80.0, y: 6.0, w: 120.0, h: 16.0 };
-    const ICONS: Rect = Rect { x: 540.0, y: 4.0, w: 50.0, h: 20.0 };
+    const ICONS: Rect = Rect { x: 520.0, y: 4.0, w: 50.0, h: 20.0 };
     const TOP: f32 = crate::chrome::TITLE_BAR_H;
     const TAB: f32 = crate::pane_view::TAB_BAR_H;
     const LEFT: Rect = Rect { x: SIDE + GAP, y: TOP + GAP, w: 180.0, h: H as f32 - TOP - 2.0 * GAP };
@@ -473,19 +473,24 @@ mod tests {
                 for plate in plates {
                     assert!(pixels(&frame, plate).iter().all(|p| *p == c.title_bar), "{name} at {t}: the plate at {plate:?} is the bar's plain colour");
                 }
-                // Between the words' plate and the icons' the sky goes on, and what is drawn near
-                // a plate still leaves the dim text its contrast.
+                // Between the words' plate and the icons' the sky goes on: a step darker than the
+                // plates on every theme, so they are seen, with its stars.
                 let sky = inside(WORDS.x + WORDS.w + PLATE_PAD, ICONS.x - PLATE_PAD - WORDS.x - WORDS.w - PLATE_PAD);
                 let seen = pixels(&frame, sky);
                 lively |= seen.iter().any(|p| contrast(*p, c.title_bar) > 1.3);
-                let near = inside(WORDS.x + WORDS.w + PLATE_PAD, 6.0);
-                assert!(pixels(&frame, near).iter().all(|p| contrast(c.text_dim, *p) >= 4.5_f64.min(contrast(c.text_dim, c.title_bar))), "{name} at {t}");
+                let (sky_lum, bar_lum) = (seen.iter().map(|p| crate::palette::luminance(*p)).sum::<f64>() / seen.len() as f64, crate::palette::luminance(c.title_bar));
+                assert!(contrast_of(sky_lum, bar_lum) > 1.04, "{name} at {t}: the sky is told from the plates ({sky_lum:.3} against {bar_lum:.3})");
             }
             assert!(lively, "{name}: stars in the sky between the plates");
         }
         // The manifest moves the words and icons in from the frame by the plate's padding.
         let m = crate::effects::manifest::parse(crate::effects::BUILTIN.iter().find(|b| b.name == "overworld").unwrap().manifest).unwrap();
         assert_eq!(m.title_pad, PLATE_PAD);
+    }
+
+    /// The contrast of two luminances.
+    fn contrast_of(a: f64, b: f64) -> f64 {
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
     }
 
     #[test]

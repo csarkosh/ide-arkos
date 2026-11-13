@@ -377,13 +377,19 @@ buttons in the app bar", and, with a screenshot of the Worktrees header at the s
 over the palace: "the worktrees explorer drops to the bottom when the file explorer opens".
 
 - **Plates in the title bar.** The bar's words, its icons and the traffic lights each sit on a
-  plate: the bar's own plain colour, 6 points wider than what it holds on each side, as tall as
+  plate: the bar's own plain colour, 9 points wider than what it holds on each side, as tall as
   the inside of the frame, corners notched, with no sky, star, cloud or bird on it. The lights'
   plate is drawn only when the words start past the lights (not in full screen). The manifest's
-  `title_pad = 6` moves the words and icons that far in from the frame. Beyond a plate, what
+  `title_pad` moves the words and icons that far in from the frame. Beyond a plate, what
   comes within `STAR_CLEAR` of a group is still softened.
 - **Closed Worktrees.** With the Worktrees section closed its header now sits right under the
   Explorer's last row instead of at the sidebar's foot, where it lay over the scene and dimmed
   all of it; a tree longer than the sidebar still scrolls above a header at the foot. This is
   the sidebar's layout under every theme. The split also used the panes' height for the
   sidebar's, which under an effect's gap is two gaps short: it now uses the sidebar's own.
+
+Cyrus, on the eighth pass: "i dont see the title bar padding updated." On Arabia Solar the
+plates were the bar's colour on a sky dithered toward white, so nothing told them apart. The
+sky is again a step darker than the bar on every theme (the words are on plates now, never on
+the sky), a test holds the sky's mean luminance apart from the plates' on four themes, and the
+padding is 9 points (`PLATE_PAD`, `title_pad`).
