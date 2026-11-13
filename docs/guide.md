@@ -753,7 +753,7 @@ About again refreshes the rows. "Copy details" puts "Arkos IDE {version}" and on
 line per row on the clipboard. Below are "Made by Cyrus Sarkosh" (a link to his GitHub) and "Buy me
 tokens" after a small pixel heart, which opens Arkos IDE's tip page, donate.csarko.sh/arkos.
 
-Settings (menu or Cmd+,) has the shared title bar and six sections. It opens centred on the IDE
+Settings (menu or Cmd+,) has the shared title bar and seven sections. It opens centred on the IDE
 window, as Keybindings (Cmd+/) does.
 
 - Appearance: two looks, as pills, **Presets** and **Custom**; the one in force is selected,

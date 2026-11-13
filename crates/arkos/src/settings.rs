@@ -79,6 +79,7 @@ fn claim_fixed_pitch_check() -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     Appearance,
+    Layout,
     Text,
     Startup,
     Updates,
@@ -87,11 +88,12 @@ pub enum Section {
 }
 
 impl Section {
-    const ALL: [Section; 6] = [Section::Appearance, Section::Text, Section::Startup, Section::Updates, Section::Privacy, Section::Keyboard];
+    const ALL: [Section; 7] = [Section::Appearance, Section::Layout, Section::Text, Section::Startup, Section::Updates, Section::Privacy, Section::Keyboard];
 
     fn label(self) -> &'static str {
         match self {
             Section::Appearance => "Appearance",
+            Section::Layout => "Layout",
             Section::Text => "Text",
             Section::Startup => "Startup",
             Section::Updates => "Updates",
@@ -1070,6 +1072,46 @@ impl SettingsWindow {
         row.into_any_element()
     }
 
+    /// The Layout section: how the window arranges its sessions and files, and where a file a
+    /// session opens goes in the Grid.
+    fn layout(&self, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        use crate::config::{LayoutName, OpenPlacement};
+        let cfg = &self.shown.config.layout;
+        let says = |text: &'static str| div().pt(px(6.0)).text_color(c.dim).child(text).into_any_element();
+        let mut out = vec![heading("Layout", c).into_any_element()];
+        let mut names = div().flex().gap(px(6.0));
+        for (ix, (label, value, which)) in [("Grid", "grid", LayoutName::Grid), ("Inbox", "inbox", LayoutName::Inbox)].into_iter().enumerate() {
+            let current = cfg.name == which;
+            let mut p = pill(("layout-name", ix), label, current, enabled, c);
+            if enabled && !current {
+                p = p.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&["layout", "name"], value)], cx)));
+            }
+            names = names.child(p);
+        }
+        out.push(names.into_any_element());
+        out.push(says(match cfg.name {
+            LayoutName::Grid => "Panes of tabs that you split and arrange. The sidebar lists the sessions by what they ask of you.",
+            LayoutName::Inbox => "The sessions as a list sorted by what needs you, one shown at full size, and a side pane for the files they open.",
+        }));
+        out.push(heading("A session's files open", c).into_any_element());
+        let mut places = div().flex().gap(px(6.0));
+        for (ix, (label, value, which)) in [("In place", "inplace", OpenPlacement::Inplace), ("Neighbor", "neighbor", OpenPlacement::Neighbor)].into_iter().enumerate() {
+            let current = cfg.placement == which;
+            let mut p = pill(("layout-placement", ix), label, current, enabled, c);
+            if enabled && !current {
+                p = p.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&["layout", "placement"], value)], cx)));
+            }
+            places = places.child(p);
+        }
+        out.push(places.into_any_element());
+        out.push(says(match (cfg.name, cfg.placement) {
+            (LayoutName::Inbox, _) => "In the Inbox a session's files always open in the side pane. This applies to the Grid.",
+            (_, OpenPlacement::Inplace) => "A file a Claude Code session opens is a new tab in that session's own pane.",
+            (_, OpenPlacement::Neighbor) => "A file a Claude Code session opens goes to the pane on its right, else the one on its left, else a new pane split off to its right.",
+        }));
+        out
+    }
+
     fn startup(&self, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let enabled = self.shown.machine_switches_live();
         let value = self.shown.config.recovery.start_at_login;
@@ -1211,6 +1253,7 @@ impl Render for SettingsWindow {
         }
         let controls = match self.section {
             Section::Appearance => self.appearance(enabled, c, cx),
+            Section::Layout => self.layout(enabled, c, cx),
             Section::Text => self.text(enabled, c, cx),
             Section::Startup => self.startup(c, cx),
             Section::Updates => self.updates(c, cx),

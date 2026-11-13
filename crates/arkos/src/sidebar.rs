@@ -53,6 +53,9 @@ pub struct Sidebar {
     /// and their fade as it opens.
     pub sessions_open: bool,
     pub sessions_fade: Transient<()>,
+    /// In the Inbox layout, whether the column shows the files (the Explorer and Worktrees) in
+    /// place of the session list. Not saved: the Inbox opens on its sessions.
+    pub inbox_files: bool,
 }
 
 pub fn clamp_width(w: f32) -> f32 {
@@ -88,6 +91,7 @@ impl Sidebar {
             worktrees_fade: fade(worktrees_open),
             sessions_open: true,
             sessions_fade: fade(true),
+            inbox_files: false,
         }
     }
 
@@ -235,20 +239,74 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
     let tree_rows = entries.len() + usize::from(root.new_file.current(root.frame_now).is_some());
     // The sidebar's own height: the panes' area and the gap an effect keeps above and below it.
     let total_h = root.content.h + 2.0 * style.gap;
+    // The Inbox layout: the column is the session list, or the files, chosen by a switch at
+    // its top. The Grid: a Sessions section over the Explorer and Worktrees.
+    let inbox = root.is_inbox();
+    let files_view = !inbox || root.sidebar.inbox_files;
+    let switch_h = if inbox { ROW_H + 6.0 } else { 0.0 };
+    let switch = inbox.then(|| {
+        let files = root.sidebar.inbox_files;
+        let (on, off, hover) = (c.tab_active.hsla(), c.tab_inactive.alpha(0.0), c.tab_inactive.hsla());
+        let pill = |id: &'static str, label: &'static str, current: bool| {
+            div()
+                .id(id)
+                .flex_none()
+                .px(px(10.0))
+                .py(px(2.0))
+                .rounded(px(999.0))
+                .text_size(px(style.ui(12.0)))
+                .text_color(if current { c.text.hsla() } else { c.text_dim.hsla() })
+                .bg(if current { on } else { off })
+                .when(!current, |d| d.cursor_pointer().hover(move |s| s.bg(hover)))
+                .child(label)
+        };
+        div()
+            .h(px(switch_h))
+            .flex_none()
+            .pl(px(8.0 + style.sidebar_pad))
+            .pr(px(8.0))
+            .flex()
+            .items_center()
+            .gap(px(4.0))
+            .child(pill("inbox-sessions", "Sessions", !files).on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
+                root.sidebar.inbox_files = false;
+                root.sidebar_focused = false;
+                root.wt_focused = false;
+                cx.notify();
+            })))
+            .child(pill("inbox-files", "Files", files).on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
+                root.sidebar.inbox_files = true;
+                cx.notify();
+            })))
+            .child(div().flex_1())
+            .child(pill("inbox-new", "+ New", false).on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
+                // A new terminal joins the sessions pane, wherever the focus is.
+                let pane = root.tree.inbox_panes().map_or(root.tree.focused, |(sessions, _)| sessions);
+                root.new_terminal_tab(pane, cx);
+            })))
+    });
+    if inbox && !files_view {
+        // No Worktrees section to say where it starts.
+        root.effect_divider = None;
+    }
     // The sessions first: what they take is taken from the two sections under them.
-    let sessions_open = root.sidebar.sessions_open;
+    let sessions_open = inbox || root.sidebar.sessions_open;
     let session_groups = crate::sessions_list::grouped(crate::sessions_list::entries(root, crate::sessions::now_ms()));
     let calling = crate::sessions_list::calling(&session_groups);
-    let sessions_h = sessions_height(total_h, crate::sessions_list::content_height(&session_groups, root.sessions_done_open), sessions_open);
+    let sessions_h = match (inbox, files_view) {
+        (true, true) => 0.0,
+        (true, false) => (total_h - switch_h).max(0.0),
+        (false, _) => sessions_height(total_h, crate::sessions_list::content_height(&session_groups, root.sessions_done_open), sessions_open),
+    };
     let sessions = div()
         .flex()
         .flex_col()
         .flex_none()
         .h(px(sessions_h))
         .min_h_0()
-        .border_b_1()
-        .border_color(if style.ink_borders { c.border.alpha(0.0) } else { c.border.hsla() })
-        .child(
+        .when(!inbox, |d| d.border_b_1().border_color(if style.ink_borders { c.border.alpha(0.0) } else { c.border.hsla() }))
+        .when(inbox && session_groups.is_empty(), |d| d.child(div().px(px(12.0 + style.sidebar_pad)).py(px(8.0)).text_size(px(style.ui(12.0))).text_color(c.text_dim.hsla()).child("No sessions. \u{201c}+ New\u{201d} starts one.")))
+        .when(!inbox, |d| d.child(
             header("sessions-header", "Sessions", sessions_open)
                 // How many call for the user, said on the header so a closed section still tells.
                 .when(calling > 0, |d| d.child(div().flex_none().text_color(theme.semantic.waiting.hsla()).child(calling.to_string())))
@@ -257,9 +315,12 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
                     root.save(cx);
                     cx.notify();
                 })),
-        )
-        .when(sessions_open && !session_groups.is_empty(), |d| d.child(crate::sessions_list::render(root, width, cx).opacity(sessions_o)));
-    let (explorer_h, worktrees_h) = sidebar_split(total_h - sessions_h, tree_rows as f32 * ROW_H, explorer_open, worktrees_open);
+        ))
+        .when(sessions_open && !session_groups.is_empty() && sessions_h > 0.0, |d| d.child(crate::sessions_list::render(root, width, cx).opacity(sessions_o)))
+        // In the Inbox the list is the column: its names may reach the foot, and say so to an
+        // effect that draws there.
+        .when(inbox && !files_view, |d| d.child(sidebar_end_marker(cx)));
+    let (explorer_h, worktrees_h) = sidebar_split(total_h - sessions_h - switch_h, tree_rows as f32 * ROW_H, explorer_open, worktrees_open);
     let explorer = div()
         .flex()
         .flex_col()
@@ -350,9 +411,9 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .font_family(family)
         .text_size(px(style.ui(13.0)))
         .text_color(c.text.hsla())
-        .child(sessions)
-        .child(explorer)
-        .child(worktrees)
+        .children(switch)
+        .when(sessions_h > 0.0 || !inbox, |d| d.child(sessions))
+        .when(files_view, |d| d.child(explorer).child(worktrees))
         .child(handle);
     if !sliding {
         return Some(column);

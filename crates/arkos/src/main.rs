@@ -336,6 +336,12 @@ pub struct Root {
     pub session_menu: Transient<(SessionId, gpui::Point<gpui::Pixels>)>,
     /// Whether the session list's Done group shows its rows. Not saved: it opens folded.
     pub sessions_done_open: bool,
+    /// The Grid layout's arrangement while the Inbox layout is on (`Tree::regridded` brings it
+    /// back); None while the Grid is on.
+    pub grid_tree: Option<Tree>,
+    /// Which session opened each tab with `arkos open`, oldest first: choosing a session in the
+    /// Inbox brings forward the tab it opened last. Kept for this run only.
+    pub tab_owners: Vec<(TabId, SessionId)>,
     /// The count the Dock icon shows: this window's sessions that call for the user.
     pub dock_badge: usize,
     /// The Worktrees section's focus handle.
@@ -717,7 +723,22 @@ impl Root {
         };
         // No saved layout: the empty screen, not a shell nobody asked for.
         let saved_marks: HashMap<SessionId, attention::Marks> = saved.as_ref().map(|w| w.marks.iter().copied().collect()).unwrap_or_default();
-        let tree = saved.map(|ws| ws.tree).unwrap_or_else(Tree::empty);
+        let mut grid_tree = saved.as_ref().and_then(|w| w.grid.clone());
+        let mut tree = saved.map(|ws| ws.tree).unwrap_or_else(Tree::empty);
+        // The config's layout over what was saved: the Inbox's shape, with the Grid's
+        // arrangement kept aside, or the Grid's arrangement back.
+        match config.layout.name {
+            config::LayoutName::Inbox if !tree.is_inbox() => {
+                grid_tree = Some(tree.clone());
+                tree.arrange_inbox();
+            }
+            config::LayoutName::Grid => {
+                if let Some(grid) = grid_tree.take() {
+                    tree = tree.regridded(&grid);
+                }
+            }
+            config::LayoutName::Inbox => {}
+        }
         let mut sessions = SessionManager::new(client.clone(), Some(client), project.clone());
         let t = &config.terminal;
         sessions.set_defaults(t.scrollback, t.shell.clone(), t.nice);
@@ -733,6 +754,8 @@ impl Root {
         let fonts = look_fonts(&config, &theme, cx);
         Self {
             tree,
+            grid_tree,
+            tab_owners: Vec::new(),
             sessions,
             save_queue: SharedSaveQueue::default(),
             project,
@@ -1757,6 +1780,9 @@ impl Root {
             // An open Keybindings window shows the saved override at once.
             aux::push_keybindings(cx, &self.config.keybindings);
         }
+        if old.layout.name != self.config.layout.name {
+            self.apply_layout(cx);
+        }
         self.switch_theme(cx);
         // The custom look's font may have changed under the same colours.
         let theme = self.base_theme.clone();
@@ -1935,7 +1961,7 @@ impl Root {
         let shown: HashSet<SessionId> = self.tree.tabs().into_iter().filter_map(|(_, _, tab)| if let Tab::Terminal { session, .. } = tab { Some(*session) } else { None }).collect();
         let mut marks: Vec<(SessionId, attention::Marks)> = self.sessions.marks.iter().filter(|(s, m)| shown.contains(s) && **m != attention::Marks::default()).map(|(s, m)| (*s, *m)).collect();
         marks.sort_by_key(|(s, _)| s.0);
-        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), marks, text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone(), folds: self.folds.clone(), diagram_modes: self.diagram_modes.clone() };
+        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), marks, grid: self.grid_tree.clone(), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone(), folds: self.folds.clone(), diagram_modes: self.diagram_modes.clone() };
         request_save(&self.save_queue, ws, cx);
     }
 
@@ -2074,11 +2100,54 @@ impl Root {
         }
     }
 
-    /// Shows `session`: its tab made the active one of its pane, and that pane focused.
+    /// Shows `session`: its tab made the active one of its pane, and that pane focused. In the
+    /// Inbox the side pane brings forward the tab that session opened last.
     pub fn show_session(&mut self, session: SessionId, cx: &mut Context<Self>) {
         let Some((pane, idx)) = self.tree.find_session(session) else { return };
+        if self.is_inbox() {
+            let last = self.tab_owners.iter().rev().find(|(_, s)| *s == session).map(|(tab, _)| *tab);
+            let at = last.and_then(|tab| self.tree.panes().into_iter().find_map(|p| self.tree.pane(p)?.ids.iter().position(|t| *t == tab).map(|i| (p, i))));
+            if let Some((side, i)) = at {
+                self.tree.activate_quiet(side, i);
+            }
+        }
         self.activate_tab(pane, idx, cx);
         self.focus_pane(pane, cx);
+    }
+
+    /// Whether the window is in the Inbox layout.
+    pub fn is_inbox(&self) -> bool {
+        self.config.layout.name == config::LayoutName::Inbox
+    }
+
+    /// Puts the window in the config's layout. To the Inbox: the Grid's arrangement is kept
+    /// aside and the tabs regrouped. To the Grid: that arrangement comes back, less what closed
+    /// and with what opened meanwhile. What is kept per pane is measured again.
+    pub fn apply_layout(&mut self, cx: &mut Context<Self>) {
+        if self.is_inbox() {
+            if !self.tree.is_inbox() {
+                self.grid_tree = Some(self.tree.clone());
+                self.tree.arrange_inbox();
+            }
+        } else if let Some(grid) = self.grid_tree.take() {
+            self.tree = self.tree.regridded(&grid);
+        }
+        self.grids.clear();
+        self.acknowledge_focused(cx);
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// Holds the Inbox's shape after whatever changed the tree (a terminal opened beside the
+    /// files, a file among the sessions, a split): called as each frame begins, so nothing is
+    /// ever drawn out of place. True when something moved.
+    fn keep_inbox_shape(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.is_inbox() || !self.tree.arrange_inbox() {
+            return false;
+        }
+        self.grids.clear();
+        self.save(cx);
+        true
     }
 
     /// Goes to the next session that is the user's move: a blocked one first, then an unread
@@ -4495,6 +4564,7 @@ impl Render for Root {
         self.effect_shapes.clear();
         self.effect_menus.clear();
         self.window_active = window.is_window_active();
+        self.keep_inbox_shape(cx);
         self.sync_shown();
         // The Dock icon says how many sessions call for the user.
         let calling = sessions_list::calling(&sessions_list::grouped(sessions_list::entries(self, sessions::now_ms())));

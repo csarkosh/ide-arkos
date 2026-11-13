@@ -360,6 +360,21 @@ impl Root {
                 (new, 0, false, true)
             }
         };
+        // In the Inbox a session's files go to the side pane whatever the placement said: the
+        // tree is regrouped at once, and the tab found again where it landed.
+        let (pane, idx, new_pane) = if self.is_inbox() {
+            let opened = self.tree.tab_id(pane, idx);
+            let had_side = self.tree.inbox_panes().is_some_and(|(_, side)| side.is_some());
+            self.tree.arrange_inbox();
+            let at = opened.and_then(|tab| self.tree.panes().into_iter().find_map(|p| self.tree.pane(p)?.ids.iter().position(|t| *t == tab).map(|i| (p, i))));
+            let (pane, idx) = at.unwrap_or((pane, idx));
+            (pane, idx, !reused && !had_side && self.tree.inbox_panes().is_some_and(|(_, side)| side == Some(pane)))
+        } else {
+            (pane, idx, new_pane)
+        };
+        if let (false, Some(session), Some(tab)) = (reused, a.session, self.tree.tab_id(pane, idx)) {
+            self.tab_owners.push((tab, session));
+        }
         // Opened on purpose: a preview tab (the sidebar's single click) it was is kept.
         if reused && self.tree.tab_id(pane, idx) == self.preview_tab {
             self.preview_tab = None;

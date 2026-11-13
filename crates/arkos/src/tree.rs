@@ -12,6 +12,9 @@ pub type SplitId = u64;
 /// the same counter as pane and split ids.
 pub type TabId = u64;
 
+/// The sessions pane's share of the Inbox's width when it has a side pane.
+pub const INBOX_RATIO: f32 = 0.6;
+
 pub const MIN_PANE_W: f32 = 160.0;
 pub const MIN_PANE_H: f32 = 80.0;
 /// The gap between two panes at a split: a hairline, painted only while the pointer is over it
@@ -587,6 +590,130 @@ impl Tree {
             p.active -= 1;
         }
         Some((tab, id))
+    }
+
+    /// Whether the tree has the Inbox layout's shape (layouts spec, "The Inbox layout"): one
+    /// pane holding only terminal tabs, alone or with one pane of other tabs to its right.
+    pub fn is_inbox(&self) -> bool {
+        let terminals = |p: &Pane| p.tabs.iter().all(|t| matches!(t, Tab::Terminal { .. }));
+        let others = |p: &Pane| !p.tabs.is_empty() && p.tabs.iter().all(|t| !matches!(t, Tab::Terminal { .. }));
+        match &self.root {
+            Node::Leaf(p) => terminals(p),
+            Node::Split { orientation: Orientation::Horizontal, first, second, .. } => matches!((&**first, &**second), (Node::Leaf(a), Node::Leaf(b)) if terminals(a) && others(b)),
+            Node::Split { .. } => false,
+        }
+    }
+
+    /// The Inbox's two panes while the tree has its shape: the sessions pane, and the side pane
+    /// when there is one.
+    pub fn inbox_panes(&self) -> Option<(PaneId, Option<PaneId>)> {
+        if !self.is_inbox() {
+            return None;
+        }
+        match &self.root {
+            Node::Leaf(p) => Some((p.id, None)),
+            Node::Split { first, second, .. } => match (&**first, &**second) {
+                (Node::Leaf(a), Node::Leaf(b)) => Some((a.id, Some(b.id))),
+                _ => None,
+            },
+        }
+    }
+
+    /// Puts the tree in the Inbox's shape, keeping every tab with its id and its name: every
+    /// terminal tab in one pane, in reading order, and every other tab in a pane to its right
+    /// (none when there is no such tab). Each pane shows the tab the user was on: the tab of its
+    /// kind used last in the focused pane, else the first tab that was active in its pane. The focus stays on the kind of tab it was on. Pane ids are kept where they
+    /// can be, so what is kept per pane stays with its tabs. True when the tree changed.
+    pub fn arrange_inbox(&mut self) -> bool {
+        if self.is_inbox() {
+            return false;
+        }
+        // (the tab, its id, how recently it was used in its pane with 0 the active tab, its pane)
+        let (mut terms, mut others): (Vec<(Tab, TabId, usize, PaneId)>, Vec<(Tab, TabId, usize, PaneId)>) = (Vec::new(), Vec::new());
+        for id in self.panes() {
+            let Some(p) = self.pane(id) else { continue };
+            for (i, (tab, tab_id)) in p.tabs.iter().zip(&p.ids).enumerate() {
+                let rank = if i == p.active { 0 } else { p.mru.iter().position(|m| *m == i).map_or(usize::MAX, |at| at + 1) };
+                let item = (tab.clone(), *tab_id, rank, id);
+                if matches!(tab, Tab::Terminal { .. }) {
+                    terms.push(item);
+                } else {
+                    others.push(item);
+                }
+            }
+        }
+        let focused = self.focused;
+        let on_other = others.iter().any(|(_, _, rank, pane)| *rank == 0 && *pane == focused);
+        let sessions_id = terms.first().map(|t| t.3).unwrap_or_else(|| self.panes()[0]);
+        let side_id = others.iter().map(|t| t.3).find(|id| *id != sessions_id).unwrap_or_else(|| self.fresh_id());
+        let pane_of = |id: PaneId, items: Vec<(Tab, TabId, usize, PaneId)>| {
+            // The tab of this kind used last in the focused pane (so a file opened among the
+            // sessions leaves the session the user was on showing), else the first that was its
+            // pane's active tab.
+            let in_focused = items.iter().enumerate().filter(|(_, t)| t.3 == focused).min_by_key(|(_, t)| t.2).map(|(i, _)| i);
+            let active = in_focused.or_else(|| items.iter().position(|t| t.2 == 0)).unwrap_or(0);
+            let mru: Vec<usize> = if items.is_empty() { Vec::new() } else { std::iter::once(active).chain((0..items.len()).filter(|i| *i != active)).collect() };
+            Pane { id, ids: items.iter().map(|t| t.1).collect(), tabs: items.into_iter().map(|t| t.0).collect(), active, mru }
+        };
+        let has_side = !others.is_empty();
+        let sessions = pane_of(sessions_id, terms);
+        self.root = if has_side {
+            let id = match &self.root {
+                Node::Split { id, .. } => *id,
+                Node::Leaf(_) => self.fresh_id(),
+            };
+            Node::Split { id, orientation: Orientation::Horizontal, ratio: INBOX_RATIO, first: Box::new(Node::Leaf(sessions)), second: Box::new(Node::Leaf(pane_of(side_id, others))) }
+        } else {
+            Node::Leaf(sessions)
+        };
+        self.focused = if on_other && has_side { side_id } else { sessions_id };
+        self.maximized = None;
+        true
+    }
+
+    /// The Grid's arrangement `grid`, kept aside while the Inbox was on, holding the tabs this
+    /// tree holds now: a tab closed meanwhile is gone from it (and a pane left empty by that,
+    /// unless it is the last), a tab that changed is as it is now, and a tab opened meanwhile is
+    /// added to its focused pane. The names are this tree's. The pane of the tab the user is on
+    /// now is focused, with that tab shown.
+    pub fn regridded(&self, grid: &Tree) -> Tree {
+        let now: Vec<(TabId, Tab)> = self.panes().into_iter().filter_map(|id| self.pane(id)).flat_map(|p| p.ids.iter().copied().zip(p.tabs.iter().cloned())).collect();
+        let mut out = grid.clone();
+        for pane in out.panes() {
+            let mut idx = 0;
+            while let Some(id) = out.tab_id(pane, idx) {
+                match now.iter().find(|(tab_id, _)| *tab_id == id) {
+                    Some((_, tab)) => {
+                        if let Some(slot) = out.pane_mut(pane).and_then(|p| p.tabs.get_mut(idx)) {
+                            *slot = tab.clone();
+                        }
+                        idx += 1;
+                    }
+                    None => {
+                        out.remove_tab(pane, idx);
+                    }
+                }
+            }
+            out.close_pane_if_empty(pane);
+        }
+        let kept: Vec<TabId> = out.panes().into_iter().filter_map(|id| out.pane(id)).flat_map(|p| p.ids.clone()).collect();
+        let target = out.focused;
+        for (id, tab) in now.iter().filter(|(id, _)| !kept.contains(id)) {
+            if let Some(p) = out.pane_mut(target) {
+                p.tabs.push(tab.clone());
+                p.ids.push(*id);
+                p.mru.push(p.tabs.len() - 1);
+            }
+        }
+        out.names = self.names.clone();
+        out.next_id = out.next_id.max(self.next_id);
+        out.maximized = None;
+        // Back where the user is: the tab they are on now.
+        let on = self.pane(self.focused).and_then(|p| p.ids.get(p.active).copied());
+        if let Some((pane, idx)) = on.and_then(|id| out.panes().into_iter().find_map(|pane| out.pane(pane)?.ids.iter().position(|t| *t == id).map(|idx| (pane, idx)))) {
+            out.activate(pane, idx);
+        }
+        out
     }
 
     /// The id of the tab at `idx` in `pane`.
@@ -1274,6 +1401,100 @@ mod tests {
         assert_eq!(t.neighbor(right_top, Side::Bottom, bounds()), Some(right_bottom));
         assert_eq!(t.neighbor(right_bottom, Side::Top, bounds()), Some(right_top));
         assert_eq!(t.neighbor(left, Side::Left, bounds()), None);
+    }
+
+    #[test]
+    fn the_inbox_arrangement_gathers_the_terminals_in_one_pane_and_the_rest_beside_it() {
+        let doc = |p: &str| Tab::Viewer { path: p.into(), mode: ViewMode::Rendered, presenting: false, outline: false };
+        // A grid: [term 1, a.md] | [term 2 (active), term 3] over [b.md].
+        let mut t = Tree::new(term(1));
+        let left = t.panes()[0];
+        t.add_tab(left, doc("/p/a.md"));
+        let right = t.split(left, Side::Right, term(2)).unwrap();
+        t.add_tab(right, term(3));
+        t.activate(right, 0);
+        let below = t.split(right, Side::Bottom, doc("/p/b.md")).unwrap();
+        t.set_tab_name(t.tab_id(right, 1).unwrap(), Some("Film".into()));
+        t.focus(right);
+        assert!(!t.is_inbox());
+        let ids_before: Vec<TabId> = t.tabs().iter().map(|(pane, idx, _)| t.tab_id(*pane, *idx).unwrap()).collect();
+        let grid = t.clone();
+        assert!(t.arrange_inbox());
+        assert!(t.is_inbox());
+        let (sessions, side) = t.inbox_panes().unwrap();
+        let side = side.expect("two files make a side pane");
+        assert_eq!(t.pane(sessions).unwrap().tabs, vec![term(1), term(2), term(3)]);
+        assert_eq!(t.pane(side).unwrap().tabs, vec![doc("/p/a.md"), doc("/p/b.md")]);
+        assert_eq!(t.pane(sessions).unwrap().active, 1, "the session the user was on");
+        assert_eq!(t.focused, sessions);
+        assert_eq!((sessions, side), (left, below), "pane ids are kept where they can be");
+        let mut ids_after: Vec<TabId> = t.tabs().iter().map(|(pane, idx, _)| t.tab_id(*pane, *idx).unwrap()).collect();
+        ids_after.sort();
+        let mut sorted = ids_before.clone();
+        sorted.sort();
+        assert_eq!(ids_after, sorted, "every tab keeps its id");
+        assert_eq!(t.tab_name(t.tab_id(sessions, 2).unwrap()), Some("Film"));
+        assert!(!t.arrange_inbox(), "already arranged: nothing moves");
+        // A terminal that lands among the files, or a file among the sessions, is put right,
+        // and a file opened among the sessions leaves the session the user was on showing.
+        t.add_tab(side, term(4));
+        t.focus(sessions);
+        t.add_tab(sessions, doc("/p/c.md"));
+        assert!(t.arrange_inbox());
+        let (sessions, side) = t.inbox_panes().unwrap();
+        assert_eq!(t.pane(sessions).unwrap().tabs.len(), 4);
+        assert_eq!(t.pane(sessions).unwrap().active, 1, "still on the session it was on");
+        let side_pane = t.pane(side.unwrap()).unwrap();
+        assert_eq!((side_pane.tabs.len(), side_pane.tabs[side_pane.active].clone()), (3, doc("/p/c.md")), "the file just opened is the one shown");
+        assert_eq!(t.focused, side.unwrap(), "and the keys are with it");
+        // With no file left the sessions take the window, and with no session an empty pane waits.
+        let mut alone = Tree::new(term(1));
+        let first = alone.panes()[0];
+        alone.split(first, Side::Bottom, term(2)).unwrap();
+        assert!(alone.arrange_inbox());
+        assert_eq!(alone.inbox_panes(), Some((first, None)));
+        let mut files = Tree::new(doc("/p/a.md"));
+        assert!(files.arrange_inbox());
+        let (sessions, side) = files.inbox_panes().unwrap();
+        assert!(files.pane(sessions).unwrap().tabs.is_empty() && files.pane(side.unwrap()).unwrap().tabs.len() == 1);
+        assert_eq!(files.focused, side.unwrap(), "the focus stays on the file it was on");
+        // Back to the grid as it was.
+        assert_eq!(t.regridded(&grid).panes().len(), 3);
+    }
+
+    #[test]
+    fn the_grid_comes_back_as_it_was_less_what_closed_and_with_what_opened() {
+        let doc = |p: &str| Tab::Viewer { path: p.into(), mode: ViewMode::Rendered, presenting: false, outline: false };
+        let mut grid = Tree::new(term(1));
+        let left = grid.panes()[0];
+        let right = grid.split(left, Side::Right, term(2)).unwrap();
+        grid.add_tab(right, doc("/p/a.md"));
+        let below = grid.split(right, Side::Bottom, doc("/p/b.md")).unwrap();
+        grid.focus(left);
+        let mut inbox = grid.clone();
+        inbox.arrange_inbox();
+        let (sessions, side) = inbox.inbox_panes().unwrap();
+        let side = side.unwrap();
+        // In the inbox: b.md closes (its pane was its own), a session and a file open, a tab is
+        // renamed, and the user ends on session 2.
+        let b = inbox.pane(side).unwrap().tabs.iter().position(|t| *t == doc("/p/b.md")).unwrap();
+        inbox.close_tab(side, b);
+        let new_term = inbox.add_tab(sessions, term(3));
+        let new_term_id = inbox.tab_id(sessions, new_term).unwrap();
+        inbox.add_tab(side, doc("/p/c.md"));
+        inbox.set_tab_name(new_term_id, Some("New".into()));
+        inbox.activate(sessions, 1);
+        let back = inbox.regridded(&grid);
+        assert_eq!(back.panes(), vec![left, right], "the pane whose only tab closed is gone");
+        assert!(back.pane(below).is_none());
+        assert_eq!(back.pane(left).unwrap().tabs, vec![term(1), term(3), doc("/p/c.md")], "what opened joins the pane that had the focus");
+        assert_eq!(back.pane(right).unwrap().tabs, vec![term(2), doc("/p/a.md")]);
+        assert_eq!(back.tab_name(new_term_id), Some("New"));
+        assert_eq!((back.focused, back.pane(right).unwrap().active), (right, 0), "on the session the user was on");
+        // A fresh id never collides with one handed out in the inbox.
+        let mut again = back.clone();
+        let idx = again.add_tab(left, term(9));
+        assert!(!inbox.tabs().iter().any(|(pane, i, _)| inbox.tab_id(*pane, *i) == again.tab_id(left, idx)));
     }
 
     #[test]

@@ -465,7 +465,10 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     // height: a terminal measures the grid it is left.
     let strip = (root.invite_pane == Some(pane)).then(|| render_invitation(root, cx));
     let body_top = bar_h + if strip.is_some() { INVITE_H } else { 0.0 };
-    let bar = render_tab_bar(root, pane, &p, number, &tabs, bar_h, cx);
+    // The Inbox's sessions pane has no tab bar: the session list is its tab bar, and the bar's
+    // place holds the session's own header.
+    let sessions_pane = root.is_inbox() && root.tree.inbox_panes().is_some_and(|(sessions, _)| sessions == pane);
+    let bar = if sessions_pane { render_session_header(root, pane, &p, &tabs, bar_h, cx) } else { render_tab_bar(root, pane, &p, number, &tabs, bar_h, cx) };
     if !p.tabs.is_empty() {
         // A pane that shows tabs forgets its empty-state animation, so emptying it again replays.
         root.empty_anim.remove(&pane);
@@ -648,6 +651,88 @@ fn render_invitation(root: &mut Root, cx: &mut Context<Root>) -> Div {
 
 /// The tab bar, `height` tall: the pane number, a tab per entry and the +;
 /// every tab clicks, drags and takes drops.
+/// The Inbox's header over the session shown, in the tab bar's place and of its height: the
+/// session's mark and name, its folder, and what the user may do with its present turn (mark it
+/// unread, put it away). A name under edit shows the editor in its place, as a tab's does.
+fn render_session_header(root: &mut Root, pane: PaneId, p: &Pane, tabs: &[(String, TabMark)], height: f32, cx: &mut Context<Root>) -> Stateful<Div> {
+    let style = root.effect_style();
+    let theme = root.theme.clone();
+    let c = &theme.chrome;
+    let dim = c.text_dim.hsla();
+    let family = root.ui_family();
+    let mut bar = div()
+        .id(("bar", pane))
+        .h(px(height))
+        .w_full()
+        .flex_none()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .px(px(12.0))
+        .bg(c.tab_bar.alpha(style.chrome_alpha))
+        .text_color(c.text.hsla())
+        .font_family(family.clone())
+        .text_size(px(style.ui(12.0)));
+    let Some(Tab::Terminal { session, cwd }) = p.tabs.get(p.active).cloned() else {
+        return bar.child(div().text_color(dim).child("No session"));
+    };
+    let (label, mark) = tabs.get(p.active).cloned().unwrap_or((String::new(), TabMark::None));
+    let attention = root.sessions.attention_of(session, crate::sessions::now_ms());
+    let breath = root.breath.alpha(root.frame_now, motion::reduce_motion());
+    let folder = {
+        let dir = cwd.as_deref().unwrap_or(&root.project);
+        dir.file_name().map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().into_owned())
+    };
+    let renaming = root.tab_rename.as_ref().filter(|r| r.pane == pane && p.ids.get(p.active) == Some(&r.tab)).map(|r| r.edit.clone());
+    let rename_focus = root.tab_rename_focus.clone();
+    bar = bar.children(mark.glyph(&theme, breath)).child(match renaming {
+        Some(edit) => div()
+            .key_context("TabRename")
+            .track_focus(&rename_focus)
+            .w(px(200.0))
+            .overflow_hidden()
+            .on_mouse_down(MouseButton::Left, cx.listener(|_root, _: &MouseDownEvent, _window, cx| cx.stop_propagation()))
+            .on_key_down(cx.listener(|root, ev: &KeyDownEvent, _window, cx| root.tab_rename_key(&ev.keystroke, cx)))
+            .child(line_edit::render(&edit, "name", &theme, family.clone(), 12.0))
+            .into_any_element(),
+        None => div().flex_none().max_w(px(320.0)).overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(gpui::FontWeight::BOLD).child(label).into_any_element(),
+    });
+    bar = bar.child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(dim).child(folder));
+    use crate::sessions_list::RowAction;
+    let mut actions: Vec<(&'static str, RowAction)> = Vec::new();
+    match attention {
+        Attention::Unanswered => actions.push(("Mark unread", RowAction::Seen(false))),
+        Attention::Later => actions.push(("Back to the list", RowAction::BackToList)),
+        _ => {}
+    }
+    match attention {
+        Attention::Done => actions.push(("Not done", RowAction::Done(false))),
+        Attention::NeedsYou => {}
+        _ => actions.push(("Done", RowAction::Done(true))),
+    }
+    let hover = c.tab_inactive.hsla();
+    for (i, (label, action)) in actions.into_iter().enumerate() {
+        bar = bar.child(
+            div()
+                .id(("session-header-action", i))
+                .flex_none()
+                .px(px(8.0))
+                .py(px(2.0))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(c.border.hsla())
+                .text_size(px(style.ui(11.0)))
+                .text_color(dim)
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .child(label)
+                .on_click(cx.listener(move |root, _ev: &ClickEvent, window, cx| root.session_row_action(session, action, window, cx))),
+        );
+    }
+    bar
+}
+
 fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: &[(String, TabMark)], height: f32, cx: &mut Context<Root>) -> Stateful<Div> {
     let style = root.effect_style();
     let theme = root.theme.clone();
