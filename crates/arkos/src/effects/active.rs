@@ -60,6 +60,8 @@ pub struct Style {
     pub title_grow: f32,
     /// Points added before every row and header of the sidebar.
     pub sidebar_pad: f32,
+    /// Points at a pane bar's right end the wash draws in, kept clear by the Inbox's header.
+    pub bar_end_clear: f32,
     /// The theme font's grid in points (`[font] grid`), which the window's UI text sizes are
     /// snapped to; 0, none. The window sets it from its theme (`Root::effect_style`): it is the
     /// theme's, not the effect's.
@@ -84,7 +86,7 @@ pub struct Style {
 impl Style {
     /// The app as it paints without an effect.
     pub fn plain() -> Style {
-        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, body_bars_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, title_grow: 0.0, sidebar_pad: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
+        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, body_bars_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, title_grow: 0.0, sidebar_pad: 0.0, bar_end_clear: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
     }
 
     /// The ground a document's own fills go with: a markdown table's header and paper rows and a
@@ -128,6 +130,7 @@ pub fn style_at(manifest: &Manifest, fade: f32) -> Style {
         title_pad: if full { manifest.title_pad } else { 0.0 },
         title_grow: if full { manifest.title_grow } else { 0.0 },
         sidebar_pad: if full { manifest.sidebar_pad } else { 0.0 },
+        bar_end_clear: if full { manifest.bar_end_clear } else { 0.0 },
         text_grid: 0.0,
         binder: if full { manifest.binder } else { 0.0 },
         gap: if full { manifest.gap } else { 0.0 },
@@ -521,7 +524,7 @@ impl<L> ActiveEffect<L> {
     pub fn style(&self, now: Instant) -> Style {
         let s = style_at(&self.effect.manifest, self.amount(now));
         if self.leaving() {
-            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, title_grow: 0.0, sidebar_pad: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false, ..s }
+            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, title_grow: 0.0, sidebar_pad: 0.0, bar_end_clear: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false, ..s }
         } else {
             // The menus' edges cut over with the rest once the effect is fully on.
             Style { menu_edges: self.amount(now) >= 1.0 && has_overlay(&self.effect.wash), ..s }
@@ -797,7 +800,7 @@ mod tests {
         assert_eq!(style_at(&m, 0.0), Style::plain());
         assert_eq!(
             style_at(&m, 1.0),
-            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, body_bars_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, title_pad: 0.0, title_grow: 0.0, sidebar_pad: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false, terminal_paint: true }
+            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, body_bars_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, title_pad: 0.0, title_grow: 0.0, sidebar_pad: 0.0, bar_end_clear: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false, terminal_paint: true }
         );
         let half = style_at(&m, 0.5);
         assert_eq!((half.paper_alpha, half.chrome_alpha, half.ground_alpha), (0.75, 0.5, 0.5));

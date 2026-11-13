@@ -669,7 +669,9 @@ fn render_session_header(root: &mut Root, pane: PaneId, p: &Pane, tabs: &[(Strin
         .flex_row()
         .items_center()
         .gap(px(8.0))
-        .px(px(12.0))
+        .pl(px(12.0))
+        // The wash's own mark at the bar's right end (overworld's gem) stays the right-most thing.
+        .pr(px(12.0f32.max(style.bar_end_clear)))
         .bg(c.tab_bar.alpha(style.chrome_alpha))
         .text_color(c.text.hsla())
         .font_family(family.clone())

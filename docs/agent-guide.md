@@ -719,6 +719,7 @@ key and the range.
 | `frame_rate` | 1 to 60 | 30 | The wash's frames per second while anything moves; sixty while a highlight fades. |
 | `scale` | 0.1 to 1.0 | 0.5 | The wash's pixels per window pixel, each side; the drawable is stretched to the window. |
 | `ui_text_bump` | 0 to 4 | 0 | Points added to the project window's UI text. |
+| `bar_end_clear` | 0 to 64 | 0 | Points at the right end of a pane's bar that the wash draws in (overworld's gem). The Inbox layout's session header, which stands in the tab bar's place with no + button, keeps its buttons left of them. Like `ui_text_bump`, it comes in once the effect has faded in. |
 | `sidebar_pad` | 0 to 24 | 0 | Points added before every row and header of the sidebar, so their text sits clear of a frame and a cursor the wash draws along the sidebar's left edge (overworld's). Like `ui_text_bump`, it comes in once the effect has faded in. |
 | `title_grow` | 0 to 16 | 0 | Points added to the title bar's height, at its foot: its words, its icons and the traffic lights keep their places, with that much more of the bar under them (overworld's, for room under the lights inside its frame). Like `ui_text_bump`, it comes in once the effect has faded in. |
 | `title_pad` | 0 to 24 | 0 | Points added inside the title bar at both ends, so its words and icons sit clear of a shape the wash draws round them (the `notebook` cover's labels). |

@@ -31,6 +31,9 @@ pub struct Manifest {
     /// Points added before every row and header of the sidebar, so their text sits clear of a
     /// frame and a cursor the wash draws along the sidebar's left edge.
     pub sidebar_pad: f32,
+    /// Points at the right end of a pane's bar that the wash draws in (overworld's gem): the
+    /// Inbox's session header, which has no + button to fill them, keeps its buttons left of them.
+    pub bar_end_clear: f32,
     /// The width in points of a gutter between the sidebar and the panes, for the wash to draw
     /// in (reported as a binder block); 0, none.
     pub binder: f32,
@@ -106,6 +109,7 @@ impl Default for Manifest {
             title_pad: 0.0,
             title_grow: 0.0,
             sidebar_pad: 0.0,
+            bar_end_clear: 0.0,
             binder: 0.0,
             gap: 0.0,
             pane_radius: 0.0,
@@ -181,6 +185,7 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
     in_range("title_pad", m.title_pad, 0.0, 24.0)?;
     in_range("title_grow", m.title_grow, 0.0, 16.0)?;
     in_range("sidebar_pad", m.sidebar_pad, 0.0, 24.0)?;
+    in_range("bar_end_clear", m.bar_end_clear, 0.0, 64.0)?;
     in_range("binder", m.binder, 0.0, 32.0)?;
     in_range("gap", m.gap, 0.0, 16.0)?;
     in_range("pane_radius", m.pane_radius, 0.0, 24.0)?;
@@ -417,6 +422,13 @@ mod tests {
         assert!(e.contains("sidebar_pad must be 0.0 to 24.0 (was 30.0)"), "{e}");
         for b in BUILTIN.iter() {
             assert_eq!(parse(b.manifest).unwrap().sidebar_pad > 0.0, b.name == "overworld", "{}", b.name);
+        }
+        // The bar's right end kept clear: none unless asked for, and only overworld, for its gem.
+        assert_eq!(parse(MINIMAL).unwrap().bar_end_clear, 0.0);
+        let e = parse(&with("bar_end_clear = 80")).unwrap_err();
+        assert!(e.contains("bar_end_clear must be 0.0 to 64.0 (was 80.0)"), "{e}");
+        for b in BUILTIN.iter() {
+            assert_eq!(parse(b.manifest).unwrap().bar_end_clear > 0.0, b.name == "overworld", "{}", b.name);
         }
         // A taller title bar: none unless asked for, and only overworld asks.
         assert_eq!(parse(MINIMAL).unwrap().title_grow, 0.0);

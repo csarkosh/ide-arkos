@@ -350,6 +350,9 @@ mod tests {
         // A row's text starts 10 points in: with the padding it clears the frame, the cursor
         // (three art pixels) and the art pixel it bobs by.
         assert!(10.0 + m.sidebar_pad >= (FRAME_PX + 3 + 1) as f32 * ART_PX + 2.0);
+        // The Inbox's header keeps its buttons left of the gem, whose far edge is 14 art pixels
+        // in from the bar's right end (`GEM_IN` and its four columns), with one of air.
+        assert!(m.bar_end_clear >= 15.0 * ART_PX && m.bar_end_clear <= 64.0);
     }
 
     /// A small Timo Purple window as the app reports it: the title bar with its words and icons,

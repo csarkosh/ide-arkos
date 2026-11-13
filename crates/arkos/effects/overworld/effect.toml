@@ -12,6 +12,9 @@ title_pad = 9                 # 0 to 24 points inside the title bar at both ends
                               # icons sit that far in from its frame, on their plates
 sidebar_pad = 12              # 0 to 24 points before each row and header of the sidebar: room for
                               # its frame (two art pixels) and the cursor bobbing inside it
+bar_end_clear = 48            # 0 to 64 points at a pane bar's right end: its gem, 10 to 14 art
+                              # pixels in, and an art pixel of air, which the Inbox's header keeps
+                              # its buttons clear of
 gap = 15                      # 0 to 16 points round each pane: five art pixels, two for each
                               # pane's frame and one of night ground between two frames
 ink_borders = false           # the app keeps drawing its own 1 px borders, inside the frames
