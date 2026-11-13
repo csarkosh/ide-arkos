@@ -163,6 +163,13 @@ constant float LANTERN_GLOW = 0.18;
 // from 2 to 6 of the bar, inside the frame, the whole length of the bar. Within STAR_CLEAR of the
 // bar's words and icons a star, a cloud, a shooting star and the bird are softened into the bar's
 // colour as the scene is under the sidebar's names, so the words keep their contrast.
+// The bar's words, its icons and the traffic lights each sit on a plate: the bar's own plain
+// colour, with no sky, star or cloud on it, PLATE_PAD points wider than what it holds on each
+// side, as tall as the inside of the frame, its corners notched. The lights' plate runs from
+// the frame to an art pixel short of the words' plate, and is there only when the words start
+// past LIGHTS_END, where the lights are (a full-screen window has none).
+constant float PLATE_PAD = 6.0;
+constant float LIGHTS_END = 60.0;
 constant float TITLE_LEFT = 80.0;
 constant int TITLE_CELL = 8;
 constant float TITLE_STAR_CHANCE = 0.6;
@@ -315,6 +322,35 @@ float4 scene_band(float4 side) {
     }
     float h = floor(min(room, SCENE_MAX_H) / ART_PX) * ART_PX;
     return float4(side.x + in, side.y + side.w - in - h, side.z - 2.0 * in, h);
+}
+
+// Whether p is on the plate pl: inside it and not in one of its four corner art pixels.
+bool on_plate(float2 p, float4 pl) {
+    if (pl.z <= 0.0 || !inside_rect(p, pl)) {
+        return false;
+    }
+    float2 last = ceil(pl.zw / ART_PX) - 1.0;
+    float2 q = floor((p - pl.xy) / ART_PX);
+    return !((q.x == 0.0 || q.x >= last.x) && (q.y == 0.0 || q.y >= last.y));
+}
+
+// Whether p is on one of the title bar's plates: behind a group of its words or icons, or behind
+// the traffic lights.
+bool plated(float2 p, float4 bar, constant ArkosInputs& u, int nb) {
+    float in = float(FRAME_PX) * ART_PX;
+    float first = 1e5;
+    for (int i = 0; i < nb; i++) {
+        if (int(u.blocks[i].kind) != ARKOS_TITLE_GROUP_BLOCK) {
+            continue;
+        }
+        float4 g = u.blocks[i].rect;
+        first = min(first, g.x);
+        if (on_plate(p, float4(g.x - PLATE_PAD, bar.y + in, g.z + 2.0 * PLATE_PAD, bar.w - 2.0 * in))) {
+            return true;
+        }
+    }
+    float to = first - PLATE_PAD - ART_PX;
+    return first < 1e4 && first > LIGHTS_END && on_plate(p, float4(bar.x + in, bar.y + in, to - bar.x - in, bar.w - 2.0 * in));
 }
 
 // Whether the art pixel whose top left is o keeps clear of the title bar's words and icons: it
@@ -942,6 +978,10 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
                     }
                 }
                 col = mix(bar, line, k);
+                continue;
+            }
+            // A plate behind the words, the icons and the traffic lights: the bar's plain colour.
+            if (plated(p, r, u, nb)) {
                 continue;
             }
             // The sky, away from the text's colour at the top.

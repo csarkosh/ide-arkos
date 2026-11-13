@@ -369,3 +369,21 @@ Cyrus: "make the text effects aladin themed too".
   A grain is there or not by its place on the screen alone, so each cut holds still. By night
   the character still resolves from blocks. The window already tells a glyph shader whether the
   ground is light (`ARKOS_LIGHT_GROUND`), so nothing new is passed.
+
+## Eighth pass, 12 November
+
+Cyrus: "add a little more background padding behind the title, stop light buttons and icon
+buttons in the app bar", and, with a screenshot of the Worktrees header at the sidebar's foot
+over the palace: "the worktrees explorer drops to the bottom when the file explorer opens".
+
+- **Plates in the title bar.** The bar's words, its icons and the traffic lights each sit on a
+  plate: the bar's own plain colour, 6 points wider than what it holds on each side, as tall as
+  the inside of the frame, corners notched, with no sky, star, cloud or bird on it. The lights'
+  plate is drawn only when the words start past the lights (not in full screen). The manifest's
+  `title_pad = 6` moves the words and icons that far in from the frame. Beyond a plate, what
+  comes within `STAR_CLEAR` of a group is still softened.
+- **Closed Worktrees.** With the Worktrees section closed its header now sits right under the
+  Explorer's last row instead of at the sidebar's foot, where it lay over the scene and dimmed
+  all of it; a tree longer than the sidebar still scrolls above a header at the foot. This is
+  the sidebar's layout under every theme. The split also used the panes' height for the
+  sidebar's, which under an effect's gap is two gaps short: it now uses the sidebar's own.

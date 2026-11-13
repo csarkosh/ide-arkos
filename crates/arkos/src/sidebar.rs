@@ -137,15 +137,18 @@ fn reveal(fade: &mut Transient<()>, open: bool, now: Instant) -> f32 {
 /// Heights for the Explorer and the Worktrees sections in a sidebar `total` tall, both headers
 /// included, from the Explorer's content height (its rows, without its header): open Worktrees
 /// take what the Explorer does not need, never less than a third of `total`; the Explorer never
-/// less than its header plus one row. On a sidebar shorter than `2 * ROW_H` the Explorer keeps its
-/// header and a row and Worktrees gets what is left, which may be nothing.
+/// less than its header plus one row. With Worktrees closed its header sits right under the
+/// Explorer's last row, not at the sidebar's foot: the Explorer is as tall as its rows, up to
+/// all but the header's row, and what is left below the header is empty. On a sidebar shorter
+/// than `2 * ROW_H` the Explorer keeps its header and a row and Worktrees gets what is left,
+/// which may be nothing.
 pub fn sidebar_split(total: f32, explorer_rows_h: f32, explorer_open: bool, worktrees_open: bool) -> (f32, f32) {
     match (explorer_open, worktrees_open) {
         (true, true) => {
             let explorer = (ROW_H + explorer_rows_h).min(total - total / 3.0).max(2.0 * ROW_H);
             (explorer, total - explorer)
         }
-        (true, false) => (total - ROW_H, ROW_H),
+        (true, false) => ((ROW_H + explorer_rows_h).max(2.0 * ROW_H).min((total - ROW_H).max(2.0 * ROW_H)), ROW_H),
         (false, true) => (ROW_H, total - ROW_H),
         (false, false) => (ROW_H, ROW_H),
     }
@@ -204,7 +207,8 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
     // The New File prompt is a row of the tree while it is open or fading out.
     let entries = root.explorer.rows();
     let tree_rows = entries.len() + usize::from(root.new_file.current(root.frame_now).is_some());
-    let (explorer_h, worktrees_h) = sidebar_split(root.content.h, tree_rows as f32 * ROW_H, explorer_open, worktrees_open);
+    // The sidebar's own height: the panes' area and the gap an effect keeps above and below it.
+    let (explorer_h, worktrees_h) = sidebar_split(root.content.h + 2.0 * style.gap, tree_rows as f32 * ROW_H, explorer_open, worktrees_open);
     let explorer = div()
         .flex()
         .flex_col()
@@ -2105,9 +2109,14 @@ mod tests {
     }
 
     #[test]
-    fn a_closed_section_leaves_the_other_the_whole_sidebar() {
+    fn closed_worktrees_sit_under_the_explorer_s_last_row_and_a_closed_explorer_leaves_worktrees_the_sidebar() {
         let h = super::ROW_H;
-        assert_eq!(super::sidebar_split(900.0, 200.0, true, false), (900.0 - h, h));
+        // A short tree: the Worktrees header right under its last row, the rest left empty.
+        assert_eq!(super::sidebar_split(900.0, 200.0, true, false), (200.0 + h, h));
+        // A tree longer than the sidebar scrolls above the header, which stays at the foot.
+        assert_eq!(super::sidebar_split(900.0, 2000.0, true, false), (900.0 - h, h));
+        // An empty tree keeps the Explorer a row under its header.
+        assert_eq!(super::sidebar_split(900.0, 0.0, true, false), (2.0 * h, h));
         assert_eq!(super::sidebar_split(900.0, 200.0, false, true), (h, 900.0 - h));
         assert_eq!(super::sidebar_split(900.0, 200.0, false, false), (h, h));
     }

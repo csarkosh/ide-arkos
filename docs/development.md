@@ -617,6 +617,12 @@ Things only a person at the screen can check, in order of value:
   little above the line, then most of the character in orange, then the whole of it settling to
   ink, in three cuts with no shimmer between them; under Timo Purple it still resolves from
   blocks
+- sidebar: with Worktrees closed its header sits right under the Explorer's last row (at the
+  sidebar's foot only when the tree is longer than the sidebar), and under an effect with a gap
+  the two sections fill the sidebar to its foot, with no strip left under them
+- effects: under overworld the title's words, its icons and the traffic lights each sit on a
+  plain plate of the bar's colour with a few points of padding round them, clear of the frame,
+  the sky and its stars going on between the plates
 - effects: under overworld the title bar is alive along its whole length: stars behind its
   words too, softer there, a shooting star every few seconds, two clouds, a bird crossing now
   and then, and a light running along the foot of its frame every six seconds; the title's words

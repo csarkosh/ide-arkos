@@ -74,6 +74,9 @@ pub fn star_clear(p: (f32, f32), groups: &[Rect]) -> bool {
 /// length of the bar. One within `STAR_CLEAR` of the bar's words or icons is softened into the
 /// bar's colour, as the scene is under the sidebar's names.
 pub const TITLE_LEFT: f32 = 80.0;
+/// The bar's words, its icons and the traffic lights each sit on a plate of the bar's plain
+/// colour, `PLATE_PAD` points wider than what it holds on each side.
+pub const PLATE_PAD: f32 = 6.0;
 pub const TITLE_CELL: i32 = 8;
 pub const TITLE_STAR_CHANCE: f32 = 0.6;
 /// A salt that gives the title bar's stars hashes of their own.
@@ -286,6 +289,7 @@ mod tests {
             format!("constant int TITLE_CELL = {TITLE_CELL};"),
             format!("constant float TITLE_STAR_CHANCE = {TITLE_STAR_CHANCE:?};"),
             format!("constant uint TITLE_SALT = 0x{TITLE_SALT:08X}u;"),
+            format!("constant float PLATE_PAD = {PLATE_PAD:?};"),
             format!("constant int CLOUD_W = {CLOUD_W};"),
             format!("constant int CLOUD_ROW = {CLOUD_ROW};"),
             format!("constant float CLOUD_SPEED = {CLOUD_SPEED:?};"),
@@ -447,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn on_the_gpu_the_title_bar_s_sky_is_alive_behind_its_words_without_costing_them_their_contrast() {
+    fn on_the_gpu_the_title_s_words_icons_and_traffic_lights_sit_on_plain_plates_in_a_living_sky() {
         if !gpu() {
             return;
         }
@@ -455,21 +459,33 @@ mod tests {
         for name in ["timo-purple", "arabia-solar", "navy", "composition-notebook"] {
             let theme = crate::theme::builtin(name).unwrap();
             let c = &theme.chrome;
-            let plain = contrast(c.text_dim, c.title_bar);
             let blocks = small_window();
+            // Inside the frame: the words and the icons with their padding, and the lights.
+            let inside = |x: f32, w: f32| Rect { x, y: 6.0, w, h: TOP - 12.0 };
+            let plates = [
+                inside(WORDS.x - PLATE_PAD + 3.0, WORDS.w + 2.0 * PLATE_PAD - 6.0),
+                inside(ICONS.x - PLATE_PAD + 3.0, ICONS.w + 2.0 * PLATE_PAD - 6.0),
+                inside(9.0, 52.0),
+            ];
             let mut lively = false;
             for t in [0.0, 3.7, 9.4, 21.3, 64.0, 200.5] {
                 let frame = render(&theme, t, &blocks);
-                for g in [WORDS, ICONS] {
-                    // The icons reach 2 points into the frame's inner line; the words do not.
-                    let inside = Rect { y: g.y.max(6.0), h: g.h.min(16.0), ..g };
-                    let worst = pixels(&frame, inside).iter().map(|p| contrast(c.text_dim, *p)).fold(f64::INFINITY, f64::min);
-                    assert!(worst >= 4.5_f64.min(plain), "{name} at {t}: the dim text is {worst:.2}:1 under {g:?}");
+                for plate in plates {
+                    assert!(pixels(&frame, plate).iter().all(|p| *p == c.title_bar), "{name} at {t}: the plate at {plate:?} is the bar's plain colour");
                 }
-                lively |= pixels(&frame, Rect { y: 6.0, h: 16.0, ..WORDS }).iter().any(|p| crate::palette::luminance(*p) != crate::palette::luminance(c.title_bar) && contrast(*p, c.title_bar) > 1.08);
+                // Between the words' plate and the icons' the sky goes on, and what is drawn near
+                // a plate still leaves the dim text its contrast.
+                let sky = inside(WORDS.x + WORDS.w + PLATE_PAD, ICONS.x - PLATE_PAD - WORDS.x - WORDS.w - PLATE_PAD);
+                let seen = pixels(&frame, sky);
+                lively |= seen.iter().any(|p| contrast(*p, c.title_bar) > 1.3);
+                let near = inside(WORDS.x + WORDS.w + PLATE_PAD, 6.0);
+                assert!(pixels(&frame, near).iter().all(|p| contrast(c.text_dim, *p) >= 4.5_f64.min(contrast(c.text_dim, c.title_bar))), "{name} at {t}");
             }
-            assert!(lively, "{name}: something is drawn behind the words");
+            assert!(lively, "{name}: stars in the sky between the plates");
         }
+        // The manifest moves the words and icons in from the frame by the plate's padding.
+        let m = crate::effects::manifest::parse(crate::effects::BUILTIN.iter().find(|b| b.name == "overworld").unwrap().manifest).unwrap();
+        assert_eq!(m.title_pad, PLATE_PAD);
     }
 
     #[test]
