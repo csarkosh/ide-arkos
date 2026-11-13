@@ -472,6 +472,28 @@ Things only a person at the screen can check, in order of value:
   the About, Settings and Keybindings windows and the chooser keep gpui's plain glyphs
 - effects: a `glyphs.metal` in the effects folder that fails to compile shows a notice
   `effect <name>: glyphs.metal: …`, and the wash stays on with plain glyphs
+- sessions: with the new hooks installed (the doctor's row offers them), a `claude` asked to
+  run a command that needs permission shows the dot in a ring on its tab and its row under
+  Needs you with "Allow Bash: …" within a moment of the dialog; answering with Enter or a digit
+  shows it working; when it stops, the row is Unread with the first line of its answer, a click
+  makes it Unanswered (a ring), and the next prompt Working; a stop while the tab is focused
+  in the window in front arrives as Unanswered; the Dock icon shows the count of Needs you and
+  Unread and loses it at zero
+- sessions: the sidebar's Sessions section shows every terminal tab under its group, two lines
+  a row, the second ending in an ellipsis at any sidebar width; the header closes it and still
+  shows the count; a right click on a row opens its menu at the pointer; End closes the tab
+  (Shift+Cmd+T brings it back); Later: in an hour moves it under Later with "in 60 min"; Done
+  folds it under Done; Rename edits the name in the tab bar (in the Inbox, in the header);
+  Shift+Cmd+U goes to a blocked session first
+- layouts: Settings, Layout, Inbox regroups the window with no tab lost: one pane with a header
+  (mark, name, folder, the buttons) in the tab bar's place and no tab bar, the sidebar with
+  Sessions and Files and "+ New"; a click on a row shows that session at full size with the keys
+  in it; `arkos open` from a session opens the side pane on the right and a second open adds a
+  tab there; closing its last tab closes the side pane; Cmd+D (split) leaves the two panes as
+  they are; back on Grid the panes are as they were; under each effect (overworld, material,
+  notebook, watercolor, runic) the header and the list are legible
+- layouts: "A session's files open" on Neighbor: with one pane an `arkos open` splits a pane
+  to the right, the next goes into that pane, and from the right pane it goes to the left one
 - Settings, Appearance: two pills, Presets and Custom, the one in force selected. Presets
   shows Mode and the dark and the light preset lists; a click on Custom shows Color on the
   left and Font above Effect on the right instead, every row readable at the window's

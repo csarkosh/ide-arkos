@@ -129,19 +129,17 @@ pub enum OpenPlacement {
     Neighbor,
 }
 
-/// The window's layout, where a session's files open, and whether a session that needs the
-/// user says so with a macOS notification while the window is not in front.
+/// The window's layout and where a session's files open.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LayoutConfig {
     pub name: LayoutName,
     pub placement: OpenPlacement,
-    pub notify: bool,
 }
 
 impl Default for LayoutConfig {
     fn default() -> Self {
-        Self { name: LayoutName::Grid, placement: OpenPlacement::Inplace, notify: true }
+        Self { name: LayoutName::Grid, placement: OpenPlacement::Inplace }
     }
 }
 
@@ -862,9 +860,6 @@ name = "grid"
 # "inplace": a new tab in the session's own pane. "neighbor": a new tab in the pane to its
 # right, else the one to its left, else a new pane split off to its right.
 placement = "inplace"
-# A macOS notification when a session needs you (a permission, a question) while the window is
-# not in front.
-notify = true
 
 [viewer]
 # Files larger than this open in the viewer without syntax colours; binaries show a notice.

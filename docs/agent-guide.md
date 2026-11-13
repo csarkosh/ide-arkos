@@ -501,8 +501,9 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
   shows, or `default` for none of a theme's, so the config's `font.family`; never set, the
   fonts are the colour's own),
   `custom.effect` (theme, none, or an installed effect's name), `theme.dark`, `theme.light`, `font.family`, `font.preset`,
-  `layout.name` (grid, inbox), `layout.placement` (inplace, neighbor: where a plain `arkos open`
-  from a session lands), `layout.notify` (true, false),
+  `layout.name` (grid, inbox: the window's layout; in the inbox what you open always goes to
+  the side pane), `layout.placement` (inplace, neighbor: where a plain `arkos open` from a
+  session lands in the grid),
   `font.presets.<name>.size` (8 to 48), `font.presets.<name>.line_height` (1.0 to 2.5),
   `effect.name` (the older key, kept: `theme` puts the presets in force; `none` or an installed
   effect's name puts the custom look in force with that effect), `effect.intensity` (0.0 to 1.0),

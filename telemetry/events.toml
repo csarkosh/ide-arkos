@@ -128,7 +128,6 @@ key = [
     "sidebar.collapsed",
     "layout.name",
     "layout.placement",
-    "layout.notify",
     "viewer.highlight_limit_bytes",
     "viewer.wide_tables",
     "viewer.image_destination",

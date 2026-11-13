@@ -78,7 +78,6 @@ pub const SETTABLE: &[&str] = &[
     "viewer.page_width",
     "layout.name",
     "layout.placement",
-    "layout.notify",
     "update.auto",
     "recovery.start_at_login",
     "telemetry.usage",
@@ -899,7 +898,7 @@ pub fn typed_value(key: &str, raw: &str) -> Result<toml_edit::Value, String> {
         return Err(format!("not settable: {key}"));
     }
     match key {
-        "update.auto" | "effect.run_unfocused" | "layout.notify" => match raw {
+        "update.auto" | "effect.run_unfocused" => match raw {
             "true" => Ok(true.into()),
             "false" => Ok(false.into()),
             _ => Err(format!("{key} must be true or false, not {raw:?}")),
@@ -1247,7 +1246,6 @@ mod tests {
         // The layout's three keys.
         assert!(typed_value("layout.name", "inbox").is_ok() && typed_value("layout.name", "journal").is_err());
         assert!(typed_value("layout.placement", "neighbor").is_ok() && typed_value("layout.placement", "right").is_err());
-        assert_eq!(typed_value("layout.notify", "false").unwrap().as_bool(), Some(false));
         assert_eq!(typed_value("viewer.image_destination", " images ").unwrap().as_str(), Some("images"));
         assert_eq!(typed_value("update.auto", "true").unwrap().as_bool(), Some(true));
         assert_eq!(typed_value("font.presets.big.size", "18").unwrap().as_float(), Some(18.0));

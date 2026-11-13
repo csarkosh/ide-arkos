@@ -10,12 +10,30 @@ from the command palette (or `arkos hooks install`), or the doctor's "Claude Cod
 row, which merges eight entries into `~/.claude/settings.json` after writing a `.bak`, then start
 or restart `claude` in a tab:
 
-| Claude Code event | The tab |
-|---|---|
-| a prompt is sent, a tool runs | a slow breathing glyph: working |
-| Claude stops, or asks for permission or input | a warm dot: waiting on you |
-| you click the tab or type into it | the dot clears |
-| the shell exits | a muted title, with the exit code |
+| Claude Code event | The session | Its mark |
+|---|---|---|
+| a prompt is sent, a tool runs | working | a slow breathing glyph |
+| Claude asks for a permission, asks you a question, or has a plan to approve | needs you | a warm dot in a ring |
+| Claude stops | unread, until you look at it | a warm dot |
+| you click the tab, or it was in front of you when Claude stopped | unanswered: still your move | a warm ring |
+| you answer | working again | the breathing glyph |
+| the shell exits | ended | a muted title, with the exit code |
+
+Each session also carries a line: what it is doing ("Bash: cargo test"), what it asks ("Allow
+Bash: ffmpeg …", or its question), or the first line of what Claude last said. The sidebar's
+Sessions section lists every session of the window under Needs you, Unread, Unanswered, Working,
+Idle, Later and Done, newest change first, each with its mark, name, age and line; a click goes
+to the session, and Shift+Cmd+U ("next session that needs you") goes to the first that is your
+move: a blocked one, then an unread one, then an unanswered one. Right click a row to end the
+session (as Cmd+W closes its tab, with the same minute in which Shift+Cmd+T brings it back),
+mark it read or unread, put it off (Later: in an hour, or tomorrow at 9; it comes back as unread
+when the time comes) or put it away (Done), or rename it. A session put off or away comes back
+by itself when Claude next stops or needs you. The Dock icon counts the sessions that need you
+or are unread. What you did with each session (seen, done, later) is this window's own and is
+saved with it; another window on another folder keeps its own list.
+
+No hook says a permission or a question was answered, so Enter or a digit typed into a session
+that needs you counts as the answer and shows it working again.
 
 A terminal bell marks a tab waiting too, so a `claude` set to ring the bell works without hooks.
 `arkos notify` is the hook side: it reads `ARKOS_SESSION_ID`, which every shell the daemon
@@ -38,6 +56,31 @@ it starts, so a `claude` that was running when they were installed still reports
 hook row then reads "installed; restart claude in Film for the tab to show its state", naming
 the tabs. `arkos hooks install` writes the folder of the shell it is run in, and `arkos doctor`
 lists each folder and each session that reports nothing under "Claude Code config folders".
+
+## Layouts
+
+Settings, Layout (or `[layout] name` in the config) chooses how a window arranges its sessions
+and files:
+
+- **Grid**, the default: panes of tabs that you split and arrange, with the Sessions section in
+  the sidebar.
+- **Inbox**: the sessions are a list in the sidebar, sorted by what needs you, and the window
+  shows one session at full size, as a chat app shows one conversation. The session's header
+  (in the tab bar's place) has its mark, name and folder, with "Mark unread" and "Done". Files,
+  pages and videos open in one side pane to the right, which is there only while something is
+  open in it; a file a Claude Code session opens with `arkos open` goes there, and choosing a
+  session brings forward the tab it opened last. The sidebar's top switches between Sessions
+  and Files (the Explorer and Worktrees), and "+ New" starts a session. Every terminal is a
+  session: splitting a pane, or dragging a tab to make one, does nothing here, since the layout
+  keeps its two panes.
+
+Switching layouts moves nothing out of the window: the same sessions and files are regrouped,
+and the Grid's arrangement is kept while the Inbox is on and restored when you switch back,
+less the tabs closed meanwhile and with the tabs opened meanwhile added to its focused pane.
+
+"A session's files open" (`[layout] placement`) says where a plain `arkos open` from a session
+lands in the Grid: In place, a new tab in the session's own pane, or Neighbor, the pane on its
+right, else the one on its left, else a new pane split off to its right.
 
 ## After a restart
 
@@ -82,7 +125,9 @@ turning it off deletes the file but does not stop a daemon already running.
 
 ## Sidebar and viewer
 
-Cmd+B shows the sidebar: a file tree rooted at the folder, read one directory at a time as you
+Cmd+B shows the sidebar. At its top the Sessions section lists the window's sessions (see
+[Session awareness](#session-awareness)); it takes up to two fifths of the sidebar and closes
+to its header, which still says how many sessions need you. Under it is a file tree rooted at the folder, read one directory at a time as you
 expand it, with `.git` hidden and anything `.gitignore` ignores left out (the palette's "Show
 ignored files" lists them dimmed). It follows the file system within a second. A single click
 opens a file in a preview tab in the focused pane, which the next single click replaces; a
@@ -619,6 +664,7 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+I | in a markdown document: italic |
 | Shift+Cmd+E | focus the file tree |
 | Ctrl+Shift+G | focus the worktree list |
+| Shift+Cmd+U | next session that needs you: a blocked one, then an unread one, then an unanswered one |
 | Shift+Cmd+D | inline diff in the viewer |
 | Shift+Cmd+M | toggle markdown view: rendered or raw (a CSV: grid or raw) |
 | Cmd+Option+], Cmd+Option+[ | in a workbook: next sheet, previous sheet |
@@ -781,6 +827,8 @@ window, as Keybindings (Cmd+/) does.
   The effect's intensity and `run_unfocused` are set in the config file only. Then "Show effects
   folder", which creates the folder, then reveals it. A change fades in or out
   over a fifth of a second, or cuts under Reduce Motion.
+- Layout: Grid or Inbox (see [Layouts](#layouts)), and "A session's files open", In place or
+  Neighbor: where a file a Claude Code session opens goes in the Grid.
 - Text: the font family (installed monospace families; a configured family that is missing is
   listed first as "(not installed)"), the text preset, and Size and Line height steppers that
   write both values of the preset together and show the file's values as they are. The preset
