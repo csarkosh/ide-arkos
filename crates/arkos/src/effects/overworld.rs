@@ -478,8 +478,11 @@ mod tests {
                 let sky = inside(WORDS.x + WORDS.w + PLATE_PAD, ICONS.x - PLATE_PAD - WORDS.x - WORDS.w - PLATE_PAD);
                 let seen = pixels(&frame, sky);
                 lively |= seen.iter().any(|p| contrast(*p, c.title_bar) > 1.3);
-                let (sky_lum, bar_lum) = (seen.iter().map(|p| crate::palette::luminance(*p)).sum::<f64>() / seen.len() as f64, crate::palette::luminance(c.title_bar));
-                assert!(contrast_of(sky_lum, bar_lum) > 1.04, "{name} at {t}: the sky is told from the plates ({sky_lum:.3} against {bar_lum:.3})");
+                // The sky's dither is a step darker than the bar over much of it, which is what
+                // tells a plate from the sky around it.
+                let dark = crate::palette::luminance(c.title_bar);
+                let darker = seen.iter().filter(|p| contrast_of(crate::palette::luminance(**p), dark) > 1.03 && crate::palette::luminance(**p) < dark).count();
+                assert!(darker * 4 >= seen.len(), "{name} at {t}: {darker} of {} sky pixels are darker than the plates", seen.len());
             }
             assert!(lively, "{name}: stars in the sky between the plates");
         }
