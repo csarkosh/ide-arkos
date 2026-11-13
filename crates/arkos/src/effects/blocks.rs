@@ -35,6 +35,10 @@ pub enum Kind {
     TitleGroup = 15,
     /// The sidebar's empty space below its last visible name, through to the sidebar's bottom.
     SidebarFoot = 16,
+    /// A document's whole page where it lies behind its pane: as wide as the pane's body, from
+    /// where the page's top is (above the body once it is scrolled) to where its end is (below
+    /// the body while more is left to read), so a wash can draw a backdrop that scrolls with it.
+    Page = 17,
 }
 
 /// The edges of a block the app no longer draws when the effect inks the borders, a bit each.
@@ -61,6 +65,12 @@ pub struct Block {
     pub busy: f32,
     /// A rows block's row height in points; 0 for every other kind.
     pub pitch: f32,
+    /// A pane's focus fade, 0 to 1, on its tab bar and body: 1 on the focused pane, moving as
+    /// the app's own focus glow does when the focus changes. 0 for every other kind.
+    pub focus: f32,
+    /// 1 for a pane's tab bar and body while the pane's active tab is a terminal whose Claude
+    /// session waits for the user, else 0.
+    pub waiting: f32,
 }
 
 /// Whether a highlight is under the pointer, selected, or both.
@@ -152,6 +162,8 @@ pub fn menu_blocks(menus: &[MenuShape]) -> Vec<Block> {
             ordinal: 0.0,
             busy: 0.0,
             pitch: 0.0,
+            focus: 0.0,
+            waiting: 0.0,
         })
         .collect()
 }
@@ -169,6 +181,9 @@ pub struct Scene<'a> {
     pub tab_bar_h: f32,
     /// The gutter's width between the sidebar and `content`; 0, none.
     pub binder: f32,
+    /// The effect's gap, which keeps `content` that far off the window's right and bottom edges:
+    /// the title bar and the sidebar still reach those edges.
+    pub gap: f32,
     pub divider_y: Option<f32>,
     /// The window y in points where the sidebar's last visible name ends, when laid out.
     pub sidebar_end: Option<f32>,
@@ -176,6 +191,10 @@ pub struct Scene<'a> {
     /// The panes whose active tab is a terminal whose Claude session works: their tab bar and
     /// body blocks are busy.
     pub busy: &'a [PaneId],
+    /// Each pane's focus fade, 0 to 1; a pane not listed has none.
+    pub focus: &'a [(PaneId, f32)],
+    /// The panes whose active tab is a terminal whose Claude session waits for the user.
+    pub waiting: &'a [PaneId],
     pub shapes: &'a [Shape],
     pub strokes: &'a [(Mark, f32)],
 }
@@ -186,9 +205,9 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
     let edges = |bits: u32| if ink_borders { bits } else { 0 };
     let c = scene.content;
     let bar = scene.title_bar_h;
-    let bottom = c.y + c.h;
+    let bottom = c.y + c.h + scene.gap;
     let mut out = vec![Block {
-        rect: Rect { x: 0.0, y: 0.0, w: c.x + c.w, h: bar },
+        rect: Rect { x: 0.0, y: 0.0, w: c.x + c.w + scene.gap, h: bar },
         kind: Kind::TitleBar,
         edges: edges(EDGE_BOTTOM),
         seed: 1.0,
@@ -196,6 +215,8 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
         ordinal: 0.0,
         busy: 0.0,
         pitch: 0.0,
+        focus: 0.0,
+        waiting: 0.0,
     }];
     let side = (c.x - scene.binder).max(0.0);
     if side > 1.0 {
@@ -208,6 +229,8 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
             ordinal: 0.0,
             busy: 0.0,
             pitch: 0.0,
+            focus: 0.0,
+            waiting: 0.0,
         });
         // The line between Explorer and Worktrees: a block with no height.
         if let Some(y) = scene.divider_y.filter(|y| *y > bar && *y < bottom) {
@@ -220,6 +243,8 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
                 ordinal: 0.0,
                 busy: 0.0,
                 pitch: 0.0,
+                focus: 0.0,
+                waiting: 0.0,
             });
         }
         // The empty space below the last name, down to the sidebar's bottom, never reaching up
@@ -234,6 +259,8 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
                 ordinal: 0.0,
                 busy: 0.0,
                 pitch: 0.0,
+                focus: 0.0,
+                waiting: 0.0,
             });
         }
         if scene.binder > 0.0 {
@@ -246,6 +273,8 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
                 ordinal: 0.0,
                 busy: 0.0,
                 pitch: 0.0,
+                focus: 0.0,
+                waiting: 0.0,
             });
         }
     }
@@ -254,6 +283,8 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
         // Seeded by the pane itself, not its place in this frame's list.
         let seed = 10.0 + (*pane % 997) as f32 * 2.0;
         let busy = if scene.busy.contains(pane) { 1.0 } else { 0.0 };
+        let focus = scene.focus.iter().find(|(id, _)| id == pane).map_or(0.0, |(_, f)| f.clamp(0.0, 1.0));
+        let waiting = if scene.waiting.contains(pane) { 1.0 } else { 0.0 };
         out.push(Block {
             rect: Rect { x: r.x, y: r.y, w: r.w, h: tab },
             kind: Kind::TabBar,
@@ -263,6 +294,8 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
             ordinal: i as f32,
             busy,
             pitch: 0.0,
+            focus,
+            waiting,
         });
         out.push(Block {
             rect: Rect { x: r.x, y: r.y + tab, w: r.w, h: (r.h - tab).max(0.0) },
@@ -273,6 +306,8 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
             ordinal: i as f32,
             busy,
             pitch: 0.0,
+            focus,
+            waiting,
         });
     }
     for shape in scene.shapes {
@@ -284,7 +319,7 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
             Kind::TableHeader => (r, EDGE_BOTTOM),
             // A terminal's rows are ruled, an active tab marked and the title bar's groups
             // labelled, never outlined.
-            Kind::Rows | Kind::ActiveTab | Kind::TitleGroup => (r, 0),
+            Kind::Rows | Kind::ActiveTab | Kind::TitleGroup | Kind::Page => (r, 0),
             _ => (r, all),
         };
         out.push(Block {
@@ -296,6 +331,8 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
             ordinal: 0.0,
             busy: 0.0,
             pitch: shape.pitch,
+            focus: 0.0,
+            waiting: 0.0,
         });
     }
     // The highlights last: past the cap, a transient stroke goes before a pane does.
@@ -318,6 +355,8 @@ fn stroke_block(mark: &Mark, value: f32) -> Block {
         ordinal: mark.state as u32 as f32,
         busy: 0.0,
         pitch: 0.0,
+        focus: 0.0,
+        waiting: 0.0,
     }
 }
 
@@ -330,7 +369,7 @@ pub fn backdrop_blocks(menu: &MenuShape, strokes: &[(Mark, f32)]) -> Vec<Block> 
         let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
         cx >= m.x && cx <= m.x + m.w && cy >= m.y && cy <= m.y + m.h
     };
-    let own = Block { rect: m, kind: Kind::Menu, edges: 0, seed: 50.0 + (menu.key % 997) as f32 * 0.61, value: 1.0, ordinal: 0.0, busy: 0.0, pitch: 0.0 };
+    let own = Block { rect: m, kind: Kind::Menu, edges: 0, seed: 50.0 + (menu.key % 997) as f32 * 0.61, value: 1.0, ordinal: 0.0, busy: 0.0, pitch: 0.0, focus: 0.0, waiting: 0.0 };
     std::iter::once(own).chain(strokes.iter().filter(|(mark, _)| inside(mark.rect)).map(|(mark, v)| stroke_block(mark, *v))).collect()
 }
 
@@ -349,7 +388,7 @@ mod tests {
     }
 
     fn scene<'a>(content: Rect, divider_y: Option<f32>, panes: &'a [(PaneId, Rect)], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
-        Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, divider_y, sidebar_end: None, panes, busy: &[], shapes: &[], strokes }
+        Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, gap: 0.0, divider_y, sidebar_end: None, panes, busy: &[], focus: &[], waiting: &[], shapes: &[], strokes }
     }
 
     /// The content area starting at `x`, under the title bar and down to y 800.
@@ -465,6 +504,55 @@ mod tests {
     }
 
     #[test]
+    fn with_a_gap_the_title_bar_and_the_sidebar_still_reach_the_window_s_edges() {
+        // A 1200 by 800 window, its panes kept 15 points off the bars and the edges.
+        let content = rect(240.0 + 15.0, 38.0 + 15.0, 1200.0 - 240.0 - 30.0, 800.0 - 38.0 - 30.0);
+        let panes = [(1, content)];
+        let s = Scene { binder: 15.0, gap: 15.0, sidebar_end: Some(300.0), ..scene(content, None, &panes, &[]) };
+        let out = blocks(&s, false);
+        let of = |kind: Kind| out.iter().find(|b| b.kind == kind).unwrap().rect;
+        assert_eq!(of(Kind::TitleBar), rect(0.0, 0.0, 1200.0, 38.0));
+        assert_eq!(of(Kind::Sidebar), rect(0.0, 38.0, 240.0, 762.0));
+        assert_eq!(of(Kind::SidebarFoot), rect(0.0, 300.0, 240.0, 500.0));
+        assert_eq!(of(Kind::Binder), rect(240.0, 38.0, 15.0, 762.0));
+        assert_eq!(of(Kind::PaneBody).y + of(Kind::PaneBody).h, 785.0, "the pane keeps its gap");
+    }
+
+    #[test]
+    fn a_document_s_page_is_reported_whole_with_no_edges_even_where_it_lies_outside_its_pane() {
+        let panes = [(1, rect(240.0, 38.0, 560.0, 562.0))];
+        // Scrolled 900 points down a page with 2,000 more below the pane.
+        let page = rect(240.0, 68.0 - 900.0, 560.0, 532.0 + 900.0 + 2000.0);
+        let shapes = [Shape { key: 4, rect: page, kind: Kind::Page, pitch: 0.0 }];
+        let s = Scene { shapes: &shapes, ..scene(rect(240.0, 38.0, 560.0, 562.0), None, &panes, &[]) };
+        for ink in [false, true] {
+            let b = *blocks(&s, ink).iter().find(|b| b.kind == Kind::Page).unwrap();
+            assert_eq!((b.rect, b.edges), (page, 0), "not clipped to the pane, never outlined");
+        }
+    }
+
+    #[test]
+    fn a_pane_s_tab_bar_and_body_carry_its_focus_and_whether_it_waits_and_nothing_else_does() {
+        let panes = [(5, rect(240.0, 38.0, 480.0, 562.0)), (9, rect(720.0, 38.0, 480.0, 562.0))];
+        let shapes = [Shape { key: 7, rect: rect(260.0, 200.0, 300.0, 100.0), kind: Kind::Table, pitch: 0.0 }];
+        let row = Mark { key: 1, rect: rect(0.0, 100.0, 240.0, 22.0), kind: Kind::RowHighlight, state: HighlightState::Hovered };
+        let strokes = [(row, 1.0)];
+        // Mid-way through the focus moving from pane 9 to pane 5, while pane 9 waits.
+        let (focus, waiting) = ([(5, 0.75), (9, 0.2)], [9]);
+        let s = Scene { focus: &focus, waiting: &waiting, shapes: &shapes, ..scene(rect(240.0, 38.0, 960.0, 562.0), Some(400.0), &panes, &strokes) };
+        let out = blocks(&s, true);
+        for b in &out {
+            let pane = matches!(b.kind, Kind::TabBar | Kind::PaneBody).then_some(b.rect.x);
+            assert_eq!(b.focus, match pane { Some(240.0) => 0.75, Some(_) => 0.2, None => 0.0 }, "{:?} at {:?}", b.kind, b.rect);
+            assert_eq!(b.waiting, if pane == Some(720.0) { 1.0 } else { 0.0 }, "{:?} at {:?}", b.kind, b.rect);
+        }
+        // A pane the scene says nothing of has no focus and does not wait; menus never do.
+        assert!(blocks(&scene(rect(240.0, 38.0, 960.0, 562.0), None, &panes, &strokes), true).iter().all(|b| b.focus == 0.0 && b.waiting == 0.0));
+        let menu = MenuShape { key: 3, rect: rect(10.0, 10.0, 100.0, 60.0), opacity: 1.0 };
+        assert!(menu_blocks(&[menu]).iter().chain(&backdrop_blocks(&menu, &strokes)).all(|b| b.focus == 0.0 && b.waiting == 0.0));
+    }
+
+    #[test]
     fn a_menu_s_backdrop_is_its_own_block_and_the_hover_strokes_inside_it() {
         let menu = MenuShape { key: 0x11, rect: rect(100.0, 80.0, 200.0, 100.0), opacity: 0.5 };
         let inside = Mark { key: menu_row_key(0x11, 1), rect: rect(100.0, 104.0, 200.0, 24.0), kind: Kind::RowHighlight, state: HighlightState::Hovered };
@@ -479,7 +567,7 @@ mod tests {
         assert_eq!((out[1].value, out[1].ordinal), (0.6, HighlightState::Hovered as u32 as f32));
         // The same stroke gives the same block in the wash and in the backdrop.
         let panes = [];
-        let in_wash = blocks(&Scene { content: rect(0.0, 0.0, 800.0, 600.0), title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, divider_y: None, sidebar_end: None, panes: &panes, busy: &[], shapes: &[], strokes: &[(inside, 0.6)] }, true);
+        let in_wash = blocks(&Scene { content: rect(0.0, 0.0, 800.0, 600.0), title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, gap: 0.0, divider_y: None, sidebar_end: None, panes: &panes, busy: &[], focus: &[], waiting: &[], shapes: &[], strokes: &[(inside, 0.6)] }, true);
         assert_eq!(in_wash.last(), out.last());
     }
 

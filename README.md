@@ -3,7 +3,7 @@
 <p align="center">Run many Claude Code sessions side by side, and never lose one.</p>
 
 <picture>
-  <img alt="Six Arkos IDE windows fanned out like postcards, each in its own theme. In front, the multi tasker: three Claude Code sessions side by side, each running its own subagents on an unrelated project. Behind, the blogger with a launch plan in the markdown editor, the data analyst with a weekly report and its chart, the hacker hardening a service in Matrix green, the student with lecture notes on a ruled notebook page, and the web developer with the app's page in a web tab" src="docs/images/hero-dark.png" width="900">
+  <img alt="Seven Arkos IDE windows fanned out like postcards, each in its own theme. In front, the multi tasker: three Claude Code sessions side by side, each running its own subagents on an unrelated project. Behind, the blogger with a launch plan in the markdown editor, the data analyst with a weekly report and its chart, the hacker hardening a service in Matrix green, the indie game dev with a dungeon crawl in pixel-framed purple, the student with lecture notes on a ruled notebook page, and the web developer with the app's page in a web tab" src="docs/images/hero-dark.png" width="900">
 </picture>
 
 <p align="center">
@@ -112,6 +112,18 @@ frame, each pane's number on a chip of its own colour, the active tab underlined
 
 <picture>
   <img alt="An Arkos IDE window in Material, its panes as white rounded cards on a pale frame: a weekly signups report rendered on the left with this week's table by channel filled in and a light blue bar chart, Claude Code on the right summing up the numbers it computed, and the CSV export of signups by week and channel below it" src="docs/images/data-analyst-dark.png" width="760">
+</picture>
+
+**The indie game dev** builds a small dungeon crawl: Claude Code on the left fixes the combat rule
+a failing test caught and designs the next room's enemy, in the design table first and then in
+the code, while the design notes on the right gain the new row as it is written and a shell
+below them shows the failing test that started it. It is shot in Timo Purple, whose overworld effect frames each pane
+like a game's menu window on a night ground, makes each tab bar a stone ledge and the title bar a
+strip of sky, stands a castle at the foot of the file tree, sets the window in a pixel face and types terminal
+text in like dialogue.
+
+<picture>
+  <img alt="An Arkos IDE window in Timo Purple, deep violet with cyan accents and pixel art: each pane in a notched pixel frame on a dark checkered ground, the focused one framed in cyan, stone tab bars with a small lantern on each active tab, stars and a cloud in the title bar and a castle under a crescent moon at the foot of the file tree; Claude Code on the left adding an enemy to a dungeon crawl, the design notes with their roster table rendered on the right, and a shell showing the failing test below them" src="docs/images/indie-game-dev-dark.png" width="760">
 </picture>
 
 ## Privacy

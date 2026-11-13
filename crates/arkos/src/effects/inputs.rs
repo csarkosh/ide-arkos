@@ -13,8 +13,7 @@ pub const MAX_BLOCKS: usize = 48;
 pub const COLORS: usize = 39;
 
 /// One block as the preamble's `ArkosBlock`: the rectangle, then kind, edges, seed, value,
-/// ordinal, busy and pitch as floats. Metal aligns its `float3 pad` to sixteen bytes, so a float
-/// of padding follows the pitch and the `float3` itself takes a sixteen-byte slot: 64 bytes in all.
+/// ordinal, busy, pitch, focus and waiting as floats, and three spare floats: 64 bytes in all.
 #[repr(C, align(16))]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ShaderBlock {
@@ -28,8 +27,11 @@ pub struct ShaderBlock {
     pub busy: f32,
     /// A rows block's row height in points, else 0.
     pub pitch: f32,
-    pub align: f32,
-    pub pad: [f32; 4],
+    /// A pane's focus fade, 0 to 1, on its tab bar and body, else 0.
+    pub focus: f32,
+    /// 1 for a pane's tab bar and body while its active tab's Claude session waits, else 0.
+    pub waiting: f32,
+    pub spare: [f32; 3],
 }
 
 /// The preamble's `ArkosInputs`, handed to the shader as buffer 0.
@@ -164,6 +166,8 @@ pub fn build(theme: &Theme, intensity: f32, size: (f32, f32), scale: f32, time: 
             ordinal: b.ordinal,
             busy: b.busy,
             pitch: b.pitch,
+            focus: b.focus,
+            waiting: b.waiting,
             ..ShaderBlock::default()
         };
     }
@@ -189,14 +193,18 @@ mod tests {
 
     #[test]
     fn the_inputs_struct_is_the_size_the_preamble_declares() {
-        // ArkosBlock: float4 rect (16), four floats (16), ordinal and busy (8), then float3 pad
-        // aligned to 16: 64 bytes.
+        // ArkosBlock: float4 rect (16), four floats (16), ordinal, busy, pitch and focus (16),
+        // waiting and three spare floats (16): 64 bytes.
         assert_eq!(size_of::<ShaderBlock>(), 64);
         assert_eq!(offset_of!(ShaderBlock, ordinal), 32);
         // The busy flag and the pitch take the floats that were padding; the rest keeps its place.
         assert_eq!(offset_of!(ShaderBlock, busy), 36);
         assert_eq!(offset_of!(ShaderBlock, pitch), 40);
-        assert_eq!(offset_of!(ShaderBlock, pad), 48);
+        // The focus and the waiting flag take the float that aligned the old padding and the
+        // first of the padding's own; the block is the size it was.
+        assert_eq!(offset_of!(ShaderBlock, focus), 44);
+        assert_eq!(offset_of!(ShaderBlock, waiting), 48);
+        assert_eq!(offset_of!(ShaderBlock, spare), 52);
         // ArkosInputs: six floats and a float2 (32), float4 colors[39], ArkosBlock blocks[48].
         assert_eq!(COLORS, 39);
         assert_eq!(size_of::<Inputs>(), 32 + 16 * COLORS + 64 * MAX_BLOCKS);
@@ -281,7 +289,7 @@ mod tests {
     fn more_than_forty_eight_blocks_are_dropped_not_overrun() {
         let theme = crate::theme::builtin("peach-watercolor").unwrap();
         let many: Vec<Block> = (0..60)
-            .map(|i| Block { rect: Rect { x: i as f32, y: 0.0, w: 1.0, h: 1.0 }, kind: Kind::PaneBody, edges: 6, seed: i as f32, value: 1.0, ordinal: 0.0, busy: (i % 2) as f32, pitch: 0.0 })
+            .map(|i| Block { rect: Rect { x: i as f32, y: 0.0, w: 1.0, h: 1.0 }, kind: Kind::PaneBody, edges: 6, seed: i as f32, value: 1.0, ordinal: 0.0, busy: (i % 2) as f32, pitch: 0.0, focus: 0.25 * (i % 4) as f32, waiting: ((i + 1) % 2) as f32 })
             .collect();
         let inputs = build(&theme, 0.7, (800.0, 600.0), 1.0, 2.5, &many);
         assert_eq!(inputs.block_count, 48.0);
@@ -289,7 +297,9 @@ mod tests {
         assert_eq!(inputs.blocks[0].kind, 5.0);
         assert_eq!(inputs.blocks[0].edges, 6.0);
         assert_eq!((inputs.blocks[0].busy, inputs.blocks[1].busy), (0.0, 1.0), "build copies the busy flag");
-        let ruled = [Block { rect: Rect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }, kind: Kind::Rows, edges: 0, seed: 1.0, value: 1.0, ordinal: 0.0, busy: 0.0, pitch: 18.5 }];
+        assert_eq!((inputs.blocks[1].focus, inputs.blocks[2].focus), (0.25, 0.5), "build copies the focus fade");
+        assert_eq!((inputs.blocks[0].waiting, inputs.blocks[1].waiting), (1.0, 0.0), "build copies the waiting flag");
+        let ruled = [Block { rect: Rect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }, kind: Kind::Rows, edges: 0, seed: 1.0, value: 1.0, ordinal: 0.0, busy: 0.0, pitch: 18.5, focus: 0.0, waiting: 0.0 }];
         assert_eq!(build(&theme, 1.0, (10.0, 10.0), 1.0, 0.0, &ruled).blocks[0].pitch, 18.5, "build copies a rows block's pitch");
         assert_eq!((inputs.time, inputs.intensity, inputs.size, inputs.scale), (2.5, 0.7, [800.0, 600.0], 1.0));
         let few = build(&theme, 0.7, (800.0, 600.0), 1.0, 2.5, &many[..3]);

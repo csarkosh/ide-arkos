@@ -429,6 +429,18 @@ impl SessionManager {
             .collect()
     }
 
+    /// The panes whose active tab is a terminal whose Claude session waits for the user, in the
+    /// tree's order: the panes an effect shows as waiting. A waiting session turns idle when the
+    /// user looks at it (`acknowledge`), so a pane is in this list only until then.
+    pub fn waiting_panes(&self, tree: &Tree) -> Vec<PaneId> {
+        tree.panes()
+            .into_iter()
+            .filter(|&id| {
+                tree.pane(id).and_then(|p| p.tabs.get(p.active)).is_some_and(|tab| matches!(tab, Tab::Terminal { session, .. } if self.states.get(session) == Some(&ClaudeState::Waiting)))
+            })
+            .collect()
+    }
+
     /// The user is quitting this window: a restart must not reopen it (section 11 step 4).
     pub fn goodbye(&mut self) {
         self.transport.send(Request::Goodbye);
@@ -856,6 +868,27 @@ mod tests {
         assert_eq!(m.working_panes(&tree), vec![left, right]);
         m.note_state(SessionId(1), ClaudeState::Waiting);
         assert_eq!(m.working_panes(&tree), vec![right], "a waiting session is not busy");
+    }
+
+    #[test]
+    fn a_pane_waits_while_its_active_tab_is_a_terminal_whose_session_waits_until_it_is_looked_at() {
+        let rec = Recorder::new();
+        let mut m = SessionManager::new(rec, None, PathBuf::from("/p"));
+        let mut tree = Tree::new(Tab::Terminal { session: SessionId(1), cwd: None });
+        let left = tree.panes()[0];
+        let right = tree.split(left, crate::tree::Side::Right, Tab::Terminal { session: SessionId(2), cwd: None }).unwrap();
+        tree.add_tab(right, Tab::Viewer { path: "/f".into(), mode: crate::tree::ViewMode::default(), presenting: false, outline: false });
+        assert!(m.waiting_panes(&tree).is_empty());
+        m.note_state(SessionId(1), ClaudeState::Working);
+        m.note_state(SessionId(2), ClaudeState::Waiting);
+        // The right pane shows its viewer, so its waiting session is not on show.
+        tree.activate(right, 1);
+        assert!(m.waiting_panes(&tree).is_empty(), "a working session does not wait");
+        tree.activate(right, 0);
+        assert_eq!(m.waiting_panes(&tree), vec![right]);
+        // Looking at it makes it idle, and the pane no longer waits.
+        assert!(m.acknowledge(SessionId(2)));
+        assert!(m.waiting_panes(&tree).is_empty());
     }
 
     #[test]

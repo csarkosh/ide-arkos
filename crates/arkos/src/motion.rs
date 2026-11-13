@@ -311,6 +311,13 @@ impl<K: Hash + Eq, T> Fades<K, T> {
         entry.0.current(now)
     }
 
+    /// `key`'s opacity at `now`, 0 to 1, without changing what it wants: 0 for a key never
+    /// shown or already gone. For a reader that draws beside the one that syncs (the effect's
+    /// wash reads the focus glow's fade to light the focused pane's frame with it).
+    pub fn opacity(&self, key: &K, now: Instant) -> f32 {
+        self.map.get(key).and_then(|(h, _)| h.current(now)).map_or(0.0, |(_, o)| o)
+    }
+
     pub fn animating(&self, now: Instant) -> bool {
         self.map.values().any(|(h, _)| h.animating(now))
     }
@@ -534,6 +541,10 @@ mod tests {
         assert_eq!(f.sync(1, None, t2), Some((&(), 1.0)));
         assert_eq!(f.sync(2, Some(()), t2), Some((&(), 0.0)));
         f.settle(t2, t2);
+        assert_eq!(f.len(), 2);
+        // A reader beside the one that syncs sees the same opacities and changes nothing.
+        assert_eq!((f.opacity(&1, t2), f.opacity(&2, t2), f.opacity(&3, t2)), (1.0, 0.0, 0.0));
+        assert_eq!(f.opacity(&2, t2 + ENTER), 1.0);
         assert_eq!(f.len(), 2);
         let t3 = t2 + EXIT;
         assert!(f.sync(1, None, t3).is_none());

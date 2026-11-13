@@ -1,0 +1,52 @@
+# The indie game dev: a small dungeon crawl in one folder. Claude Code on the left fixes the
+# combat rule a failing test caught and adds the next room's enemy, to the design table first and
+# then to the code; the design notes are rendered on the right, where the new row appears as it
+# is written, and a shell below them shows the failing test that started it. Shot in Timo Purple, whose overworld effect
+# frames each pane like a game's menu window on a night ground, makes each tab bar a stone ledge
+# and the title bar a strip of sky, stands a castle at the foot of the file tree and types the
+# terminal's text in like dialogue.
+
+[scene]
+name = "indie-game-dev"
+caption = "The indie game dev"
+
+[demo]
+name = "emberwood"
+dir = "~/Projects/emberwood"
+fixture = "scripts/shoot/demo/game"
+
+[window]
+width = 1320
+height = 860
+preset = "compact"
+sidebar_width = 230
+expanded = ["design", "game", "tests"]
+theme = { dark = "timo-purple", light = "timo-purple" }
+
+# One session straight through, so it is still on screen with its work when the others settle.
+[[pane]]
+name = "rules"
+claude = "python3 -m unittest -q fails. Read design/enemies.md first: it is the source of truth. Fix game/combat.py so the failing test passes. Then design an enemy for the frozen stair, the room after the gate, a step harder than the stone sentry: add its row to the roster table in design/enemies.md, tick its item in the To do list, add it to game/enemies.py and give the frozen stair that enemy in game/world.py. Run the tests until they pass, then tell me in two sentences what the new enemy is like to fight. Change files only with your edit tools. Work straight through without asking me anything."
+
+[[pane]]
+name = "enemies"
+view = "design/enemies.md"
+
+[[pane]]
+name = "tests"
+# A short prompt: the runner's host name is forty characters of noise.
+run = "PS1='$ '; clear; python3 -m unittest -q"
+
+[layout]
+split = "horizontal"
+ratio = 0.5
+first = { tabs = ["rules"] }
+second = { split = "vertical", ratio = 0.66, first = { tabs = ["enemies"] }, second = { tabs = ["tests"] } }
+
+[[shot]]
+name = "dark"
+theme = "dark"
+wait = { rules = "waiting" }
+changed = { rules = 3 }
+after_secs = 30
+timeout_secs = 360

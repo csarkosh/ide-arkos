@@ -548,17 +548,53 @@ Things only a person at the screen can check, in order of value:
   while wet; under Navy with `effect.name = "notebook"` the cover's label and the rules read in
   Navy's colours
 - effects: Navy (`effect.name = "theme"`, the default) draws plain, with no effect
-- effects: under Timo Purple, overworld draws a muted night scene at the foot of the sidebar
+- effects: under Timo Purple, overworld draws a night scene at the foot of the sidebar
   (stars, a crescent moon, a castle with cyan windows, pines, grass and a path) with crisp 3 point
-  pixels on Retina and on a 1x screen, a few stars in the title bar clear of its words and icons
-  (still only a few on a wide display), and a lantern on each pane's active tab; the lantern ends
-  where the tab's label begins, never under it; every tab body is plain Timo Purple
-- effects: under overworld the Explorer's selected and hovered rows, the Worktrees rows and the
-  hovered tab are filled as without an effect, and a tab click, a hover and a sidebar drag show
-  at once, with no lag and no strip of the window's colour
-- effects: under overworld, as the Worktrees list grows the scene is cut from the top, and with
-  under about 50 points left below the last name it is gone; with Worktrees closed under an open
-  Explorer the names run to the foot and there is no scene; no name ever sits on art
+  pixels on Retina and on a 1x screen, and a lantern on each pane's active tab; the lantern ends
+  where the tab's label begins, never under it
+- effects: under overworld the sidebar and the title bar are boxed in the same two-line frame as
+  the panes, inside their own edges, the title's words and icons and every sidebar name clear
+  of it, and each tab bar carries a small gem near its right end, cyan on the focused pane, never
+  under the + button
+- effects: under overworld each pane wears a two-line pixel frame with notched corners in the
+  gap round it, on a checkered night ground; the focused pane's frame is the focus colour and
+  changes with the app's glow when the focus moves; four panes in a grid each keep a line of
+  ground between their frames; nothing of a frame is drawn over a pane's content
+- effects: under overworld the tab bars are stone ledges whose joints never make a tab's label
+  harder to read, and the title bar is a sky with stars along its length and a slow cloud, none
+  of them under its words or icons, on a wide display too
+- effects: under overworld a terminal shows a dusk at its top, a few faint stars and hills along
+  its foot behind its text, and every line of a Claude Code session reads as easily as with no
+  effect; a markdown tab and a file viewer show the same night behind their text and read as
+  easily, a markdown table's header a darker band and a CSV grid's cells still told apart
+- effects: under overworld the scene feels alive without pulling the eye from the work: stars
+  twinkling at different paces, a shooting star in the title sky or over the castle every several
+  seconds, two clouds in the title bar and one over the castle, the castle's windows guttering
+  and its pennant waving, grass blades leaning, six fireflies, a bat crossing now and then, each
+  lantern's flame flickering and a spark crossing the focused pane's gem
+- effects: under Timo Purple with Departure Mono installed the window, the terminal and rendered
+  markdown are set in it and its pixels are whole at a preset size of 16.5 or 22; without it the
+  config's font is used
+- effects: under overworld a long markdown or code file shows its dusk only at the top of the
+  page and its hills only at its end, both scrolling with the text without lagging or jumping,
+  the plain night between; a file that fits its pane shows both; switching between rendered and
+  raw keeps them in place
+- effects: under overworld text of any size has hard edges with no soft fringe, in Departure
+  Mono and in a font that is not a pixel face alike, and small text stays readable
+- effects: under overworld new terminal text is typed in, each character resolving from big
+  blocks to small blocks to the font's glyph in three cuts with no fade, a
+  long line no slower than a short one; Claude Code's working mark is one steady mark; under
+  Reduce Motion text appears at once
+- effects: under overworld a pane whose Claude session is working has a short, dim glint going
+  slowly round its frame that never pulls the eye from the text, and a pane whose session is
+  waiting has a muted yellow arrow bobbing in its terminal's bottom right corner until it is
+  looked at
+- effects: under overworld the Explorer's selected row is filled and has a yellow cursor bobbing
+  just inside the sidebar's frame, clear of its name at any indent; hovered rows, the Worktrees rows and the hovered tab are
+  filled, and a tab click, a hover and a sidebar drag show at once, with no lag
+- effects: under overworld the scene always stands at the sidebar's foot under a few rows of
+  open sky; as the lists grow over it, the part under the names is softened into the sidebar's
+  colour, the castle still seen, and every name over it reads as easily as on the plain sidebar
 - effects: under overworld, Cmd+B slides the sidebar out with the scene and back, the selected
   row's fill never past the sidebar's edge; a narrow sidebar keeps the castle centred and the
   pines at its edges
@@ -568,7 +604,8 @@ Things only a person at the screen can check, in order of value:
   tab's address bar keep their own colours
 - effects: under overworld a markdown table's header and alternate rows, and a CSV grid's
   header, row numbers and alternate rows, keep their own colours
-- effects: overworld on Peach Watercolor reads as an intended dusk scene, not a broken one
+- effects: overworld on Peach Watercolor reads as an intended dusk scene, not a broken one: pale
+  frames and ground, and a terminal's text as easy to read as without it
 - effects, space: Navy with `effect.name = "space"` shows the night sky; over ten minutes a
   shooting star crosses every 8 to 16 seconds (one at a time, in under a second, no bright
   flash), a planet drifts across over several minutes, the stars twinkle slowly, and there is

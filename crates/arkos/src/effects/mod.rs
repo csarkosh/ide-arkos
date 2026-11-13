@@ -86,7 +86,7 @@ pub const BUILTIN: &[BuiltIn] = &[
         name: "overworld",
         manifest: include_str!("../../effects/overworld/effect.toml"),
         wash: include_str!("../../effects/overworld/wash.metal"),
-        glyphs: None,
+        glyphs: Some(include_str!("../../effects/overworld/glyphs.metal")),
         hidden: false,
     },
 ];

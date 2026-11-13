@@ -38,7 +38,7 @@ constant float INDICATOR_INSET = 10.0;
 // The search bar: from past the traffic lights to clear of the bar's icons, a little in from the
 // bar's top and bottom, the frame with a touch of the accent.
 constant float SEARCH_LEFT = 76.0;
-constant float SEARCH_RIGHT = 84.0;
+constant float SEARCH_RIGHT = 92.0;
 constant float SEARCH_INSET = 3.0;
 constant float SEARCH_TONE = 0.07;
 // The progress indicator's height in points and its cycle in seconds.

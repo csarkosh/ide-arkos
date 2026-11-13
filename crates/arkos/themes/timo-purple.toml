@@ -6,6 +6,14 @@ appearance = "dark"
 [effect]
 name = "overworld"
 
+# A pixel face for a pixel-art window (SIL Open Font License, github.com/rektdeckard/departure-mono;
+# `brew install --cask font-departure-mono`). Its pixels are whole at multiples of 11 px, and of
+# 5.5 px on a Retina screen (16.5, 22). Without it installed, the config's own font is used.
+[font]
+prose = "Departure Mono"
+ui = "Departure Mono"
+terminal = "Departure Mono"
+
 [chrome]
 window_bg = "#330076"
 title_bar = "#2a0062"

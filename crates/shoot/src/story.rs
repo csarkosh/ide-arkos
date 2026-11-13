@@ -924,14 +924,14 @@ theme = "light"
             names.push(story.scene.name);
         }
         names.sort();
-        assert_eq!(names, ["blogger", "data-analyst", "hacker", "multitasker", "probe", "student", "web-developer"]);
+        assert_eq!(names, ["blogger", "data-analyst", "hacker", "indie-game-dev", "multitasker", "probe", "student", "web-developer"]);
     }
 
     #[test]
     fn a_clip_that_names_no_backs_stands_every_persona_but_its_own_behind_the_window_and_not_the_probe() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let names = personas(&root.join("scripts/shoot/stories"), "multitasker").unwrap();
-        assert_eq!(names, ["blogger", "data-analyst", "hacker", "student", "web-developer"]);
+        assert_eq!(names, ["blogger", "data-analyst", "hacker", "indie-game-dev", "student", "web-developer"]);
         assert!(names.len() <= MAX_BACKS, "cinema.py has a slot for each");
     }
 

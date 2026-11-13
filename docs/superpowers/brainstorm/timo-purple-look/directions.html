@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Timo Purple: how far to take it</title>
+<style>
+  body { margin: 0; padding: 24px 16px 60px; background: #14002f; color: #f3edff; font: 14px/1.5 -apple-system, "Helvetica Neue", sans-serif; }
+  main { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  h2 { font-size: 17px; margin: 40px 0 4px; }
+  h2 span { display: inline-block; min-width: 46px; margin-right: 10px; padding: 1px 8px; border-radius: 4px; background: #00ffff; color: #14002f; font-size: 13px; text-align: center; }
+  h2 span.now { background: #c4b6ea; }
+  p { margin: 0 0 10px; color: #c4b6ea; max-width: 760px; }
+  p b { color: #f3edff; font-weight: 600; }
+  .fit { overflow: hidden; }
+  .gb-wrap { position: relative; width: 900px; height: 510px; transform-origin: 0 0; }
+  .gb-wrap canvas { position: absolute; left: 0; top: 0; width: 900px; height: 510px; image-rendering: pixelated; }
+  .t { position: absolute; font: 11px/17px Menlo, monospace; color: #c4b6ea; white-space: pre; pointer-events: none; }
+  .t b { color: #f3edff; font-weight: normal; }
+  .t.body { font-size: 12px; line-height: 18px; color: #f3edff; }
+  .c { color: #00ffff; } .g { color: #5fe39a; } .d { color: #c4b6ea; } .m { color: #e39bff; } .y { color: #ffd166; }
+  .f { color: #ffffff; text-shadow: 0 0 6px #00ffff; }
+</style>
+</head>
+<body>
+<main>
+<h1>Timo Purple: how far to take it</h1>
+<p>Why it reads plain next to the others: runic, watercolor, notebook and material each redraw the window's <b>structure</b> (pane edges, tabs, title bar, selection) and give terminal <b>text an entrance</b> (decode, pen, ballpoint). Overworld does neither. It is a small muted picture at the foot of the sidebar, and everything else is two flat purples. Below, the same purple and cyan, the same night overworld, taken three steps further. Each step includes the one before. The mockups move; text stays as crisp as today in all of them.</p>
+
+<h2><span class="now">NOW</span>Overworld as shipped</h2>
+<p>Flat chrome, the app's own hairline borders, the muted scene, a lantern on the active tab.</p>
+<div class="fit"><div class="gb-wrap" id="m0"></div></div>
+
+<h2><span>1</span>Framed</h2>
+<p><b>What differs:</b> every pane, the sidebar and the title bar become game menu windows with notched pixel frames on a dithered night ground (the focused one framed in cyan). The tab bar is a stone ledge, the pane number a gem, the selected file gets a bobbing pixel cursor instead of a flat fill. The title bar is a strip of sky with a drifting cloud. The scene is a little less muted. Still nothing behind any text you read in a tab.</p>
+<div class="fit"><div class="gb-wrap" id="m1"></div></div>
+
+<h2><span>2</span>Framed and alive <small style="font-weight:400;color:#c4b6ea">(my pick)</small></h2>
+<p><b>What differs from 1:</b> the terminal gets its entrance. New text types in like a dialogue box, each fresh character lit cyan-white for a moment (the left pane loops it). A pane whose Claude session is working has a faint glint drifting slowly round its frame (calmed on 12 November: no white head, a third of the speed); a session waiting for you shows the bobbing yellow "continue" arrow in its corner (right pane).</p>
+<div class="fit"><div class="gb-wrap" id="m2"></div></div>
+
+<h2><span>3</span>The whole window is the world <small style="font-weight:400;color:#c4b6ea">(chosen, 12 November)</small></h2>
+<p><b>What differs from 2:</b> the art comes up to nearly full colour, and the night reaches into the panes: a dithered dusk at the top of each body, a few faint stars and a line of hills along its foot, behind the text. This is the step that reopens what you turned down on 4 November (bright art, anything behind text), so it is here to show the ceiling.</p>
+<div class="fit"><div class="gb-wrap" id="m3"></div></div>
+</main>
+
+<script>
+(function () {
+  const W = 300, H = 170, S = 3;
+  const P = { bg: '#330076', chrome: '#2a0062', deep: '#1a0045', night: '#1c0050', border: '#4b2a98', hover: '#7a5ad0', cyan: '#00ffff', text: '#f3edff', dim: '#c4b6ea', banner: '#3b1a86', green: '#5fe39a', yellow: '#ffd166', magenta: '#e39bff' };
+  const hex = c => [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16));
+  const mix = (a, b, t) => { const x = hex(a), y = hex(b); return '#' + x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, '0')).join(''); };
+  const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+
+  // What the left pane's terminal says, as [class, text] runs per line.
+  const SCRIPT = [
+    [['c', '❯'], ['', ' cargo test -p arkos']],
+    [['d', '   Compiling arkos v0.8.25']],
+    [['g', 'test result: ok.'], ['', ' 1494 passed']],
+    [],
+    [['m', '●'], ['', ' Claude is editing wash.metal']],
+    [['d', '  ⎿ Updated 3 files']],
+    [],
+    [['m', '●'], ['', ' Running the contrast matrix']],
+  ];
+  const SCRIPT_LEN = SCRIPT.reduce((n, l) => n + l.reduce((m, r) => m + r[1].length, 0), 0);
+  function scriptHtml(n) {
+    let left = n, out = '';
+    for (const line of SCRIPT) {
+      for (const [cls, s] of line) {
+        if (left <= 0) break;
+        const shown = s.slice(0, left), fresh = left <= s.length ? Math.min(2, shown.length) : 0;
+        left -= s.length;
+        const head = esc(shown.slice(0, shown.length - fresh)), tail = esc(shown.slice(shown.length - fresh));
+        out += '<span class="' + cls + '">' + head + '</span>' + (tail ? '<span class="f">' + tail + '</span>' : '');
+      }
+      out += '\n';
+      if (left <= 0) break;
+    }
+    return out;
+  }
+
+  function build(id, o) {
+    const wrap = document.getElementById(id);
+    const mk = () => { const cv = document.createElement('canvas'); cv.width = W; cv.height = H; wrap.appendChild(cv); return cv.getContext('2d'); };
+    const base = mk(), live = mk();
+    let x = base;
+    const r = (a, b, w, h, c) => { x.fillStyle = c; x.fillRect(a, b, w, h); };
+    const p = (a, b, c) => r(a, b, 1, 1, c);
+    let seed = 11;
+    const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+    const k = c => mix(c, P.chrome, o.mute);
+    function dither(a, b, w, h, c1, c2, t) {
+      for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) p(a + i, b + j, (t(j / h) > (((i + j) % 2 === 0) ? 0.25 : 0.75)) ? c2 : c1);
+    }
+    const stars = [];
+
+    // The layout: plain as the app draws it, or framed boxes with a gap of night between them.
+    const F = o.framed;
+    const side = F ? { x: 1, y: 10, w: 51, h: 159 } : { x: 0, y: 8, w: 52, h: 162 };
+    const panes = F
+      ? [{ x: 54, y: 10, w: 137, h: 159 }, { x: 193, y: 10, w: 106, h: 159 }]
+      : [{ x: 53, y: 8, w: 139, h: 162 }, { x: 193, y: 8, w: 107, h: 162 }];
+    const inset = F ? 2 : 0, barH = F ? 9 : 9;
+
+    function box(b, line) {
+      r(b.x + 1, b.y, b.w - 2, b.h, line); r(b.x, b.y + 1, b.w, b.h - 2, line);
+      r(b.x + 1, b.y + 1, b.w - 2, b.h - 2, P.deep);
+      r(b.x + 2, b.y + 2, b.w - 4, b.h - 4, P.chrome);
+      for (const [i, j] of [[2, 2], [b.w - 3, 2], [2, b.h - 3], [b.w - 3, b.h - 3]]) p(b.x + i, b.y + j, line);
+    }
+
+    // The night scene at the foot of the sidebar, inside a clip so a frame keeps its edge.
+    function scene() {
+      const cx = side.x + inset, cw = side.w - inset * 2, bottom = side.y + side.h - inset, dy = bottom - 150, ox = cx + (cw - 52) / 2 | 0;
+      x.save(); x.beginPath(); x.rect(cx, side.y + inset, cw, side.h - inset * 2); x.clip();
+      dither(cx, 70 + dy, cw, 42, P.chrome, k(P.banner), t => t);
+      for (let i = 0; i < (F ? 22 : 16); i++) {
+        const a = cx + 1 + Math.floor(rnd() * (cw - 2)), b = (F ? 62 : 72) + dy + Math.floor(rnd() * (F ? 30 : 20));
+        stars.push([a, b, rnd() < 0.25 ? k(P.cyan) : k(P.text), rnd() * 6.28, 0.5 + rnd()]);
+      }
+      for (let j = -4; j <= 4; j++) for (let i = -4; i <= 4; i++) {
+        if (i * i + j * j <= 16 && !((i - 2) * (i - 2) + (j + 1) * (j + 1) <= 13)) p(ox + 42 + i, 79 + dy + j, k(P.text));
+      }
+      for (let i = -4; i < 56; i++) { const h = Math.round(6 + 3 * Math.sin(i / 7) + 2 * Math.sin(i / 3)); r(ox + i, 118 + dy - h, 1, h + 40, k('#24005a')); }
+      const cs = mix('#1a0045', P.chrome, o.mute * 0.5);
+      r(ox + 10, 98 + dy, 26, 16, cs); r(ox + 8, 92 + dy, 6, 22, cs); r(ox + 32, 92 + dy, 6, 22, cs); r(ox + 19, 86 + dy, 8, 28, cs);
+      for (const [a, b] of [[8, 91], [10, 91], [12, 91], [32, 91], [34, 91], [36, 91], [19, 85], [21, 85], [23, 85], [25, 85]]) p(ox + a, b + dy, cs);
+      r(ox + 22, 81 + dy, 1, 5, cs); r(ox + 23, 80 + dy, 3, 2, k(P.magenta));
+      for (const [a, b] of [[10, 96], [34, 96], [22, 90], [16, 103], [28, 103]]) p(ox + a, b + dy, P.cyan);
+      const pine = (a, b, h) => { for (let j = 0; j < h; j++) { const w = Math.floor(j / 2) + 1; r(ox + a - w + 1, b + dy + j, w * 2 - 1, 1, k(j % 3 === 0 ? '#1e5a52' : '#174844')); } r(ox + a, b + dy + h, 1, 2, k('#3a1f2e')); };
+      pine(4, 114, 12); pine(46, 112, 14); pine(40, 120, 9);
+      dither(cx, 128 + dy, cw, 22, k('#2f8a63'), k('#1e5a52'), t => t * 1.4);
+      for (let i = 0; i < 14; i++) p(cx + Math.floor(rnd() * cw), 128 + dy + Math.floor(rnd() * 20), k(P.green));
+      for (let j = 0; j < 22; j++) r(ox + 22 + Math.round(4 * Math.sin(j / 6)), 128 + dy + j, 5 + Math.floor(j / 6), 1, k('#6b4a8a'));
+      x.restore();
+      return { ox, dy };
+    }
+
+    function lantern(a, b) { p(a + 1, b, k('#8a6aa8')); r(a, b + 1, 3, 3, k('#8a6aa8')); p(a + 1, b + 2, P.yellow); }
+    function gem(a, b, lit) {
+      const c = lit ? P.cyan : '#5a4aa0', h = lit ? P.text : '#7a6ac0', sh = lit ? '#00a0b0' : '#3d2a7a';
+      r(a + 1, b, 2, 1, h); r(a, b + 1, 4, 1, c); p(a, b + 1, h); r(a, b + 2, 4, 1, sh); r(a + 1, b + 3, 2, 1, sh);
+    }
+
+    // ---- the still layer
+    if (F) {
+      dither(0, 0, W, H, P.deep, P.night, t => 0.5);
+      box({ x: 1, y: 0, w: 298, h: 9 }, P.hover);
+      dither(3, 2, 294, 5, P.deep, P.chrome, t => t);
+      for (let i = 0; i < 60; i++) { const a = 4 + Math.floor(rnd() * 290), b = 2 + Math.floor(rnd() * 5); if (a < 112 || a > 188) stars.push([a, b, rnd() < 0.3 ? k(P.cyan) : k(P.dim), rnd() * 6.28, 0.5 + rnd()]); }
+      box(side, P.hover);
+    } else {
+      r(0, 0, W, H, P.chrome);
+      for (let i = 0; i < 30; i++) { const a = Math.floor(rnd() * W), b = 1 + Math.floor(rnd() * 6); if (a < 70 || a > W - 50) stars.push([a, b, rnd() < 0.3 ? k(P.cyan) : k(P.dim), rnd() * 6.28, 0.5 + rnd()]); }
+      r(0, 22, 52, 6, P.banner);
+      r(52, 8, 1, H, P.border); r(192, 8, 1, H, P.border);
+    }
+    const sc = scene();
+    panes.forEach((b, n) => {
+      const focused = n === 0;
+      if (F) box(b, focused ? P.cyan : P.hover);
+      const ix = b.x + inset, iy = b.y + inset, iw = b.w - inset * 2, ih = b.h - inset * 2;
+      // The tab bar.
+      if (F) {
+        r(ix, iy, iw, barH, P.banner); r(ix, iy, iw, 1, mix(P.hover, P.banner, 0.4)); r(ix, iy + 4, iw, 1, mix(P.banner, P.chrome, 0.6));
+        for (let i = 0; i < iw; i += 10) { r(ix + i, iy + 1, 1, 3, mix(P.banner, P.chrome, 0.6)); if (i + 5 < iw) r(ix + i + 5, iy + 5, 1, 3, mix(P.banner, P.chrome, 0.6)); }
+        r(ix, iy + barH - 1, iw, 1, P.deep);
+        gem(ix + iw - 7, iy + 2, focused);
+      } else {
+        r(ix, iy + barH, iw, 1, P.border);
+      }
+      // The body, then the active tab joined to it.
+      r(ix, iy + barH + (F ? 0 : 1), iw, ih - barH - (F ? 0 : 1), P.bg);
+      r(ix + 2, iy + (F ? 0 : 1), 36, barH + (F ? 0 : 1), P.bg);
+      if (focused || F) r(ix + 2, iy + (F ? 0 : 1), 36, 1, focused ? P.cyan : P.hover);
+      lantern(ix + 4, iy + 3);
+      if (o.world) {
+        const by = iy + barH, bh = ih - barH;
+        dither(ix, by, iw, 34, P.chrome, P.bg, t => t);
+        for (let i = 0; i < iw / 5; i++) stars.push([ix + 2 + Math.floor(rnd() * (iw - 4)), by + 2 + Math.floor(rnd() * 60), mix(P.bg, P.dim, 0.4), rnd() * 6.28, 0.5 + rnd()]);
+        for (let i = 0; i < iw; i++) { const h = Math.round(7 + 3 * Math.sin((i + b.x) / 9) + 2 * Math.sin((i + b.x) / 4)); r(ix + i, by + bh - h, 1, h, '#2c0069'); }
+        for (let i = 0; i < iw; i++) { const h = Math.round(3 + 2 * Math.sin((i + b.x) / 5 + 2)); r(ix + i, by + bh - h, 1, h, '#28005f'); }
+      }
+    });
+
+    // ---- the words, drawn by the browser so they are as crisp as the app's
+    const T = (cls, html, a, b) => { const d = document.createElement('div'); d.className = 't ' + cls; d.innerHTML = html; d.style.left = a + 'px'; d.style.top = b + 'px'; wrap.appendChild(d); return d; };
+    T('', 'arkos-demo', 420, F ? 5 : 4);
+    const sx = F ? 20 : 14, sy = F ? 44 : 32;
+    T('', 'EXPLORER\n  src\n    <b>main.rs</b>\n    wash.metal\n    theme.rs\n  docs\n  README.md\n\nWORKTREES\n  release', sx, sy);
+    const tabY = (panes[0].y + inset) * S + (F ? 5 : 8);
+    [['<b>claude</b>', 10], ['notes.md', 46], ['zsh', 78]].forEach(([s, a]) => T('', s, (panes[0].x + inset + a) * S, tabY));
+    [['<b>review</b>', 10], ['zsh', 46]].forEach(([s, a]) => T('', s, (panes[1].x + inset + a) * S, tabY));
+    const bodyY = (panes[0].y + inset + barH) * S + 12;
+    const term = T('body', scriptHtml(1e9), (panes[0].x + inset + 5) * S, bodyY);
+    T('body', '<span class="m">●</span> Both checks pass.\n\n<span class="y">Merge web-pane into main?</span>\n<span class="c">❯</span> 1. Yes\n<span class="d">  2. No, keep the branch</span>', (panes[1].x + inset + 5) * S, bodyY);
+
+    // ---- what moves
+    const rowY = Math.round((sy + 34) / S) + 1;
+    function frame(t) {
+      x = live; x.clearRect(0, 0, W, H);
+      for (const [a, b, c, ph, sp] of stars) p(a, b, Math.sin(t * sp + ph) > -0.6 ? c : mix(c, P.chrome, 0.7));
+      // Fireflies rise from the grass and fade.
+      [[14, 0], [38, 1.3], [30, 2.6]].forEach(([a, ph]) => { const u = ((t / 5 + ph / 4) % 1); if (u < 0.8) p(sc.ox + a + Math.round(2 * Math.sin(u * 9 + ph)), Math.round(132 + sc.dy - u * 22), u < 0.6 ? P.yellow : mix(P.yellow, P.chrome, 0.6)); });
+      if (F) {
+        // A cloud crossing the title's sky, clear of its words.
+        const cxx = 200 + ((t * 1.5) % 80), cl = k(P.banner);
+        r(cxx, 4, 12, 2, cl); r(cxx + 3, 3, 6, 1, cl);
+        // The pixel cursor on the selected row.
+        const bob = Math.floor(t * 2) % 2;
+        ['X....', 'XX...', 'XXX..', 'XX...', 'X....'].forEach((row, j) => [...row].forEach((ch, i) => { if (ch === 'X') p(8 + bob + i, rowY + j, P.yellow); }));
+      }
+      if (o.alive) {
+        // A wisp round the working pane's frame.
+        const b = panes[0], len = 2 * (b.w + b.h) - 4;
+        // Calm: a short glint of the frame's own colour, a little lighter, never off the frame.
+        const line = P.cyan;
+        for (let n = 0; n < 6; n++) {
+          let d = (Math.floor(t * 12) - n + len * 100) % len, a, c;
+          if (d < b.w) { a = b.x + d; c = b.y; } else if (d < b.w + b.h) { a = b.x + b.w - 1; c = b.y + d - b.w; } else if (d < 2 * b.w + b.h) { a = b.x + b.w - 1 - (d - b.w - b.h); c = b.y + b.h - 1; } else { a = b.x; c = b.y + b.h - 1 - (d - 2 * b.w - b.h); }
+          p(a, c, mix(line, '#ffffff', 0.55 * (1 - n / 6)));
+        }
+        // The "continue" arrow on the waiting pane.
+        const q = panes[1], bob = Math.floor(t * 2.5) % 2, ax = q.x + q.w - 12, ay = q.y + q.h - 10 + bob;
+        ['XXXXX', '.XXX.', '..X..'].forEach((row, j) => [...row].forEach((ch, i) => { if (ch === 'X') p(ax + i, ay + j, P.yellow); }));
+        // The dialogue: typed in, held, then again.
+        const u = t % 11, n = Math.floor(u * 38);
+        term.innerHTML = n >= SCRIPT_LEN + 3 ? scriptHtml(1e9) : scriptHtml(Math.max(1, n));
+      }
+    }
+    return frame;
+  }
+
+  const frames = [
+    build('m0', { framed: false, alive: false, world: false, mute: 0.45 }),
+    build('m1', { framed: true, alive: false, world: false, mute: 0.3 }),
+    build('m2', { framed: true, alive: true, world: false, mute: 0.3 }),
+    build('m3', { framed: true, alive: true, world: true, mute: 0.08 }),
+  ];
+  const still = new URLSearchParams(location.search).has('still');
+  const t0 = performance.now();
+  const tick = () => { const t = still ? 2.4 : (performance.now() - t0) / 1000; frames.forEach(f => f(t)); };
+  tick();
+  if (!still) setInterval(tick, 100);
+
+  function fit() {
+    document.querySelectorAll('.fit').forEach(f => {
+      const s = Math.min(1, f.clientWidth / 900);
+      f.firstElementChild.style.transform = 'scale(' + s + ')';
+      f.style.height = Math.round(510 * s) + 'px';
+    });
+  }
+  fit(); addEventListener('resize', fit);
+})();
+</script>
+</body>
+</html>

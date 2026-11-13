@@ -173,7 +173,8 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
             .id(id)
             .h(px(ROW_H))
             .flex_none()
-            .px(px(10.0))
+            .pl(px(10.0 + style.sidebar_pad))
+            .pr(px(10.0))
             .flex()
             .items_center()
             .gap(px(4.0))
@@ -515,6 +516,8 @@ pub fn render_rows(root: &mut Root, entries: Vec<crate::explorer::Row>, theme: &
     let selected = root.explorer.selected.clone();
     let weak = cx.weak_entity();
     let family = root.ui_family();
+    // The effect's room before each row, for a frame and a cursor it draws at the sidebar's edge.
+    let pad = root.effect_style().sidebar_pad;
     let (highlights, hovered) = (root.effect_highlights(), root.effect_hover);
     let (selected_bg, hover_bg, dim, dot) = (theme.chrome.tab_active.hsla(), theme.chrome.tab_inactive.hsla(), theme.chrome.text_dim.hsla(), theme.tree.modified.hsla());
     let theme = theme.clone();
@@ -533,7 +536,7 @@ pub fn render_rows(root: &mut Root, entries: Vec<crate::explorer::Row>, theme: &
                             .id("new-file-row")
                             .w_full()
                             .h(px(ROW_H))
-                            .pl(px(10.0 + *depth as f32 * INDENT))
+                            .pl(px(10.0 + pad + *depth as f32 * INDENT))
                             .pr(px(8.0))
                             .flex()
                             .items_center()
@@ -576,7 +579,7 @@ pub fn render_rows(root: &mut Root, entries: Vec<crate::explorer::Row>, theme: &
                     .id(("row", key))
                     .w_full()
                     .h(px(ROW_H))
-                    .pl(px(10.0 + row.depth as f32 * INDENT))
+                    .pl(px(10.0 + pad + row.depth as f32 * INDENT))
                     .pr(px(8.0))
                     .flex()
                     .items_center()
@@ -1068,7 +1071,7 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
                 let count = wt_count_text(dirty);
                 let (p_click, p_menu) = (wt.path.clone(), wt.path.clone());
                 let has_menu = !worktree_menu_items(&wt, dirty).is_empty();
-                base.pl(px(10.0))
+                base.pl(px(10.0 + style.sidebar_pad))
                     .children(band)
                     .child(
                         div()
@@ -1133,7 +1136,7 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
                     o
                 };
                 let path = worktree.join(&rel);
-                base.pl(px(10.0 + 2.0 * INDENT))
+                base.pl(px(10.0 + style.sidebar_pad + 2.0 * INDENT))
                     .opacity(opacity)
                     .text_color(row_color(Some(status), false, theme).hsla())
                     .child(div().min_w_0().truncate().child(rel.to_string_lossy().into_owned()))
@@ -1147,7 +1150,7 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
     }
     // After the rows, so a row's child index stays its index in `rows()` for the scroll.
     if let Some(line) = line {
-        list = list.child(div().flex_none().h(px(ROW_H)).px(px(10.0)).flex().items_center().text_color(dim).truncate().child(line));
+        list = list.child(div().flex_none().h(px(ROW_H)).pl(px(10.0 + style.sidebar_pad)).pr(px(10.0)).flex().items_center().text_color(dim).truncate().child(line));
     }
     // Last in the scroll, so its top is where the last name ends (below the sidebar when the list
     // overflows).

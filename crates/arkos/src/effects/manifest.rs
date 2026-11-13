@@ -25,6 +25,9 @@ pub struct Manifest {
     /// Points added inside the title bar at both ends, so its words and icons sit clear of a
     /// shape the wash draws round them.
     pub title_pad: f32,
+    /// Points added before every row and header of the sidebar, so their text sits clear of a
+    /// frame and a cursor the wash draws along the sidebar's left edge.
+    pub sidebar_pad: f32,
     /// The width in points of a gutter between the sidebar and the panes, for the wash to draw
     /// in (reported as a binder block); 0, none.
     pub binder: f32,
@@ -98,6 +101,7 @@ impl Default for Manifest {
             scale: 0.5,
             ui_text_bump: 0.0,
             title_pad: 0.0,
+            sidebar_pad: 0.0,
             binder: 0.0,
             gap: 0.0,
             pane_radius: 0.0,
@@ -171,6 +175,7 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
     in_range("scale", m.scale, 0.1, 1.0)?;
     in_range("ui_text_bump", m.ui_text_bump, 0.0, 4.0)?;
     in_range("title_pad", m.title_pad, 0.0, 24.0)?;
+    in_range("sidebar_pad", m.sidebar_pad, 0.0, 24.0)?;
     in_range("binder", m.binder, 0.0, 32.0)?;
     in_range("gap", m.gap, 0.0, 16.0)?;
     in_range("pane_radius", m.pane_radius, 0.0, 24.0)?;
@@ -375,6 +380,15 @@ mod tests {
     fn a_value_out_of_range_is_refused_with_its_key_and_range() {
         let e = parse(&with("title_pad = 30")).unwrap_err();
         assert!(e.contains("title_pad must be 0.0 to 24.0 (was 30.0)"), "{e}");
+        // The sidebar's padding: none unless asked for, and overworld asks for room for its
+        // frame and its cursor.
+        assert_eq!(parse(MINIMAL).unwrap().sidebar_pad, 0.0);
+        assert_eq!(parse(&with("sidebar_pad = 12")).unwrap().sidebar_pad, 12.0);
+        let e = parse(&with("sidebar_pad = 30")).unwrap_err();
+        assert!(e.contains("sidebar_pad must be 0.0 to 24.0 (was 30.0)"), "{e}");
+        for b in BUILTIN.iter() {
+            assert_eq!(parse(b.manifest).unwrap().sidebar_pad > 0.0, b.name == "overworld", "{}", b.name);
+        }
         let e = parse(&with("binder = -1")).unwrap_err();
         assert!(e.contains("binder must be 0.0 to 32.0 (was -1.0)"), "{e}");
         let e = parse(&with("frame_rate = 90")).unwrap_err();
@@ -448,14 +462,14 @@ mod tests {
     }
 
     #[test]
-    fn a_manifest_may_ask_the_terminal_to_paint_changed_cells_in_only_with_a_glyphs_file_and_watercolor_and_notebook_do() {
+    fn a_manifest_may_ask_the_terminal_to_paint_changed_cells_in_only_with_a_glyphs_file_and_watercolor_notebook_and_overworld_do() {
         assert!(!parse(MINIMAL).unwrap().terminal_paint);
         assert!(parse(&with("glyphs = \"g.metal\"\nterminal_paint = true")).unwrap().terminal_paint);
         assert_eq!(parse(&with("terminal_paint = true")).unwrap_err(), "terminal_paint = true requires a glyphs file");
         let both = with("glyphs = \"g.metal\"\nglyph_motion = true\nterminal_decode = true\nterminal_paint = true");
         assert_eq!(parse(&both).unwrap_err(), "terminal_paint and terminal_decode cannot both be true");
         for b in BUILTIN.iter() {
-            assert_eq!(parse(b.manifest).unwrap().terminal_paint, b.name == "watercolor" || b.name == "notebook", "{}", b.name);
+            assert_eq!(parse(b.manifest).unwrap().terminal_paint, matches!(b.name, "watercolor" | "notebook" | "overworld"), "{}", b.name);
         }
     }
 
@@ -550,11 +564,15 @@ mod tests {
     fn the_built_in_overworld_parses_with_its_fixed_values() {
         let b = BUILTIN.iter().find(|b| b.name == "overworld").expect("overworld is built in");
         let m = parse(b.manifest).unwrap();
-        assert_eq!(m.description, "A night overworld in muted pixel art at the foot of the sidebar: stars, a castle, pines and fireflies.");
+        assert_eq!(m.description, "A night overworld in pixel art across the window: panes framed like game menus on a night ground, stone tab bars, a sky for a title bar, a castle scene, and text typed in like dialogue.");
         assert_eq!((m.frame_rate, m.scale), (30, 1.0), "30 fps, so the chrome the wash paints keeps up with the app");
-        assert!(!m.ink_borders && m.glyphs.is_none() && !b.hidden);
+        assert!(!m.ink_borders && !b.hidden);
+        assert_eq!(m.glyphs.as_deref(), Some("glyphs.metal"));
+        assert!(m.terminal_paint && !m.glyph_motion && !m.terminal_decode, "typed in from the terminal's stamps, with no timer of its own");
         assert_eq!((m.highlights, m.menus), (Highlights::Effect, MenuLook::App));
-        assert_eq!((m.paper_alpha, m.chrome_alpha, m.active_tab_alpha, m.text_contrast), (1.0, 0.0, 0.0, 0.0));
+        assert_eq!((m.paper_alpha, m.chrome_alpha, m.active_tab_alpha, m.text_contrast), (0.6, 0.0, 0.0, 0.0));
+        assert_eq!(m.document_paper_alpha(), 0.6, "a document's paper is the terminal's: the night is behind both");
+        assert_eq!((m.gap, m.pane_radius, m.binder), (15.0, 0.0, 0.0), "room round each pane for its frame");
         assert_eq!(m.body_bars_alpha(), 1.0, "the bars inside a tab's body keep their colour");
     }
 

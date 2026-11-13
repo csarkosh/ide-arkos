@@ -4285,9 +4285,14 @@ impl Root {
         let (strokes, strokes_moving) = self.effect_strokes.sync(&self.effect_marks, now);
         // The panes whose Claude session works: an effect may show them busy.
         let busy = self.sessions.working_panes(&self.tree);
+        // The panes whose session waits for the user, and each pane's share of the focus as the
+        // app's own glow fades it (ENTER and EXIT, short3 and short2), so an effect that lights
+        // the focused pane's frame moves with the glow.
+        let waiting = self.sessions.waiting_panes(&self.tree);
+        let focus: Vec<(PaneId, f32)> = layout.panes.iter().map(|(id, _)| (*id, self.glow.opacity(id, now))).collect();
         let e = self.effect.as_mut()?;
         let style = e.style(now);
-        let scene = effects::active::scene(self.content, self.binder, self.effect_divider, self.effect_sidebar_end, &layout.panes, &busy, &self.effect_shapes, &strokes);
+        let scene = effects::blocks::Scene { gap: style.gap, focus: &focus, waiting: &waiting, ..effects::active::scene(self.content, self.binder, self.effect_divider, self.effect_sidebar_end, &layout.panes, &busy, &self.effect_shapes, &strokes) };
         self.effect_strokes_now = strokes.clone();
         let blocks = effects::blocks::blocks(&scene, style.ink_borders);
         let (size, scale) = e.layer.metrics();

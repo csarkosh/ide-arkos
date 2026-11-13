@@ -623,9 +623,14 @@ row, a search bar round the title, a progress bar on a busy pane, no glyph shade
 Composition Notebook recommends `notebook` (the
 marbled cover over the title bar, cream pages ruled under the terminal's rows, pencil edges, a
 highlighter on the selected row, and terminal text written in by a ballpoint), and Timo Purple recommends `overworld`
-(a muted pixel-art night overworld at the foot of the sidebar, a few stars in the title bar and a
-lantern on each active tab, no glyph shader; markdown tables and the CSV grid keep their own fills
-over it). Navy, the default, alone draws plain. The user may pick any
+(a pixel-art night overworld across the window: each pane, the sidebar and the title bar framed
+like a game's menu window on a night ground, the focused pane in the focus colour, with a slow
+glint round a working pane's frame; stone tab bars with a lantern on each active tab and a gem
+that lights on the focused pane; a sky with stars and a cloud for a title bar; a castle scene at
+the foot of the sidebar, softened where names lie over it, and a bobbing cursor on its selected
+row; a dusk, faint stars and hills behind a terminal's and a document's text; terminal text
+typed in like dialogue, each character resolving from chunky pixels in three steps; and a bobbing
+"continue" arrow in the corner of a pane whose session waits). Navy, the default, alone draws plain. The user may pick any
 effect for any theme, or none, in
 Settings or through `arkos effect use`. An effect reads the theme's colours on every frame, so
 write it to suit any theme rather than one.
@@ -658,6 +663,12 @@ What an effect can touch:
   The sidebar's foot (`ARKOS_SIDEBAR_FOOT_BLOCK`, no edges) is the sidebar's empty space below its
   last visible name, through to the sidebar's bottom. It is reported whenever the sidebar shows and
   there is room, and it follows the lists as they grow, scroll, open and close.
+  A page (`ARKOS_PAGE_BLOCK`, no edges) is a document's whole page where it lies behind its
+  pane: as wide as the pane's body, its top above the body once the page is scrolled and its foot
+  below the body while more is left to read (a page that fits is the body itself). A markdown
+  tab, rendered or raw, and a file viewer report one; a terminal and a grid do not. With it a
+  wash can draw a backdrop that scrolls with the text (the built-in `overworld` puts its dusk at
+  the page's top and its hills at the page's end).
 - The text, through the glyph shader: it replaces gpui's own stages for the project window's
   glyphs.
 - The alphas of the app's surfaces over the wash: the paper of terminals and documents, the bars
@@ -689,6 +700,7 @@ key and the range.
 | `frame_rate` | 1 to 60 | 30 | The wash's frames per second while anything moves; sixty while a highlight fades. |
 | `scale` | 0.1 to 1.0 | 0.5 | The wash's pixels per window pixel, each side; the drawable is stretched to the window. |
 | `ui_text_bump` | 0 to 4 | 0 | Points added to the project window's UI text. |
+| `sidebar_pad` | 0 to 24 | 0 | Points added before every row and header of the sidebar, so their text sits clear of a frame and a cursor the wash draws along the sidebar's left edge (overworld's). Like `ui_text_bump`, it comes in once the effect has faded in. |
 | `title_pad` | 0 to 24 | 0 | Points added inside the title bar at both ends, so its words and icons sit clear of a shape the wash draws round them (the `notebook` cover's labels). |
 | `gap` | 0 to 16 | 0 | Points kept clear round each pane: between the panes, and between them and the window's bars and edges (beside the sidebar too, unless a `binder` is that gutter), so the wash can draw the panes as cards on its ground. Like `ui_text_bump`, it comes in once the effect has faded in. |
 | `pane_radius` | 0 to 24 | 0 | The corner radius of the panes as the wash draws them: the focused pane's glow becomes a ring rounded to match, and a terminal's or document's paper rounds its bottom corners inside it, and the pane's number is centred by its ink (its glyphs' own bounds across, its cap height down) in an 18 point slot 10 points in from the inside of the pane's 1 point border (`pane_view::number_slot`), so a chip drawn on that slot's centre clears the corner and the ring and has the number in its middle. Like `gap`, it comes in once the effect has faded in. |
@@ -741,7 +753,12 @@ rectangle in window points from the top left with its kind, the edges the app no
 `ordinal` (a pane's place; a highlight's state, 0 hovered, 1 selected, 2 both), a `busy` flag
 (1 on a pane's tab bar and body while the pane's active tab is a terminal whose Claude session
 is working, else 0; runic runs a busy pane's edges hotter, material draws a progress bar along
-its tab bar) and a `pitch` (a rows block's row height in points, 0 on every other block). `in.uv` runs
+its tab bar), a `pitch` (a rows block's row height in points, 0 on every other block), a `focus`
+(a pane's share of the focus on its tab bar and body, 0 to 1: 1 on the focused pane, fading as
+the app's own focus glow does when the focus moves; 0 on every other block; overworld lights the
+focused pane's frame with it) and a `waiting` flag (1 on a pane's tab bar and body while the
+pane's active tab is a terminal whose Claude session waits for the user, which ends when they
+look at it; else 0; overworld shows a "continue" arrow in such a pane's corner). `in.uv` runs
 from (0, 0) at the top left to (1, 1) at the bottom right. What the wash returns is the window's
 opaque ground; the app's surfaces are drawn over it with the manifest's alphas. Derive every
 shade from the theme's colours, so the effect reads right in a dark theme as in a light one.

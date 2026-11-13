@@ -26,6 +26,9 @@ constant int ARKOS_MENU_BLOCK = 11;    constant int ARKOS_ROWS_BLOCK = 12;
 constant int ARKOS_BINDER_BLOCK = 13;    constant int ARKOS_ACTIVE_TAB_BLOCK = 14;
 constant int ARKOS_TITLE_GROUP_BLOCK = 15;
 constant int ARKOS_SIDEBAR_FOOT_BLOCK = 16;  // the sidebar's empty space below its last name
+constant int ARKOS_PAGE_BLOCK = 17;  // a document's whole page behind its pane, no edges: as
+// wide as the pane's body, its top above the body once the page is scrolled and its foot below
+// the body while more is left to read, so a backdrop can scroll with the page
 // A title group block is one group of the title bar's contents where the bar lays it out, with
 // no edges: its words (the app's name, the project's path, `sandbox`) and its icons, a block
 // each, so a wash can set a label behind each with the bar showing between them.
@@ -57,7 +60,11 @@ struct ArkosBlock {
     float busy;       // 1 for a pane's tab bar and body while the pane's active tab is a terminal
                       // whose Claude session works, else 0
     float pitch;      // a rows block's row height in points; 0 for every other kind
-    float3 pad;       // aligned to 16 bytes after pitch: the block is 64 bytes
+    float focus;      // a pane's focus on its tab bar and body, 0 to 1: 1 on the focused pane,
+                      // fading as the app's own focus glow does; 0 for every other kind
+    float waiting;    // 1 for a pane's tab bar and body while the pane's active tab is a terminal
+                      // whose Claude session waits for the user, else 0
+    float spare0; float spare1; float spare2; // the block is 64 bytes
 };
 
 struct ArkosInputs {

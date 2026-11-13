@@ -457,7 +457,16 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
             None => render_busy(root, pane, p.ids.get(p.active).copied(), cx),
         },
         Some(Tab::Viewer { path, .. }) => match p.ids.get(p.active).copied() {
-            Some(tab) => render_viewer(root, pane, tab, path, Rect { h: rect.h - body_top, ..rect }, cx),
+            Some(tab) => {
+                // Under an effect the document says where its whole page lies, so a backdrop can
+                // scroll with it.
+                let span = root.viewers.get(&tab).and_then(|v| v.read(cx).page_span()).filter(|_| style.ground_alpha < 1.0);
+                if let Some((above, below)) = span {
+                    let page = Rect { x: rect.x, y: rect.y + body_top - above, w: rect.w, h: rect.h - body_top + above + below };
+                    root.effect_shapes.push(blocks::Shape { key: blocks::tab_key(tab), rect: page, kind: blocks::Kind::Page, pitch: 0.0 });
+                }
+                render_viewer(root, pane, tab, path, Rect { h: rect.h - body_top, ..rect }, cx)
+            }
             None => div(),
         },
         Some(Tab::Browser { url }) => match p.ids.get(p.active).copied() {

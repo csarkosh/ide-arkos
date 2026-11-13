@@ -1129,6 +1129,14 @@ struct Compose {
 
 impl EventEmitter<ViewerEvent> for Viewer {}
 
+/// The page's reach past a view `view_h` points tall showing rows of `line_h` points from row
+/// `scroll` of `rows`: the points above the view and the points below it. The last row can be
+/// scrolled to the view's top, so the view may end past the page: then nothing is below.
+pub fn raw_page_span(rows: usize, scroll: f32, view_h: f32, line_h: f32) -> (f32, f32) {
+    let above = scroll.max(0.0) * line_h;
+    (above, (rows as f32 * line_h - above - view_h).max(0.0))
+}
+
 impl Viewer {
     pub fn new(path: PathBuf, font_size: f32, line_height: f32, cx: &mut Context<Self>) -> Self {
         Viewer {
@@ -1367,6 +1375,22 @@ impl Viewer {
     /// The active sheet, `None` without a book.
     pub fn sheet(&self) -> Option<&grid::Sheet> {
         sheet_of(self.book.as_ref(), self.sheet)
+    }
+
+    /// How far the page reaches past the view, in points: how much of it is scrolled off above
+    /// and how much is still below, for an effect whose backdrop scrolls with the page. `None`
+    /// for a grid, which is no page, and for text not laid out yet.
+    pub fn page_span(&self) -> Option<(f32, f32)> {
+        if self.grid_shown() {
+            return None;
+        }
+        if self.rendered() {
+            let above = (-f32::from(self.list_state.scroll_px_offset_for_scrollbar().y)).max(0.0);
+            let most = f32::from(self.list_state.max_offset_for_scrollbar().height);
+            return Some((above.min(most.max(above)), (most - above).max(0.0)));
+        }
+        let l = self.last_bounds.as_ref()?;
+        Some(raw_page_span(self.row_count(), self.scroll.current, f32::from(l.bounds.size.height), l.line_h))
     }
 
     /// The furthest the view can scroll: the last row at the top of the viewport. The grid's
@@ -5808,6 +5832,16 @@ pub fn sections_from(saved: &[DetailsOpen]) -> BTreeMap<(String, usize), bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_text_page_reaches_past_its_view_by_what_is_scrolled_off_and_what_is_left_to_read() {
+        // 100 rows of 20 points in a view 300 points tall.
+        assert_eq!(raw_page_span(100, 0.0, 300.0, 20.0), (0.0, 1700.0), "at the top");
+        assert_eq!(raw_page_span(100, 40.0, 300.0, 20.0), (800.0, 900.0), "part of the way");
+        assert_eq!(raw_page_span(100, 85.0, 300.0, 20.0), (1700.0, 0.0), "the last row at the view's foot");
+        assert_eq!(raw_page_span(100, 99.0, 300.0, 20.0), (1980.0, 0.0), "the last row at its top: nothing below");
+        assert_eq!(raw_page_span(5, 0.0, 300.0, 20.0), (0.0, 0.0), "a page that fits has nothing past the view");
+    }
     use crate::edit::{Move, Pos, Unit};
 
     #[test]

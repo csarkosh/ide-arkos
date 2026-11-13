@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       scenes:
-        description: "Scenes to shoot, space-separated: probe, multitasker, web-developer, blogger, hacker, student, data-analyst"
+        description: "Scenes to shoot, space-separated: probe, multitasker, web-developer, blogger, hacker, student, data-analyst, indie-game-dev"
         required: true
         default: probe
         type: string
@@ -43,7 +43,7 @@ jobs:
           # theme's picture is in its own type: Material's DM Sans and Roboto Mono, Lavender's
           # Cascadia Code, Composition Notebook's Monaspace Radon. Without them a theme falls back
           # to the system's, as on a Mac without them.
-          brew install --quiet --cask font-dm-sans font-roboto-mono font-cascadia-code font-monaspace || echo "a theme font did not install"
+          brew install --quiet --cask font-dm-sans font-roboto-mono font-cascadia-code font-monaspace font-departure-mono || echo "a theme font did not install"
           for f in Baskerville Optima "PT Mono" "Avenir Next" "Chalkboard SE" "DM Sans" "Roboto Mono" "Cascadia Code" "Monaspace Radon"; do
             system_profiler SPFontsDataType 2>/dev/null | grep -q "Full Name: $f" && echo "font: $f" || echo "font missing: $f"
           done
