@@ -129,8 +129,8 @@ impl TabMark {
             (true, Attention::NeedsYou) => TabMark::NeedsYou,
             (true, Attention::Unread) => TabMark::Unread,
             (true, Attention::Unanswered) => TabMark::Unanswered,
-            // Idle, and what the user put off or away.
-            (true, Attention::Idle | Attention::Later | Attention::Done) => TabMark::None,
+            // Quiet, and what the user put off or away.
+            (true, Attention::Quiet | Attention::Later | Attention::Done) => TabMark::None,
         }
     }
 
@@ -1912,7 +1912,7 @@ mod tests {
         assert_eq!(TabMark::of(Attention::NeedsYou, true), TabMark::NeedsYou);
         assert_eq!(TabMark::of(Attention::Unread, true), TabMark::Unread);
         assert_eq!(TabMark::of(Attention::Unanswered, true), TabMark::Unanswered);
-        for quiet in [Attention::Idle, Attention::Later, Attention::Done] {
+        for quiet in [Attention::Quiet, Attention::Later, Attention::Done] {
             assert_eq!(TabMark::of(quiet, true), TabMark::None, "{quiet:?}");
         }
         assert_eq!(TabMark::of(Attention::Working, false), TabMark::Dead, "ended outranks a stale state");

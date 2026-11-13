@@ -24,7 +24,7 @@ Bash: ffmpeg …", or its question), or the first line of what Claude last said,
 window so an update does not lose it; a session that has said nothing yet shows its terminal's
 title (Claude Code titles it with the conversation's topic), else the folder it runs in. The sidebar's
 Sessions section lists every session of the window under Needs you, Unread, Unanswered, Working,
-Idle, Later and Done, newest change first, each with its mark, name, age and line; a click goes
+Quiet, Later and Done, newest change first, each with its mark, name, age and line; a click goes
 to the session, and Shift+Cmd+U ("next session that needs you") goes to the first that is your
 move: a blocked one, then an unread one, then an unanswered one. A row you click
 stays where it was until you choose another session, so an unread one stays under Unread

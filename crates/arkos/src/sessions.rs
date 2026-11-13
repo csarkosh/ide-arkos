@@ -1059,7 +1059,7 @@ mod tests {
         assert_eq!(rec.requests().len(), sent, "the daemon is told nothing: the session still waits");
         assert!(!m.acknowledge_at(hooked, 2000), "a second look changes nothing");
         assert!(m.acknowledge_at(bell, 2000));
-        assert_eq!(m.attention_of(bell, 2000), Attention::Idle);
+        assert_eq!(m.attention_of(bell, 2000), Attention::Quiet);
         assert_eq!(rec.requests().last(), Some(&Request::SetState { session: bell, state: ClaudeState::Idle }));
         // The next answer is a new turn: unread again, unless the user is looking at it.
         m.note_events_at(&[Event::State { session: hooked, state: ClaudeState::Working }], 3000);

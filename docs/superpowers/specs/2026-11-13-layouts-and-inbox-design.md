@@ -105,7 +105,7 @@ What a row shows, `attention::of(state, alive, marks, now)`:
 | Unread | `Waiting`, not seen | the warm dot (today's) |
 | Unanswered | `Waiting`, seen | a warm ring |
 | Working | `Working` | the breathing dot (today's) |
-| Idle | no state: a plain shell, or a Claude not yet asked anything | none |
+| Quiet | not finished, nothing happening: a plain shell, or a Claude not yet asked anything | none |
 | Later | `Waiting` with a later time ahead | none, the time instead of the age |
 | Done | marked done, or the shell ended | muted |
 
@@ -116,7 +116,7 @@ and Unread.
 ## The session list
 
 One list, `sessions_list.rs`, of the window's terminal tabs, grouped under Needs you, Unread,
-Unanswered, Working, Idle, Later and Done (collapsed), each with its count, empty groups left
+Unanswered, Working, Quiet, Later and Done (collapsed), each with its count, empty groups left
 out, newest change first within a group. A row: the mark, the tab's name, the age of its last
 change, and under them its line (for an idle shell, its folder). A session whose folder is
 another repository than the window's says which.

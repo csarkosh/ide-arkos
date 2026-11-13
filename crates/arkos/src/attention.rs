@@ -16,8 +16,9 @@ pub enum Attention {
     Unanswered,
     /// The user's last word is with the agent, which is working.
     Working,
-    /// Nothing pending: a plain shell, or an agent not yet asked anything.
-    Idle,
+    /// Not finished, but nothing is happening and nothing is asked of the user: a plain shell, an
+    /// agent not yet asked anything, or one the user has left be.
+    Quiet,
     /// Put off by the user until a time that has not come.
     Later,
     /// Put away by the user, or its shell has ended.
@@ -26,7 +27,7 @@ pub enum Attention {
 
 impl Attention {
     /// Every kind, in the order a list shows its groups.
-    pub const ALL: [Attention; 7] = [Attention::NeedsYou, Attention::Unread, Attention::Unanswered, Attention::Working, Attention::Idle, Attention::Later, Attention::Done];
+    pub const ALL: [Attention; 7] = [Attention::NeedsYou, Attention::Unread, Attention::Unanswered, Attention::Working, Attention::Quiet, Attention::Later, Attention::Done];
 
     /// The group's heading in a list.
     pub fn label(self) -> &'static str {
@@ -35,7 +36,7 @@ impl Attention {
             Attention::Unread => "Unread",
             Attention::Unanswered => "Unanswered",
             Attention::Working => "Working",
-            Attention::Idle => "Idle",
+            Attention::Quiet => "Quiet",
             Attention::Later => "Later",
             Attention::Done => "Done",
         }
@@ -146,7 +147,7 @@ pub fn of(state: Option<ClaudeState>, blocked: bool, alive: bool, marks: &Marks,
         Some(ClaudeState::Waiting) if marks.seen && marks.later_until.is_none() => Attention::Unanswered,
         Some(ClaudeState::Waiting) => Attention::Unread,
         Some(ClaudeState::Working) => Attention::Working,
-        Some(ClaudeState::Idle) | None => Attention::Idle,
+        Some(ClaudeState::Idle) | None => Attention::Quiet,
     }
 }
 
@@ -180,8 +181,8 @@ mod tests {
         assert_eq!(at(Some(ClaudeState::Waiting), false, true, &fresh), Attention::Unread);
         assert_eq!(at(Some(ClaudeState::Waiting), false, true, &seen), Attention::Unanswered);
         assert_eq!(at(Some(ClaudeState::Working), false, true, &seen), Attention::Working);
-        assert_eq!(at(Some(ClaudeState::Idle), false, true, &fresh), Attention::Idle);
-        assert_eq!(at(None, false, true, &fresh), Attention::Idle, "a plain shell");
+        assert_eq!(at(Some(ClaudeState::Idle), false, true, &fresh), Attention::Quiet);
+        assert_eq!(at(None, false, true, &fresh), Attention::Quiet, "a plain shell");
         assert_eq!(at(Some(ClaudeState::Working), false, false, &fresh), Attention::Done, "its shell ended");
         // Looking at a block does not end it: it needs an answer, not a glance.
         assert_eq!(at(Some(ClaudeState::Waiting), true, true, &seen), Attention::NeedsYou);
@@ -244,7 +245,7 @@ mod tests {
 
     #[test]
     fn the_groups_are_listed_from_what_calls_for_the_user_to_what_is_put_away() {
-        assert_eq!(Attention::ALL.map(Attention::label), ["Needs you", "Unread", "Unanswered", "Working", "Idle", "Later", "Done"]);
+        assert_eq!(Attention::ALL.map(Attention::label), ["Needs you", "Unread", "Unanswered", "Working", "Quiet", "Later", "Done"]);
         assert_eq!(Attention::ALL.map(Attention::calls), [true, true, false, false, false, false, false]);
         let mut sorted = Attention::ALL;
         sorted.reverse();
