@@ -8,7 +8,7 @@
 // before its label. The title bar is a strip of sky: stars along it and one slow cloud, both clear
 // of its words and icons. At the foot of the sidebar, below its last name, stands the scene: grass
 // with a winding path, pines, low hills, a castle with lit windows and a pennant, and a sky with
-// stars and a crescent moon; a short foot cuts it from the top and under SCENE_MIN_H there is
+// stars and a crescent moon (by day, on a light theme, a sun); a short foot cuts it from the top and under SCENE_MIN_H there is
 // none. The selected row has the menu's cursor in its left padding. Behind a terminal the night
 // goes on: a dusk at its top, a few faint stars and two lines of hills along its foot.
 //
@@ -76,6 +76,9 @@ constant int HIGH_ROWS = 10;
 constant float SOFT_AWAY = 0.35;
 constant float SOFT_FLOOR = 4.6;
 constant float SOFT_STEPS[5] = {0.6, 0.75, 0.85, 0.92, 1.0};
+// Once the names reach into the scene, all of it is softened, not only the part under them, so
+// no line runs across the castle: fully once they reach SOFT_REACH points in.
+constant float SOFT_REACH = 24.0;
 // The sky's dither runs over its first SKY_ROWS rows; its stars live in the first STAR_ROWS, one
 // in some of the cells of STAR_CELL art pixels, a few of them in the focus colour.
 constant int SKY_ROWS = 26;
@@ -90,6 +93,8 @@ constant int2 MOON_AT = int2(9, 5);
 constant float MOON_R2 = 16.0;
 constant float2 MOON_BITE = float2(2.0, -1.0);
 constant float MOON_BITE_R2 = 13.0;
+// By day the sun's rays: one art pixel this far from its middle, up, down, left and right.
+constant float SUN_RAY = 6.0;
 // The hills: their base row, and how much darker than the sidebar they are.
 constant int HILL_BASE = 26;
 constant float HILL_STEP = 0.2;
@@ -105,6 +110,18 @@ constant int KEEP_CRENELS = 5;
 constant int2 POLE = int2(2, 5);
 constant int3 PENNANT = int3(1, 2, 2);
 constant int2 WINDOWS[5] = {int2(-11, 14), int2(10, 14), int2(0, 10), int2(-6, 19), int2(5, 19)};
+// By day, on a light theme, the scene is a desert kingdom of the old tales rather than a castle
+// in the hills: a palace in the castle's place, its long hall under a great onion dome with a
+// spire, a small dome on each wing and a minaret at each end, its windows WINDOWS_DAY; dunes of
+// sand SAND_FAR and SAND_NEAR of the way from the sidebar's colour to the terminal's yellow for
+// hills; sand SAND_LIGHT to SAND_DEEP for the ground; a palm for each pine; and a carpet riding
+// the air where the bat flew. The art is the effect's own.
+constant int2 WINDOWS_DAY[5] = {int2(-13, 14), int2(13, 14), int2(0, 14), int2(-8, 20), int2(8, 20)};
+constant float DOME_TONE = 0.5;
+constant float SAND_FAR = 0.18;
+constant float SAND_NEAR = 0.28;
+constant float SAND_LIGHT = 0.3;
+constant float SAND_DEEP = 0.42;
 // The pines: each one's column (from the left edge when positive, from the right when negative,
 // -1 being the last column), its top row and its height. Its trunk is two rows under it.
 constant int3 PINES[3] = {int3(3, 20, 11), int3(-4, 18, 13), int3(-11, 25, 8)};
@@ -141,12 +158,14 @@ constant float LANTERN_TONE = 0.55;
 constant float LANTERN_GLOW = 0.18;
 
 // The title bar's sky, inside its frame: dithered over its SKY_BAR_ROWS art rows from SKY_DEEP
-// darker than the bar at the top to the bar's own colour. Its stars: none before TITLE_LEFT, the
-// traffic lights' end; one in some of the cells of TITLE_CELL columns, on a row from 2 to 6 of
-// the bar, inside the frame, wherever it keeps STAR_CLEAR from every group.
+// away from the text's colour at the top to the bar's own colour. Its stars: none before
+// TITLE_LEFT, the traffic lights' end; one in most of the cells of TITLE_CELL columns, on a row
+// from 2 to 6 of the bar, inside the frame, the whole length of the bar. Within STAR_CLEAR of the
+// bar's words and icons a star, a cloud, a shooting star and the bird are softened into the bar's
+// colour as the scene is under the sidebar's names, so the words keep their contrast.
 constant float TITLE_LEFT = 80.0;
-constant int TITLE_CELL = 12;
-constant float TITLE_STAR_CHANCE = 0.5;
+constant int TITLE_CELL = 8;
+constant float TITLE_STAR_CHANCE = 0.6;
 constant uint TITLE_SALT = 0x9E3779B9u;
 constant int SKY_BAR_ROWS = 9;
 constant float SKY_DEEP = 0.3;
@@ -167,6 +186,17 @@ constant float CLOUD2_AHEAD = 150.0;
 // cycle (none in the first, so the still frame has none), crossing SHOOT_RUN art pixels down and
 // to the left in SHOOT_FOR seconds with SHOOT_TRAIL of them fading behind it.
 constant float SHOOT_CYCLE = 7.0;
+// The title bar's own come more often.
+constant float TITLE_SHOOT_CYCLE = 4.0;
+// A bird crosses the title's sky from right to left in BIRD_FOR seconds every BIRD_CYCLE, and a
+// light runs the length of the bar's foot, along its frame's outer line, every TITLE_GLINT_CYCLE
+// seconds at TITLE_GLINT_SPEED art pixels a second, TITLE_GLINT_LEN of them lit.
+constant float BIRD_CYCLE = 9.0;
+constant float BIRD_FOR = 6.0;
+constant float TITLE_GLINT_CYCLE = 6.0;
+constant float TITLE_GLINT_SPEED = 160.0;
+constant float TITLE_GLINT_LEN = 12.0;
+constant float TITLE_GLINT_LIFT = 0.6;
 constant float SHOOT_FOR = 0.6;
 constant float SHOOT_RUN = 26.0;
 constant float SHOOT_TRAIL = 6.0;
@@ -254,6 +284,8 @@ constant float STAR_LIMIT = 0.25;
 constant uint NIGHT_SALT = 0x7F4A7C15u;
 constant float HILL_FAR = 0.1;
 constant float HILL_NEAR = 0.18;
+constant float DUNE_FAR = 0.02;
+constant float DUNE_NEAR = 0.035;
 
 // A highlight's block is its row or tab inset by this much on each side (`blocks::stroke_block`);
 // the fill covers the whole row or tab, as the app's does.
@@ -347,14 +379,14 @@ float twinkle(float seed, float t) {
 
 // How lit a shooting star is at art pixel (i, j) of a sky w wide whose stars fall through its
 // first `rows` rows, one row down for every `slope` columns across: 1 at its head, fading along
-// its trail, 0 elsewhere and whenever none is falling.
-float shooting(int i, int j, int w, int rows, float slope, float t, uint salt) {
-    float k = floor(t / SHOOT_CYCLE);
+// its trail, 0 elsewhere and whenever none is falling. One falls every `cycle` seconds.
+float shooting(int i, int j, int w, int rows, float slope, float cycle, float t, uint salt) {
+    float k = floor(t / cycle);
     if (k < 1.0) {
         return 0.0;
     }
     uint id = uint(k) ^ salt;
-    float since = t - k * SHOOT_CYCLE - hash01(id) * (SHOOT_CYCLE - SHOOT_FOR);
+    float since = t - k * cycle - hash01(id) * (cycle - SHOOT_FOR);
     if (since < 0.0 || since >= SHOOT_FOR) {
         return 0.0;
     }
@@ -400,6 +432,34 @@ bool castle_at(int d, int j) {
     return d == 0 && j >= POLE.x && j <= POLE.y;
 }
 
+// What the palace is at column d from its middle and row j: 0 nothing, 1 its stone, 2 a dome.
+int palace_at(int d, int j) {
+    if (j > CASTLE_FOOT) {
+        return 0;
+    }
+    int a = abs(d);
+    // The great dome over the middle hall: an onion, widest above its neck, and its spire.
+    int bulge = j == 10 ? 3 : (j == 9 || j == 8) ? 5 : j == 7 ? 4 : j == 6 ? 3 : j == 5 ? 2 : j == 4 ? 1 : (j == 3 || j == 2) ? 0 : -1;
+    if (j >= 2 && j <= 10 && a <= bulge) {
+        return 2;
+    }
+    // A small dome on each wing, eight columns out.
+    int wing = abs(a - 8);
+    if ((j == 16 && wing <= 2) || (j == 15 && wing <= 2) || (j == 14 && wing <= 1) || (j == 13 && wing == 0)) {
+        return 2;
+    }
+    // A minaret at each end: a thin shaft with a balcony, under a small dome and a spire.
+    int end = abs(a - 13);
+    if ((end <= 1 && j == 8) || (end == 0 && (j == 6 || j == 7))) {
+        return 2;
+    }
+    if ((end <= 1 && j >= 9) || (end <= 2 && j == 12)) {
+        return 1;
+    }
+    // The long hall and the taller middle one.
+    return ((a <= 11 && j >= 17) || (a <= 4 && j >= 11)) ? 1 : 0;
+}
+
 // The scene's colour at art pixel (i, j): column i of w across the band, row j of the full scene.
 float3 scene(constant ArkosInputs& u, int i, int j, int w, float t) {
     float3 sb = u.colors[ARKOS_SIDEBAR].rgb;
@@ -429,27 +489,45 @@ float3 scene(constant ArkosInputs& u, int i, int j, int w, float t) {
     if (sr >= 0 && sr < 3 && sc >= (sr == 0 ? 3 : 0) && sc < (sr == 0 ? CLOUD_W - 3 : CLOUD_W)) {
         col = mix(col, mute(u, u.colors[ARKOS_BANNER].rgb), 0.7);
     }
-    // The crescent moon.
+    // The crescent moon; by day, on a light theme, the sun in its place: a whole disc in the
+    // focus colour, with four rays that come and go with the stars.
     float2 m = float2(float(i - (w - MOON_AT.x)), float(j - MOON_AT.y));
-    if (dot(m, m) <= MOON_R2 && dot(m - MOON_BITE, m - MOON_BITE) > MOON_BITE_R2) {
-        col = mute(u, text);
+    if (u.dark > 0.5) {
+        if (dot(m, m) <= MOON_R2 && dot(m - MOON_BITE, m - MOON_BITE) > MOON_BITE_R2) {
+            col = mute(u, text);
+        }
+    } else if (dot(m, m) <= MOON_R2) {
+        col = mute(u, u.colors[ARKOS_FOCUS_RING].rgb);
+    } else if ((abs(m.x) == SUN_RAY && m.y == 0.0) || (abs(m.y) == SUN_RAY && m.x == 0.0)) {
+        col = mix(col, mute(u, u.colors[ARKOS_FOCUS_RING].rgb), twinkle(77.0, t));
     }
-    // The hills, the full width.
+    // The hills, the full width; by day two lines of long dunes.
+    bool day = u.dark < 0.5;
+    float3 sand = u.colors[ARKOS_ANSI + 3].rgb;
     float fi = float(i);
-    int hill = int(rint(5.0 + 2.0 * sin(fi / 7.0) + 1.5 * sin(fi / 3.0)));
-    if (j >= HILL_BASE - hill) {
+    if (day) {
+        if (j >= HILL_BASE - int(rint(4.0 + 3.0 * sin(fi / 11.0 + 1.0)))) {
+            col = mute(u, mix(sb, sand, SAND_FAR));
+        }
+        if (j >= HILL_BASE + 3 - int(rint(2.0 + 2.0 * sin(fi / 8.0 + 3.0)))) {
+            col = mute(u, mix(sb, sand, SAND_NEAR));
+        }
+    } else if (j >= HILL_BASE - int(rint(5.0 + 2.0 * sin(fi / 7.0) + 1.5 * sin(fi / 3.0)))) {
         col = mute(u, darker(u, sb, HILL_STEP));
     }
     // The castle, centred, its windows lit in the focus colour and one now and then dimming. Its
     // walls span columns -13 to 12 from `mid`, so on an even band they sit on its very middle.
     int mid = w / 2;
     int d = i - mid;
-    if (castle_at(d, j)) {
+    int built = day ? palace_at(d, j) : (castle_at(d, j) ? 1 : 0);
+    if (built > 0) {
         float3 stone = mute(u, darker(u, sb, CASTLE_STEP));
-        col = stone;
+        // A dome is the stone warmed with the focus colour.
+        col = built == 2 ? mix(stone, mute(u, u.colors[ARKOS_FOCUS_RING].rgb), DOME_TONE) : stone;
         float2 dim = dimmed_window(t);
         for (int n = 0; n < CASTLE_WINDOWS; n++) {
-            if (d == WINDOWS[n].x && j == WINDOWS[n].y) {
+            int2 at = day ? WINDOWS_DAY[n] : WINDOWS[n];
+            if (d == at.x && j == at.y) {
                 float depth = float(n) == dim.x ? dim.y * DIM_DEPTH : 0.0;
                 // Candlelight: each window gutters a little on its own, steady in the first beat.
                 float beat = floor(t * WINDOW_FLICKERS);
@@ -457,10 +535,14 @@ float3 scene(constant ArkosInputs& u, int i, int j, int w, float t) {
                 col = mix(u.colors[ARKOS_FOCUS_RING].rgb, stone, max(depth, gutter));
             }
         }
+        // The palace's gate: an arch in its middle hall.
+        if (day && ((abs(d) <= 1 && j >= 22) || (d == 0 && j == 21))) {
+            col = mute(u, darker(u, sb, CASTLE_STEP + 0.2));
+        }
     }
-    // The pennant, its tip dipping a row and back as it waves.
+    // The castle's pennant, its tip dipping a row and back as it waves.
     bool dipped = fmod(floor(t / PENNANT_WAVE), 2.0) > 0.5;
-    if (d >= PENNANT.x && d <= PENNANT.y && j == PENNANT.z + ((dipped && d == PENNANT.y) ? 1 : 0)) {
+    if (!day && d >= PENNANT.x && d <= PENNANT.y && j == PENNANT.z + ((dipped && d == PENNANT.y) ? 1 : 0)) {
         col = mute(u, u.colors[ARKOS_ANSI + 5].rgb);
     }
     // The pines, near both edges, with a light row every third.
@@ -468,6 +550,17 @@ float3 scene(constant ArkosInputs& u, int i, int j, int w, float t) {
         int3 pine = PINES[n];
         int a = pine.x >= 0 ? pine.x : w + pine.x;
         int row = j - pine.y;
+        if (day) {
+            // A palm: three rows of fronds spread from the top of a thin trunk.
+            int dx = abs(i - a);
+            bool frond = (row == 0 && (dx == 1 || dx == 2)) || (row == 1 && (dx == 0 || dx == 2 || dx == 3)) || (row == 2 && (dx == 0 || dx == 3));
+            if (frond) {
+                col = mute(u, darker(u, mix(sb, green, PINE_GREEN_HI), PINE_STEP_HI));
+            } else if (dx == 0 && row >= 3 && row < pine.z + 2) {
+                col = mute(u, darker(u, mix(sb, u.colors[ARKOS_ANSI + 1].rgb, TRUNK_RED), TRUNK_STEP));
+            }
+            continue;
+        }
         if (row >= 0 && row < pine.z && abs(i - a) <= row / 2) {
             bool hi = row % 3 == 0;
             float3 needles = darker(u, mix(sb, green, hi ? PINE_GREEN_HI : PINE_GREEN), hi ? PINE_STEP_HI : PINE_STEP);
@@ -481,10 +574,14 @@ float3 scene(constant ArkosInputs& u, int i, int j, int w, float t) {
         float3 ground = darker(u, sb, GRASS_DARK);
         float deep = float(j - GRASS_TOP) / float(SCENE_ROWS - GRASS_TOP) * 1.4;
         col = mute(u, mix(green, ground, deep > (even ? 0.25 : 0.75) ? GRASS_LO : GRASS_HI));
+        if (day) {
+            col = mute(u, mix(sb, sand, deep > (even ? 0.25 : 0.75) ? SAND_DEEP : SAND_LIGHT));
+        }
         // The bright blades lean a column and back, each row in its own time.
         int lean = int(fmod(floor(t / GRASS_SWAY + hash01(uint(j) ^ GRASS_SALT)), 2.0));
         if (hash01((uint(j) * 1024u + uint(i - lean)) ^ GRASS_SALT) < GRASS_BLADES) {
-            col = mute(u, green);
+            // By day a tuft of dry grass in the sand.
+            col = mute(u, day ? mix(sand, green, 0.4) : green);
         }
         int from = mid + PATH_FROM + int(rint(3.0 * sin(float(j) / 5.0)));
         if (i >= from && i < from + 4 + (j - GRASS_TOP) / 5) {
@@ -499,7 +596,12 @@ float3 scene(constant ArkosInputs& u, int i, int j, int w, float t) {
         int ax = i - (int(across * float(w + 6)) - 3);
         int ay = j - (BAT_ROW + int(hash01(uint(bk) ^ BAT_SALT) * 8.0) + int(rint(2.0 * sin(across * 11.0))));
         bool up = fmod(floor(t * BAT_FLAPS), 2.0) < 0.5;
-        if (ax >= -1 && ax <= 1 && ay >= 0 && ay <= 1 && ((ax != 0) == (up ? ay == 0 : ay == 1))) {
+        if (day) {
+            // A carpet riding the air, five art pixels long, its ends rippling in turn.
+            if ((abs(ax) <= 1 && ay == 0) || (ax == -2 && ay == (up ? 0 : 1)) || (ax == 2 && ay == (up ? 1 : 0))) {
+                col = mute(u, u.colors[ARKOS_ANSI + 5].rgb);
+            }
+        } else if (ax >= -1 && ax <= 1 && ay >= 0 && ay <= 1 && ((ax != 0) == (up ? ay == 0 : ay == 1))) {
             col = mute(u, darker(u, sb, CASTLE_STEP));
         }
     }
@@ -632,10 +734,9 @@ float luma(float3 c) {
     return dot(lin, float3(0.2126, 0.7152, 0.0722));
 }
 
-// The scene's colour c where the sidebar's names lie over it: softened into the sidebar's colour,
-// far enough that the dim text keeps its contrast (see SOFT_AWAY).
-float3 soften(constant ArkosInputs& u, float3 c) {
-    float3 sb = u.colors[ARKOS_SIDEBAR].rgb;
+// The colour c of a piece of art where words lie over it on a surface of colour sb: softened
+// into that colour, far enough that the dim text keeps its contrast (see SOFT_AWAY).
+float3 soften(constant ArkosInputs& u, float3 c, float3 sb) {
     float text = luma(u.colors[ARKOS_TEXT_DIM].rgb);
     float base = luma(sb);
     float own = luma(c);
@@ -702,11 +803,15 @@ float3 night(constant ArkosInputs& u, float2 at, float to_foot, int star_rows, f
     int up = int(floor(to_foot / ART_PX));
     if (up < 12) {
         float fi = float(i) + seed * 3.0;
+        // By night they are away from the text's colour; by day, where that would be white on
+        // near white, dunes a touch toward it, little enough to cost the text almost nothing.
+        bool day = u.dark < 0.5;
+        float3 ink = u.colors[ARKOS_TEXT].rgb;
         if (up < int(rint(6.0 + 2.5 * sin(fi / 9.0) + 1.5 * sin(fi / 4.0)))) {
-            col = away(u, bg, HILL_FAR);
+            col = day ? mix(bg, ink, DUNE_FAR) : away(u, bg, HILL_FAR);
         }
         if (up < int(rint(3.0 + 1.5 * sin(fi / 5.0 + 2.0)))) {
-            col = away(u, bg, HILL_NEAR);
+            col = day ? mix(bg, ink, DUNE_NEAR) : away(u, bg, HILL_NEAR);
         }
     }
     return col;
@@ -824,13 +929,25 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             int2 q = int2(floor((p - r.xy) / ART_PX));
             col = bar;
             // Its frame, the panes' own, inside its edges.
-            if (inner_ring(p, r).x < FRAME_PX) {
-                col = mix(bar, boxed(u, p, r, bar), k);
+            int2 edge = inner_ring(p, r);
+            if (edge.x < FRAME_PX) {
+                float3 line = boxed(u, p, r, bar);
+                // A light running the length of the bar's foot, along the frame's outer line: one
+                // pass every TITLE_GLINT_CYCLE seconds, none in the first.
+                float gk = floor(t / TITLE_GLINT_CYCLE);
+                if (gk >= 1.0 && edge.x == 0 && edge.y == 0 && p.y >= r.y + r.w - ART_PX) {
+                    float behind = (t - gk * TITLE_GLINT_CYCLE) * TITLE_GLINT_SPEED - floor((p.x - r.x) / ART_PX);
+                    if (behind >= 0.0 && behind < TITLE_GLINT_LEN) {
+                        line = mix(line, float3(1.0), TITLE_GLINT_LIFT * (1.0 - behind / TITLE_GLINT_LEN));
+                    }
+                }
+                col = mix(bar, line, k);
                 continue;
             }
-            // The sky, darkest at the top.
+            // The sky, away from the text's colour at the top.
             if (1.0 - float(q.y) / float(SKY_BAR_ROWS) > (((q.x + q.y) & 1) == 0 ? 0.25 : 0.75)) {
-                col = mix(bar, darker(u, bar, SKY_DEEP), k);
+                // Away from the text's colour, so the title's words read as well on a light theme.
+                col = mix(bar, away(u, bar, SKY_DEEP), k);
             }
             int cell = q.x / TITLE_CELL;
             uint id = uint(cell) ^ TITLE_SALT;
@@ -839,25 +956,47 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             int cx = q.x - cloud_at(int(r.z / ART_PX), t);
             int cy = q.y - CLOUD_ROW;
             bool on_cloud = cy >= 0 && cy < 3 && cx >= (cy == 0 ? 3 : 0) && cx < (cy == 0 ? CLOUD_W - 3 : CLOUD_W);
-            int c2 = q.x - cloud_at(int(r.z / ART_PX), t * CLOUD2_RATE + CLOUD2_AHEAD);
+            int tw = int(r.z / ART_PX);
+            int c2 = q.x - cloud_at(tw, t * CLOUD2_RATE + CLOUD2_AHEAD);
             on_cloud = on_cloud || (cy >= 1 && cy < 3 && c2 >= (cy == 1 ? 2 : 0) && c2 < (cy == 1 ? CLOUD2_W - 2 : CLOUD2_W));
-            float shot = shooting(q.x, q.y - FRAME_PX, int(r.z / ART_PX), SKY_BAR_ROWS - 2 * FRAME_PX, 6.0, t + 3.0, SHOOT_SALT + 1u);
-            if (!on_star && !on_cloud && shot <= 0.0) {
+            float shot = shooting(q.x, q.y - FRAME_PX, tw, SKY_BAR_ROWS - 2 * FRAME_PX, 6.0, TITLE_SHOOT_CYCLE, t + 3.0, SHOOT_SALT + 1u);
+            // A bird crossing from right to left now and then, its wings up and down: none in the
+            // first cycle.
+            bool on_bird = false;
+            float bk = floor(t / BIRD_CYCLE);
+            float bs = t - bk * BIRD_CYCLE;
+            if (bk >= 1.0 && bs < BIRD_FOR) {
+                float across = bs / BIRD_FOR;
+                int ax = q.x - (tw + 3 - int(across * float(tw + 6)));
+                int ay = q.y - (FRAME_PX + 1 + int(rint(sin(across * 14.0))));
+                bool up = fmod(floor(t * BAT_FLAPS), 2.0) < 0.5;
+                on_bird = ax >= -1 && ax <= 1 && ay >= 0 && ay <= 1 && ((ax != 0) == (up ? ay == 0 : ay == 1));
+            }
+            if (!on_star && !on_cloud && !on_bird && shot <= 0.0) {
                 continue;
             }
             float2 o = r.xy + float2(q) * ART_PX;
-            if (o.x < TITLE_LEFT || o.x + ART_PX > r.x + r.z || !cell_clear(o, u, nb)) {
+            if (o.x < TITLE_LEFT || o.x + ART_PX > r.x + r.z) {
                 continue;
             }
-            // The cloud, then a star over it.
+            // The cloud, a star over it, the shooting star and the bird; near the bar's words
+            // and icons all of it softened into the bar.
+            float3 art = col;
             if (on_cloud) {
-                col = mix(col, mix(bar, mute(u, u.colors[ARKOS_BANNER].rgb), CLOUD_TONE), k);
+                art = mix(art, mix(bar, mute(u, u.colors[ARKOS_BANNER].rgb), CLOUD_TONE), 1.0);
             }
             if (on_star) {
                 float3 c = hash01(id + 3u) < STAR_FOCUS ? u.colors[ARKOS_FOCUS_RING].rgb : u.colors[ARKOS_TEXT].rgb;
-                col = mix(col, mute(u, c), twinkle(float(1000 + cell), t) * k);
+                art = mix(art, mute(u, c), twinkle(float(1000 + cell), t));
             }
-            col = mix(col, mute(u, u.colors[ARKOS_TEXT].rgb), shot * k);
+            art = mix(art, mute(u, u.colors[ARKOS_TEXT].rgb), shot);
+            if (on_bird) {
+                art = mute(u, u.colors[ARKOS_TEXT_DIM].rgb);
+            }
+            if (!cell_clear(o, u, nb)) {
+                art = soften(u, art, bar);
+            }
+            col = mix(col, art, k);
         } else if (kind == ARKOS_SIDEBAR_BLOCK) {
             float3 sb = u.colors[ARKOS_SIDEBAR].rgb;
             col = sb;
@@ -875,9 +1014,14 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             int j = q.y + SCENE_ROWS + HIGH_ROWS - int(band.w / ART_PX);
             int w = int(band.z / ART_PX);
             float3 art = j < HIGH_ROWS ? high_sky(u, q.x, j, t) : scene(u, q.x, j - HIGH_ROWS, w, t);
-            art = mix(art, mute(u, u.colors[ARKOS_TEXT].rgb), shooting(q.x, j, w, HIGH_ROWS + STAR_ROWS, 2.0, t, SHOOT_SALT));
+            art = mix(art, mute(u, u.colors[ARKOS_TEXT].rgb), shooting(q.x, j, w, HIGH_ROWS + STAR_ROWS, 2.0, SHOOT_CYCLE, t, SHOOT_SALT));
+            // Under the names it is softened for their contrast; and once they reach into the
+            // scene the rest of it is softened with them, so it dims as one.
+            float reach = saturate((names_end - band.y) / SOFT_REACH);
             if (p.y < names_end) {
-                art = soften(u, art);
+                art = soften(u, art, sb);
+            } else if (reach > 0.0) {
+                art = mix(art, soften(u, art, sb), reach);
             }
             col = mix(sb, art, k);
         } else if (kind == ARKOS_TAB_BAR_BLOCK) {

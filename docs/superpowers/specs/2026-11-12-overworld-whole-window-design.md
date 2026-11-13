@@ -307,3 +307,53 @@ and "the empty in-between space" otherwise.
   (of 5.5 px on a Retina screen); at other sizes the edges are now hard but its strokes are not
   all the same width. A theme cannot choose a text size, so this pass does not snap sizes; a
   preset of 16.5 is pixel-perfect for the terminal and documents.
+
+## Fifth pass, 12 November
+
+Cyrus: "I'm happy with this", and asked for "a `arabia-solar` theme", the sandy look he saw
+when the effect was shot on Peach Watercolor, with the "same persona as `timo-purple`".
+
+- **Arabia Solar**, a tenth built-in theme: Peach Watercolor's colours exactly (the ones he
+  saw), recommending `overworld`, set in Departure Mono. It is Timo Purple by day. The indie
+  game dev's storyboard takes a second picture in it (`indie-game-dev-solar.png`), as the
+  blogger's does in Lavender Watercolor.
+- **By day.** On a light theme the scene's crescent moon is a sun: a whole disc in the focus
+  colour with four rays that come and go. The title bar's sky is dithered away from the text's
+  colour (lighter on a light theme), where it had been toward it and made the title's words
+  harder to read. A table's header behind a document's paper takes a faint band toward the text
+  on a light theme, where a band away from it would be white on near white.
+- **A font's grid.** A theme's `[font]` table may give `grid`, the points its terminal font's
+  own pixels are whole at. Under the theme every text size is drawn at the nearest multiple of
+  it: the preset's size in terminals and viewers (`Root::apply_text_preset`, and again when a
+  theme with another grid is put on), the chrome's labels (`Style::ui`), and a Cmd+= or Cmd+-
+  nudge moves one step of it. The config's presets are not changed, and without the font
+  installed nothing is snapped. Both pixel themes set 5.5, so a preset of 14 or 18 draws at
+  16.5 and the chrome at 11. Rendered markdown's headings are sized from the body text and are
+  not snapped.
+
+## Sixth pass, 12 November
+
+Cyrus, in the sandbox: "part of the castle does not get dimmed when i scroll all the way down"
+(his screenshot: the strip of grass under the last worktree row at full colour, the rest
+dimmed), "the app bar is not as alive as i'd like it", and of Arabia Solar: "more aladin
+themed... the same effects. just aladin instead of high fantasy".
+
+- **The scene dims as one.** Under the names it is softened as before; and once the names
+  reach into the scene at all, the rest of it is softened with them, fully by 24 points in, so
+  no line runs across it and nothing below the last name stays bright.
+- **A livelier title bar.** Its stars run its whole length, denser, and no longer stop short of
+  its words and icons: within `STAR_CLEAR` of them a star, a cloud, a shooting star and the
+  bird are softened into the bar's colour by the same rule as the scene under the names, so the
+  dim text keeps 4.5:1 (tested on four themes). A shooting star falls every 4 seconds, a bird
+  crosses from right to left every 9, and a light runs the length of the bar's foot along its
+  frame every 6. None of the new ones shows in the first cycle, so the still frame is calm.
+- **Arabia Solar's world.** A theme cannot pass an effect anything but its colours, so the
+  scene has two faces chosen by the theme's mode: by night (a dark theme) the castle in the
+  hills, and by day (a light one) a desert kingdom: a palace with a great onion dome and spire,
+  a small dome on each wing and a minaret at each end, its domes warmed with the focus colour;
+  palms for pines; two lines of dunes for hills; sand with dry tufts and a trail for grass; and
+  a carpet rippling across the sky where the bat flew. Behind text the foot of a terminal or a
+  page shows two faint dunes, 2% and 3.5% toward the text's colour, where the night's hills
+  would be white on near white. Everything else (frames, ledges, gems, lanterns, cursor, arrow,
+  typed text) is the same effect. The art is original and takes only the motifs of the old
+  tales: no character, building or design of any film.

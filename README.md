@@ -120,7 +120,7 @@ the code, while the design notes on the right gain the new row as it is written 
 below them shows the failing test that started it. It is shot in Timo Purple, whose overworld effect frames each pane
 like a game's menu window on a night ground, makes each tab bar a stone ledge and the title bar a
 strip of sky, stands a castle at the foot of the file tree, sets the window in a pixel face and types terminal
-text in like dialogue.
+text in like dialogue. Arabia Solar is the same effect by day: a desert palace with domes and minarets among palms and dunes, in sand and cream under a sun.
 
 <picture>
   <img alt="An Arkos IDE window in Timo Purple, deep violet with cyan accents and pixel art: each pane in a notched pixel frame on a dark checkered ground, the focused one framed in cyan, stone tab bars with a small lantern on each active tab, stars and a cloud in the title bar and a castle under a crescent moon at the foot of the file tree; Claude Code on the left adding an enemy to a dungeon crawl, the design notes with their roster table rendered on the right, and a shell showing the failing test below them" src="docs/images/indie-game-dev-dark.png" width="760">
@@ -138,7 +138,7 @@ identifies you or your Mac. [What Arkos sends](docs/telemetry.md) lists every ke
 
 - **[The guide](docs/guide.md)**: sessions and recovery, the sidebar, the markdown editor, the
   browser pane, the video pane, keys, settings and updates.
-- **[Themes](docs/themes.md)**: the nine built in, and how to make your own.
+- **[Themes](docs/themes.md)**: the ten built in, and how to make your own.
 - **Agents**: run `arkos guide` in an Arkos terminal for how to show the user a video or a
   document and how to change the theme and settings.
 - **[Developing](docs/development.md)**: building from source, tests, releases and status.

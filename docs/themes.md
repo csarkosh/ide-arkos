@@ -1,6 +1,6 @@
 # Themes
 
-A theme is one TOML file with a `name` and five tables: `chrome`, `terminal`, `semantic`, `tree` and `viewer`, plus an optional `font` table. Every colour key is required and every value is a `#rrggbb` colour; an unknown or missing key is an error. Arkos ships nine themes built in (`navy`, `timo-purple`, `peach-watercolor`, `lavender-watercolor`, `lavender-material`, `matrix`, `navy-runic`, `composition-notebook`, `material`; `peach-light` and `peach-material` (0.8.11) are old names of `peach-watercolor`, and `lavender-light` of `lavender-watercolor`; they still load them); the files in `crates/arkos/themes/` are complete examples to copy.
+A theme is one TOML file with a `name` and five tables: `chrome`, `terminal`, `semantic`, `tree` and `viewer`, plus an optional `font` table. Every colour key is required and every value is a `#rrggbb` colour; an unknown or missing key is an error. Arkos ships ten themes built in (`navy`, `timo-purple`, `peach-watercolor`, `lavender-watercolor`, `lavender-material`, `matrix`, `navy-runic`, `composition-notebook`, `material`, `arabia-solar`; `peach-light` and `peach-material` (0.8.11) are old names of `peach-watercolor`, and `lavender-light` of `lavender-watercolor`; they still load them); the files in `crates/arkos/themes/` are complete examples to copy.
 
 ## Contrast rules
 
@@ -104,9 +104,10 @@ Optional. The one table that is not colours.
 
 | Key | What it sets |
 | --- | --- |
-| `prose` | The family the rendered markdown's text is set in (headings, paragraphs, lists, quotes); code stays in the terminal font. Unset, the system UI font. `peach-watercolor` sets Baskerville, `composition-notebook` Chalkboard SE, `material` DM Sans and `timo-purple` Departure Mono. |
-| `ui` | The family of the window's chrome: the title bar, file tree, tabs, palette and banners. Unset, the title bar is in the system font and the rest in the terminal font. `peach-watercolor` sets Optima, `lavender-watercolor` and `lavender-material` Avenir Next, `composition-notebook` Chalkboard SE, `material` DM Sans, `timo-purple` Departure Mono. |
-| `terminal` | The family of the shells, the raw and code views and the terminal's cell measurements; it must be monospaced. Unset, `[font] family` from `config.toml`. `peach-watercolor` sets PT Mono, `lavender-watercolor` and `lavender-material` Cascadia Code (installed with `brew install --cask font-cascadia-code`), `composition-notebook` Monaspace Radon (`font-monaspace`) `material` Roboto Mono (`font-roboto-mono`, with DM Sans from `font-dm-sans` for the rest) and `timo-purple` Departure Mono (`font-departure-mono`), a pixel face whose pixels are whole at multiples of 11 px, and of 5.5 px on a Retina screen (16.5 or 22 for a preset's size). |
+| `prose` | The family the rendered markdown's text is set in (headings, paragraphs, lists, quotes); code stays in the terminal font. Unset, the system UI font. `peach-watercolor` sets Baskerville, `composition-notebook` Chalkboard SE, `material` DM Sans, and `timo-purple` and `arabia-solar` Departure Mono. |
+| `ui` | The family of the window's chrome: the title bar, file tree, tabs, palette and banners. Unset, the title bar is in the system font and the rest in the terminal font. `peach-watercolor` sets Optima, `lavender-watercolor` and `lavender-material` Avenir Next, `composition-notebook` Chalkboard SE, `material` DM Sans, `timo-purple` and `arabia-solar` Departure Mono. |
+| `terminal` | The family of the shells, the raw and code views and the terminal's cell measurements; it must be monospaced. Unset, `[font] family` from `config.toml`. `peach-watercolor` sets PT Mono, `lavender-watercolor` and `lavender-material` Cascadia Code (installed with `brew install --cask font-cascadia-code`), `composition-notebook` Monaspace Radon (`font-monaspace`) `material` Roboto Mono (`font-roboto-mono`, with DM Sans from `font-dm-sans` for the rest) and `timo-purple` and `arabia-solar` Departure Mono (`font-departure-mono`), a pixel face whose pixels are whole at multiples of 11 px, and of 5.5 px on a Retina screen (16.5 or 22 for a preset's size). |
+| `grid` | The size in points the terminal font's own pixels are whole at, for a pixel face: 1 to 24. Under the theme every text size is drawn at the nearest multiple of it (the preset's size in terminals and files, the chrome's labels), and Cmd+= and Cmd+- move one step of it, so the font is sharp whatever the presets say; the config's presets are not changed. It goes with the terminal font: without that installed, sizes are left alone. `timo-purple` and `arabia-solar` set 5.5 for Departure Mono, whose pixels are whole every 11 device pixels: a preset of 14 or 18 is drawn at 16.5. |
 
 A family that is not installed on the Mac is left out: that slot shows what it would without the theme naming a font, and the window's log says which font was missing.
 
@@ -116,7 +117,7 @@ Optional. A shader effect drawn under the window's text.
 
 | Key | What it sets |
 | --- | --- |
-| `name` | The effect the theme was designed with; the user's `effect.name` in `config.toml` or Settings may choose another. `peach-watercolor` and `lavender-watercolor` set `watercolor`, `matrix` and `navy-runic` set `runic`, `composition-notebook` sets `notebook`, `timo-purple` sets `overworld`, and `material`, `peach-watercolor` and `lavender-material` set `material`; `navy`, the default, sets none and draws plain. |
+| `name` | The effect the theme was designed with; the user's `effect.name` in `config.toml` or Settings may choose another. `peach-watercolor` and `lavender-watercolor` set `watercolor`, `matrix` and `navy-runic` set `runic`, `composition-notebook` sets `notebook`, `timo-purple` and `arabia-solar` set `overworld`, and `material`, `peach-watercolor` and `lavender-material` set `material`; `navy`, the default, sets none and draws plain. |
 
 ## Adding a theme
 

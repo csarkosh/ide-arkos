@@ -622,7 +622,7 @@ panes as rounded cards in the theme's page colour on a frame of its sidebar colo
 row, a search bar round the title, a progress bar on a busy pane, no glyph shader),
 Composition Notebook recommends `notebook` (the
 marbled cover over the title bar, cream pages ruled under the terminal's rows, pencil edges, a
-highlighter on the selected row, and terminal text written in by a ballpoint), and Timo Purple recommends `overworld`
+highlighter on the selected row, and terminal text written in by a ballpoint), and Timo Purple and Arabia Solar recommend `overworld`
 (a pixel-art night overworld across the window: each pane, the sidebar and the title bar framed
 like a game's menu window on a night ground, the focused pane in the focus colour, with a slow
 glint round a working pane's frame; stone tab bars with a lantern on each active tab and a gem

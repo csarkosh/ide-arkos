@@ -58,6 +58,10 @@ pub struct Style {
     pub title_pad: f32,
     /// Points added before every row and header of the sidebar.
     pub sidebar_pad: f32,
+    /// The theme font's grid in points (`[font] grid`), which the window's UI text sizes are
+    /// snapped to; 0, none. The window sets it from its theme (`Root::effect_style`): it is the
+    /// theme's, not the effect's.
+    pub text_grid: f32,
     /// The gutter between the sidebar and the panes, in points.
     pub binder: f32,
     /// Points kept clear round each pane.
@@ -78,7 +82,7 @@ pub struct Style {
 impl Style {
     /// The app as it paints without an effect.
     pub fn plain() -> Style {
-        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, body_bars_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, sidebar_pad: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
+        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, body_bars_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, sidebar_pad: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
     }
 
     /// The ground a document's own fills go with: a markdown table's header and paper rows and a
@@ -95,7 +99,7 @@ impl Style {
 
     /// A UI text size of `pt` points as this style draws it.
     pub fn ui(&self, pt: f32) -> f32 {
-        pt + self.ui_text_bump
+        crate::theme::snap_to((self.text_grid > 0.0).then_some(self.text_grid), pt + self.ui_text_bump)
     }
 }
 
@@ -121,6 +125,7 @@ pub fn style_at(manifest: &Manifest, fade: f32) -> Style {
         ui_text_bump: if full { manifest.ui_text_bump } else { 0.0 },
         title_pad: if full { manifest.title_pad } else { 0.0 },
         sidebar_pad: if full { manifest.sidebar_pad } else { 0.0 },
+        text_grid: 0.0,
         binder: if full { manifest.binder } else { 0.0 },
         gap: if full { manifest.gap } else { 0.0 },
         pane_radius: if full { manifest.pane_radius } else { 0.0 },
@@ -513,7 +518,7 @@ impl<L> ActiveEffect<L> {
     pub fn style(&self, now: Instant) -> Style {
         let s = style_at(&self.effect.manifest, self.amount(now));
         if self.leaving() {
-            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, sidebar_pad: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false, ..s }
+            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, sidebar_pad: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false, ..s }
         } else {
             // The menus' edges cut over with the rest once the effect is fully on.
             Style { menu_edges: self.amount(now) >= 1.0 && has_overlay(&self.effect.wash), ..s }
@@ -587,6 +592,17 @@ mod tests {
     use crate::tree::{Rect, Side, Tab, Tree};
     use std::path::Path;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn ui_text_is_drawn_on_the_theme_font_s_grid_when_it_has_one() {
+        let mut s = Style::plain();
+        assert_eq!((s.ui(12.0), s.ui(13.0)), (12.0, 13.0), "no grid, the sizes as asked");
+        s.text_grid = 5.5;
+        assert_eq!((s.ui(10.5), s.ui(12.0), s.ui(13.0), s.ui(15.0)), (11.0, 11.0, 11.0, 16.5));
+        // An effect's bump is added before the snap.
+        s.ui_text_bump = 2.0;
+        assert_eq!(s.ui(13.0), 16.5);
+    }
 
     #[test]
     fn the_terminal_decodes_only_once_the_effect_has_fully_faded_in() {
@@ -777,7 +793,7 @@ mod tests {
         assert_eq!(style_at(&m, 0.0), Style::plain());
         assert_eq!(
             style_at(&m, 1.0),
-            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, body_bars_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, title_pad: 0.0, sidebar_pad: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false, terminal_paint: true }
+            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, body_bars_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, title_pad: 0.0, sidebar_pad: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false, terminal_paint: true }
         );
         let half = style_at(&m, 0.5);
         assert_eq!((half.paper_alpha, half.chrome_alpha, half.ground_alpha), (0.75, 0.5, 0.5));

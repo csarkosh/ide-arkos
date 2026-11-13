@@ -73,6 +73,20 @@ pub struct ThemeFont {
     pub ui: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<String>,
+    /// The size, in points, the font's own pixels are whole at: under the theme every text size
+    /// is drawn at the nearest multiple of it, so a pixel face is sharp at any preset. It goes
+    /// with the terminal font: without that installed, sizes are left as they are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid: Option<f32>,
+}
+
+/// A text size of `size` points on a font's `grid`: the nearest multiple of it, and never under
+/// one step. Without a grid, the size itself.
+pub fn snap_to(grid: Option<f32>, size: f32) -> f32 {
+    match grid {
+        Some(g) if g > 0.0 => (size / g).round().max(1.0) * g,
+        _ => size,
+    }
 }
 
 impl ThemeFont {
@@ -92,7 +106,9 @@ impl ThemeFont {
             }
             other => other.clone(),
         };
-        let fonts = ThemeFont { prose: keep(&self.prose), ui: keep(&self.ui), terminal: keep(&self.terminal) };
+        let (prose, ui, terminal) = (keep(&self.prose), keep(&self.ui), keep(&self.terminal));
+        let grid = self.grid.filter(|_| terminal.is_some());
+        let fonts = ThemeFont { prose, ui, terminal, grid };
         (fonts, missing)
     }
 }
@@ -182,7 +198,7 @@ pub struct ViewerColors {
 }
 
 /// The embedded themes: (name, file text). Extracted verbatim by `extract`.
-pub const BUILTIN: [(&str, &str); 9] = [
+pub const BUILTIN: [(&str, &str); 10] = [
     ("navy", include_str!("../themes/navy.toml")),
     ("timo-purple", include_str!("../themes/timo-purple.toml")),
     ("peach-watercolor", include_str!("../themes/peach-watercolor.toml")),
@@ -192,6 +208,7 @@ pub const BUILTIN: [(&str, &str); 9] = [
     ("navy-runic", include_str!("../themes/navy-runic.toml")),
     ("composition-notebook", include_str!("../themes/composition-notebook.toml")),
     ("material", include_str!("../themes/material.toml")),
+    ("arabia-solar", include_str!("../themes/arabia-solar.toml")),
 ];
 
 /// The luminance a glyph shader sees: the sRGB dot product `0.2126 r + 0.7152 g + 0.0722 b` of
@@ -217,6 +234,9 @@ pub fn parse(text: &str) -> Result<Theme, String> {
                 by_background.word()
             ));
         }
+    }
+    if let Some(grid) = theme.font.grid.filter(|g| !(1.0..=24.0).contains(g)) {
+        return Err(format!("font.grid must be 1.0 to 24.0 (was {grid:?})"));
     }
     Ok(theme)
 }
@@ -644,6 +664,7 @@ const SCHEMA: &[TableDoc] = &[
             surface("prose", "Optional: the installed family for rendered markdown text; unset, the system UI font"),
             surface("ui", "Optional: the installed family for the window's chrome; unset, the terminal font"),
             surface("terminal", "Optional: the installed monospaced family for the shells and code views; unset, [font] family"),
+            surface("grid", "Optional: the points the terminal font's own pixels are whole at (a pixel face); every text size is drawn at the nearest multiple of it"),
         ],
     },
     TableDoc {
@@ -811,11 +832,30 @@ mod tests {
     }
 
     #[test]
+    fn a_font_s_grid_snaps_every_text_size_to_its_nearest_multiple() {
+        // Departure Mono's pixels are whole every 5.5 points on a Retina screen.
+        let g = Some(5.5);
+        assert_eq!((snap_to(g, 14.0), snap_to(g, 18.0), snap_to(g, 16.5), snap_to(g, 20.0)), (16.5, 16.5, 16.5, 22.0), "the presets");
+        assert_eq!((snap_to(g, 10.5), snap_to(g, 11.0), snap_to(g, 12.0), snap_to(g, 13.0)), (11.0, 11.0, 11.0, 11.0), "the chrome's sizes");
+        assert_eq!(snap_to(g, 1.0), 5.5, "never under one step");
+        assert_eq!((snap_to(None, 14.0), snap_to(Some(0.0), 14.0)), (14.0, 14.0), "no grid, no change");
+        // The two pixel themes ask for it; no other built-in does.
+        for (name, _) in BUILTIN {
+            assert_eq!(builtin(name).unwrap().font.grid, matches!(name, "timo-purple" | "arabia-solar").then_some(5.5), "{name}");
+        }
+        let navy = BUILTIN.iter().find(|(n, _)| *n == "navy").unwrap().1;
+        assert_eq!(parse(&(navy.to_string() + "\n[font]\ngrid = 0.5\n")).unwrap_err(), "font.grid must be 1.0 to 24.0 (was 0.5)");
+        assert_eq!(parse(&(navy.to_string() + "\n[font]\ngrid = 11\n")).unwrap().font.grid, Some(11.0));
+    }
+
+    #[test]
     fn a_font_that_is_not_installed_is_left_out() {
-        let fonts = ThemeFont { prose: Some("Baskerville".into()), ui: Some("Optima".into()), terminal: Some("PT Mono".into()) };
+        let fonts = ThemeFont { prose: Some("Baskerville".into()), ui: Some("Optima".into()), terminal: Some("PT Mono".into()), grid: Some(5.5) };
         let have: std::collections::HashSet<String> = ["Baskerville", "Menlo"].iter().map(|s| s.to_string()).collect();
         let (kept, missing) = fonts.installed(&have);
-        assert_eq!(kept, ThemeFont { prose: Some("Baskerville".into()), ui: None, terminal: None });
+        assert_eq!(kept, ThemeFont { prose: Some("Baskerville".into()), ui: None, terminal: None, grid: None }, "the grid is the terminal font's, and goes with it");
+        let have_all: std::collections::HashSet<String> = ["Baskerville", "Optima", "PT Mono"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(fonts.installed(&have_all).0.grid, Some(5.5));
         assert_eq!(missing, vec!["Optima".to_string(), "PT Mono".to_string()]);
         assert_eq!(ThemeFont::default().installed(&have), (ThemeFont::default(), vec![]));
     }
@@ -841,7 +881,7 @@ mod tests {
         assert_eq!(m.chrome.window_bg, Rgb { r: 0, g: 0, b: 0 });
         assert_eq!(m.terminal.background, Rgb { r: 0, g: 0, b: 0 });
         assert_eq!(m.recommended_effect(), Some("runic"));
-        assert_eq!(BUILTIN.len(), 9);
+        assert_eq!(BUILTIN.len(), 10);
     }
 
     #[test]
@@ -1016,7 +1056,7 @@ mod tests {
         assert_eq!(load("navy", dir.path()).unwrap().chrome.window_bg, rgb(0x000000));
         std::fs::write(dir.path().join("mine.toml"), BUILTIN[1].1.replace("name = \"timo-purple\"", "name = \"mine\"")).unwrap();
         assert_eq!(load("mine", dir.path()).unwrap().name, "mine");
-        assert_eq!(names(dir.path()), vec!["composition-notebook".to_string(), "lavender-material".to_string(), "lavender-watercolor".to_string(), "material".to_string(), "matrix".to_string(), "mine".to_string(), "navy".to_string(), "navy-runic".to_string(), "peach-watercolor".to_string(), "timo-purple".to_string()]);
+        assert_eq!(names(dir.path()), vec!["arabia-solar".to_string(), "composition-notebook".to_string(), "lavender-material".to_string(), "lavender-watercolor".to_string(), "material".to_string(), "matrix".to_string(), "mine".to_string(), "navy".to_string(), "navy-runic".to_string(), "peach-watercolor".to_string(), "timo-purple".to_string()]);
         let e = load("nope", dir.path()).unwrap_err();
         assert!(e.contains("nope") && e.contains(&dir.path().display().to_string()), "{e}");
         assert!(load("../navy", dir.path()).is_err());
@@ -1031,7 +1071,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("themes");
         let wrote = extract(&sub).unwrap();
-        assert_eq!(wrote.len(), 9);
+        assert_eq!(wrote.len(), 10);
         assert_eq!(std::fs::read_to_string(sub.join("navy.toml")).unwrap(), BUILTIN[0].1);
         std::fs::write(sub.join("navy.toml"), "edited").unwrap();
         assert!(extract(&sub).unwrap().is_empty(), "nothing to write the second time");
@@ -1069,12 +1109,22 @@ mod tests {
     }
 
     #[test]
+    fn arabia_solar_is_peach_watercolor_s_colours_by_day_under_timo_purple_s_effect_and_font() {
+        let (solar, peach, timo) = (builtin("arabia-solar").expect("ships"), builtin("peach-watercolor").unwrap(), builtin("timo-purple").unwrap());
+        assert_eq!(solar.name, "arabia-solar");
+        assert!(solar.is_light());
+        assert_eq!((&solar.chrome, &solar.terminal, &solar.semantic, &solar.tree, &solar.viewer), (&peach.chrome, &peach.terminal, &peach.semantic, &peach.tree, &peach.viewer));
+        assert_eq!(solar.recommended_effect(), Some("overworld"));
+        assert_eq!(solar.font, timo.font, "the same pixel face as Timo Purple");
+    }
+
+    #[test]
     fn timo_purple_is_built_in_and_its_accent_is_the_cyan() {
         // Its other surfaces (banner, sidebar, inactive tabs, selection, find) are checked for
         // every built-in through `contrast_pairs`.
         let t = builtin("timo-purple").expect("ships");
         assert_eq!(t.name, "timo-purple");
-        assert_eq!(BUILTIN.len(), 9);
+        assert_eq!(BUILTIN.len(), 10);
         assert_eq!(t.chrome.focus_ring, t.terminal.cyan, "the accent is the cyan");
         assert_eq!(t.terminal.cursor, t.terminal.cyan);
     }
@@ -1095,8 +1145,9 @@ mod tests {
         assert_eq!(l[6], ("navy-runic".into(), Source::BuiltIn));
         assert_eq!(l[7], ("composition-notebook".into(), Source::BuiltIn));
         assert_eq!(l[8], ("material".into(), Source::BuiltIn));
-        assert!(matches!(&l[9], (n, Source::Invalid(e)) if n == "broken" && !e.is_empty()));
-        assert_eq!(l[10], ("mine".into(), Source::File));
+        assert_eq!(l[9], ("arabia-solar".into(), Source::BuiltIn));
+        assert!(matches!(&l[10], (n, Source::Invalid(e)) if n == "broken" && !e.is_empty()));
+        assert_eq!(l[11], ("mine".into(), Source::File));
         assert_eq!(validate_file(&dir.path().join("mine.toml")), Ok("mine".into()));
         assert!(validate_file(&dir.path().join("broken.toml")).is_err());
         assert!(validate_file(&dir.path().join("none.toml")).is_err());
@@ -1112,8 +1163,9 @@ mod tests {
         assert_eq!(lines[6], "navy-runic (built in, dark)");
         assert_eq!(lines[7], "composition-notebook (built in, light)");
         assert_eq!(lines[8], "material (built in, light)");
-        assert!(lines[9].starts_with("broken (file, invalid: "));
-        assert_eq!(lines[10], "mine (file, dark)");
+        assert_eq!(lines[9], "arabia-solar (built in, light)");
+        assert!(lines[10].starts_with("broken (file, invalid: "));
+        assert_eq!(lines[11], "mine (file, dark)");
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["validate".into(), dir.path().join("mine.toml").display().to_string()], dir.path(), &mut out, &mut err), 0);
         assert_eq!(std::str::from_utf8(&out).unwrap(), "ok: mine\n");
@@ -1128,7 +1180,8 @@ mod tests {
         assert_eq!(v[1], serde_json::json!({ "name": "timo-purple", "source": "built-in", "appearance": "dark" }));
         assert_eq!(v[2]["appearance"], "light");
         assert_eq!((v[7]["name"].as_str(), v[8]["name"].as_str(), v[8]["appearance"].as_str()), (Some("composition-notebook"), Some("material"), Some("light")));
-        assert_eq!((v[9]["source"].as_str(), v[9]["error"].is_string(), v[9].get("appearance")), (Some("invalid"), true, None));
+        assert_eq!((v[9]["name"].as_str(), v[9]["appearance"].as_str()), (Some("arabia-solar"), Some("light")));
+        assert_eq!((v[10]["source"].as_str(), v[10]["error"].is_string(), v[10].get("appearance")), (Some("invalid"), true, None));
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["validate".into(), dir.path().join("broken.toml").display().to_string(), "--json".into()], dir.path(), &mut out, &mut err), 1);
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();

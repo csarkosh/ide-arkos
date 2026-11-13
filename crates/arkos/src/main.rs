@@ -719,6 +719,8 @@ impl Root {
             let _ = weak.update(cx, |root, _| root.last_input = Instant::now());
         })
         .detach();
+        // The theme's fonts that are installed, and the preset's size on the font's grid.
+        let fonts = installed_fonts(&theme, cx);
         Self {
             tree,
             sessions,
@@ -778,7 +780,7 @@ impl Root {
             wt_tx,
             wt_gen: 0,
             wt_list_gen: HashMap::new(),
-            font_size: preset.size,
+            font_size: theme::snap_to(fonts.grid, preset.size),
             line_height: preset.line_height,
             text_preset,
             content: Rect { x: 0.0, y: 0.0, w: 1200.0, h: 800.0 },
@@ -794,7 +796,7 @@ impl Root {
             empty_anim: HashMap::new(),
             shell_name: shell_name(config.terminal.shell.as_deref(), std::env::var("SHELL").ok().as_deref()),
             config,
-            fonts: installed_fonts(&theme, cx),
+            fonts,
             base_theme: Arc::new(theme.clone()),
             theme: Arc::new(theme),
             theme_fade: None,
@@ -1537,7 +1539,14 @@ impl Root {
         if fonts.terminal != self.fonts.terminal {
             self.grids.clear();
         }
+        // A theme whose font has another grid (or none) draws the preset at another size: every
+        // terminal and viewer takes it again, as a preset change would have them.
+        let regrid = fonts.grid != self.fonts.grid;
         self.fonts = fonts;
+        if regrid {
+            let preset = self.text_preset.clone();
+            self.apply_text_preset(&preset, cx);
+        }
         let shown = effects::active::contrasted(&theme, self.text_contrast());
         let accent_changed = theme.chrome.focus_ring != self.base_theme.chrome.focus_ring;
         self.base_theme = Arc::new(theme);
@@ -1841,18 +1850,20 @@ impl Root {
     pub fn apply_text_preset(&mut self, name: &str, cx: &mut Context<Self>) -> bool {
         let Some(p) = self.config.font.presets.get(name).copied() else { return false };
         self.text_preset = name.to_string();
-        self.font_size = p.size;
+        // On the theme font's grid when it has one, so a pixel face is sharp at any preset.
+        let size = theme::snap_to(self.fonts.grid, p.size);
+        self.font_size = size;
         self.line_height = p.line_height;
         for t in self.sessions.terminals.values() {
             t.update(cx, |t, cx| {
-                t.font_size = p.size;
+                t.font_size = size;
                 t.line_height = p.line_height;
                 cx.notify();
             });
         }
         for v in self.viewers.values() {
             v.update(cx, |v, cx| {
-                v.font_size = p.size;
+                v.font_size = size;
                 v.line_height = p.line_height;
                 cx.notify();
             });
@@ -2933,6 +2944,8 @@ impl Root {
             FontDelta(d) => {
                 // Only the focused terminal changes (spec 7); its element resizes the grid and
                 // the PTY on the next paint. Nudges are not saved, and a preset change resets them.
+                // On a font's grid a nudge is one step of it, so the text stays sharp.
+                let d = self.fonts.grid.map_or(d, |g| d.signum() * g);
                 if let Some(t) = self.active_terminal(cx) {
                     t.update(cx, |t, cx| {
                         t.font_size = (t.font_size + d).clamp(10.0, 32.0);
@@ -4060,7 +4073,10 @@ impl Root {
     /// The style the app paints its surfaces with this frame: plain without an effect, the
     /// manifest's with one, and a blend of the two while it fades.
     pub fn effect_style(&self) -> effects::active::Style {
-        self.effect.as_ref().map_or(effects::active::Style::plain(), |e| e.style(self.frame_now))
+        let mut style = self.effect.as_ref().map_or(effects::active::Style::plain(), |e| e.style(self.frame_now));
+        // The theme font's grid is the theme's, with or without an effect.
+        style.text_grid = self.fonts.grid.unwrap_or(0.0);
+        style
     }
 
     /// Whether the effect paints the highlights (its manifest's `highlights = "effect"`, once it

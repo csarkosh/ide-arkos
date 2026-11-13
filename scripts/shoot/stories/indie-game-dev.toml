@@ -21,7 +21,7 @@ height = 860
 preset = "compact"
 sidebar_width = 230
 expanded = ["design", "game", "tests"]
-theme = { dark = "timo-purple", light = "timo-purple" }
+theme = { dark = "timo-purple", light = "arabia-solar" }
 
 # One session straight through, so it is still on screen with its work when the others settle.
 [[pane]]
@@ -50,3 +50,11 @@ wait = { rules = "waiting" }
 changed = { rules = 3 }
 after_secs = 30
 timeout_secs = 360
+
+# The same moment in Arabia Solar (the light slot), the theme's daytime twin, taken as soon as
+# the first is: `indie-game-dev-solar.png`.
+[[shot]]
+name = "solar"
+theme = "light"
+wait = { rules = "waiting" }
+timeout_secs = 60

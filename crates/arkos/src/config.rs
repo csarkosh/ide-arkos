@@ -771,14 +771,14 @@ watchdog_secs = 30
 replay_bytes = 16777216
 
 [theme]
-# Theme files live in ~/.config/arkos/themes/<name>.toml. "navy", "timo-purple", "peach-watercolor", "lavender-watercolor", "lavender-material", "matrix", "navy-runic", "composition-notebook" and "material" are built in;
+# Theme files live in ~/.config/arkos/themes/<name>.toml. "navy", "timo-purple", "peach-watercolor", "lavender-watercolor", "lavender-material", "matrix", "navy-runic", "composition-notebook", "material" and "arabia-solar" are built in;
 # "Extract built-in themes" in the command palette writes them there to copy from.
 dark = "navy"
 light = "peach-watercolor"
 
 [effect]
 # A shader drawn under the window's text. "theme" draws the one the theme was designed with
-# (peach-watercolor's and lavender-watercolor's watercolor, material's and lavender-material's material, matrix's runic, composition-notebook's notebook), "none" draws nothing, or name an
+# (peach-watercolor's and lavender-watercolor's watercolor, material's and lavender-material's material, matrix's runic, composition-notebook's notebook, timo-purple's and arabia-solar's overworld), "none" draws nothing, or name an
 # effect: a built-in, or a folder in ~/.config/arkos/effects/. intensity runs from 0.0
 # (invisible) to 1.0 (as designed).
 name = "theme"

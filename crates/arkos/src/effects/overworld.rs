@@ -69,22 +69,21 @@ pub fn star_clear(p: (f32, f32), groups: &[Rect]) -> bool {
     })
 }
 
-/// The title bar's stars: none before `TITLE_LEFT`, the traffic lights' end; one in some of the
-/// cells of `TITLE_CELL` art pixels, on a row from 2 to 6 of the bar, inside its frame, wherever
-/// it keeps `STAR_CLEAR` from every group.
+/// The title bar's stars: none before `TITLE_LEFT`, the traffic lights' end; one in most of the
+/// cells of `TITLE_CELL` art pixels, on a row from 2 to 6 of the bar, inside its frame, the whole
+/// length of the bar. One within `STAR_CLEAR` of the bar's words or icons is softened into the
+/// bar's colour, as the scene is under the sidebar's names.
 pub const TITLE_LEFT: f32 = 80.0;
-pub const TITLE_CELL: i32 = 12;
-pub const TITLE_STAR_CHANCE: f32 = 0.5;
+pub const TITLE_CELL: i32 = 8;
+pub const TITLE_STAR_CHANCE: f32 = 0.6;
 /// A salt that gives the title bar's stars hashes of their own.
 pub const TITLE_SALT: u32 = 0x9E37_79B9;
 
 /// The art pixels, counted from the bar's origin, of the stars drawn in a title bar laid out at
-/// `bar` with its word and icon `groups`, as the shader draws them: in each cell that wins its
-/// chance, at a seeded place, when the whole star keeps clear of every group.
-pub fn title_stars(bar: Rect, groups: &[Rect]) -> Vec<(i32, i32)> {
-    if groups.is_empty() {
-        return Vec::new();
-    }
+/// `bar`, as the shader draws them: in each cell that wins its chance, at a seeded place, right of
+/// the traffic lights and whole inside the bar. With each, whether it keeps clear of every one of
+/// the bar's `groups`: one that does not is softened.
+pub fn title_stars(bar: Rect, groups: &[Rect]) -> Vec<((i32, i32), bool)> {
     let cells = (bar.w / ART_PX).floor() as i32 / TITLE_CELL + 1;
     (0..cells)
         .filter_map(|cell| {
@@ -95,8 +94,8 @@ pub fn title_stars(bar: Rect, groups: &[Rect]) -> Vec<(i32, i32)> {
             }
             let o = (bar.x + star.0 as f32 * ART_PX, bar.y + star.1 as f32 * ART_PX);
             let corners = [o, (o.0 + ART_PX, o.1), (o.0, o.1 + ART_PX), (o.0 + ART_PX, o.1 + ART_PX)];
-            let clear = o.0 >= TITLE_LEFT && o.0 + ART_PX <= bar.x + bar.w && corners.iter().all(|c| star_clear(*c, groups));
-            clear.then_some(star)
+            let clear = !groups.is_empty() && corners.iter().all(|c| star_clear(*c, groups));
+            (o.0 >= TITLE_LEFT && o.0 + ART_PX <= bar.x + bar.w).then_some((star, clear))
         })
         .collect()
 }
@@ -392,7 +391,7 @@ mod tests {
         }
         use crate::effects::blocks::blocks;
         use crate::palette::contrast;
-        for name in ["timo-purple", "navy", "peach-watercolor", "composition-notebook", "matrix", "material"] {
+        for name in ["timo-purple", "arabia-solar", "navy", "peach-watercolor", "composition-notebook", "matrix", "material"] {
             let theme = crate::theme::builtin(name).unwrap();
             let (sb, dim) = (theme.chrome.sidebar, theme.chrome.text_dim);
             assert!(contrast(dim, sb) >= 4.5, "{name}");
@@ -410,32 +409,84 @@ mod tests {
         }
     }
 
+    /// A window whose sidebar's names end at `names_end`.
+    fn window_with_names_to(names_end: f32) -> Vec<crate::effects::blocks::Block> {
+        use crate::effects::blocks::{blocks, Kind, Scene, Shape};
+        let content = Rect { x: SIDE + GAP, y: TOP + GAP, w: W as f32 - SIDE - 2.0 * GAP, h: H as f32 - TOP - 2.0 * GAP };
+        let panes = [(1, content)];
+        let shapes = [Shape { key: 1, rect: WORDS, kind: Kind::TitleGroup, pitch: 0.0 }, Shape { key: 2, rect: ICONS, kind: Kind::TitleGroup, pitch: 0.0 }];
+        blocks(&Scene { gap: GAP, ..crate::effects::active::scene(content, GAP, None, Some(names_end), &panes, &[], &shapes, &[]) }, false)
+    }
+
     #[test]
-    fn on_the_gpu_the_scene_is_at_full_colour_below_the_names_and_the_title_s_words_sit_on_nothing_lighter_than_the_bar() {
+    fn on_the_gpu_the_scene_is_at_full_colour_until_the_names_reach_it_and_then_dims_as_one() {
+        if !gpu() {
+            return;
+        }
+        use crate::palette::contrast;
+        let theme = crate::theme::builtin("timo-purple").unwrap();
+        let c = &theme.chrome;
+        let band = scene_band(Rect { x: 0.0, y: TOP, w: SIDE, h: H as f32 - TOP }).unwrap();
+        // A castle window is the focus colour at time 0 wherever the scene is at full colour.
+        let lit = |names_end: f32| pixels(&render(&theme, 0.0, &window_with_names_to(names_end)), band).contains(&c.focus_ring);
+        assert!(lit(band.y - 30.0), "names that end above the scene leave it at full colour");
+        assert!(lit(band.y), "and ones that only reach its top");
+        // Names a row into the scene, a strip of it left below them: all of it is softened, the
+        // strip too, so no line runs across the castle and nothing below the last name is bright.
+        for names_end in [band.y + 24.0, band.y + 90.0, band.y + band.h - 12.0] {
+            let frame = render(&theme, 0.0, &window_with_names_to(names_end));
+            let seen = pixels(&frame, band);
+            assert!(!seen.contains(&c.focus_ring), "softened as one with the names at {names_end}");
+            assert!(seen.iter().all(|p| contrast(c.text_dim, *p) >= 4.5), "the dim text keeps its contrast on all of it at {names_end}");
+            assert!(seen.iter().any(|p| *p != c.sidebar), "and it is still there at {names_end}");
+        }
+        // Above the scene the sidebar is plain, whatever the names do.
+        let frame = render(&theme, 3.7, &window_with_names_to(band.y + 60.0));
+        let above = Rect { y: TOP + 6.0, h: band.y - TOP - 6.0, ..sidebar_inside() };
+        assert!(pixels(&frame, above).iter().all(|p| *p == c.sidebar));
+    }
+
+    #[test]
+    fn on_the_gpu_the_title_bar_s_sky_is_alive_behind_its_words_without_costing_them_their_contrast() {
+        if !gpu() {
+            return;
+        }
+        use crate::palette::contrast;
+        for name in ["timo-purple", "arabia-solar", "navy", "composition-notebook"] {
+            let theme = crate::theme::builtin(name).unwrap();
+            let c = &theme.chrome;
+            let plain = contrast(c.text_dim, c.title_bar);
+            let blocks = small_window();
+            let mut lively = false;
+            for t in [0.0, 3.7, 9.4, 21.3, 64.0, 200.5] {
+                let frame = render(&theme, t, &blocks);
+                for g in [WORDS, ICONS] {
+                    // The icons reach 2 points into the frame's inner line; the words do not.
+                    let inside = Rect { y: g.y.max(6.0), h: g.h.min(16.0), ..g };
+                    let worst = pixels(&frame, inside).iter().map(|p| contrast(c.text_dim, *p)).fold(f64::INFINITY, f64::min);
+                    assert!(worst >= 4.5_f64.min(plain), "{name} at {t}: the dim text is {worst:.2}:1 under {g:?}");
+                }
+                lively |= pixels(&frame, Rect { y: 6.0, h: 16.0, ..WORDS }).iter().any(|p| crate::palette::luminance(*p) != crate::palette::luminance(c.title_bar) && contrast(*p, c.title_bar) > 1.08);
+            }
+            assert!(lively, "{name}: something is drawn behind the words");
+        }
+    }
+
+    #[test]
+    fn on_the_gpu_a_light_runs_along_the_title_bar_s_foot_now_and_then_and_never_in_the_still_frame() {
         if !gpu() {
             return;
         }
         let theme = crate::theme::builtin("timo-purple").unwrap();
-        let c = &theme.chrome;
         let blocks = small_window();
-        let band = scene_band(Rect { x: 0.0, y: TOP, w: SIDE, h: H as f32 - TOP }).unwrap();
-        assert!(band.y < NAMES_END, "this window's names reach into the scene");
-        let bar = crate::palette::luminance(c.title_bar);
-        for t in [0.0, 3.7, 21.3, 64.0, 200.5] {
-            let frame = render(&theme, t, &blocks);
-            let above = Rect { y: TOP + 6.0, h: band.y - TOP - 6.0, ..sidebar_inside() };
-            assert!(pixels(&frame, above).iter().all(|p| *p == c.sidebar), "the sidebar above the scene is plain at {t}");
-            // The castle's windows are the focus colour where no name lies over them, and never
-            // that bright under the names.
-            let (over, under) = (Rect { y: band.y, h: NAMES_END - band.y, ..band }, Rect { y: NAMES_END, h: band.y + band.h - NAMES_END, ..band });
-            // A window gutters like a candle after the first beat, by at most a third.
-            let lit = |p: &crate::palette::Rgb| if t == 0.0 { *p == c.focus_ring } else { p.g > 170 && p.b > 170 && p.r < 60 };
-            assert!(pixels(&frame, under).iter().any(lit), "lit windows below the names at {t}");
-            assert!(!pixels(&frame, over).contains(&c.focus_ring), "softened under the names at {t}");
-            for g in [WORDS, ICONS] {
-                assert!(pixels(&frame, g).iter().all(|p| crate::palette::luminance(*p) <= bar), "no star, cloud or line under {g:?} at {t}");
-            }
-        }
+        let foot = Rect { x: 3.0, y: TOP - 3.0, w: W as f32 - 6.0, h: 3.0 };
+        let line = |t: f32| pixels(&render(&theme, t, &blocks), foot);
+        let still = line(0.0);
+        assert!(still.iter().all(|p| *p == still[0]), "the still frame's line is whole");
+        assert!(line(3.0) == still, "none in the first cycle");
+        // A second into the second cycle it is 160 art pixels along, lit and on the line only.
+        let lit = line(7.0);
+        assert!(lit != still && lit.iter().filter(|p| **p != still[0]).count() <= 12 * 9);
     }
 
     #[test]
@@ -518,7 +569,7 @@ mod tests {
             return;
         }
         use crate::palette::contrast;
-        for name in ["timo-purple", "navy", "peach-watercolor", "composition-notebook"] {
+        for name in ["timo-purple", "arabia-solar", "navy", "peach-watercolor", "composition-notebook"] {
             let theme = crate::theme::builtin(name).unwrap();
             let (bg, fg, dim) = (theme.terminal.background, theme.terminal.foreground, theme.chrome.text_dim);
             let toward = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * STAR_LIMIT).round() as u8;
@@ -527,7 +578,9 @@ mod tests {
             for t in [0.0, 5.3, 47.0] {
                 let frame = render(&theme, t, &small_window());
                 let seen: Vec<_> = pixels(&frame, body(LEFT)).into_iter().map(|p| papered(&theme, p)).collect();
-                let stars = seen.iter().filter(|p| contrast(fg, **p) < plain - 0.05).count();
+                // By day the dunes at the foot are a touch toward the text's colour, costing it
+                // under 7% of its contrast; only a star costs more.
+                let stars = seen.iter().filter(|p| contrast(fg, **p) < plain * 0.93).count();
                 assert!(seen.iter().all(|p| contrast(fg, *p) >= floor - 0.1), "{name} at {t}: a pixel under the star limit's {floor:.2}:1");
                 // A star is one art pixel, nine points; a body this size has a handful.
                 assert!(stars <= 9 * 12, "{name} at {t}: {stars} points lower the text's contrast");
@@ -543,21 +596,16 @@ mod tests {
     }
 
     #[test]
-    fn the_title_bar_s_stars_run_its_length_and_every_one_keeps_clear_of_its_words_and_icons() {
+    fn the_title_bar_s_stars_run_its_whole_length_behind_its_words_too() {
         for w in [900.0, 1440.0, 2560.0] {
             let (bar, groups) = title_bar(w);
             let stars = title_stars(bar, &groups);
-            assert!(stars.len() >= 4, "{} stars on a bar {w} points wide", stars.len());
-            for (i, j) in &stars {
-                let o = (*i as f32 * ART_PX, *j as f32 * ART_PX);
-                for c in [o, (o.0 + ART_PX, o.1), (o.0, o.1 + ART_PX), (o.0 + ART_PX, o.1 + ART_PX)] {
-                    assert!(star_clear(c, &groups) && c.0 >= TITLE_LEFT, "{c:?} on a bar {w} wide");
-                }
-                assert!((2..=6).contains(j), "a star stays inside the bar's frame: row {j}");
+            assert!(stars.len() >= 12, "{} stars on a bar {w} points wide", stars.len());
+            for ((i, j), _) in &stars {
+                assert!(*i as f32 * ART_PX >= TITLE_LEFT && (2..=6).contains(j), "({i}, {j}) on a bar {w} wide: right of the traffic lights, inside the frame");
             }
-            // Stars in the middle of the free stretch too, not only at its ends.
-            let (lo, hi) = (groups[0].x + groups[0].w, groups[1].x);
-            assert!(stars.iter().any(|(i, _)| { let x = *i as f32 * ART_PX; x > lo + (hi - lo) * 0.3 && x < lo + (hi - lo) * 0.7 }), "{w}");
+            // Some in the clear, at full colour, and some behind the words, softened.
+            assert!(stars.iter().any(|(_, clear)| *clear) && stars.iter().any(|(_, clear)| !*clear), "{w}");
         }
     }
 
@@ -595,8 +643,15 @@ mod tests {
             .collect();
         drawn.sort();
         drawn.dedup();
-        let stars: Vec<(i32, i32)> = title_stars(bar, &groups).into_iter().filter(|(i, j)| !clouded(*i, *j)).collect();
-        assert_eq!(drawn, stars);
+        let stars: Vec<((i32, i32), bool)> = title_stars(bar, &groups).into_iter().filter(|((i, j), _)| !clouded(*i, *j)).collect();
+        // Every star in the clear is drawn, and nothing is drawn that is not a star (one behind
+        // the words may be softened all the way into the bar).
+        for (star, clear) in &stars {
+            assert!(!clear || drawn.contains(star), "{star:?}");
+        }
+        for cell in &drawn {
+            assert!(stars.iter().any(|(star, _)| star == cell), "{cell:?} is no star");
+        }
         // The frame's outer line runs the length of the bar's foot, between its corners.
         let line = frame[((h - 2) * w + 300) as usize];
         assert!((3..w - 3).all(|x| frame[((h - 2) * w + x) as usize] == line) && crate::palette::luminance(line) > lum);

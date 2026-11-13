@@ -572,9 +572,11 @@ Things only a person at the screen can check, in order of value:
   seconds, two clouds in the title bar and one over the castle, the castle's windows guttering
   and its pennant waving, grass blades leaning, six fireflies, a bat crossing now and then, each
   lantern's flame flickering and a spark crossing the focused pane's gem
-- effects: under Timo Purple with Departure Mono installed the window, the terminal and rendered
-  markdown are set in it and its pixels are whole at a preset size of 16.5 or 22; without it the
-  config's font is used
+- effects: under Timo Purple or Arabia Solar with Departure Mono installed the window, the
+  terminal and rendered markdown are set in it, sharp at every preset (compact and comfortable
+  both draw at 16.5, the chrome's labels at 11); Cmd+= and Cmd+- step to 22 and 11; switching to
+  another theme puts the preset's own size back, and back again on return; without the font the
+  config's font is used at its own sizes
 - effects: under overworld a long markdown or code file shows its dusk only at the top of the
   page and its hills only at its end, both scrolling with the text without lagging or jumping,
   the plain night between; a file that fits its pane shows both; switching between rendered and
@@ -606,6 +608,18 @@ Things only a person at the screen can check, in order of value:
   header, row numbers and alternate rows, keep their own colours
 - effects: overworld on Peach Watercolor reads as an intended dusk scene, not a broken one: pale
   frames and ground, and a terminal's text as easy to read as without it
+- effects: Arabia Solar is Timo Purple by day: sand and cream with burnt-orange frames on the
+  focused pane, set in Departure Mono, its scene a desert kingdom (a palace with a great onion
+  dome, two small ones and a minaret at each end, three palms, two lines of dunes, sand with a
+  trail, a sun with four rays, and now and then a carpet rippling across the sky); it reads as
+  its own place, not as the castle recoloured; its text is as easy to read as Peach Watercolor's
+- effects: under overworld the title bar is alive along its whole length: stars behind its
+  words too, softer there, a shooting star every few seconds, two clouds, a bird crossing now
+  and then, and a light running along the foot of its frame every six seconds; the title's words
+  and icons read as easily as on a plain bar
+- effects: under overworld, once the sidebar's names reach into the scene all of it dims
+  together, the strip below the last name included (scroll the Worktrees list to its end), and
+  it comes back to full colour when the names end above it
 - effects, space: Navy with `effect.name = "space"` shows the night sky; over ten minutes a
   shooting star crosses every 8 to 16 seconds (one at a time, in under a second, no bright
   flash), a planet drifts across over several minutes, the stars twinkle slowly, and there is
@@ -991,7 +1005,7 @@ Things only a person at the screen can check, in order of value:
   `arkos theme current` showing it; afterwards `skills/arkos-ide/SKILL.md` exists in that
   session's config folder (`CLAUDE_CONFIG_DIR`, else `~/.claude`)
 - the same with the skill installed (`arkos guide --install`) and the hooks removed
-- `arkos theme list` shows `navy`, `timo-purple`, `peach-watercolor`, `lavender-watercolor`, `lavender-material`, `matrix`, `navy-runic`, `composition-notebook` and `material` as built in, each dark or light; with Timo Purple
+- `arkos theme list` shows `navy`, `timo-purple`, `peach-watercolor`, `lavender-watercolor`, `lavender-material`, `matrix`, `navy-runic`, `composition-notebook`, `material` and `arabia-solar` as built in, each dark or light; with Timo Purple
   chosen, the purple, cyan and green match the screenshot (check at the offsite demo)
 - About open, close the project window with the red button: the app quits
 - Settings opened from the chooser, a theme or text change, then a folder: the project window
