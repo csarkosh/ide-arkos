@@ -357,3 +357,15 @@ themed... the same effects. just aladin instead of high fantasy".
   would be white on near white. Everything else (frames, ledges, gems, lanterns, cursor, arrow,
   typed text) is the same effect. The art is original and takes only the motifs of the old
   tales: no character, building or design of any film.
+
+## Seventh pass, 12 November
+
+Cyrus: "make the text effects aladin themed too".
+
+- **Sand into ink.** By day (a light theme) a typed-in character keeps the three cuts over
+  200 ms, but tells the desert's story: a scatter of gold grains 1.5 points square, about a
+  third of the glyph's, a grain above where they will lie; then three quarters of them in the
+  theme's accent, half a grain above; then the whole glyph, settled and still warm; then ink.
+  A grain is there or not by its place on the screen alone, so each cut holds still. By night
+  the character still resolves from blocks. The window already tells a glyph shader whether the
+  ground is light (`ARKOS_LIGHT_GROUND`), so nothing new is passed.

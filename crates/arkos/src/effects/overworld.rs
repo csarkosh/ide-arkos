@@ -801,6 +801,19 @@ mod tests {
     }
 
     #[test]
+    fn typed_text_resolves_in_three_cuts_over_short4_as_blocks_by_night_and_as_gathering_sand_by_day() {
+        let glyphs = crate::effects::BUILTIN.iter().find(|b| b.name == "overworld").unwrap().glyphs.unwrap();
+        // 200 ms, Material's short4, in three stages with no blend between them.
+        assert!(glyphs.contains("constant float FLASH = 0.2;") && glyphs.contains("int stage = int(age / FLASH * 3.0);"));
+        // The theme's mode chooses the telling: the window declares ARKOS_LIGHT_GROUND.
+        let (day, night) = glyphs.split_once("if (ARKOS_LIGHT_GROUND) {").and_then(|(_, rest)| rest.split_once("} else {")).expect("a branch for each");
+        assert!(day.contains("GRAIN_FEW") && day.contains("GRAIN_MOST") && day.contains("GOLD"), "grains by day");
+        assert!(night.contains("BLOCK_BIG") && night.contains("BLOCK_SMALL"), "blocks by night");
+        // Nothing in either reads the clock but the stage, so a cut's picture holds still.
+        assert!(!day.contains("*time") && !night.contains("*time"));
+    }
+
+    #[test]
     fn a_firefly_is_gone_before_it_leaves_the_scene() {
         for i in 0..FIREFLIES {
             for k in 0..200 {

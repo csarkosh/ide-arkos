@@ -613,6 +613,10 @@ Things only a person at the screen can check, in order of value:
   dome, two small ones and a minaret at each end, three palms, two lines of dunes, sand with a
   trail, a sun with four rays, and now and then a carpet rippling across the sky); it reads as
   its own place, not as the castle recoloured; its text is as easy to read as Peach Watercolor's
+- effects: under Arabia Solar new terminal text gathers out of sand: a scatter of gold grains a
+  little above the line, then most of the character in orange, then the whole of it settling to
+  ink, in three cuts with no shimmer between them; under Timo Purple it still resolves from
+  blocks
 - effects: under overworld the title bar is alive along its whole length: stars behind its
   words too, softer there, a shooting star every few seconds, two clouds, a bird crossing now
   and then, and a light running along the foot of its frame every six seconds; the title's words

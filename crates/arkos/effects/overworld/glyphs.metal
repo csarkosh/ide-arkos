@@ -6,8 +6,14 @@
 // chunky blocks BLOCK_BIG points square, lit; then as blocks BLOCK_SMALL square, in the theme's
 // accent; then as the font's own glyph, still a little lit; and after FLASH seconds (200 ms,
 // Material's short4) as plain text. The steps cut rather than fade, as a palette swap does. The
-// lit colour is a white touched with the accent (the accent alone on a light theme, where white
-// would fade the text).
+// lit colour is a white touched with the accent.
+//
+// By day, on a light theme, the same three cuts tell the desert's story instead of the screen's:
+// the character gathers out of blown sand. First a scatter of grains GRAIN points square, about
+// GRAIN_FEW of the glyph's, in gold and a grain above where they will lie; then most of them
+// (GRAIN_MOST), in the theme's accent, half a grain above; then the whole glyph, settled and
+// still warm; then plain ink. Each grain is there or not by its place alone, so the scatter is
+// the same on every frame of a cut and the sand does not boil.
 //
 // The terminal's other stamps are drawn at once and plainly, since a dialogue box has no ink to
 // soak or dry: a change in place (ARKOS_PAINT_SOAK, ARKOS_PAINT_FLIP_SOAK) is the new glyph, and
@@ -29,6 +35,10 @@ constant float FLASH = 0.2;
 constant float BLOCK_BIG = 3.0;
 constant float BLOCK_SMALL = 1.5;
 constant float FLASH_ACCENT = 0.3;
+constant float GRAIN = 1.5;
+constant float GRAIN_FEW = 0.35;
+constant float GRAIN_MOST = 0.75;
+constant float3 GOLD = float3(0.85, 0.6, 0.1);
 
 struct OverworldGlyphVertexOutput {
   float4 position [[position]];
@@ -107,18 +117,36 @@ fragment float4 arkos_glyph_fragment(
       return float4(0.0);
     }
     if (age >= 0.0 && age < FLASH) {
-      float3 lit = ARKOS_LIGHT_GROUND ? ARKOS_ACCENT : mix(float3(1.0), ARKOS_ACCENT, FLASH_ACCENT);
       int stage = int(age / FLASH * 3.0);
-      float block = (stage == 0 ? BLOCK_BIG : stage == 1 ? BLOCK_SMALL : 0.0) * ARKOS_SCALE;
-      if (block > 0.0) {
-        // One sample at the middle of the block this pixel is in, cut to on or off: the glyph as
-        // a handful of chunky pixels. A block's middle outside the glyph's tile is empty.
-        float2 to_middle = (floor(input.position.xy / block) + 0.5) * block - input.position.xy;
-        float2 uv = input.tile_position + float2(dfdx(input.tile_position.x), dfdy(input.tile_position.y)) * to_middle;
-        bool inside = all(uv >= input.tile_rect.xy) && all(uv <= input.tile_rect.zw);
-        coverage = inside ? step(0.3, atlas_texture.sample(smp, uv).a) : 0.0;
+      float2 per_px = float2(dfdx(input.tile_position.x), dfdy(input.tile_position.y));
+      if (ARKOS_LIGHT_GROUND) {
+        // By day: sand gathering into the character.
+        if (stage < 2) {
+          float grain = GRAIN * ARKOS_SCALE;
+          float2 cell = floor(input.position.xy / grain);
+          // The grain's own place in the glyph, lifted a grain, then half of one, above it.
+          float2 to_middle = (cell + 0.5) * grain - input.position.xy + float2(0.0, (stage == 0 ? 1.0 : 0.5) * grain);
+          float2 uv = input.tile_position + per_px * to_middle;
+          bool inside = all(uv >= input.tile_rect.xy) && all(uv <= input.tile_rect.zw);
+          float there = fract(sin(dot(cell, float2(12.9898, 78.233))) * 43758.5453);
+          bool shown = there < (stage == 0 ? GRAIN_FEW : GRAIN_MOST);
+          coverage = inside && shown ? step(0.3, atlas_texture.sample(smp, uv).a) : 0.0;
+        }
+        rgb = stage == 0 ? GOLD : stage == 1 ? ARKOS_ACCENT : mix(rgb, ARKOS_ACCENT, 0.45);
+      } else {
+        // By night: a sprite resolving on a small screen.
+        float3 lit = mix(float3(1.0), ARKOS_ACCENT, FLASH_ACCENT);
+        float block = (stage == 0 ? BLOCK_BIG : stage == 1 ? BLOCK_SMALL : 0.0) * ARKOS_SCALE;
+        if (block > 0.0) {
+          // One sample at the middle of the block this pixel is in, cut to on or off: the glyph
+          // as a handful of chunky pixels. A block's middle outside the glyph's tile is empty.
+          float2 to_middle = (floor(input.position.xy / block) + 0.5) * block - input.position.xy;
+          float2 uv = input.tile_position + per_px * to_middle;
+          bool inside = all(uv >= input.tile_rect.xy) && all(uv <= input.tile_rect.zw);
+          coverage = inside ? step(0.3, atlas_texture.sample(smp, uv).a) : 0.0;
+        }
+        rgb = stage == 0 ? lit : stage == 1 ? mix(rgb, ARKOS_ACCENT, 0.6) : mix(rgb, lit, 0.3);
       }
-      rgb = stage == 0 ? lit : stage == 1 ? mix(rgb, ARKOS_ACCENT, 0.6) : mix(rgb, lit, 0.3);
     }
   }
   return float4(rgb, coverage * input.color.a);
