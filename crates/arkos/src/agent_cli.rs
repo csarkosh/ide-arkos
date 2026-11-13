@@ -60,6 +60,9 @@ const CONFIG_USAGE: &str = "usage: arkos config reload [--json]\nsee: arkos guid
 /// The keys `arkos settings set` may write. A `*` segment matches exactly one bare name.
 pub const SETTABLE: &[&str] = &[
     "appearance.mode",
+    "appearance.look",
+    "custom.color",
+    "custom.effect",
     "theme.dark",
     "theme.light",
     "font.family",
@@ -509,7 +512,15 @@ fn use_theme(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Writ
         _ => None,
     };
     let key = theme_key_for_use(flag, cfg.appearance.mode, windows_dark);
-    if let Err(e) = config::set_values(env.config, &[(&["theme", key], toml_edit::Value::from(name.as_str()))]) {
+    let slot = ["theme", key];
+    let mut edits: Vec<(&[&str], toml_edit::Value)> = vec![(&slot, toml_edit::Value::from(name.as_str()))];
+    // A custom look with a colour of its own would go on showing that colour: using a theme
+    // puts the presets in force. One with no colour (an effect over whichever preset shows)
+    // keeps its effect over the theme named.
+    if cfg.look() == config::Look::Custom && cfg.custom.color.is_some() {
+        edits.push((&["appearance", "look"], toml_edit::Value::from("presets")));
+    }
+    if let Err(e) = config::set_values(env.config, &edits) {
         return fail(err, &e);
     }
     let mode = cfg.appearance.mode;
@@ -670,6 +681,23 @@ fn preview(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
     live(env, CustomizeAction::PreviewTheme { toml }, &judge, json, out, err)
 }
 
+/// `presets` or `custom`, as the config spells the look.
+fn look_name(look: config::Look) -> &'static str {
+    match look {
+        config::Look::Presets => "presets",
+        config::Look::Custom => "custom",
+    }
+}
+
+/// What `theme current` adds to its config line while the custom look is in force: its colour
+/// (the preset showing, when it has none of its own) and its effect. Nothing under the presets.
+fn custom_words(c: &config::Config) -> String {
+    if c.look() != config::Look::Custom {
+        return String::new();
+    }
+    format!(", custom {} with {}", c.custom.color.as_deref().unwrap_or("the preset's colours"), crate::effects::cli::choice_name(&c.effect_choice()))
+}
+
 fn mode_name(mode: AppearanceMode) -> &'static str {
     match mode {
         AppearanceMode::System => "system",
@@ -747,14 +775,14 @@ fn current(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
     let shown = answer.as_ref().unwrap_or(&empty);
     if a.has("--json") {
         let config = match &file {
-            Ok(c) => json!({ "dark": c.theme.dark, "light": c.theme.light, "mode": mode_name(c.appearance.mode) }),
+            Ok(c) => json!({ "dark": c.theme.dark, "light": c.theme.light, "mode": mode_name(c.appearance.mode), "look": look_name(c.look()), "custom": { "color": c.custom.color, "effect": c.custom.effect.as_ref().map(crate::effects::cli::choice_name) } }),
             Err(e) => json!({ "error": e }),
         };
         let windows: Vec<Json> = shown.outcomes.iter().map(report_json).collect();
         let _ = writeln!(out, "{}", json!({ "config": config, "windows": windows, "missing": shown.missing, "too_old": shown.too_old }));
     } else {
         let _ = match &file {
-            Ok(c) => writeln!(out, "config: dark {}, light {}, mode {}", c.theme.dark, c.theme.light, mode_name(c.appearance.mode)),
+            Ok(c) => writeln!(out, "config: dark {}, light {}, mode {}{}", c.theme.dark, c.theme.light, mode_name(c.appearance.mode), custom_words(c)),
             Err(e) => writeln!(out, "config: {e}"),
         };
         report_lines(shown, out);
@@ -871,6 +899,9 @@ pub fn typed_value(key: &str, raw: &str) -> Result<toml_edit::Value, String> {
             _ => Err(format!("{key} must be true or false, not {raw:?}")),
         },
         "appearance.mode" => one_of(key, raw, &["system", "dark", "light"]),
+        "appearance.look" => one_of(key, raw, &["presets", "custom"]),
+        "custom.effect" if raw == "theme" || raw == "none" || crate::theme::is_bare_name(raw) => Ok(raw.into()),
+        "custom.effect" => Err(format!("custom.effect must be theme, none or an effect's bare name, not {raw:?}")),
         "viewer.wide_tables" => one_of(key, raw, &["wrap", "scroll"]),
         "viewer.page_width" => one_of(key, raw, &["full", "letter"]),
         // Empty puts images beside the document.
@@ -929,7 +960,7 @@ fn settings_set(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn W
         Ok(v) => v,
         Err(e) => return fail(err, &e),
     };
-    if matches!(*key, "theme.dark" | "theme.light") {
+    if matches!(*key, "theme.dark" | "theme.light" | "custom.color") {
         if let Err(e) = load_name(raw, env.themes) {
             return fail(err, &e);
         }
@@ -959,6 +990,17 @@ fn settings_set(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn W
             // A new preset takes its other field from comfortable.
             let merged = config::resolve_preset(Some(name), "comfortable", &presets).1;
             preset_edits(&path, value.clone(), has_table, &merged)
+        }
+        // The old key for the effect, in the two looks' terms: `theme` is the presets, each
+        // with its own; anything else is the custom look with that effect, over the colours it
+        // has (or the preset showing, when it has none of its own).
+        ["effect", "name"] => {
+            let own = |keys: &[&str]| keys.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+            let mut edits = vec![(own(&["effect", "name"]), value.clone()), (own(&["appearance", "look"]), if *raw == "theme" { "presets" } else { "custom" }.into())];
+            if *raw != "theme" {
+                edits.push((own(&["custom", "effect"]), value.clone()));
+            }
+            edits
         }
         _ => vec![(path.iter().map(|s| s.to_string()).collect(), value.clone())],
     };
@@ -992,7 +1034,7 @@ fn settings_set(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn W
         let _ = writeln!(out, "deleted {cleared} queued session report{s} recorded before usage reports were on");
     }
     // A key that picks the theme fails on a theme error too; the others only on a config error.
-    let picks_theme = matches!(*key, "appearance.mode" | "theme.dark" | "theme.light");
+    let picks_theme = matches!(*key, "appearance.mode" | "appearance.look" | "custom.color" | "theme.dark" | "theme.light");
     let judge = |r: &Report| match (&r.config_error, &r.theme_error) {
         (Some(e), _) => Err(e.clone()),
         (None, Some(e)) if picks_theme => Err(e.clone()),
@@ -1114,6 +1156,34 @@ mod tests {
     }
 
     #[test]
+    fn using_a_theme_puts_the_presets_in_force_over_a_custom_colour_and_keeps_an_effect_with_no_colour_of_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("config.toml");
+        let themes = dir.path().join("themes");
+        let env = Env { socket: &dir.path().join("none.sock"), config: &cfg, themes: &themes, wait: Duration::from_millis(10) };
+        // A custom colour would go on showing: the theme named is a preset, and presets show.
+        std::fs::write(&cfg, "[appearance]\nmode = \"dark\"\nlook = \"custom\"\n[custom]\ncolor = \"matrix\"\neffect = \"material\"\n").unwrap();
+        assert_eq!(theme_cli_to(&["use".into(), "timo-purple".into()], &env, &mut Vec::new(), &mut Vec::new()), 0);
+        let saved = config::load(&cfg).unwrap();
+        assert_eq!((saved.look(), saved.theme_name(true), saved.effect_choice()), (config::Look::Presets, "timo-purple", config::EffectChoice::Theme));
+        assert_eq!((saved.custom.color.as_deref(), saved.custom.effect.clone()), (Some("matrix"), Some(config::EffectChoice::Named("material".into()))), "the custom look is kept for later");
+        // An effect over whichever preset shows stays over the theme named.
+        std::fs::write(&cfg, "[appearance]\nmode = \"dark\"\nlook = \"custom\"\n[custom]\neffect = \"none\"\n").unwrap();
+        assert_eq!(theme_cli_to(&["use".into(), "timo-purple".into()], &env, &mut Vec::new(), &mut Vec::new()), 0);
+        let saved = config::load(&cfg).unwrap();
+        assert_eq!((saved.look(), saved.theme_name(true), saved.effect_choice()), (config::Look::Custom, "timo-purple", config::EffectChoice::None));
+        // `settings set custom.color` takes only a theme that loads, and `theme current` says
+        // what the custom look is.
+        let settings = Env { socket: &dir.path().join("none.sock"), config: &cfg, themes: &themes, wait: Duration::from_millis(10) };
+        let mut err = Vec::new();
+        assert_eq!(settings_cli_to(&["set".into(), "custom.color".into(), "nope".into()], &settings, &mut Vec::new(), &mut err), 1);
+        assert_eq!(settings_cli_to(&["set".into(), "custom.color".into(), "arabia-solar".into()], &settings, &mut Vec::new(), &mut Vec::new()), 0);
+        let mut out = Vec::new();
+        assert_eq!(theme_cli_to(&["current".into()], &env, &mut out, &mut Vec::new()), 0);
+        assert!(String::from_utf8(out).unwrap().starts_with("config: dark timo-purple, light peach-watercolor, mode dark, custom arabia-solar with none\n"));
+    }
+
+    #[test]
     fn use_writes_the_right_key_refuses_an_unknown_name_and_says_so_without_a_window() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join("config.toml");
@@ -1231,6 +1301,12 @@ mod tests {
     #[test]
     fn settings_set_accepts_effect_name_and_effect_intensity_and_refuses_bad_values() {
         assert!(settable("effect.name") && settable("effect.intensity") && !settable("effect.speed"));
+        // The two looks' own keys.
+        assert!(settable("appearance.look") && settable("custom.color") && settable("custom.effect") && !settable("custom.font"));
+        assert_eq!(typed_value("appearance.look", "custom").unwrap().as_str(), Some("custom"));
+        assert!(typed_value("appearance.look", "both").is_err());
+        assert_eq!(typed_value("custom.effect", "none").unwrap().as_str(), Some("none"));
+        assert!(typed_value("custom.effect", "../x").is_err());
         assert_eq!(typed_value("effect.intensity", "0.5").unwrap().as_float(), Some(0.5));
         assert!(typed_value("effect.intensity", "1.5").is_err());
         assert!(typed_value("effect.intensity", "-1").is_err());

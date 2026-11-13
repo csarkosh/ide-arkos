@@ -1519,8 +1519,7 @@ impl Root {
 
     /// The theme the config and the current appearance name, loaded from the themes folder.
     pub fn resolve_theme(&self) -> Result<theme::Theme, String> {
-        let name = theme::pick_name(self.config.appearance.mode, self.system_is_dark, &self.config.theme);
-        theme::load(name, &paths::themes_dir())
+        theme::load(self.config.theme_name(self.system_is_dark), &paths::themes_dir())
     }
 
     /// Switches to `theme`. The fonts change at once (they cannot fade); the colours cross-fade
@@ -1640,7 +1639,9 @@ impl Root {
     /// the current one and says why in the banner. A preview ends here, in any mode, so the screen
     /// shows what the config names.
     pub fn set_system_appearance(&mut self, dark: bool, cx: &mut Context<Self>) {
-        let (end_preview, switch) = appearance_step(self.system_is_dark, dark, self.config.appearance.mode, self.preview.is_some());
+        // A custom colour is one look, day and night: only what follows macOS switches with it.
+        let mode = if self.config.follows_system() { config::AppearanceMode::System } else { config::AppearanceMode::Dark };
+        let (end_preview, switch) = appearance_step(self.system_is_dark, dark, mode, self.preview.is_some());
         self.system_is_dark = dark;
         if end_preview {
             self.preview = None;
@@ -1762,7 +1763,7 @@ impl Root {
     /// The configured theme's file, `themes_dir/<name>.toml`, whether or not it exists. The
     /// watcher polls it; a preview or a failed load never moves it.
     pub fn theme_file(&self) -> PathBuf {
-        theme_file_for(self.config.appearance.mode, self.system_is_dark, &self.config.theme, &paths::themes_dir())
+        theme_file_for(self.config.theme_name(self.system_is_dark), &paths::themes_dir())
     }
 
     /// What this window shows, for an agent's `Customize` (spec 5).
@@ -4092,7 +4093,7 @@ impl Root {
 
     /// Puts on the effect the config and the theme name, or takes it off.
     pub fn resolve_effect(&mut self, cx: &mut Context<Self>) {
-        let name = effects::resolve(&self.config.effect.name, &self.base_theme);
+        let name = effects::resolve(&self.config.effect_choice(), &self.base_theme);
         self.set_effect(name, cx);
     }
 
@@ -4735,9 +4736,9 @@ pub fn customize_outcome(action: &CustomizeAction, parsed: Result<theme::Theme, 
     }
 }
 
-/// `themes/<name>.toml` for the theme `cfg` names under `mode` and the system appearance.
-pub fn theme_file_for(mode: config::AppearanceMode, system_is_dark: bool, cfg: &config::ThemeConfig, themes: &Path) -> PathBuf {
-    themes.join(format!("{}.toml", theme::pick_name(mode, system_is_dark, cfg)))
+/// `themes/<name>.toml`, the file of the theme in force (`Config::theme_name`).
+pub fn theme_file_for(name: &str, themes: &Path) -> PathBuf {
+    themes.join(format!("{name}.toml"))
 }
 
 /// What a reported system appearance asks of a window, as (end the preview, switch the theme).
@@ -5048,7 +5049,7 @@ fn main() {
 /// The theme the config names for this appearance, at launch. One that does not load gives the
 /// built-in of the same name, else navy, and the banner that says so.
 fn startup_theme(config: &config::Config, system_is_dark: bool) -> (theme::Theme, Option<String>) {
-    let name = theme::pick_name(config.appearance.mode, system_is_dark, &config.theme).to_string();
+    let name = config.theme_name(system_is_dark).to_string();
     match theme::load(&name, &paths::themes_dir()) {
         Ok(t) => (t, None),
         Err(e) => {
@@ -5724,9 +5725,14 @@ mod tests {
         let good = customize_outcome(&CustomizeAction::PreviewTheme { toml: "...".into() }, Ok(theme::builtin("navy").unwrap()), after.clone());
         assert_eq!(good.unwrap().preview.as_deref(), Some("x"));
         assert!(customize_outcome(&CustomizeAction::ReportState, Err("unused".into()), after).is_ok(), "only a preview can fail");
-        let cfg = config::ThemeConfig { dark: "timo-purple".into(), light: "lavender-watercolor".into() };
-        assert_eq!(theme_file_for(config::AppearanceMode::System, true, &cfg, Path::new("/t")), PathBuf::from("/t/timo-purple.toml"));
-        assert_eq!(theme_file_for(config::AppearanceMode::Light, true, &cfg, Path::new("/t")), PathBuf::from("/t/lavender-watercolor.toml"));
+        let mut cfg = config::Config { theme: config::ThemeConfig { dark: "timo-purple".into(), light: "lavender-watercolor".into() }, ..config::Config::default() };
+        assert_eq!(theme_file_for(cfg.theme_name(true), Path::new("/t")), PathBuf::from("/t/timo-purple.toml"));
+        cfg.appearance.mode = config::AppearanceMode::Light;
+        assert_eq!(theme_file_for(cfg.theme_name(true), Path::new("/t")), PathBuf::from("/t/lavender-watercolor.toml"));
+        // A custom colour is the watched file whatever the mode.
+        cfg.appearance.look = Some(config::Look::Custom);
+        cfg.custom.color = Some("matrix".into());
+        assert_eq!(theme_file_for(cfg.theme_name(true), Path::new("/t")), PathBuf::from("/t/matrix.toml"));
     }
 
     #[test]

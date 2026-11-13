@@ -19,6 +19,7 @@ pub struct Config {
     pub theme: ThemeConfig,
     pub effect: EffectConfig,
     pub appearance: AppearanceConfig,
+    pub custom: CustomConfig,
     pub recovery: RecoveryConfig,
     pub update: UpdateConfig,
     /// Usage and crash reports (telemetry spec, section 3.1): the type is the shared crate's,
@@ -239,10 +240,34 @@ pub enum AppearanceMode {
     Light,
 }
 
+/// Which of the two looks is in force: the presets (a mode, a dark preset and a light one, each
+/// with its own effect) or the custom look (a colour and an effect chosen apart).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Look {
+    Presets,
+    Custom,
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AppearanceConfig {
     pub mode: AppearanceMode,
+    /// Unset in a config written before there were two looks: `Config::look` reads it then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub look: Option<Look>,
+}
+
+/// The custom look: any theme's colours (and fonts) under any effect.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CustomConfig {
+    /// A theme's name. Unset, the colours are the preset the mode picks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// `none`, an effect's name, or `theme` for the colour's own. Unset, the old `effect.name`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effect: Option<EffectChoice>,
 }
 
 /// Whether arkosd starts at login to bring sessions back after a restart (update-in-place
@@ -292,6 +317,7 @@ impl Default for Config {
             theme: ThemeConfig::default(),
             effect: EffectConfig::default(),
             appearance: AppearanceConfig::default(),
+            custom: CustomConfig::default(),
             recovery: RecoveryConfig::default(),
             update: UpdateConfig::default(),
             telemetry: ::telemetry::TelemetryConfig::default(),
@@ -300,6 +326,38 @@ impl Default for Config {
 }
 
 impl Config {
+    /// The look in force. A config from before there were two says which by its `effect.name`:
+    /// `theme` was every theme with its own effect, which is the presets; `none` or an effect's
+    /// name was that effect over whichever theme showed, which is a custom look with no colour
+    /// of its own.
+    pub fn look(&self) -> Look {
+        self.appearance.look.unwrap_or(if self.effect.name == EffectChoice::Theme { Look::Presets } else { Look::Custom })
+    }
+
+    /// The name of the theme whose colours and fonts show: the custom look's colour when it has
+    /// one, else the preset the mode and macOS's appearance pick.
+    pub fn theme_name(&self, system_is_dark: bool) -> &str {
+        match (self.look(), &self.custom.color) {
+            (Look::Custom, Some(color)) => color,
+            _ => crate::theme::pick_name(self.appearance.mode, system_is_dark, &self.theme),
+        }
+    }
+
+    /// The effect in force: each preset's own, or the custom look's (the old `effect.name` when
+    /// the custom look names none).
+    pub fn effect_choice(&self) -> EffectChoice {
+        match self.look() {
+            Look::Presets => EffectChoice::Theme,
+            Look::Custom => self.custom.effect.clone().unwrap_or_else(|| self.effect.name.clone()),
+        }
+    }
+
+    /// Whether the theme follows macOS's light and dark: the presets in "system" mode, and a
+    /// custom look with no colour of its own. A custom colour is one look, day and night.
+    pub fn follows_system(&self) -> bool {
+        self.appearance.mode == AppearanceMode::System && !(self.look() == Look::Custom && self.custom.color.is_some())
+    }
+
     /// Rules the types cannot express. The message names the setting so the banner is useful.
     pub fn validate(&self) -> Result<(), String> {
         if self.font.family.trim().is_empty() {
@@ -478,18 +536,17 @@ pub fn retire_navy_light(text: &str, themes_dir: &Path) -> Option<String> {
 }
 
 /// A built-in theme was renamed (`theme::RENAMED`). When `text` names one by its old name as
-/// `theme.light` or `theme.dark` and the user has no theme file of that old name in `themes_dir`
+/// `theme.light`, `theme.dark` or `custom.color` and the user has no theme file of that old name in `themes_dir`
 /// (such a file is theirs and keeps its name), returns the text with the name now, every comment
 /// kept. `None` when there is nothing to change or the text is not TOML.
 pub fn rename_themes(text: &str, themes_dir: &Path) -> Option<String> {
     let doc = text.parse::<toml_edit::DocumentMut>().ok()?;
-    let theme = doc.get("theme")?.as_table_like()?;
     let mut edits: Vec<(&[&str], toml_edit::Value)> = Vec::new();
-    for key in ["dark", "light"] {
-        let Some(old) = theme.get(key).and_then(|v| v.as_str()) else { continue };
+    let named: [&[&str]; 3] = [&["theme", "dark"], &["theme", "light"], &["custom", "color"]];
+    for path in named {
+        let Some(old) = doc.get(path[0]).and_then(|t| t.as_table_like()).and_then(|t| t.get(path[1])).and_then(|v| v.as_str()) else { continue };
         let now = crate::theme::current_name(old);
         if now != old && !themes_dir.join(format!("{old}.toml")).exists() {
-            let path: &[&str] = if key == "dark" { &["theme", "dark"] } else { &["theme", "light"] };
             edits.push((path, toml_edit::Value::from(now)));
         }
     }
@@ -793,6 +850,20 @@ run_unfocused = true
 # system setting already tracks. "dark" or "light" fixes one. No warm tint or blue-light mode is
 # offered: both fail their controlled trials.
 mode = "system"
+# Which of the two looks is in force. "presets": the mode above picks the dark or the light
+# preset of [theme], each a finished look with its own effect and fonts. "custom": the colour and
+# the effect of [custom], chosen apart. Settings, Appearance switches between them; neither
+# forgets its choices. Commented out, a config says which by its older keys: the presets unless
+# [effect] name puts one effect over every theme.
+# look = "presets"
+
+[custom]
+# The custom look: any theme's colours and fonts (a built-in's name or a file's in the themes
+# folder) under any effect ("none", a built-in or a folder in ~/.config/arkos/effects/, or
+# "theme" for the colour's own). It does not follow macOS's light and dark. Both lines are
+# commented out until Settings or `arkos effect use` writes them.
+# color = "navy"
+# effect = "none"
 
 [recovery]
 # A daemon that ended (a restart, or killed while you worked) brings every session back when it
@@ -851,6 +922,55 @@ pub fn preset_after_reload(current: &str, old: &FontConfig, new: &FontConfig) ->
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn the_look_in_force_is_the_presets_or_a_colour_and_an_effect_chosen_apart() {
+        let themes = "[theme]\ndark = \"tokyo-rain\"\nlight = \"arabia-solar\"\n";
+        // The presets: the mode picks one, and it draws with its own effect.
+        let c = parse(&format!("{themes}[appearance]\nmode = \"dark\"\nlook = \"presets\"\n[custom]\ncolor = \"matrix\"\neffect = \"material\"\n")).unwrap();
+        assert_eq!((c.look(), c.theme_name(false), c.effect_choice()), (Look::Presets, "tokyo-rain", EffectChoice::Theme));
+        assert!(!c.follows_system());
+        // The custom look: its colour whatever macOS shows, under its effect. Neither forgets
+        // the other's choices: the same file, the other look.
+        let c = parse(&format!("{themes}[appearance]\nlook = \"custom\"\n[custom]\ncolor = \"matrix\"\neffect = \"material\"\n")).unwrap();
+        assert_eq!((c.look(), c.theme_name(true), c.theme_name(false), c.effect_choice()), (Look::Custom, "matrix", "matrix", EffectChoice::Named("material".into())));
+        assert!(!c.follows_system(), "one look, day and night");
+        assert_eq!((c.theme.dark.as_str(), c.theme.light.as_str()), ("tokyo-rain", "arabia-solar"));
+        // A custom look with no colour of its own is over the preset the mode picks.
+        let c = parse(&format!("{themes}[appearance]\nlook = \"custom\"\n[custom]\neffect = \"none\"\n")).unwrap();
+        assert_eq!((c.theme_name(true), c.theme_name(false), c.effect_choice()), ("tokyo-rain", "arabia-solar", EffectChoice::None));
+        assert!(c.follows_system());
+        // The default is the presets, following macOS.
+        let d = Config::default();
+        assert_eq!((d.look(), d.effect_choice(), d.follows_system()), (Look::Presets, EffectChoice::Theme, true));
+        assert_eq!(parse(DEFAULT_CONFIG).unwrap().look(), Look::Presets, "and so is the default file");
+        assert!(parse("[appearance]\nlook = \"both\"\n").is_err());
+    }
+
+    #[test]
+    fn a_config_from_before_the_two_looks_keeps_what_it_showed() {
+        // `effect.name = "theme"` was every theme with its own effect: the presets.
+        let c = parse("[effect]\nname = \"theme\"\n").unwrap();
+        assert_eq!((c.look(), c.effect_choice()), (Look::Presets, EffectChoice::Theme));
+        // `none` or a name was that effect over whichever theme showed: a custom look with no
+        // colour of its own, still following macOS.
+        let c = parse("[theme]\ndark = \"navy\"\nlight = \"peach-watercolor\"\n[effect]\nname = \"material\"\n").unwrap();
+        assert_eq!((c.look(), c.effect_choice(), c.theme_name(true), c.theme_name(false)), (Look::Custom, EffectChoice::Named("material".into()), "navy", "peach-watercolor"));
+        assert!(c.follows_system());
+        assert_eq!(parse("[effect]\nname = \"none\"\n").unwrap().effect_choice(), EffectChoice::None);
+        // Once a look is written, the old key says nothing more.
+        let c = parse("[appearance]\nlook = \"presets\"\n[effect]\nname = \"material\"\n").unwrap();
+        assert_eq!((c.look(), c.effect_choice()), (Look::Presets, EffectChoice::Theme));
+        let c = parse("[appearance]\nlook = \"custom\"\n[custom]\neffect = \"runic\"\n[effect]\nname = \"material\"\n").unwrap();
+        assert_eq!(c.effect_choice(), EffectChoice::Named("runic".into()));
+    }
+
+    #[test]
+    fn a_renamed_theme_is_moved_as_a_custom_colour_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let moved = rename_themes("[custom]\ncolor = \"navy-runic\" # mine\n", dir.path()).unwrap();
+        assert_eq!(moved, "[custom]\ncolor = \"tokyo-rain\" # mine\n");
+    }
 
     #[test]
     fn the_recovery_section_defaults_to_ask_and_parses_on_and_off() {

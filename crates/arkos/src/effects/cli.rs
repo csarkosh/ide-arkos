@@ -304,7 +304,7 @@ fn use_effect(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Wri
     agent_cli::settings_cli_to(&set, env, out, err)
 }
 
-fn choice_name(choice: &EffectChoice) -> &str {
+pub(crate) fn choice_name(choice: &EffectChoice) -> &str {
     match choice {
         EffectChoice::Theme => "theme",
         EffectChoice::None => "none",
@@ -352,14 +352,14 @@ fn current(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
     let shown = answer.as_ref().unwrap_or(&empty);
     if a.has("--json") {
         let config = match &file {
-            Ok(c) => json!({ "name": choice_name(&c.effect.name), "intensity": agent_cli::tidy(c.effect.intensity) }),
+            Ok(c) => json!({ "name": choice_name(&c.effect_choice()), "intensity": agent_cli::tidy(c.effect.intensity) }),
             Err(e) => json!({ "error": e }),
         };
         let windows: Vec<Json> = shown.outcomes.iter().map(|(o, d)| window_json(o, d)).collect();
         let _ = writeln!(out, "{}", json!({ "config": config, "windows": windows, "missing": shown.missing, "too_old": shown.too_old }));
     } else {
         let _ = match &file {
-            Ok(c) => writeln!(out, "config: effect {}, intensity {}", choice_name(&c.effect.name), c.effect.intensity),
+            Ok(c) => writeln!(out, "config: effect {}, intensity {}", choice_name(&c.effect_choice()), c.effect.intensity),
             Err(e) => writeln!(out, "config: {e}"),
         };
         for (o, detail) in &shown.outcomes {
@@ -720,10 +720,15 @@ mod tests {
         assert_eq!(out, "window 7 (/p): effect.name applied\nwindow 8: no answer\n");
         let asked = server.join().unwrap();
         assert!(matches!(asked.as_slice(), [Request::Customize { action: CustomizeAction::ReloadConfig, .. }]), "{asked:?}");
-        assert_eq!(config::load(&s.path("config.toml")).unwrap().effect.name, config::EffectChoice::Named("watercolor".into()));
+        // An effect by name is the custom look with that effect, over the colours on screen.
+        let saved = config::load(&s.path("config.toml")).unwrap();
+        assert_eq!(saved.effect.name, config::EffectChoice::Named("watercolor".into()));
+        assert_eq!((saved.look(), saved.appearance.look, saved.effect_choice(), saved.custom.color.clone()), (config::Look::Custom, Some(config::Look::Custom), config::EffectChoice::Named("watercolor".into()), None));
+        assert!(saved.follows_system(), "the colours are still the preset the mode picks");
         let alone = env!(s, s.path("none.sock"));
         assert_eq!(run(&["use", "none"], &alone), (0, "saved; no window running\n".to_string(), String::new()));
-        assert_eq!(config::load(&s.path("config.toml")).unwrap().effect.name, config::EffectChoice::None);
+        let saved = config::load(&s.path("config.toml")).unwrap();
+        assert_eq!((saved.effect.name.clone(), saved.look(), saved.effect_choice()), (config::EffectChoice::None, config::Look::Custom, config::EffectChoice::None));
         let (code, out, _) = run(&["use", "theme", "--json"], &alone);
         assert_eq!(code, 0);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
@@ -735,7 +740,11 @@ mod tests {
             assert_eq!(code, 1, "{name}");
             assert!(err.contains(name), "{err}");
         }
-        assert_eq!(config::load(&s.path("config.toml")).unwrap().effect.name, config::EffectChoice::Theme);
+        // `theme` puts the presets in force, each with its own effect; the custom look keeps
+        // the effect it had for the next time.
+        let saved = config::load(&s.path("config.toml")).unwrap();
+        assert_eq!((saved.effect.name.clone(), saved.appearance.look, saved.effect_choice()), (config::EffectChoice::Theme, Some(config::Look::Presets), config::EffectChoice::Theme));
+        assert_eq!(saved.custom.effect, Some(config::EffectChoice::None));
         assert_eq!(run(&["use"], &alone).0, 2);
     }
 
