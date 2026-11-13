@@ -89,9 +89,29 @@ pub fn snap_to(grid: Option<f32>, size: f32) -> f32 {
     }
 }
 
+/// The fonts a window draws with, from its theme's and its effect's (each already less what is
+/// not installed). Under a custom look the effect's stand whatever colour is under it, and a
+/// colour's show only where the effect names none; a preset is a finished look, so what its
+/// theme names stands, and a theme that names none takes its effect's.
+pub fn fonts_for(custom: bool, theme: &ThemeFont, effect: Option<&ThemeFont>) -> ThemeFont {
+    let effect = effect.filter(|f| !f.is_default());
+    match effect {
+        Some(e) if custom || theme.is_default() => e.clone(),
+        _ => theme.clone(),
+    }
+}
+
 impl ThemeFont {
     fn is_default(&self) -> bool {
         *self == ThemeFont::default()
+    }
+
+    /// Refuses a `grid` out of range, naming the key.
+    pub fn check(&self) -> Result<(), String> {
+        match self.grid.filter(|g| !(1.0..=24.0).contains(g)) {
+            Some(grid) => Err(format!("font.grid must be 1.0 to 24.0 (was {grid:?})")),
+            None => Ok(()),
+        }
     }
 
     /// The same fonts with every family that is not installed left out, and those families'
@@ -235,9 +255,7 @@ pub fn parse(text: &str) -> Result<Theme, String> {
             ));
         }
     }
-    if let Some(grid) = theme.font.grid.filter(|g| !(1.0..=24.0).contains(g)) {
-        return Err(format!("font.grid must be 1.0 to 24.0 (was {grid:?})"));
-    }
+    theme.font.check()?;
     Ok(theme)
 }
 
@@ -846,6 +864,23 @@ mod tests {
         let navy = BUILTIN.iter().find(|(n, _)| *n == "navy").unwrap().1;
         assert_eq!(parse(&(navy.to_string() + "\n[font]\ngrid = 0.5\n")).unwrap_err(), "font.grid must be 1.0 to 24.0 (was 0.5)");
         assert_eq!(parse(&(navy.to_string() + "\n[font]\ngrid = 11\n")).unwrap().font.grid, Some(11.0));
+    }
+
+    #[test]
+    fn a_custom_look_draws_with_its_effect_s_fonts_and_a_preset_with_its_theme_s_own() {
+        let named = |f: &str, grid: Option<f32>| ThemeFont { prose: Some(f.into()), ui: Some(f.into()), terminal: Some(f.into()), grid };
+        let (pixel, serif, none) = (named("Departure Mono", Some(5.5)), named("Baskerville", None), ThemeFont::default());
+        // Custom: the effect's fonts stay whatever colour is under it.
+        assert_eq!(fonts_for(true, &serif, Some(&pixel)), pixel);
+        assert_eq!(fonts_for(true, &none, Some(&pixel)), pixel);
+        // An effect that names none, and no effect at all, leave the colour's.
+        assert_eq!(fonts_for(true, &serif, Some(&none)), serif);
+        assert_eq!(fonts_for(true, &serif, None), serif);
+        // A preset is a finished look: what its theme names stands, and one that names none
+        // takes its effect's.
+        assert_eq!(fonts_for(false, &serif, Some(&pixel)), serif);
+        assert_eq!(fonts_for(false, &none, Some(&pixel)), pixel);
+        assert_eq!(fonts_for(false, &none, None), none);
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use super::BUILTIN;
-use crate::theme::is_bare_name;
+use crate::theme::{is_bare_name, ThemeFont};
 
 /// An effect's `effect.toml`. Every key but `name` and `wash` has a default.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -73,6 +73,10 @@ pub struct Manifest {
     /// its glyph shader paints the ink in from the stamp (`effects::paint`). Needs a glyphs file,
     /// and an effect paints or decodes, not both.
     pub terminal_paint: bool,
+    /// The fonts the effect is drawn for, a `[font]` table with a theme's own keys (`prose`,
+    /// `ui`, `terminal`, `grid`). Under a custom look they are the window's fonts whatever
+    /// colour is chosen; a preset takes them when its theme names none (`theme::fonts_for`).
+    pub font: ThemeFont,
 }
 
 impl Manifest {
@@ -122,6 +126,7 @@ impl Default for Manifest {
             glyph_rate: None,
             terminal_decode: false,
             terminal_paint: false,
+            font: ThemeFont::default(),
         }
     }
 }
@@ -194,6 +199,7 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
     }
     in_range("active_tab_alpha", m.active_tab_alpha, 0.0, 1.0)?;
     in_range("text_contrast", m.text_contrast, 0.0, 1.0)?;
+    m.font.check()?;
     if let Some(r) = m.glyph_rate {
         in_range("glyph_rate", r, 1, 20)?;
     }
@@ -403,6 +409,34 @@ mod tests {
         assert!(e.contains("pane_radius must be 0.0 to 24.0 (was 30.0)"), "{e}");
         assert_eq!(m.binder, 0.0, "no binder: the gap is the gutter beside the sidebar");
         assert!(b.glyphs.is_none(), "the text stays as the font draws it");
+    }
+
+    #[test]
+    fn an_effect_may_name_its_own_fonts_and_overworld_and_the_notebook_do() {
+        assert_eq!(parse(MINIMAL).unwrap().font, crate::theme::ThemeFont::default(), "none unless named");
+        let m = parse(&format!("{MINIMAL}\n[font]\nterminal = \"Monaco\"\ngrid = 11\n")).unwrap();
+        assert_eq!((m.font.terminal.as_deref(), m.font.grid, m.font.ui.as_deref()), (Some("Monaco"), Some(11.0), None));
+        let e = parse(&format!("{MINIMAL}\n[font]\ngrid = 40\n")).unwrap_err();
+        assert!(e.contains("font.grid must be 1.0 to 24.0 (was 40.0)"), "{e}");
+        let built_in = |name: &str| parse(BUILTIN.iter().find(|b| b.name == name).expect("built in").manifest).unwrap().font;
+        let o = built_in("overworld");
+        assert_eq!((o.prose.as_deref(), o.ui.as_deref(), o.terminal.as_deref(), o.grid), (Some("Departure Mono"), Some("Departure Mono"), Some("Departure Mono"), Some(5.5)), "the pixel face goes with the pixel art");
+        let n = built_in("notebook");
+        assert_eq!((n.prose.as_deref(), n.ui.as_deref(), n.terminal.as_deref()), (Some("Chalkboard SE"), Some("Chalkboard SE"), Some("Monaspace Radon")), "the handwriting goes with the notebook");
+        // Two presets share each of these and name different faces, so the font stays the colour's.
+        assert_eq!((built_in("watercolor"), built_in("material")), Default::default());
+    }
+
+    #[test]
+    fn a_built_in_preset_s_own_fonts_are_its_effect_s_where_the_effect_names_any() {
+        for (t, text) in crate::theme::BUILTIN {
+            let theme = crate::theme::parse(text).unwrap();
+            let Some(effect) = theme.effect.as_ref().and_then(|e| BUILTIN.iter().find(|b| b.name == e.name)) else { continue };
+            let font = parse(effect.manifest).unwrap().font;
+            if font != Default::default() {
+                assert_eq!(theme.font, font, "{t}: switching to Custom from this preset must not change a font");
+            }
+        }
     }
 
     #[test]

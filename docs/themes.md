@@ -111,6 +111,11 @@ Optional. The one table that is not colours.
 
 A family that is not installed on the Mac is left out: that slot shows what it would without the theme naming a font, and the window's log says which font was missing.
 
+An effect may name fonts too, in a `[font]` table of its `effect.toml` with these same keys.
+In Settings' Custom look the effect's fonts are the window's whatever colour is chosen, and a
+theme's show only under an effect that names none (or under no effect). As a preset, a theme
+keeps the fonts it names and takes its effect's when it names none.
+
 ## [effect]
 
 Optional. A shader effect drawn under the window's text.

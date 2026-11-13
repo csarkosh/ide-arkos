@@ -20,3 +20,10 @@ active_tab_alpha = 0.55       # 0.0 to 1.0; the active tab over the wash
 text_contrast = 0.3           # 0.0 to 1.0; how far the text moves towards ink while the effect is on
 terminal_paint = true         # new terminal text is written in by a pen: the terminal stamps a changed
                               # cell once and the glyph shader paints it in; needs a glyphs file
+
+# The handwriting the pages are ruled for. Under a custom look these are the window's fonts
+# whatever colour is chosen; a family that is not installed falls back as if it were not named.
+[font]
+prose = "Chalkboard SE"
+ui = "Chalkboard SE"
+terminal = "Monaspace Radon"

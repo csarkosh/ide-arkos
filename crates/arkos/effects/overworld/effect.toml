@@ -31,3 +31,14 @@ active_tab_alpha = 0.0        # 0.0 to 1.0; the active tab over the wash: clear,
 text_contrast = 0.0           # 0.0 to 1.0; how far the text moves towards ink while the effect is on
 terminal_paint = true         # new terminal text is typed in like dialogue: the terminal stamps a
                               # changed cell once and the glyph shader shows it from its start
+
+# The pixel face the art is drawn for (SIL Open Font License, github.com/rektdeckard/departure-mono;
+# `brew install --cask font-departure-mono`). Its pixels are whole at multiples of 5.5 points on
+# a Retina screen, so `grid` draws every text size at the nearest multiple. Under a custom look
+# these are the window's fonts whatever colour is chosen; without the font installed, the slots
+# fall back as if none were named.
+[font]
+prose = "Departure Mono"
+ui = "Departure Mono"
+terminal = "Departure Mono"
+grid = 5.5

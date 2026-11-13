@@ -20,8 +20,8 @@ The look of the window is one of two things, and only one is in force:
 - **Presets.** A preset is a finished look: colours, the effect made for them and its fonts.
   It is what a theme file has always been. The user picks a Mode (System, Dark, Light), a dark
   preset and a light preset, and each preset draws with its own effect.
-- **Custom.** A colour and an effect, chosen apart: any theme's colours (and fonts) under any
-  effect, or none. There is one custom look: it does not follow macOS's light and dark.
+- **Custom.** A colour and an effect, chosen apart: any theme's colours under any effect, or
+  none. The fonts go with the effect when it names its own (see "Fonts" below). There is one custom look: it does not follow macOS's light and dark.
   (My call from "Custom includes Color and Effects", which names no Mode.)
 
 Switching between the two never loses the other's choices.
@@ -38,7 +38,7 @@ dark = "navy"
 light = "peach-watercolor"
 
 [custom]               # the custom look
-color = "navy"         # a theme's name: its colours and fonts
+color = "navy"         # a theme's name: its colours (and its fonts, under an effect with none)
 effect = "none"        # "none" or an effect's name
 ```
 
@@ -67,6 +67,22 @@ other puts it in force. Under them, only the selected one's controls:
 The first click on Custom, with no `[custom]` table yet, starts from what is on screen: the
 preset showing as the colour and its effect as the effect, so nothing changes until the user
 picks something.
+
+## Fonts
+
+Cyrus, 13 November, on the first build: "why doesn't the effect's font remain when I change
+colors for Custom". Fonts were a theme's alone, so the pixel face left with Timo Purple's
+colours while overworld stayed. Now an effect's manifest may carry a `[font]` table, the
+theme's own keys, and `theme::fonts_for` picks:
+
+- Custom: the effect's fonts when it names any, whatever the colour; else the colour's.
+- Presets: the theme's own when it names any (a preset is a finished look); else its effect's.
+
+`overworld` names Departure Mono on its 5.5 grid and `notebook` Chalkboard SE and Monaspace
+Radon. `watercolor` and `material` name none: each has two presets with different faces, and
+naming one would change a font on the first click on Custom, so under them the font is still
+the colour's. (My call.) The theme files keep their `[font]` tables, so nothing changes for a
+preset or for a config from before the two looks.
 
 ## The commands
 

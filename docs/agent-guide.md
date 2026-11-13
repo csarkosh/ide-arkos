@@ -725,6 +725,7 @@ key and the range.
 | `body_bars_alpha` | 0.0 to 1.0 | `chrome_alpha` | The bars inside a tab's body over the wash: a grid's banner, a spreadsheet's sheet strip, a video's bar and a web tab's address bar. |
 | `active_tab_alpha` | 0.0 to 1.0 | 0.55 | The active tab over the wash. |
 | `text_contrast` | 0.0 to 1.0 | 0.0 | How far the text moves towards ink (black on a light theme, white on a dark one): `chrome.text` that far, `chrome.text_dim` three quarters and `terminal.foreground` nine tenths of the way. |
+| `[font]` | a table: `prose`, `ui`, `terminal`, `grid` | absent | The fonts the effect is drawn for, with a theme's own `[font]` keys and rules (each an installed family, `terminal` monospaced, `grid` 1 to 24; a family that is not installed is left out). It goes last in the file, after every key above. Under the custom look these are the window's fonts whatever colour is chosen; a preset keeps the fonts its theme names and takes the effect's only when the theme names none. An effect that names none leaves the colour's fonts. `overworld` names Departure Mono on a 5.5 grid and `notebook` Chalkboard SE with Monaspace Radon; `watercolor` and `material` name none, since each has two presets with different faces. |
 
 Changing effects fades the wash and the surfaces' alphas in and out over 200 ms (it cuts under
 Reduce Motion); the glyph shader, the text size, the borders, the highlights, the menus and the text

@@ -766,8 +766,11 @@ window, as Keybindings (Cmd+/) does.
     of that name. A new preset is set as the dark or light one by the mode in force. A
     configured preset that is neither built in nor a file is listed first as "(not installed)".
   - Custom: Color and Effect side by side. Color lists every theme, the dark ones first, each
-    marked dark or light: its colours and fonts are used. Effect lists "None" and every effect
-    installed, built in or a folder; one that does not load is "(invalid)" and one named that
+    marked dark or light: its colours are used. Effect lists "None" and every effect
+    installed, built in or a folder. The fonts go with the effect when it names its own, as
+    `overworld` (its pixel face) and `notebook` (its handwriting) do, so they stay as you change
+    the colour; under an effect that names none, or under None, they are the colour's. In the
+    Effect list, one that does not load is "(invalid)" and one named that
     is missing "(not installed)". The custom look is one look: it does not follow macOS's
     light and dark. The first time it is put in force it starts as what is on screen. "Add
     color…" takes a theme's `.toml` file and "Add effect…" an effect's folder (copied into the

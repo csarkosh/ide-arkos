@@ -401,7 +401,8 @@ pub struct Root {
     base_theme: Arc<theme::Theme>,
     /// Whether a frame has been drawn: a theme set before the first one shows at once.
     pub painted: bool,
-    /// The theme's fonts, less any family this Mac lacks (`ThemeFont::installed`).
+    /// The look's fonts, its theme's or its effect's (`theme::fonts_for`), less any family this
+    /// Mac lacks (`ThemeFont::installed`).
     pub fonts: theme::ThemeFont,
     /// Syntax colours for viewer tabs in the theme's `viewer` colours. `None` until the grammars
     /// finish loading on the background executor after launch; a theme change rethemes it.
@@ -720,7 +721,7 @@ impl Root {
         })
         .detach();
         // The theme's fonts that are installed, and the preset's size on the font's grid.
-        let fonts = installed_fonts(&theme, cx);
+        let fonts = installed_fonts(&format!("theme {}", theme.name), &theme.font, cx);
         Self {
             tree,
             sessions,
@@ -1532,20 +1533,7 @@ impl Root {
         if *self.base_theme == theme {
             return;
         }
-        let fonts = installed_fonts(&theme, cx);
-        // A theme that brings its own terminal font changes the cell size (`family()` reads the
-        // theme): panes re-measure before a restore trusts a grid, as a config change does.
-        if fonts.terminal != self.fonts.terminal {
-            self.grids.clear();
-        }
-        // A theme whose font has another grid (or none) draws the preset at another size: every
-        // terminal and viewer takes it again, as a preset change would have them.
-        let regrid = fonts.grid != self.fonts.grid;
-        self.fonts = fonts;
-        if regrid {
-            let preset = self.text_preset.clone();
-            self.apply_text_preset(&preset, cx);
-        }
+        self.refresh_fonts(&theme, cx);
         let shown = effects::active::contrasted(&theme, self.text_contrast());
         let accent_changed = theme.chrome.focus_ring != self.base_theme.chrome.focus_ring;
         self.base_theme = Arc::new(theme);
@@ -1555,6 +1543,40 @@ impl Root {
             self.glyphs_pending = Some(self.glyph_shader_for(effects::active::WindowKind::Project));
         }
         self.fade_theme_to(shown, cx);
+    }
+
+    /// Takes the fonts `theme` and the effect that is on draw with (`theme::fonts_for`: under a
+    /// custom look the effect's own stay whatever the colour). They change at once, since a
+    /// font cannot fade; an effect on its way out no longer counts.
+    fn refresh_fonts(&mut self, theme: &theme::Theme, cx: &mut Context<Self>) {
+        let theme_fonts = installed_fonts(&format!("theme {}", theme.name), &theme.font, cx);
+        // The effect `theme` will be under: on a switch the old theme's effect is still on until
+        // `resolve_effect` runs, and its fonts must not show for the frames between.
+        let wanted = effects::resolve(&self.config.effect_choice(), theme);
+        let on = self.effect.as_ref().filter(|e| !e.leaving() && wanted.as_deref() == Some(e.effect.manifest.name.as_str()));
+        let effect_fonts = on.map(|e| {
+            let m = &e.effect.manifest;
+            installed_fonts(&format!("effect {}", m.name), &m.font, cx)
+        });
+        let custom = self.config.look() == config::Look::Custom;
+        let fonts = theme::fonts_for(custom, &theme_fonts, effect_fonts.as_ref());
+        if fonts == self.fonts {
+            return;
+        }
+        // A terminal font of the look's own changes the cell size (`family()` reads it): panes
+        // re-measure before a restore trusts a grid, as a config change does.
+        if fonts.terminal != self.fonts.terminal {
+            self.grids.clear();
+        }
+        // A font with another grid (or none) draws the preset at another size: every terminal
+        // and viewer takes it again, as a preset change would have them.
+        let regrid = fonts.grid != self.fonts.grid;
+        self.fonts = fonts;
+        if regrid {
+            let preset = self.text_preset.clone();
+            self.apply_text_preset(&preset, cx);
+        }
+        cx.notify();
     }
 
     /// Cross-fades the window's colours to `theme` from what is on screen, or switches at once
@@ -4102,6 +4124,13 @@ impl Root {
     /// before the first frame. An effect that is missing or whose shader does not compile is a
     /// notice, and the window stays plain.
     pub fn set_effect(&mut self, name: Option<String>, cx: &mut Context<Self>) {
+        self.put_effect(name, cx);
+        // The effect that is on, or the look it is part of, may have changed: so may the fonts.
+        let theme = self.base_theme.clone();
+        self.refresh_fonts(&theme, cx);
+    }
+
+    fn put_effect(&mut self, name: Option<String>, cx: &mut Context<Self>) {
         let now = Instant::now();
         let cut = motion::reduce_motion() || !self.painted;
         let Some(name) = name else {
@@ -4811,18 +4840,18 @@ fn banner_bar(text: String, opacity: f32, family: gpui::SharedString, theme: &th
         .child(text)
 }
 
-/// The theme's fonts that this Mac has; each missing one is said once on stderr and its slot
-/// falls back as if the theme had not named it.
 /// The end of a theme fade, or the theme shown when none runs (`Root::target_theme`).
 fn fade_target<'a>(fade: Option<&'a ThemeFade>, shown: &'a Arc<theme::Theme>) -> &'a Arc<theme::Theme> {
     fade.map_or(shown, |f| &f.to)
 }
 
-fn installed_fonts(theme: &theme::Theme, cx: &App) -> theme::ThemeFont {
+/// The fonts of `owner` (a theme or an effect) that this Mac has; each missing one is said on
+/// stderr and its slot falls back as if it had not been named.
+fn installed_fonts(owner: &str, font: &theme::ThemeFont, cx: &App) -> theme::ThemeFont {
     let families: std::collections::HashSet<String> = cx.text_system().all_font_names().into_iter().collect();
-    let (fonts, missing) = theme.font.installed(&families);
+    let (fonts, missing) = font.installed(&families);
     for name in missing {
-        eprintln!("arkos: theme {}: the font {name:?} is not installed; using the default for that slot", theme.name);
+        eprintln!("arkos: {owner}: the font {name:?} is not installed; using the default for that slot");
     }
     fonts
 }

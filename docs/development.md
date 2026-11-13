@@ -477,7 +477,10 @@ Things only a person at the screen can check, in order of value:
   instead and changes nothing on screen the first time (it starts as what is showing); picking
   another colour or effect switches the window with the usual fade; back on Presets the mode's
   preset and its own effect return, and Custom again brings the custom look back as it was; in
-  Custom the window keeps its colour when macOS switches between light and dark; "Add
+  Custom the window keeps its colour when macOS switches between light and dark; in Custom
+  with `overworld` ticked, every colour picked keeps the pixel font (and with `notebook` the
+  handwriting), while with `watercolor`, `material` or None the font changes with the colour,
+  and nothing lingers for a frame on the way; "Add
   effect…" with a folder that is no effect shows the error and copies nothing; an effect set
   with `arkos effect use runic` puts Custom in force with runic ticked; a click switches
   the window with a fade, and "Show effects folder" creates and reveals the folder
