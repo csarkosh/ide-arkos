@@ -155,9 +155,26 @@ pub fn calling(groups: &[(Attention, Vec<Entry>)]) -> usize {
     groups.iter().filter(|(kind, _)| kind.calls()).map(|(_, rows)| rows.len()).sum()
 }
 
-/// The list's height: every group's heading and rows, the Done group's rows only while it is open.
-pub fn content_height(groups: &[(Attention, Vec<Entry>)], done_open: bool) -> f32 {
-    groups.iter().map(|(kind, rows)| GROUP_H + if *kind == Attention::Done && !done_open { 0.0 } else { rows.len() as f32 * ROW_H }).sum()
+/// The groups folded under their headings, as the user left them: `Attention::FOLDED_AT_FIRST`
+/// until they fold or open one.
+pub type Folded = std::collections::BTreeSet<Attention>;
+
+/// Folds `kind`'s group, or opens it when folded.
+pub fn toggle_fold(folded: &mut Folded, kind: Attention) {
+    if !folded.remove(&kind) {
+        folded.insert(kind);
+    }
+}
+
+/// Whether `kind`'s rows are hidden under its heading: folded, and no filter typed, since a
+/// filter shows every row it finds.
+pub fn is_folded(folded: &Folded, kind: Attention, filtering: bool) -> bool {
+    !filtering && folded.contains(&kind)
+}
+
+/// The list's height: every group's heading, and the rows of each that is open.
+pub fn content_height(groups: &[(Attention, Vec<Entry>)], folded: &Folded) -> f32 {
+    groups.iter().map(|(kind, rows)| GROUP_H + if folded.contains(kind) { 0.0 } else { rows.len() as f32 * ROW_H }).sum()
 }
 
 /// What a row's right-click menu does.
@@ -304,14 +321,14 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
     let shown = root.focused_session();
     let breath = root.breath.alpha(root.frame_now, motion::reduce_motion());
     let (selected_bg, hover_bg, dim) = (c.tab_active.hsla(), c.tab_inactive.hsla(), c.text_dim.hsla());
-    let done_open = root.sessions_done_open || filtering;
+
     let pad = 10.0 + style.sidebar_pad;
     let mut list = div().id("session-rows").flex_1().min_h_0().overflow_y_scroll().flex().flex_col();
     if filtering && groups.is_empty() {
         list = list.child(div().px(px(pad)).py(px(8.0)).text_size(px(style.ui(12.0))).text_color(dim).child("No session matches."));
     }
     for (kind, rows) in groups {
-        let folded = kind == Attention::Done && !done_open;
+        let folded = is_folded(&root.sessions_folded, kind, filtering);
         let heading = div()
             .id(("session-group", kind as usize))
             .h(px(GROUP_H))
@@ -323,14 +340,17 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
             .gap(px(4.0))
             .text_size(px(style.ui(11.0)))
             .text_color(dim)
-            .child(div().flex_1().child(if kind == Attention::Done { format!("{} {}", if folded { "\u{25b8}" } else { "\u{25be}" }, kind.label()) } else { kind.label().to_string() }))
+            // The unread are a step heavier, so new answers catch the eye.
+            .when(kind == Attention::Unread, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
+            .child(div().flex_none().w(px(10.0)).child(if folded { "\u{25b8}" } else { "\u{25be}" }))
+            .child(div().flex_1().child(kind.label()))
             .child(div().flex_none().text_color(if kind.calls() { c.text.hsla() } else { dim }).child(rows.len().to_string()))
-            .when(kind == Attention::Done, |d| {
-                d.cursor_pointer().on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
-                    root.sessions_done_open = !root.sessions_done_open;
-                    cx.notify();
-                }))
-            });
+            .cursor_pointer()
+            .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
+                toggle_fold(&mut root.sessions_folded, kind);
+                root.save(cx);
+                cx.notify();
+            }));
         list = list.child(heading);
         if folded {
             continue;
@@ -640,8 +660,9 @@ mod tests {
         let shape: Vec<(Attention, Vec<u64>)> = groups.iter().map(|(k, rows)| (*k, rows.iter().map(|e| e.session.0).collect())).collect();
         assert_eq!(shape, vec![(Attention::NeedsYou, vec![3]), (Attention::Unread, vec![4, 6, 2]), (Attention::Working, vec![1]), (Attention::Done, vec![5])]);
         assert_eq!(calling(&groups), 4, "needs you and unread");
-        assert_eq!(content_height(&groups, false), 4.0 * GROUP_H + 5.0 * ROW_H, "Done is folded");
-        assert_eq!(content_height(&groups, true), 4.0 * GROUP_H + 6.0 * ROW_H);
+        let first: Folded = Attention::FOLDED_AT_FIRST.into_iter().collect();
+        assert_eq!(content_height(&groups, &first), 4.0 * GROUP_H + 5.0 * ROW_H, "Done is folded");
+        assert_eq!(content_height(&groups, &Folded::new()), 4.0 * GROUP_H + 6.0 * ROW_H);
         assert!(grouped(Vec::new()).is_empty());
     }
 
@@ -677,6 +698,21 @@ mod tests {
         assert_eq!(ids("FFMPEG"), [1], "a line matches too, whatever the case");
         assert_eq!(ids("game tests"), [3], "every word, in any order and from either line");
         assert_eq!(ids("game ffmpeg"), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn every_group_folds_under_its_heading_quiet_and_done_at_first_and_a_filter_opens_them() {
+        let mut folded: Folded = Attention::FOLDED_AT_FIRST.into_iter().collect();
+        let shut = |f: &Folded| Attention::ALL.into_iter().filter(|k| is_folded(f, *k, false)).collect::<Vec<_>>();
+        assert_eq!(shut(&folded), [Attention::Quiet, Attention::Done]);
+        toggle_fold(&mut folded, Attention::Working);
+        toggle_fold(&mut folded, Attention::Done);
+        assert_eq!(shut(&folded), [Attention::Working, Attention::Quiet]);
+        toggle_fold(&mut folded, Attention::Working);
+        assert_eq!(shut(&folded), [Attention::Quiet]);
+        assert!(Attention::ALL.iter().all(|k| !is_folded(&folded, *k, true)), "a filter shows what it finds");
+        // Saved by the sections' names.
+        assert_eq!(serde_json::to_string(&Attention::NeedsYou).unwrap(), "\"needs_you\"");
     }
 
     #[test]

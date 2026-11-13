@@ -517,6 +517,9 @@ Things only a person at the screen can check, in order of value:
   sidebar's scene has mountains (by day mesas) above the castle, at the same pixel size as the
   castle, and the names dim only the part of it they lie over, a short list leaving the castle
   at full colour; a selected session row's highlight stops at the sidebar's frame on both sides
+- sessions: every group's heading has a chevron and folds or opens its rows on a click, Quiet
+  and Done folded on a first open; the Unread heading is a step heavier than the others; what
+  is folded is the same after a relaunch
 - layouts: under overworld the Inbox header's "Mark unread" and "Done" end left of the gem,
   which is the right-most thing in the header, with an art pixel of air between
 - layouts: "A session's files open" on Neighbor: with one pane an `arkos open` splits a pane

@@ -313,7 +313,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
     let sessions_h = match (inbox, files_view) {
         (true, true) => 0.0,
         (true, false) => (total_h - switch_h).max(0.0),
-        (false, _) => sessions_height(total_h, crate::sessions_list::content_height(&session_groups, root.sessions_done_open), sessions_open),
+        (false, _) => sessions_height(total_h, crate::sessions_list::content_height(&session_groups, &root.sessions_folded), sessions_open),
     };
     let sessions = div()
         .flex()

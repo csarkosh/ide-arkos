@@ -6,7 +6,8 @@ use protocol::ClaudeState;
 use serde::{Deserialize, Serialize};
 
 /// Where a session stands with the user, in the order a list shows them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Attention {
     /// The agent cannot go on until the user acts: a permission, a question, a plan to approve.
     NeedsYou,
@@ -28,6 +29,10 @@ pub enum Attention {
 impl Attention {
     /// Every kind, in the order a list shows its groups.
     pub const ALL: [Attention; 7] = [Attention::NeedsYou, Attention::Unread, Attention::Unanswered, Attention::Working, Attention::Quiet, Attention::Later, Attention::Done];
+
+    /// The groups a list shows folded until the user opens them: what is quiet and what is done
+    /// can wait; the rest is open.
+    pub const FOLDED_AT_FIRST: [Attention; 2] = [Attention::Quiet, Attention::Done];
 
     /// The group's heading in a list.
     pub fn label(self) -> &'static str {

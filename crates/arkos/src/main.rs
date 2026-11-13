@@ -340,8 +340,9 @@ pub struct Root {
     pub ended: Vec<sessions_list::Ended>,
     /// The command to type into a tab's shell once it has started: a resumed session's.
     pub resume_input: HashMap<TabId, Vec<u8>>,
-    /// Whether the session list's Done group shows its rows. Not saved: it opens folded.
-    pub sessions_done_open: bool,
+    /// The session list's groups folded under their headings (`sessions_list::Folded`), saved
+    /// with the workspace.
+    pub sessions_folded: sessions_list::Folded,
     /// The Inbox's filter over its session list: what is typed, its focus, and whether the
     /// keys are in it.
     pub session_filter: line_edit::LineEdit,
@@ -741,6 +742,7 @@ impl Root {
             None => (sidebar::Sidebar::new(config.sidebar.width, config.sidebar.collapsed, true, true, cx), explorer::Explorer::new(project.clone(), Vec::new(), false), worktrees::Worktrees::new(Vec::new())),
         };
         // No saved layout: the empty screen, not a shell nobody asked for.
+        let saved_folded: sessions_list::Folded = saved.as_ref().and_then(|w| w.folded_sections.clone()).unwrap_or_else(|| attention::Attention::FOLDED_AT_FIRST.to_vec()).into_iter().collect();
         let saved_lines: HashMap<SessionId, String> = saved.as_ref().map(|w| w.lines.iter().cloned().collect()).unwrap_or_default();
         let saved_marks: HashMap<SessionId, attention::Marks> = saved.as_ref().map(|w| w.marks.iter().copied().collect()).unwrap_or_default();
         let saved_ended = saved.as_ref().map(|w| w.ended.clone()).unwrap_or_default();
@@ -831,7 +833,7 @@ impl Root {
             session_menu: Transient::Hidden,
             ended: saved_ended,
             resume_input: HashMap::new(),
-            sessions_done_open: false,
+            sessions_folded: saved_folded,
             session_filter: line_edit::LineEdit::new(),
             session_filter_focus: cx.focus_handle(),
             session_filter_focused: false,
@@ -2003,7 +2005,7 @@ impl Root {
         owners.sort();
         let mut lines: Vec<(SessionId, String)> = self.sessions.lines.iter().filter(|(s, _)| shown.contains(s)).map(|(s, l)| (*s, l.clone())).collect();
         lines.sort_by_key(|(s, _)| s.0);
-        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), marks, grid: self.grid_tree.clone(), ended: self.ended.clone(), sides, side_of: self.inbox.shown, side_ratio: Some(self.inbox.ratio), owners, lines, text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone(), folds: self.folds.clone(), diagram_modes: self.diagram_modes.clone() };
+        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), marks, grid: self.grid_tree.clone(), ended: self.ended.clone(), sides, side_of: self.inbox.shown, side_ratio: Some(self.inbox.ratio), owners, lines, folded_sections: Some(self.sessions_folded.iter().copied().collect()), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone(), folds: self.folds.clone(), diagram_modes: self.diagram_modes.clone() };
         request_save(&self.save_queue, ws, cx);
     }
 
