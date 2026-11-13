@@ -333,7 +333,35 @@ impl Root {
         }
     }
 
+    /// An agent's open. In the Inbox what a session opens is that session's own: when the
+    /// session is not the one shown, its side is brought into the tree for the open and put
+    /// away again after, so the user's own view is left as it was; with `--focus` the session
+    /// becomes the one shown instead.
     fn direct_open(&mut self, a: OpenArgs, cx: &mut Context<Self>) -> Result<Prepared, String> {
+        let at = a.session.filter(|_| self.is_inbox()).and_then(|s| self.tree.find_session(s));
+        let owner = at.and_then(|(pane, idx)| self.tree.tab_id(pane, idx));
+        let (shown, focused, focus) = (self.inbox.shown, self.tree.focused, a.focus);
+        let elsewhere = owner.is_some() && owner != shown;
+        if elsewhere {
+            self.inbox.swap(&mut self.tree, owner);
+        }
+        let out = self.direct_open_here(a, cx);
+        if elsewhere {
+            match (focus && out.is_ok(), at) {
+                (true, Some((pane, idx))) => self.tree.activate_quiet(pane, idx),
+                _ => {
+                    self.inbox.swap(&mut self.tree, shown);
+                    if self.tree.pane(focused).is_some() {
+                        self.tree.focused = focused;
+                    }
+                }
+            }
+            self.save(cx);
+        }
+        out
+    }
+
+    fn direct_open_here(&mut self, a: OpenArgs, cx: &mut Context<Self>) -> Result<Prepared, String> {
         let anchor = a.session.and_then(|s| self.tree.find_session(s)).map(|(pane, _)| pane);
         refuse_unshown(a.session, anchor, &a.place)?;
         // The command line checked; the file may have gone since.
@@ -372,8 +400,10 @@ impl Root {
         } else {
             (pane, idx, new_pane)
         };
-        if let (false, Some(session), Some(tab)) = (reused, a.session, self.tree.tab_id(pane, idx)) {
-            self.tab_owners.push((tab, session));
+        // Whichever layout is on, the tab is its session's: the Inbox hands it to that session.
+        let opener = a.session.and_then(|s| self.tree.find_session(s)).and_then(|(p, i)| self.tree.tab_id(p, i));
+        if let (false, Some(session), Some(tab)) = (reused, opener, self.tree.tab_id(pane, idx)) {
+            self.inbox.owner.insert(tab, session);
         }
         // Opened on purpose: a preview tab (the sidebar's single click) it was is kept.
         if reused && self.tree.tab_id(pane, idx) == self.preview_tab {

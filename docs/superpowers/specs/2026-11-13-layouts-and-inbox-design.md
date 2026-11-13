@@ -174,8 +174,17 @@ Not built yet, with why:
   tried from a `target` build; it waits for a pass with a local bundle (`packaging/test.sh`).
   The `layout.notify` key is not in the config until then.
 - **The filter field** over the Inbox's list.
-- A side pane **per session**: the side pane is one pane, and choosing a session brings
-  forward the tab it opened last (kept for the run, not saved).
+
+After Cyrus tried it, the same day: "when i click on a new session, all the tab panes should
+be replaced. they only exist within the session." So the side is the session's own
+(`inbox.rs`, `Sides`): one pane or several beside the sessions pane, lifted out of the tree
+whole when another session is chosen (`Tree::inbox_take_side`) and put back when its own is
+chosen again, saved with the workspace by the session's tab. A file opened from the Explorer
+joins the session shown; an agent's `arkos open` joins its own session, also while another is
+shown (its side is brought into the tree for the open and put away after); closing a session
+closes its tabs first. Each tab's session is remembered through the Grid (`Sides::owner`).
+This replaces "Choosing a session brings forward the tab that session opened last" and the
+fixed two panes: a split among a session's panes now stays.
 
 Differences from the text above: a session's row says its folder only when it has no line of
 its own; a kept session is recorded when its tab closes (not when its shell exits, whose tab

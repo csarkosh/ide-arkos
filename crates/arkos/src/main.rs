@@ -37,6 +37,7 @@ mod grid_view;
 mod guide;
 mod highlight;
 mod hook_cli;
+mod inbox;
 mod idle;
 mod keybindings;
 mod keys;
@@ -344,9 +345,9 @@ pub struct Root {
     /// The Grid layout's arrangement while the Inbox layout is on (`Tree::regridded` brings it
     /// back); None while the Grid is on.
     pub grid_tree: Option<Tree>,
-    /// Which session opened each tab with `arkos open`, oldest first: choosing a session in the
-    /// Inbox brings forward the tab it opened last. Kept for this run only.
-    pub tab_owners: Vec<(TabId, SessionId)>,
+    /// The Inbox's sides: each session's own panes, put away while another session is shown
+    /// (`inbox::Sides`). Saved with the workspace.
+    pub inbox: inbox::Sides,
     /// The count the Dock icon shows: this window's sessions that call for the user.
     pub dock_badge: usize,
     /// The Worktrees section's focus handle.
@@ -730,20 +731,24 @@ impl Root {
         let saved_marks: HashMap<SessionId, attention::Marks> = saved.as_ref().map(|w| w.marks.iter().copied().collect()).unwrap_or_default();
         let saved_ended = saved.as_ref().map(|w| w.ended.clone()).unwrap_or_default();
         let mut grid_tree = saved.as_ref().and_then(|w| w.grid.clone());
+        let mut inbox_sides = inbox::Sides::default();
+        if let Some(w) = saved.as_ref() {
+            inbox_sides.kept = w.sides.iter().cloned().collect();
+            inbox_sides.shown = w.side_of;
+            inbox_sides.ratio = w.side_ratio.unwrap_or(tree::INBOX_RATIO);
+            inbox_sides.owner = w.owners.iter().copied().collect();
+        }
         let mut tree = saved.map(|ws| ws.tree).unwrap_or_else(Tree::empty);
         // The config's layout over what was saved: the Inbox's shape, with the Grid's
-        // arrangement kept aside, or the Grid's arrangement back.
+        // arrangement kept aside, or the Grid's arrangement back with every session's tabs.
         match config.layout.name {
-            config::LayoutName::Inbox if !tree.is_inbox() => {
-                grid_tree = Some(tree.clone());
-                tree.arrange_inbox();
-            }
+            config::LayoutName::Inbox if grid_tree.is_none() && !tree.is_inbox() => grid_tree = Some(inbox_sides.enter(&mut tree)),
+            config::LayoutName::Inbox => {}
             config::LayoutName::Grid => {
-                if let Some(grid) = grid_tree.take() {
-                    tree = tree.regridded(&grid);
+                if grid_tree.is_some() || !inbox_sides.kept.is_empty() {
+                    inbox_sides.leave(&mut tree, grid_tree.take());
                 }
             }
-            config::LayoutName::Inbox => {}
         }
         let mut sessions = SessionManager::new(client.clone(), Some(client), project.clone());
         let t = &config.terminal;
@@ -761,7 +766,7 @@ impl Root {
         Self {
             tree,
             grid_tree,
-            tab_owners: Vec::new(),
+            inbox: inbox_sides,
             sessions,
             save_queue: SharedSaveQueue::default(),
             project,
@@ -1969,7 +1974,13 @@ impl Root {
         let shown: HashSet<SessionId> = self.tree.tabs().into_iter().filter_map(|(_, _, tab)| if let Tab::Terminal { session, .. } = tab { Some(*session) } else { None }).collect();
         let mut marks: Vec<(SessionId, attention::Marks)> = self.sessions.marks.iter().filter(|(s, m)| shown.contains(s) && **m != attention::Marks::default()).map(|(s, m)| (*s, *m)).collect();
         marks.sort_by_key(|(s, _)| s.0);
-        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), marks, grid: self.grid_tree.clone(), ended: self.ended.clone(), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone(), folds: self.folds.clone(), diagram_modes: self.diagram_modes.clone() };
+        // The Inbox's sides, in a steady order, less the owners of tabs that are gone.
+        self.inbox.prune(&self.tree);
+        let mut sides: Vec<(TabId, tree::Node)> = self.inbox.kept.iter().map(|(session, side)| (*session, side.clone())).collect();
+        sides.sort_by_key(|(session, _)| *session);
+        let mut owners: Vec<(TabId, TabId)> = self.inbox.owner.iter().map(|(tab, session)| (*tab, *session)).collect();
+        owners.sort();
+        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), marks, grid: self.grid_tree.clone(), ended: self.ended.clone(), sides, side_of: self.inbox.shown, side_ratio: Some(self.inbox.ratio), owners, text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone(), folds: self.folds.clone(), diagram_modes: self.diagram_modes.clone() };
         request_save(&self.save_queue, ws, cx);
     }
 
@@ -2109,16 +2120,9 @@ impl Root {
     }
 
     /// Shows `session`: its tab made the active one of its pane, and that pane focused. In the
-    /// Inbox the side pane brings forward the tab that session opened last.
+    /// Inbox the side panes become that session's own as the next frame begins.
     pub fn show_session(&mut self, session: SessionId, cx: &mut Context<Self>) {
         let Some((pane, idx)) = self.tree.find_session(session) else { return };
-        if self.is_inbox() {
-            let last = self.tab_owners.iter().rev().find(|(_, s)| *s == session).map(|(tab, _)| *tab);
-            let at = last.and_then(|tab| self.tree.panes().into_iter().find_map(|p| self.tree.pane(p)?.ids.iter().position(|t| *t == tab).map(|i| (p, i))));
-            if let Some((side, i)) = at {
-                self.tree.activate_quiet(side, i);
-            }
-        }
         self.activate_tab(pane, idx, cx);
         self.focus_pane(pane, cx);
     }
@@ -2160,12 +2164,12 @@ impl Root {
     /// and with what opened meanwhile. What is kept per pane is measured again.
     pub fn apply_layout(&mut self, cx: &mut Context<Self>) {
         if self.is_inbox() {
-            if !self.tree.is_inbox() {
-                self.grid_tree = Some(self.tree.clone());
-                self.tree.arrange_inbox();
+            if self.grid_tree.is_none() {
+                self.grid_tree = Some(self.inbox.enter(&mut self.tree));
             }
-        } else if let Some(grid) = self.grid_tree.take() {
-            self.tree = self.tree.regridded(&grid);
+        } else {
+            let grid = self.grid_tree.take();
+            self.inbox.leave(&mut self.tree, grid);
         }
         self.grids.clear();
         self.acknowledge_focused(cx);
@@ -2177,12 +2181,32 @@ impl Root {
     /// files, a file among the sessions, a split): called as each frame begins, so nothing is
     /// ever drawn out of place. True when something moved.
     fn keep_inbox_shape(&mut self, cx: &mut Context<Self>) -> bool {
-        if !self.is_inbox() || !self.tree.arrange_inbox() {
+        if !self.is_inbox() || !self.inbox.keep_shape(&mut self.tree) {
             return false;
         }
         self.grids.clear();
         self.save(cx);
         true
+    }
+
+    /// Closes every tab of the side that belongs to the session whose terminal tab is `owner`:
+    /// a session's tabs exist only within it, so they go when it does. Each closes as Cmd+W
+    /// closes it (a file's edits are saved first), and a tab that will not close (its file
+    /// changed on disk) stops this and is why the session stays: false then.
+    fn close_side_of(&mut self, owner: TabId, cx: &mut Context<Self>) -> bool {
+        let shown = self.inbox.shown;
+        self.inbox.swap(&mut self.tree, Some(owner));
+        let closed_all = loop {
+            let Some((sessions, _)) = self.tree.inbox_panes() else { break true };
+            let Some(pane) = self.tree.panes().into_iter().find(|p| *p != sessions) else { break true };
+            let before = self.tree.tabs().len();
+            self.close_tab(pane, 0, cx);
+            if self.tree.tabs().len() == before {
+                break false;
+            }
+        };
+        self.inbox.swap(&mut self.tree, shown);
+        closed_all
     }
 
     /// Goes to the next session that is the user's move: a blocked one first, then an unread
@@ -2262,6 +2286,13 @@ impl Root {
     /// on disk, or whose write failed, stays open with its banner.
     pub fn close_tab(&mut self, pane: PaneId, idx: usize, cx: &mut Context<Self>) {
         let Some(id) = self.tree.tab_id(pane, idx) else { return };
+        // In the Inbox a session's tabs go with it.
+        let is_session = matches!(self.tree.pane(pane).and_then(|p| p.tabs.get(idx)), Some(Tab::Terminal { .. }));
+        if self.is_inbox() && is_session && !self.close_side_of(id, cx) {
+            return;
+        }
+        // Closing them may have closed a pane: the session's tab is found again.
+        let Some((pane, idx)) = self.tree.locate(id) else { return };
         if let Some(viewer) = self.viewers.get(&id).cloned() {
             let kept = viewer.update(cx, |v, cx| match v.save_now() {
                 Ok(()) => None,

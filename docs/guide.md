@@ -70,16 +70,22 @@ and files:
 - **Inbox**: the sessions are a list in the sidebar, sorted by what needs you, and the window
   shows one session at full size, as a chat app shows one conversation. The session's header
   (in the tab bar's place) has its mark, name and folder, with "Mark unread" and "Done". Files,
-  pages and videos open in one side pane to the right, which is there only while something is
-  open in it; a file a Claude Code session opens with `arkos open` goes there, and choosing a
-  session brings forward the tab it opened last. The sidebar's top switches between Sessions
-  and Files (the Explorer and Worktrees), and "+ New" starts a session. Every terminal is a
-  session: splitting a pane, or dragging a tab to make one, does nothing here, since the layout
-  keeps its two panes.
+  pages and videos open in panes to its right, and those panes belong to the session: they
+  exist only within it. Choosing another session replaces all of them with that session's own
+  (none, if it has opened nothing), and coming back brings them back as they were, split and
+  all. A file you open from the Explorer joins the session you are on; a file a Claude Code
+  session opens with `arkos open` joins that session, also while you are looking at another
+  one, whose panes are left as they are. Ending a session closes its tabs with it. The divider
+  between the session and its panes stays where you put it from one session to the next. The
+  sidebar's top switches between Sessions and Files (the Explorer and Worktrees), and "+ New"
+  starts a session. Every terminal is a session: a terminal opened among a session's panes
+  joins the list instead.
 
 Switching layouts moves nothing out of the window: the same sessions and files are regrouped,
 and the Grid's arrangement is kept while the Inbox is on and restored when you switch back,
 less the tabs closed meanwhile and with the tabs opened meanwhile added to its focused pane.
+Which session each file belongs to is remembered through the Grid, so a return to the Inbox
+hands each session its tabs again.
 
 "A session's files open" (`[layout] placement`) says where a plain `arkos open` from a session
 lands in the Grid: In place, a new tab in the session's own pane, or Neighbor, the pane on its

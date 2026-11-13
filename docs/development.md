@@ -496,6 +496,11 @@ Things only a person at the screen can check, in order of value:
   tab there; closing its last tab closes the side pane; Cmd+D (split) leaves the two panes as
   they are; back on Grid the panes are as they were; under each effect (overworld, material,
   notebook, watercolor, runic) the header and the list are legible
+- layouts: in the Inbox, open a file from the Explorer under session A, split it, choose
+  session B: every pane beside the sessions is gone (B has none); open a file under B; back on
+  A its two panes are as they were and B's file is not among them; `arkos open` run in B's
+  shell while A is shown changes nothing on screen and the file is there when B is chosen;
+  End on A closes its tabs with it; after a relaunch each session still has its own
 - layouts: "A session's files open" on Neighbor: with one pane an `arkos open` splits a pane
   to the right, the next goes into that pane, and from the right pane it goes to the left one
 - Settings, Appearance: two pills, Presets and Custom, the one in force selected. Presets
