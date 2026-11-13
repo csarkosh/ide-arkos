@@ -142,6 +142,7 @@ pub fn render_view_button(root: &Root, pane: PaneId, tab: TabId, find_open: bool
                 root.last_input = now;
                 root.context_menu.hide(now);
                 root.wt_menu.hide(now);
+                root.session_menu.hide(now);
                 root.link_menu.hide(now);
                 root.md_menu.hide(now);
                 root.close_popovers(now);

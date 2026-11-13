@@ -87,6 +87,7 @@ mod settings;
 mod split_view;
 mod startup;
 mod sessions;
+mod sessions_list;
 mod sidebar;
 mod telemetry;
 mod telemetry_cli;
@@ -331,6 +332,12 @@ pub struct Root {
     pub wt_focused: bool,
     /// A worktree row's right-click menu while it is open: the worktree and the click.
     pub wt_menu: Transient<(PathBuf, gpui::Point<gpui::Pixels>)>,
+    /// The right-click menu of a session's row in the list (`sessions_list`), and where.
+    pub session_menu: Transient<(SessionId, gpui::Point<gpui::Pixels>)>,
+    /// Whether the session list's Done group shows its rows. Not saved: it opens folded.
+    pub sessions_done_open: bool,
+    /// The count the Dock icon shows: this window's sessions that call for the user.
+    pub dock_badge: usize,
     /// The Worktrees section's focus handle.
     pub wt_focus: FocusHandle,
     /// The pointer is over the Worktrees list (wired by the section's paint): the order holds.
@@ -705,7 +712,7 @@ impl Root {
         let (wt_tx, wt_rx) = futures::channel::mpsc::unbounded();
         // The folder's own sidebar when it saved one, else the config's defaults.
         let (sidebar, explorer, worktrees) = match saved.as_ref().and_then(|w| w.sidebar.clone()) {
-            Some(s) => (sidebar::Sidebar::new(s.width, s.collapsed, s.explorer_open, s.worktrees_open, cx), explorer::Explorer::new(project.clone(), s.expanded, s.show_ignored), worktrees::Worktrees::new(s.worktrees_expanded)),
+            Some(s) => (sidebar::Sidebar::new(s.width, s.collapsed, s.explorer_open, s.worktrees_open, cx).with_sessions(s.sessions_open), explorer::Explorer::new(project.clone(), s.expanded, s.show_ignored), worktrees::Worktrees::new(s.worktrees_expanded)),
             None => (sidebar::Sidebar::new(config.sidebar.width, config.sidebar.collapsed, true, true, cx), explorer::Explorer::new(project.clone(), Vec::new(), false), worktrees::Worktrees::new(Vec::new())),
         };
         // No saved layout: the empty screen, not a shell nobody asked for.
@@ -772,6 +779,9 @@ impl Root {
             worktrees_seq: 0,
             wt_focused: false,
             wt_menu: Transient::Hidden,
+            session_menu: Transient::Hidden,
+            sessions_done_open: false,
+            dock_badge: 0,
             wt_focus: cx.focus_handle(),
             wt_hovered: false,
             wt_open: wt_open.clone(),
@@ -896,6 +906,7 @@ impl Root {
         let now = Instant::now();
         self.context_menu.hide(now);
         self.wt_menu.hide(now);
+        self.session_menu.hide(now);
         self.link_menu.hide(now);
         self.md_menu.hide(now);
         self.view_menu.hide(now);
@@ -1476,6 +1487,7 @@ impl Root {
             || self.outline_hover.as_ref().is_some_and(|h| h.animating(now))
             || self.popover.animating(now)
             || self.wt_menu.animating(now)
+            || self.session_menu.animating(now)
             || self.palette.animating(now)
             || self.notice.animating(now)
             || self.url_prompt.animating(now)
@@ -1515,6 +1527,7 @@ impl Root {
         });
         self.popover.settle(now);
         self.wt_menu.settle(now);
+        self.session_menu.settle(now);
         self.palette.settle(now);
         self.notice.settle(now);
         self.url_prompt.settle(now);
@@ -1917,7 +1930,7 @@ impl Root {
     }
 
     pub fn save(&mut self, cx: &mut App) {
-        let sidebar = SidebarSaved { width: self.sidebar.width, collapsed: self.sidebar.collapsed, show_ignored: self.explorer.show_ignored, expanded: self.explorer.expanded_dirs(), worktrees_expanded: self.worktrees.expanded.iter().cloned().collect(), explorer_open: self.sidebar.explorer_open, worktrees_open: self.sidebar.worktrees_open };
+        let sidebar = SidebarSaved { width: self.sidebar.width, collapsed: self.sidebar.collapsed, show_ignored: self.explorer.show_ignored, expanded: self.explorer.expanded_dirs(), worktrees_expanded: self.worktrees.expanded.iter().cloned().collect(), explorer_open: self.sidebar.explorer_open, worktrees_open: self.sidebar.worktrees_open, sessions_open: self.sidebar.sessions_open };
         // The marks of the sessions the window still shows, in a steady order.
         let shown: HashSet<SessionId> = self.tree.tabs().into_iter().filter_map(|(_, _, tab)| if let Tab::Terminal { session, .. } = tab { Some(*session) } else { None }).collect();
         let mut marks: Vec<(SessionId, attention::Marks)> = self.sessions.marks.iter().filter(|(s, m)| shown.contains(s) && **m != attention::Marks::default()).map(|(s, m)| (*s, *m)).collect();
@@ -2059,6 +2072,49 @@ impl Root {
                 cx.notify();
             }
         }
+    }
+
+    /// Shows `session`: its tab made the active one of its pane, and that pane focused.
+    pub fn show_session(&mut self, session: SessionId, cx: &mut Context<Self>) {
+        let Some((pane, idx)) = self.tree.find_session(session) else { return };
+        self.activate_tab(pane, idx, cx);
+        self.focus_pane(pane, cx);
+    }
+
+    /// Goes to the next session that is the user's move: a blocked one first, then an unread
+    /// one, then one looked at and not answered. A notice says so when there is none.
+    pub fn next_calling_session(&mut self, cx: &mut Context<Self>) {
+        let groups = sessions_list::grouped(sessions_list::entries(self, sessions::now_ms()));
+        match sessions_list::next_calling(&groups, self.focused_session()) {
+            Some(session) => self.show_session(session, cx),
+            None => self.show_notice("no session needs you".to_string(), cx),
+        }
+    }
+
+    /// What a session row's menu does (`sessions_list::menu_items`).
+    pub fn session_row_action(&mut self, session: SessionId, action: sessions_list::RowAction, window: &mut Window, cx: &mut Context<Self>) {
+        use sessions_list::RowAction;
+        let now = sessions::now_ms();
+        match action {
+            RowAction::Seen(seen) => self.sessions.set_seen(session, seen),
+            RowAction::Done(done) => self.sessions.set_done(session, done),
+            RowAction::LaterFor(ms) => self.sessions.set_later(session, Some(now + ms)),
+            RowAction::LaterTomorrow => self.sessions.set_later(session, Some(sessions_list::tomorrow_at_nine(now))),
+            RowAction::BackToList => self.sessions.set_later(session, None),
+            RowAction::Rename => {
+                if let Some((pane, idx)) = self.tree.find_session(session) {
+                    self.activate_tab(pane, idx, cx);
+                    self.begin_tab_rename(pane, idx, window, cx);
+                }
+            }
+            RowAction::End => {
+                if let Some((pane, idx)) = self.tree.find_session(session) {
+                    self.close_tab(pane, idx, cx);
+                }
+            }
+        }
+        self.save(cx);
+        cx.notify();
     }
 
     /// Tells the sessions which one the user is looking at: the focused tab's, while the window
@@ -3069,6 +3125,7 @@ impl Root {
                 self.wt_focused = false;
                 cx.notify();
             }
+            NextCallingSession => self.next_calling_session(cx),
             FocusWorktrees => {
                 if self.sidebar.collapsed {
                     self.sidebar.set_collapsed(false, Instant::now());
@@ -3406,7 +3463,7 @@ impl Root {
     fn chrome_state(&self, cx: &App) -> idle::Chrome {
         idle::Chrome {
             palette: self.palette.value().is_some(),
-            menu: self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.link_menu.value().is_some() || self.md_menu.value().is_some() || self.view_menu.value().is_some() || self.popover.value().is_some(),
+            menu: self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.session_menu.value().is_some() || self.link_menu.value().is_some() || self.md_menu.value().is_some() || self.view_menu.value().is_some() || self.popover.value().is_some(),
             prompt: self.url_prompt.value().is_some(),
             find: self.active_terminal(cx).is_some_and(|t| t.read(cx).find.is_some()) || self.active_viewer().is_some_and(|v| v.read(cx).find.is_some()),
             drag: self.drop_target.is_some() || self.resizing.is_some() || self.sidebar_resizing,
@@ -3536,6 +3593,9 @@ impl Root {
         }
         if self.sessions.route_events(events, cx) {
             cx.notify();
+        }
+        if self.sessions.take_marks_changed() {
+            self.save(cx);
         }
         // A Claude Code the probe found silent has reported since: its row clears without one.
         if self.sessions.take_newly_reporting() && self.silent.iter().any(|s| self.sessions.is_reporting(*s)) {
@@ -4048,7 +4108,7 @@ impl Root {
             || self.context_menu.value().is_some()
             || self.link_menu.value().is_some()
             || self.md_menu.value().is_some()
-            || self.wt_menu.value().is_some()
+            || self.wt_menu.value().is_some() || self.session_menu.value().is_some()
             || self.drop_target.is_some()
             || self.reorder.is_some()
             || self.picking_folder
@@ -4436,6 +4496,12 @@ impl Render for Root {
         self.effect_menus.clear();
         self.window_active = window.is_window_active();
         self.sync_shown();
+        // The Dock icon says how many sessions call for the user.
+        let calling = sessions_list::calling(&sessions_list::grouped(sessions_list::entries(self, sessions::now_ms())));
+        if calling != self.dock_badge {
+            self.dock_badge = calling;
+            screen::set_dock_badge(calling);
+        }
         self.note_focus();
         let now = Instant::now();
         // Before the clocks are read: a change of focus or of Settings' focus re-renders.
@@ -4685,7 +4751,7 @@ impl Render for Root {
             .on_any_mouse_down(cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
                 let now = Instant::now();
                 root.last_input = now;
-                if root.context_menu.hide(now) | root.new_file.hide(now) | root.wt_menu.hide(now) | root.link_menu.hide(now) | root.md_menu.hide(now) | root.view_menu.hide(now) | root.close_popovers(now) {
+                if root.context_menu.hide(now) | root.new_file.hide(now) | root.wt_menu.hide(now) | root.session_menu.hide(now) | root.link_menu.hide(now) | root.md_menu.hide(now) | root.view_menu.hide(now) | root.close_popovers(now) {
                     cx.notify();
                 }
             }))
@@ -4745,7 +4811,8 @@ impl Render for Root {
             .children(slash_menu::render_slash_menu(self, cx))
             .children(lang_menu::render_lang_menu(self, cx))
             .children(self.render_popover(window, cx))
-            .children(sidebar::render_worktree_menu(self, cx));
+            .children(sidebar::render_worktree_menu(self, cx))
+            .children(sessions_list::render_menu(self, cx));
         // One request per frame while anything eases; an idle window asks for none.
         if self.any_motion(now) {
             window.request_animation_frame();
@@ -5526,7 +5593,14 @@ fn open_project_window(
         let retry_root = root.clone();
         cx.spawn(async move |cx| loop {
             cx.background_executor().timer(KILL_RETRY).await;
-            if retry_root.update(cx, |root, _| root.sessions.resend_kills()).is_err() {
+            let alive = retry_root.update(cx, |root, cx| {
+                root.sessions.resend_kills();
+                // A session put off until a time that has come is back in the list: repaint.
+                if root.sessions.later_came(sessions::now_ms()) {
+                    cx.notify();
+                }
+            });
+            if alive.is_err() {
                 break;
             }
         })

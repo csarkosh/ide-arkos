@@ -909,6 +909,7 @@ fn open_link_menu(root: &mut Root, terminal: &Entity<Terminal>, ev: &MouseDownEv
     root.last_input = now;
     root.context_menu.hide(now);
     root.wt_menu.hide(now);
+    root.session_menu.hide(now);
     root.view_menu.hide(now);
     root.close_popovers(now);
     root.url_prompt.hide(now);
@@ -1533,6 +1534,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 root.last_input = now;
                 root.context_menu.hide(now);
                 root.wt_menu.hide(now);
+                root.session_menu.hide(now);
                 root.link_menu.hide(now);
                 root.view_menu.hide(now);
                 root.close_popovers(now);

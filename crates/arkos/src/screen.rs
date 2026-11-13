@@ -98,6 +98,22 @@ mod mac {
         ((f.origin.y + f.size.height) - (v.origin.y + v.size.height)).max(0.0)
     }
 
+    /// Sets the number on the app's Dock icon, or with 0 takes it off. Nothing off the main
+    /// thread.
+    pub fn set_dock_badge(count: usize) {
+        let Some(mtm) = MainThreadMarker::new() else { return };
+        let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+        let label = (count > 0).then(|| objc2_foundation::NSString::from_str(&count.to_string()));
+        // SAFETY: `dockTile` returns the application's own tile, an object that lives as long as
+        // the application, and `setBadgeLabel:` takes a string or nil; both on the main thread.
+        unsafe {
+            let tile: Option<Retained<AnyObject>> = objc2::msg_send![&app, dockTile];
+            if let Some(tile) = tile {
+                let _: () = objc2::msg_send![&tile, setBadgeLabel: label.as_deref()];
+            }
+        }
+    }
+
     /// The window is minimized to the Dock or hidden (Cmd+H, or not on screen at all).
     pub fn window_hidden(window: &NSWindow) -> bool {
         window.isMiniaturized() || !window.isVisible()

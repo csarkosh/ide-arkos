@@ -49,6 +49,10 @@ pub struct Sidebar {
     /// list would still take clicks).
     pub explorer_fade: Transient<()>,
     pub worktrees_fade: Transient<()>,
+    /// The Sessions section (`sessions_list`), above the Explorer: whether it shows its rows,
+    /// and their fade as it opens.
+    pub sessions_open: bool,
+    pub sessions_fade: Transient<()>,
 }
 
 pub fn clamp_width(w: f32) -> f32 {
@@ -82,7 +86,18 @@ impl Sidebar {
             slide: None,
             explorer_fade: fade(explorer_open),
             worktrees_fade: fade(worktrees_open),
+            sessions_open: true,
+            sessions_fade: fade(true),
         }
+    }
+
+    /// The same sidebar with its Sessions section as it was saved.
+    pub fn with_sessions(mut self, open: bool) -> Self {
+        self.sessions_open = open;
+        if !open {
+            self.sessions_fade = Transient::Hidden;
+        }
+        self
     }
 
     pub fn visible_width(&self) -> f32 {
@@ -111,7 +126,7 @@ impl Sidebar {
 
     /// Whether anything in the column eases at `now`.
     pub fn animating(&self, now: Instant) -> bool {
-        self.sliding(now) || self.explorer_fade.animating(now) || self.worktrees_fade.animating(now)
+        self.sliding(now) || self.explorer_fade.animating(now) || self.worktrees_fade.animating(now) || self.sessions_fade.animating(now)
     }
 }
 
@@ -154,7 +169,17 @@ pub fn sidebar_split(total: f32, explorer_rows_h: f32, explorer_open: bool, work
     }
 }
 
-/// The column: the Explorer and Worktrees sections, each under a header that opens and closes
+/// The Sessions section's height in a sidebar `total` tall, its header included: closed, or
+/// with no session to list, the header alone; open, its rows up to two fifths of the sidebar,
+/// past which they scroll, so the Explorer under it always keeps the larger part.
+pub fn sessions_height(total: f32, rows_h: f32, open: bool) -> f32 {
+    if !open || rows_h <= 0.0 {
+        return ROW_H;
+    }
+    (ROW_H + rows_h).min((total * 0.4).max(ROW_H))
+}
+
+/// The column: the Sessions, Explorer and Worktrees sections, each under a header that opens and closes
 /// it, and the resize handle. `None` while collapsed, once its slide out has finished.
 pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> Option<Div> {
     let style = root.effect_style();
@@ -166,6 +191,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         return None;
     }
     let explorer_o = reveal(&mut root.sidebar.explorer_fade, root.sidebar.explorer_open, now);
+    let sessions_o = reveal(&mut root.sidebar.sessions_fade, root.sidebar.sessions_open, now);
     let worktrees_o = reveal(&mut root.sidebar.worktrees_fade, root.sidebar.worktrees_open, now);
     let theme = root.theme.clone();
     let c = &theme.chrome;
@@ -208,7 +234,32 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
     let entries = root.explorer.rows();
     let tree_rows = entries.len() + usize::from(root.new_file.current(root.frame_now).is_some());
     // The sidebar's own height: the panes' area and the gap an effect keeps above and below it.
-    let (explorer_h, worktrees_h) = sidebar_split(root.content.h + 2.0 * style.gap, tree_rows as f32 * ROW_H, explorer_open, worktrees_open);
+    let total_h = root.content.h + 2.0 * style.gap;
+    // The sessions first: what they take is taken from the two sections under them.
+    let sessions_open = root.sidebar.sessions_open;
+    let session_groups = crate::sessions_list::grouped(crate::sessions_list::entries(root, crate::sessions::now_ms()));
+    let calling = crate::sessions_list::calling(&session_groups);
+    let sessions_h = sessions_height(total_h, crate::sessions_list::content_height(&session_groups, root.sessions_done_open), sessions_open);
+    let sessions = div()
+        .flex()
+        .flex_col()
+        .flex_none()
+        .h(px(sessions_h))
+        .min_h_0()
+        .border_b_1()
+        .border_color(if style.ink_borders { c.border.alpha(0.0) } else { c.border.hsla() })
+        .child(
+            header("sessions-header", "Sessions", sessions_open)
+                // How many call for the user, said on the header so a closed section still tells.
+                .when(calling > 0, |d| d.child(div().flex_none().text_color(theme.semantic.waiting.hsla()).child(calling.to_string())))
+                .on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
+                    root.sidebar.sessions_open = !root.sidebar.sessions_open;
+                    root.save(cx);
+                    cx.notify();
+                })),
+        )
+        .when(sessions_open && !session_groups.is_empty(), |d| d.child(crate::sessions_list::render(root, width, cx).opacity(sessions_o)));
+    let (explorer_h, worktrees_h) = sidebar_split(total_h - sessions_h, tree_rows as f32 * ROW_H, explorer_open, worktrees_open);
     let explorer = div()
         .flex()
         .flex_col()
@@ -226,6 +277,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
                 cx.stop_propagation();
                 let now = Instant::now();
                 root.wt_menu.hide(now);
+                root.session_menu.hide(now);
                 root.link_menu.hide(now);
                 root.md_menu.hide(now);
                 root.view_menu.hide(now);
@@ -298,6 +350,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .font_family(family)
         .text_size(px(style.ui(13.0)))
         .text_color(c.text.hsla())
+        .child(sessions)
         .child(explorer)
         .child(worktrees)
         .child(handle);
@@ -636,6 +689,7 @@ pub fn render_rows(root: &mut Root, entries: Vec<crate::explorer::Row>, theme: &
                         let _ = w_menu.update(cx, |root, cx| {
                             let now = Instant::now();
                             root.wt_menu.hide(now);
+                            root.session_menu.hide(now);
                             root.link_menu.hide(now);
                             root.md_menu.hide(now);
                             root.view_menu.hide(now);
@@ -1192,7 +1246,7 @@ pub fn render_worktree_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<D
         return None;
     }
     // Drawn while it fades out too, but only the open menu occludes and takes clicks.
-    let live = root.wt_menu.value().is_some();
+    let live = root.wt_menu.value().is_some() || root.session_menu.value().is_some();
     let c = &root.theme.chrome;
     let hover = crate::chrome::menu_colors(&root.theme, style.menus).hover;
     let mut m = div()
@@ -1788,12 +1842,13 @@ impl Root {
     /// document's), a markdown tab's view menu or a title bar popover is open closes it and
     /// nothing else.
     pub(crate) fn escape_closes_menu(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
-        if !escape_closes(&ks.key, self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.link_menu.value().is_some() || self.md_menu.value().is_some() || self.view_menu.value().is_some() || self.popover.value().is_some()) {
+        if !escape_closes(&ks.key, self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.session_menu.value().is_some() || self.link_menu.value().is_some() || self.md_menu.value().is_some() || self.view_menu.value().is_some() || self.popover.value().is_some()) {
             return false;
         }
         let now = Instant::now();
         self.context_menu.hide(now);
         self.wt_menu.hide(now);
+        self.session_menu.hide(now);
         self.link_menu.hide(now);
         self.md_menu.hide(now);
         self.view_menu.hide(now);
@@ -2125,6 +2180,16 @@ mod tests {
     fn a_short_sidebar_keeps_the_explorer_s_header() {
         let (e, w) = super::sidebar_split(60.0, 2000.0, true, true);
         assert_eq!((e, w), (2.0 * super::ROW_H, 60.0 - 2.0 * super::ROW_H));
+    }
+
+    #[test]
+    fn the_sessions_section_is_its_rows_up_to_two_fifths_of_the_sidebar_and_a_header_when_closed_or_empty() {
+        let h = super::ROW_H;
+        assert_eq!(super::sessions_height(900.0, 100.0, true), h + 100.0);
+        assert_eq!(super::sessions_height(900.0, 2000.0, true), 360.0, "past two fifths the rows scroll");
+        assert_eq!(super::sessions_height(900.0, 2000.0, false), h);
+        assert_eq!(super::sessions_height(900.0, 0.0, true), h, "no session: the header alone");
+        assert_eq!(super::sessions_height(30.0, 2000.0, true), h, "never less than its header");
     }
 
     #[test]

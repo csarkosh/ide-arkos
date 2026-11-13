@@ -221,6 +221,11 @@ pub struct SessionManager {
     /// The session the user is looking at: its tab shown and focused in the window in front.
     /// A turn that begins there is seen at once. The root keeps it.
     pub shown: Option<SessionId>,
+    /// A mark changed with a session's state since the root last looked (`take_marks_changed`):
+    /// the workspace is saved again.
+    marks_changed: bool,
+    /// When `later_came` last looked, in milliseconds since the Unix epoch.
+    later_checked: u64,
     /// Sessions whose Claude Code has reported itself: an agent record in the list, or a
     /// `State` event. A terminal bell is not a report: it rings without hooks.
     reporting: HashSet<SessionId>,
@@ -247,7 +252,7 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub fn new(transport: Arc<dyn Transport>, client: Option<Arc<Client>>, project: PathBuf) -> Self {
-        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashMap::new(), states: HashMap::new(), labels: HashMap::new(), attention: HashMap::new(), marks: HashMap::new(), shown: None, reporting: HashSet::new(), probed: HashMap::new(), probe_wanted: false, newly_reporting: false, restoring: HashSet::new(), backlog: HashMap::new(), offline: false, kills_to_resend: Vec::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
+        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashMap::new(), states: HashMap::new(), labels: HashMap::new(), attention: HashMap::new(), marks: HashMap::new(), shown: None, marks_changed: false, later_checked: 0, reporting: HashSet::new(), probed: HashMap::new(), probe_wanted: false, newly_reporting: false, restoring: HashSet::new(), backlog: HashMap::new(), offline: false, kills_to_resend: Vec::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
     }
 
     /// A new connection: requests go to it from now on.
@@ -476,6 +481,19 @@ impl SessionManager {
             return true;
         }
         self.acknowledge_at(session, now)
+    }
+
+    /// Whether a session's later time has come since this was last asked, at `now`: true once
+    /// for each such time, so the window repaints when a session comes back.
+    pub fn later_came(&mut self, now: u64) -> bool {
+        let came = self.marks.values().any(|m| m.later_until.is_some_and(|t| t <= now && t > self.later_checked));
+        self.later_checked = now;
+        came
+    }
+
+    /// True once after a session's state moved its marks.
+    pub fn take_marks_changed(&mut self) -> bool {
+        std::mem::take(&mut self.marks_changed)
     }
 
     /// Where `session` stands with the user at `now` (`attention::of`). A session with no label
@@ -826,6 +844,7 @@ impl SessionManager {
                     // A block is a new turn, as a finished answer is: what the user put away
                     // comes back.
                     if attention.blocked && !before.as_ref().is_some_and(|a| a.blocked) {
+                        self.marks_changed = true;
                         let shown = self.shown == Some(*session);
                         self.marks.entry(*session).or_default().turned(shown, now);
                     }
@@ -853,6 +872,7 @@ impl SessionManager {
             return false;
         }
         let shown = self.shown == Some(session);
+        self.marks_changed = true;
         let m = self.marks.entry(session).or_default();
         if state == ClaudeState::Waiting {
             m.turned(shown, now);
@@ -1045,6 +1065,12 @@ mod tests {
         assert_eq!(m.attention_of(s, 3000), Attention::Unanswered);
         m.set_seen(s, false);
         assert_eq!(m.attention_of(s, 3000), Attention::Unread);
+        // A later time that comes is told once, so the window repaints as the session returns.
+        m.set_later(s, Some(9000));
+        assert!(!m.later_came(8000));
+        assert!(m.later_came(9500));
+        assert!(!m.later_came(9600), "once");
+        m.set_seen(s, false);
         // The list at connect fills the attention in.
         m.list_attention();
         let id = rec.requests().len() as u32;

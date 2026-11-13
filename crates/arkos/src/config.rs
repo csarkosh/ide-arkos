@@ -810,6 +810,7 @@ option_as_meta = true
 # "focus file tree" = "cmd-shift-e"
 # "show ignored files" = ""
 # "focus worktrees" = "ctrl-shift-g"
+# "next session that needs you" = "cmd-shift-u"
 # "toggle inline diff" = "cmd-shift-d"
 # "toggle markdown view" = "cmd-shift-m"
 # "save file" = "cmd-s"
@@ -1198,7 +1199,7 @@ pub(crate) mod tests {
             ReopenClosedTab, CloseAllInPane, MoveTabWithin(1), NewTerminal, ClearToStart, FontDelta(1.0), About, OpenSettings, Keybindings,
             Documentation, OpenConfig, TextPreset(String::new()), ReloadConfig, ExtractThemes, CommandPalette, SetTheme(String::new()), Find,
             CopyAsShown, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks, InstallAgentGuide,
-            ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, Bold, Italic, FoldAll, UnfoldAll, ToggleOutline, TogglePresentation, NextSheet, PreviousSheet, OpenFolder,
+            ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, NextCallingSession, ToggleInlineDiff, ToggleMarkdownView, SaveFile, Bold, Italic, FoldAll, UnfoldAll, ToggleOutline, TogglePresentation, NextSheet, PreviousSheet, OpenFolder,
             NewWindow, NewBrowserTab, OpenFileInPane, VideoPlayPause, VideoBack, VideoForward, VideoBackFine, VideoForwardFine, VideoStepBack, VideoStepForward,
             VideoStart, VideoLoop, VideoMute, VideoReload, PageBack, PageForward, ReloadPage, FocusAddress, OpenInBrowser, ZoomReset,
         ];
@@ -1210,7 +1211,7 @@ pub(crate) mod tests {
                 | CloseAllInPane | MoveTabWithin(_) | NewTerminal | ClearToStart | FontDelta(_) | About | OpenSettings | Keybindings
                 | Documentation | OpenConfig | TextPreset(_) | ReloadConfig | ExtractThemes | CommandPalette | SetTheme(_) | Find | CopyAsShown
                 | UpdateNow | CheckForUpdates | Notifications | Doctor | RetryUpdate | StartAtLogin | InstallHooks | InstallAgentGuide
-                | ToggleSidebar | FocusFileTree | ShowIgnoredFiles | FocusWorktrees | ToggleInlineDiff | ToggleMarkdownView | SaveFile | Bold | Italic | FoldAll | UnfoldAll | ToggleOutline | TogglePresentation | NextSheet | PreviousSheet
+                | ToggleSidebar | FocusFileTree | ShowIgnoredFiles | FocusWorktrees | NextCallingSession | ToggleInlineDiff | ToggleMarkdownView | SaveFile | Bold | Italic | FoldAll | UnfoldAll | ToggleOutline | TogglePresentation | NextSheet | PreviousSheet
                 | OpenFolder | NewWindow | NewBrowserTab | OpenFileInPane | VideoPlayPause | VideoBack | VideoForward | VideoBackFine | VideoForwardFine
                 | VideoStepBack | VideoStepForward | VideoStart | VideoLoop | VideoMute | VideoReload | PageBack | PageForward | ReloadPage
                 | FocusAddress | OpenInBrowser | ZoomReset => {}

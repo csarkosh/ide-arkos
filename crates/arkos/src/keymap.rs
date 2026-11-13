@@ -20,7 +20,7 @@ actions!(
         MoveTabLeft, MoveTabRight,
         NewTerminal, ClearToStart, FontBigger, FontSmaller,
         About, OpenSettings, Keybindings, Documentation, OpenConfig, CommandPalette, Find, CopyAsShown, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks, InstallAgentGuide,
-        ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, Bold, Italic, FoldAll, UnfoldAll, ToggleOutline, TogglePresentation, NextSheet, PreviousSheet, OpenFolder, NewWindow,
+        ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, NextCallingSession, ToggleInlineDiff, ToggleMarkdownView, SaveFile, Bold, Italic, FoldAll, UnfoldAll, ToggleOutline, TogglePresentation, NextSheet, PreviousSheet, OpenFolder, NewWindow,
         NewBrowserTab, Quit,
         OpenFileInPane,
         VideoPlayPause, VideoBack, VideoForward, VideoBackFine, VideoForwardFine, VideoStepBack, VideoStepForward,
@@ -101,6 +101,8 @@ pub enum Command {
     ShowIgnoredFiles,
     /// Put keyboard focus in the worktree list.
     FocusWorktrees,
+    /// Go to the next session that is the user's move: blocked, then unread, then unanswered.
+    NextCallingSession,
     /// Show or hide the focused viewer's deleted lines between its current ones.
     ToggleInlineDiff,
     /// Flip the focused markdown tab between rendered and raw.
@@ -267,6 +269,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     row(Section::Sidebar, "focus file tree", "cmd-shift-e"),
     row(Section::Sidebar, "show ignored files", ""),
     row(Section::Sidebar, "focus worktrees", "ctrl-shift-g"),
+    row(Section::Sidebar, "next session that needs you", "cmd-shift-u"),
     ActionSpec { name: "toggle inline diff", keys: "cmd-shift-d", context: Some("Viewer"), section: Section::Markdown },
     ActionSpec { name: "toggle markdown view", keys: "cmd-shift-m", context: Some("Viewer"), section: Section::Markdown },
     ActionSpec { name: "save file", keys: "cmd-s", context: Some("Viewer"), section: Section::Markdown },
@@ -402,6 +405,7 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "focus file tree" => KeyBinding::new(keys, FocusFileTree, context),
         "show ignored files" => KeyBinding::new(keys, ShowIgnoredFiles, context),
         "focus worktrees" => KeyBinding::new(keys, FocusWorktrees, context),
+        "next session that needs you" => KeyBinding::new(keys, NextCallingSession, context),
         "toggle inline diff" => KeyBinding::new(keys, ToggleInlineDiff, context),
         "toggle markdown view" => KeyBinding::new(keys, ToggleMarkdownView, context),
         "save file" => KeyBinding::new(keys, SaveFile, context),
@@ -730,6 +734,7 @@ pub fn command_for(name: &str) -> Option<Command> {
         "focus file tree" => Command::FocusFileTree,
         "show ignored files" => Command::ShowIgnoredFiles,
         "focus worktrees" => Command::FocusWorktrees,
+        "next session that needs you" => Command::NextCallingSession,
         "toggle inline diff" => Command::ToggleInlineDiff,
         "toggle markdown view" => Command::ToggleMarkdownView,
         "save file" => Command::SaveFile,
@@ -808,7 +813,7 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         OpenConfig => Command::OpenConfig, CommandPalette => Command::CommandPalette, Find => Command::Find, CopyAsShown => Command::CopyAsShown,
         UpdateNow => Command::UpdateNow, CheckForUpdates => Command::CheckForUpdates, Notifications => Command::Notifications, Doctor => Command::Doctor, RetryUpdate => Command::RetryUpdate, StartAtLogin => Command::StartAtLogin, InstallHooks => Command::InstallHooks, InstallAgentGuide => Command::InstallAgentGuide,
         ToggleSidebar => Command::ToggleSidebar, FocusFileTree => Command::FocusFileTree, ShowIgnoredFiles => Command::ShowIgnoredFiles,
-        FocusWorktrees => Command::FocusWorktrees, ToggleInlineDiff => Command::ToggleInlineDiff,
+        FocusWorktrees => Command::FocusWorktrees, NextCallingSession => Command::NextCallingSession, ToggleInlineDiff => Command::ToggleInlineDiff,
         ToggleMarkdownView => Command::ToggleMarkdownView, SaveFile => Command::SaveFile, Bold => Command::Bold, Italic => Command::Italic, FoldAll => Command::FoldAll, UnfoldAll => Command::UnfoldAll, ToggleOutline => Command::ToggleOutline, TogglePresentation => Command::TogglePresentation,
         NextSheet => Command::NextSheet, PreviousSheet => Command::PreviousSheet,
         OpenFolder => Command::OpenFolder, NewWindow => Command::NewWindow,
@@ -871,6 +876,7 @@ mod tests {
         ("cmd-shift-e", "focus file tree", "FocusFileTree"),
         ("", "show ignored files", "ShowIgnoredFiles"),
         ("ctrl-shift-g", "focus worktrees", "FocusWorktrees"),
+        ("cmd-shift-u", "next session that needs you", "NextCallingSession"),
         ("cmd-shift-d", "toggle inline diff", "ToggleInlineDiff"),
         ("cmd-shift-m", "toggle markdown view", "ToggleMarkdownView"),
         ("cmd-s", "save file", "SaveFile"),

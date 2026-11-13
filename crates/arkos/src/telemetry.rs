@@ -661,6 +661,7 @@ pub fn command_name(command: &Command) -> &'static str {
         FocusFileTree => "focus_file_tree",
         ShowIgnoredFiles => "show_ignored_files",
         FocusWorktrees => "focus_worktrees",
+        NextCallingSession => "next_calling_session",
         ToggleInlineDiff => "toggle_inline_diff",
         ToggleMarkdownView => "toggle_markdown_view",
         SaveFile => "save_file",
