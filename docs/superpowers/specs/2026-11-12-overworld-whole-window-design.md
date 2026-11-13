@@ -393,3 +393,10 @@ plates were the bar's colour on a sky dithered toward white, so nothing told the
 sky is again a step darker than the bar on every theme (the words are on plates now, never on
 the sky), a test holds the sky's mean luminance apart from the plates' on four themes, and the
 padding is 9 points (`PLATE_PAD`, `title_pad`).
+
+Cyrus: "increase the padding on the bottom of the title bar. it's flush with the stoplight
+buttons right now". The lights are placed by macOS from about 7 to 22 points down a 28 point
+bar, and the frame's inner line began at 22. The title bar's frame is now its outer line alone
+(`TITLE_FRAME_PX`, 3 points), and a new manifest key, `title_grow` (0 to 16, overworld 2), makes
+the bar that much taller at its foot while its words and icons stay level with the lights: 4
+points clear above the lights and 5 below.

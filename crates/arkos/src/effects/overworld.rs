@@ -514,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn on_the_gpu_the_sidebar_and_the_title_bar_are_boxed_in_the_panes_own_frame() {
+    fn on_the_gpu_the_sidebar_is_boxed_in_the_panes_own_frame_and_the_title_bar_in_its_outer_line() {
         if !gpu() {
             return;
         }
@@ -527,8 +527,9 @@ mod tests {
         assert_eq!((at(1.5, mid), at(4.5, mid)), (line, dark), "the sidebar's left edge");
         assert_eq!((at(SIDE - 1.5, mid), at(SIDE - 4.5, mid)), (line, dark), "its right edge");
         assert_eq!((at(60.0, H as f32 - 1.5), at(60.0, H as f32 - 4.5)), (line, dark), "its foot, over the scene");
-        assert_eq!((at(300.0, 1.5), at(300.0, 4.5)), (line, dark), "the title bar's top");
-        assert_eq!((at(300.0, TOP - 1.5), at(300.0, TOP - 4.5)), (line, dark), "its foot");
+        // The title bar's frame is the outer line alone, so the traffic lights have room.
+        assert_eq!((at(300.0, 1.5), at(300.0, TOP - 1.5)), (line, line), "the title bar's top and foot");
+        assert!(![line, dark].contains(&at(300.0, 4.5)) && ![line, dark].contains(&at(300.0, TOP - 4.5)), "one line, the sky inside it");
         // The notch: an outer corner is left to the ground, an inner one is the line's colour.
         assert!(at(1.5, TOP + 1.5) != line && at(1.5, TOP + 1.5) != dark);
         assert_eq!(at(4.5, TOP + 4.5), line);

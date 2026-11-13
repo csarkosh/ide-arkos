@@ -56,6 +56,8 @@ pub struct Style {
     pub ui_text_bump: f32,
     /// Points added inside the title bar at both ends.
     pub title_pad: f32,
+    /// Points added to the title bar's height, at its foot.
+    pub title_grow: f32,
     /// Points added before every row and header of the sidebar.
     pub sidebar_pad: f32,
     /// The theme font's grid in points (`[font] grid`), which the window's UI text sizes are
@@ -82,7 +84,7 @@ pub struct Style {
 impl Style {
     /// The app as it paints without an effect.
     pub fn plain() -> Style {
-        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, body_bars_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, sidebar_pad: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
+        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, body_bars_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, title_grow: 0.0, sidebar_pad: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
     }
 
     /// The ground a document's own fills go with: a markdown table's header and paper rows and a
@@ -124,6 +126,7 @@ pub fn style_at(manifest: &Manifest, fade: f32) -> Style {
         highlights: full && manifest.highlights == Highlights::Effect,
         ui_text_bump: if full { manifest.ui_text_bump } else { 0.0 },
         title_pad: if full { manifest.title_pad } else { 0.0 },
+        title_grow: if full { manifest.title_grow } else { 0.0 },
         sidebar_pad: if full { manifest.sidebar_pad } else { 0.0 },
         text_grid: 0.0,
         binder: if full { manifest.binder } else { 0.0 },
@@ -518,7 +521,7 @@ impl<L> ActiveEffect<L> {
     pub fn style(&self, now: Instant) -> Style {
         let s = style_at(&self.effect.manifest, self.amount(now));
         if self.leaving() {
-            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, sidebar_pad: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false, ..s }
+            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, title_grow: 0.0, sidebar_pad: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false, ..s }
         } else {
             // The menus' edges cut over with the rest once the effect is fully on.
             Style { menu_edges: self.amount(now) >= 1.0 && has_overlay(&self.effect.wash), ..s }
@@ -633,6 +636,7 @@ mod tests {
         assert_eq!((half.title_pad, half.binder), (0.0, 0.0));
         let o = manifest::load("overworld", Path::new("/nonexistent/effects")).unwrap().manifest;
         assert_eq!((style_at(&o, 0.5).sidebar_pad, style_at(&o, 1.0).sidebar_pad, Style::plain().sidebar_pad), (0.0, o.sidebar_pad, 0.0), "the sidebar's padding cuts in with the text size");
+        assert_eq!((style_at(&o, 0.5).title_grow, style_at(&o, 1.0).title_grow, Style::plain().title_grow), (0.0, o.title_grow, 0.0), "and so does the taller title bar");
         let full = style_at(&m, 1.0);
         assert_eq!((full.title_pad, full.binder), (m.title_pad, m.binder));
         assert_eq!((Style::plain().title_pad, Style::plain().binder), (0.0, 0.0));
@@ -793,7 +797,7 @@ mod tests {
         assert_eq!(style_at(&m, 0.0), Style::plain());
         assert_eq!(
             style_at(&m, 1.0),
-            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, body_bars_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, title_pad: 0.0, sidebar_pad: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false, terminal_paint: true }
+            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, body_bars_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, title_pad: 0.0, title_grow: 0.0, sidebar_pad: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false, terminal_paint: true }
         );
         let half = style_at(&m, 0.5);
         assert_eq!((half.paper_alpha, half.chrome_alpha, half.ground_alpha), (0.75, 0.5, 0.5));

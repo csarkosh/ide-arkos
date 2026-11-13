@@ -622,7 +622,10 @@ Things only a person at the screen can check, in order of value:
   the two sections fill the sidebar to its foot, with no strip left under them
 - effects: under overworld the title's words, its icons and the traffic lights each sit on a
   plain plate of the bar's colour with a few points of padding round them, clear of the frame,
-  the sky and its stars going on between the plates
+  the sky and its stars going on between the plates; the bar is two points taller with a
+  one-line frame, so the traffic lights have clear space above and below and are not flush with
+  the frame's foot; the words and icons stay level with the lights, and a popover from the
+  bar's icons opens just under the taller bar
 - effects: under overworld the title bar is alive along its whole length: stars behind its
   words too, softer there, a shooting star every few seconds, two clouds, a bird crossing now
   and then, and a light running along the foot of its frame every six seconds; the title's words

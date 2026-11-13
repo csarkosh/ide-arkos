@@ -25,6 +25,9 @@ pub struct Manifest {
     /// Points added inside the title bar at both ends, so its words and icons sit clear of a
     /// shape the wash draws round them.
     pub title_pad: f32,
+    /// Points added to the title bar's height, at its foot: its words, its icons and the traffic
+    /// lights keep their places, with that much more of the bar under them.
+    pub title_grow: f32,
     /// Points added before every row and header of the sidebar, so their text sits clear of a
     /// frame and a cursor the wash draws along the sidebar's left edge.
     pub sidebar_pad: f32,
@@ -101,6 +104,7 @@ impl Default for Manifest {
             scale: 0.5,
             ui_text_bump: 0.0,
             title_pad: 0.0,
+            title_grow: 0.0,
             sidebar_pad: 0.0,
             binder: 0.0,
             gap: 0.0,
@@ -175,6 +179,7 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
     in_range("scale", m.scale, 0.1, 1.0)?;
     in_range("ui_text_bump", m.ui_text_bump, 0.0, 4.0)?;
     in_range("title_pad", m.title_pad, 0.0, 24.0)?;
+    in_range("title_grow", m.title_grow, 0.0, 16.0)?;
     in_range("sidebar_pad", m.sidebar_pad, 0.0, 24.0)?;
     in_range("binder", m.binder, 0.0, 32.0)?;
     in_range("gap", m.gap, 0.0, 16.0)?;
@@ -388,6 +393,14 @@ mod tests {
         assert!(e.contains("sidebar_pad must be 0.0 to 24.0 (was 30.0)"), "{e}");
         for b in BUILTIN.iter() {
             assert_eq!(parse(b.manifest).unwrap().sidebar_pad > 0.0, b.name == "overworld", "{}", b.name);
+        }
+        // A taller title bar: none unless asked for, and only overworld asks.
+        assert_eq!(parse(MINIMAL).unwrap().title_grow, 0.0);
+        assert_eq!(parse(&with("title_grow = 6")).unwrap().title_grow, 6.0);
+        let e = parse(&with("title_grow = 20")).unwrap_err();
+        assert!(e.contains("title_grow must be 0.0 to 16.0 (was 20.0)"), "{e}");
+        for b in BUILTIN.iter() {
+            assert_eq!(parse(b.manifest).unwrap().title_grow > 0.0, b.name == "overworld", "{}", b.name);
         }
         let e = parse(&with("binder = -1")).unwrap_err();
         assert!(e.contains("binder must be 0.0 to 32.0 (was -1.0)"), "{e}");

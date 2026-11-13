@@ -282,7 +282,10 @@ pub fn title_bar(project: &Path, sandbox: bool, right: Right, fullscreen: bool, 
         )
     };
     drag_to_move(div())
-        .h(px(TITLE_BAR_H))
+        // An effect may make the bar taller at its foot: what it holds stays centred in the bar's
+        // own height, level with the traffic lights, with the added room under it.
+        .h(px(TITLE_BAR_H + style.title_grow))
+        .pb(px(style.title_grow))
         .w_full()
         .flex_none()
         .flex()
@@ -462,7 +465,7 @@ pub fn popover_card(which: Popover, window_w: f32, opacity: f32, live: bool, the
     let c = &theme.chrome;
     div()
         .absolute()
-        .top(px(TITLE_BAR_H + 4.0) - px(crate::motion::lift(opacity, crate::motion::MENU_LIFT)))
+        .top(px(TITLE_BAR_H + style.title_grow + 4.0) - px(crate::motion::lift(opacity, crate::motion::MENU_LIFT)))
         .right(px(popover_right_inset(which)))
         .w(px(popover_width(which, window_w)))
         .opacity(opacity)

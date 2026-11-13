@@ -4308,7 +4308,7 @@ impl Root {
         let focus: Vec<(PaneId, f32)> = layout.panes.iter().map(|(id, _)| (*id, self.glow.opacity(id, now))).collect();
         let e = self.effect.as_mut()?;
         let style = e.style(now);
-        let scene = effects::blocks::Scene { gap: style.gap, focus: &focus, waiting: &waiting, ..effects::active::scene(self.content, self.binder, self.effect_divider, self.effect_sidebar_end, &layout.panes, &busy, &self.effect_shapes, &strokes) };
+        let scene = effects::blocks::Scene { title_bar_h: chrome::TITLE_BAR_H + style.title_grow, gap: style.gap, focus: &focus, waiting: &waiting, ..effects::active::scene(self.content, self.binder, self.effect_divider, self.effect_sidebar_end, &layout.panes, &busy, &self.effect_shapes, &strokes) };
         self.effect_strokes_now = strokes.clone();
         let blocks = effects::blocks::blocks(&scene, style.ink_borders);
         let (size, scale) = e.layer.metrics();
@@ -4474,7 +4474,7 @@ impl Render for Root {
             .filter(|(b, _)| !b.is_empty())
             .collect();
         let banner_h = BANNER_H * banners.len() as f32;
-        let top = chrome::TITLE_BAR_H;
+        let top = chrome::TITLE_BAR_H + self.effect_style().title_grow;
         // The panes start right of the sidebar and the effect's binder, if it asks for one. A
         // window shorter than its chrome lays out at zero.
         // While Cmd+B's slide runs, the panes follow the width on screen frame by frame (each

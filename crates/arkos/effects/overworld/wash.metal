@@ -157,7 +157,7 @@ constant float LANTERN_MIN_W = 30.0;
 constant float LANTERN_TONE = 0.55;
 constant float LANTERN_GLOW = 0.18;
 
-// The title bar's sky, inside its frame: dithered over its SKY_BAR_ROWS art rows from SKY_DEEP
+// The title bar's sky, inside its one-line frame: dithered over its SKY_BAR_ROWS art rows from SKY_DEEP
 // darker than the bar at the top to the bar's own colour. Its stars: none before
 // TITLE_LEFT, the traffic lights' end; one in most of the cells of TITLE_CELL columns, on a row
 // from 2 to 6 of the bar, inside the frame, the whole length of the bar. Within STAR_CLEAR of the
@@ -174,7 +174,10 @@ constant float TITLE_LEFT = 80.0;
 constant int TITLE_CELL = 8;
 constant float TITLE_STAR_CHANCE = 0.6;
 constant uint TITLE_SALT = 0x9E3779B9u;
-constant int SKY_BAR_ROWS = 9;
+constant int SKY_BAR_ROWS = 10;
+// The title bar's own frame is a single line, TITLE_FRAME_PX art pixels, so the traffic lights
+// have room above and below; the manifest's title_grow makes the bar that much taller too.
+constant int TITLE_FRAME_PX = 1;
 constant float SKY_DEEP = 0.3;
 // The cloud: CLOUD_W art pixels wide and 3 tall from row CLOUD_ROW, crossing the bar right of
 // TITLE_LEFT at CLOUD_SPEED art pixels a second from CLOUD_START of the way along, and hidden
@@ -337,7 +340,7 @@ bool on_plate(float2 p, float4 pl) {
 // Whether p is on one of the title bar's plates: behind a group of its words or icons, or behind
 // the traffic lights.
 bool plated(float2 p, float4 bar, constant ArkosInputs& u, int nb) {
-    float in = float(FRAME_PX) * ART_PX;
+    float in = float(TITLE_FRAME_PX) * ART_PX;
     float first = 1e5;
     for (int i = 0; i < nb; i++) {
         if (int(u.blocks[i].kind) != ARKOS_TITLE_GROUP_BLOCK) {
@@ -966,8 +969,9 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             col = bar;
             // Its frame, the panes' own, inside its edges.
             int2 edge = inner_ring(p, r);
-            if (edge.x < FRAME_PX) {
-                float3 line = boxed(u, p, r, bar);
+            if (edge.x < TITLE_FRAME_PX) {
+                // A single line, its corners left to the ground.
+                float3 line = edge.y == 1 ? ground(u, p) : frame_line(u);
                 // A light running the length of the bar's foot, along the frame's outer line: one
                 // pass every TITLE_GLINT_CYCLE seconds, none in the first.
                 float gk = floor(t / TITLE_GLINT_CYCLE);
@@ -1000,7 +1004,7 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             int tw = int(r.z / ART_PX);
             int c2 = q.x - cloud_at(tw, t * CLOUD2_RATE + CLOUD2_AHEAD);
             on_cloud = on_cloud || (cy >= 1 && cy < 3 && c2 >= (cy == 1 ? 2 : 0) && c2 < (cy == 1 ? CLOUD2_W - 2 : CLOUD2_W));
-            float shot = shooting(q.x, q.y - FRAME_PX, tw, SKY_BAR_ROWS - 2 * FRAME_PX, 6.0, TITLE_SHOOT_CYCLE, t + 3.0, SHOOT_SALT + 1u);
+            float shot = shooting(q.x, q.y - TITLE_FRAME_PX, tw, SKY_BAR_ROWS - 2 * TITLE_FRAME_PX, 6.0, TITLE_SHOOT_CYCLE, t + 3.0, SHOOT_SALT + 1u);
             // A bird crossing from right to left now and then, its wings up and down: none in the
             // first cycle.
             bool on_bird = false;
@@ -1009,7 +1013,7 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             if (bk >= 1.0 && bs < BIRD_FOR) {
                 float across = bs / BIRD_FOR;
                 int ax = q.x - (tw + 3 - int(across * float(tw + 6)));
-                int ay = q.y - (FRAME_PX + 1 + int(rint(sin(across * 14.0))));
+                int ay = q.y - (TITLE_FRAME_PX + 2 + int(rint(sin(across * 14.0))));
                 bool up = fmod(floor(t * BAT_FLAPS), 2.0) < 0.5;
                 on_bird = ax >= -1 && ax <= 1 && ay >= 0 && ay <= 1 && ((ax != 0) == (up ? ay == 0 : ay == 1));
             }
