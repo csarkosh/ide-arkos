@@ -495,9 +495,17 @@ impl SessionManager {
     /// Whether a session's later time has come since this was last asked, at `now`: true once
     /// for each such time, so the window repaints when a session comes back.
     pub fn later_came(&mut self, now: u64) -> bool {
-        let came = self.marks.values().any(|m| m.later_until.is_some_and(|t| t <= now && t > self.later_checked));
+        let passed = |t: Option<u64>| t.is_some_and(|t| t <= now && t > self.later_checked);
+        // A new session left alone moves to Quiet at its time, as a put-off one comes back at its.
+        let came = self.marks.values().any(|m| passed(m.later_until) || passed(m.new_until));
         self.later_checked = now;
         came
+    }
+
+    /// The user started `session` at `now`: it is new for a while (`Marks::started`).
+    pub fn mark_started(&mut self, session: SessionId, now: u64) {
+        self.marks.entry(session).or_default().started(now);
+        self.marks_changed = true;
     }
 
     /// True once after a session's state moved its marks.

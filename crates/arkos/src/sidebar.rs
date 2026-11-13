@@ -279,22 +279,28 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
                 cx.notify();
             })))
     });
-    // "+ New" sits over the list, just above its first group.
+    // "+ New session", a button over the list, just above its first group: filled in the active
+    // tab's colour with a line round it, lighter under the pointer.
     let new_row = (inbox && !files_view).then(|| {
-        let (dim, text, hover) = (c.text_dim.hsla(), c.text.hsla(), c.tab_inactive.hsla());
+        let (fill, line, text, hover) = (c.tab_active.hsla(), c.border.hsla(), c.text.hsla(), c.tab_inactive.hsla());
         div()
             .id("inbox-new")
             .flex_none()
-            .h(px(22.0))
-            .mx(px(4.0 + style.sidebar_pad))
-            .px(px(6.0))
+            .h(px(26.0))
+            .mx(px(8.0 + style.sidebar_pad))
+            .mb(px(6.0))
+            .px(px(10.0))
             .flex()
             .items_center()
+            .justify_center()
             .rounded(px(6.0))
+            .border_1()
+            .border_color(line)
+            .bg(fill)
             .text_size(px(style.ui(12.0)))
-            .text_color(dim)
+            .text_color(text)
             .cursor_pointer()
-            .hover(move |s| s.bg(hover).text_color(text))
+            .hover(move |s| s.bg(hover))
             .child("+ New session")
             .on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
                 // A new terminal joins the sessions pane, wherever the focus is.

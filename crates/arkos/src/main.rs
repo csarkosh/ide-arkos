@@ -4096,6 +4096,10 @@ impl Root {
                 if let Some(bytes) = self.resume_input.remove(&tab) {
                     self.sessions.transport.send(Request::Input { session, bytes });
                 }
+                // A shell the user asked for, not one started again after a restart, is new.
+                if !note {
+                    self.sessions.mark_started(session, sessions::now_ms());
+                }
                 if note {
                     self.sessions.notes.insert(session, sessions::Note::Restarted);
                 }

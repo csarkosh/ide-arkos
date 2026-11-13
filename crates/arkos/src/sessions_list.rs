@@ -12,6 +12,13 @@ use gpui::{div, prelude::*, px, ClickEvent, Context, Div, MouseButton, MouseDown
 use protocol::SessionId;
 use std::time::Instant;
 
+/// `text` drawn heavier than its font's own weight: drawn twice, the second half a point to the
+/// right, so it thickens by one device pixel on a Retina screen in any face, the pixel faces
+/// with a single weight included.
+fn heavy(text: &'static str, color: gpui::Hsla) -> Div {
+    div().relative().text_color(color).child(text).child(div().absolute().top_0().left(px(0.5)).child(text))
+}
+
 /// The keys a session row's highlight mark is reported under, apart from every other row's.
 const MARK_LIVE: u64 = 0x5E55_1000_0000_0000;
 const MARK_ENDED: u64 = 0x5E55_2000_0000_0000;
@@ -340,10 +347,9 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
             .gap(px(4.0))
             .text_size(px(style.ui(11.0)))
             .text_color(dim)
-            // The unread are a step heavier, so new answers catch the eye.
-            .when(kind == Attention::Unread, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
             .child(div().flex_none().w(px(10.0)).child(if folded { "\u{25b8}" } else { "\u{25be}" }))
-            .child(div().flex_1().child(kind.label()))
+            // The unread are heavier, and in the text's own colour, so new answers catch the eye.
+            .child(if kind == Attention::Unread { heavy(kind.label(), c.text.hsla()).flex_1() } else { div().flex_1().child(kind.label()) })
             .child(div().flex_none().text_color(if kind.calls() { c.text.hsla() } else { dim }).child(rows.len().to_string()))
             .cursor_pointer()
             .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {

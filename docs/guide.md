@@ -23,8 +23,9 @@ Each session also carries a line: what it is doing ("Bash: cargo test"), what it
 Bash: ffmpeg …", or its question), or the first line of what Claude last said, kept with the
 window so an update does not lose it; a session that has said nothing yet shows its terminal's
 title (Claude Code titles it with the conversation's topic), else the folder it runs in. The sidebar's
-Sessions section lists every session of the window under Needs you, Unread, Unanswered, Working,
-Quiet, Later and Done, newest change first, each with its mark, name, age and line. A click on a
+Sessions section lists every session of the window under Needs you, Unread, New, Unanswered,
+Working, Quiet, Later and Done, newest change first, each with its mark, name, age and line. A session you start (a new tab, "+ New session", or one resumed) is New until something
+happens in it, and one left untouched for ten minutes moves to Quiet. A click on a
 group's heading folds it or opens it; Quiet (not finished, nothing happening) and Done start
 folded, the window remembers what you leave folded, and typing in the Inbox's filter opens
 them all while it finds. A click on a row goes to the session, and Shift+Cmd+U ("next session that needs you") goes to the first that is your

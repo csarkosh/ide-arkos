@@ -13,6 +13,9 @@ pub enum Attention {
     NeedsYou,
     /// The agent finished its turn and the user has not looked since.
     Unread,
+    /// Just started by the user, with nothing happening in it yet: for `NEW_FOR`, after which
+    /// one still untouched is quiet.
+    New,
     /// The user looked and has not answered: still their move, no longer new.
     Unanswered,
     /// The user's last word is with the agent, which is working.
@@ -28,7 +31,7 @@ pub enum Attention {
 
 impl Attention {
     /// Every kind, in the order a list shows its groups.
-    pub const ALL: [Attention; 7] = [Attention::NeedsYou, Attention::Unread, Attention::Unanswered, Attention::Working, Attention::Quiet, Attention::Later, Attention::Done];
+    pub const ALL: [Attention; 8] = [Attention::NeedsYou, Attention::Unread, Attention::New, Attention::Unanswered, Attention::Working, Attention::Quiet, Attention::Later, Attention::Done];
 
     /// The groups a list shows folded until the user opens them: what is quiet and what is done
     /// can wait; the rest is open.
@@ -39,6 +42,7 @@ impl Attention {
         match self {
             Attention::NeedsYou => "Needs you",
             Attention::Unread => "Unread",
+            Attention::New => "New",
             Attention::Unanswered => "Unanswered",
             Attention::Working => "Working",
             Attention::Quiet => "Quiet",
@@ -70,19 +74,32 @@ pub struct Marks {
     pub unread: bool,
     /// When the session's state last changed, in milliseconds since the Unix epoch; 0, unknown.
     pub since: u64,
+    /// Started by the user and new until this time, while nothing has happened in it.
+    pub new_until: Option<u64>,
 }
+
+/// How long a session the user started stays new with nothing happening in it, in milliseconds:
+/// long enough to type its first prompt or come back to it, after which it is quiet.
+pub const NEW_FOR: u64 = 10 * 60 * 1000;
 
 impl Marks {
     /// The session began a new turn of waiting on the user at `now`: whatever the user did with
     /// the last one no longer applies. `shown` is whether the user is looking at it this moment
     /// (its tab shown and focused in the window in front), in which case it is seen at once.
     pub fn turned(&mut self, shown: bool, now: u64) {
-        *self = Marks { seen: shown, done: false, later_until: None, unread: false, since: now };
+        *self = Marks { seen: shown, done: false, later_until: None, unread: false, since: now, new_until: None };
     }
 
-    /// The session's state changed at `now` in a way that is no new turn (it went to work).
+    /// The session's state changed at `now` in a way that is no new turn (it went to work). It is
+    /// no longer new.
     pub fn moved(&mut self, now: u64) {
         self.since = now;
+        self.new_until = None;
+    }
+
+    /// The user started the session at `now`: new for `NEW_FOR`, unless something happens first.
+    pub fn started(&mut self, now: u64) {
+        *self = Marks { since: now, new_until: Some(now + NEW_FOR), ..Marks::default() };
     }
 }
 
@@ -102,10 +119,10 @@ impl Marks {
     pub fn moved_to(self, to: MoveTo) -> Marks {
         let since = self.since;
         match to {
-            MoveTo::Unread => Marks { seen: false, done: false, later_until: None, unread: true, since },
-            MoveTo::Unanswered => Marks { seen: true, done: false, later_until: None, unread: false, since },
-            MoveTo::Later(until) => Marks { seen: true, done: false, later_until: Some(until), unread: false, since },
-            MoveTo::Done => Marks { seen: true, done: true, later_until: None, unread: false, since },
+            MoveTo::Unread => Marks { seen: false, done: false, later_until: None, unread: true, since, new_until: None },
+            MoveTo::Unanswered => Marks { seen: true, done: false, later_until: None, unread: false, since, new_until: None },
+            MoveTo::Later(until) => Marks { seen: true, done: false, later_until: Some(until), unread: false, since, new_until: None },
+            MoveTo::Done => Marks { seen: true, done: true, later_until: None, unread: false, since, new_until: None },
         }
     }
 }
@@ -152,6 +169,8 @@ pub fn of(state: Option<ClaudeState>, blocked: bool, alive: bool, marks: &Marks,
         Some(ClaudeState::Waiting) if marks.seen && marks.later_until.is_none() => Attention::Unanswered,
         Some(ClaudeState::Waiting) => Attention::Unread,
         Some(ClaudeState::Working) => Attention::Working,
+        // Just started, nothing in it yet: new for a while, then quiet.
+        Some(ClaudeState::Idle) | None if marks.new_until.is_some_and(|t| t > now) => Attention::New,
         Some(ClaudeState::Idle) | None => Attention::Quiet,
     }
 }
@@ -205,7 +224,7 @@ mod tests {
         // The next turn drops both marks, and is seen at once when the user is looking at it.
         let mut m = done;
         m.turned(false, NOW);
-        assert_eq!(m, Marks { seen: false, done: false, later_until: None, unread: false, since: NOW });
+        assert_eq!(m, Marks { seen: false, done: false, later_until: None, unread: false, since: NOW, new_until: None });
         assert_eq!(of(Some(ClaudeState::Waiting), false, true, &m, NOW), Attention::Unread);
         m.turned(true, NOW + 5);
         assert_eq!(of(Some(ClaudeState::Waiting), false, true, &m, NOW), Attention::Unanswered);
@@ -249,9 +268,33 @@ mod tests {
     }
 
     #[test]
+    fn a_session_the_user_starts_is_new_until_something_happens_or_it_is_left_alone_for_a_while() {
+        let mut m = Marks::default();
+        m.started(NOW);
+        assert_eq!(of(None, false, true, &m, NOW), Attention::New);
+        assert_eq!(of(Some(ClaudeState::Idle), false, true, &m, NOW + NEW_FOR - 1), Attention::New, "a Claude Code started in it, not yet asked anything");
+        assert_eq!(of(None, false, true, &m, NOW + NEW_FOR), Attention::Quiet, "forgotten: quiet");
+        // Something happening in it ends it being new, and it does not come back.
+        assert_eq!(of(Some(ClaudeState::Working), false, true, &m, NOW), Attention::Working);
+        let mut worked = m;
+        worked.moved(NOW + 5);
+        assert_eq!(of(Some(ClaudeState::Idle), false, true, &worked, NOW + 6), Attention::Quiet);
+        let mut answered = m;
+        answered.turned(false, NOW + 5);
+        assert_eq!(answered.new_until, None);
+        // What the user says of it stands: unread, done, a block.
+        assert_eq!(of(None, false, true, &m.moved_to(MoveTo::Done), NOW), Attention::Done);
+        assert_eq!(of(None, false, true, &m.moved_to(MoveTo::Unread), NOW), Attention::Unread);
+        assert_eq!(of(Some(ClaudeState::Waiting), true, true, &m, NOW), Attention::NeedsYou);
+        assert_eq!(of(None, false, false, &m, NOW), Attention::Done, "its shell ended");
+        // A session never started here (restored, or from before) is quiet from the first.
+        assert_eq!(of(None, false, true, &Marks::default(), NOW), Attention::Quiet);
+    }
+
+    #[test]
     fn the_groups_are_listed_from_what_calls_for_the_user_to_what_is_put_away() {
-        assert_eq!(Attention::ALL.map(Attention::label), ["Needs you", "Unread", "Unanswered", "Working", "Quiet", "Later", "Done"]);
-        assert_eq!(Attention::ALL.map(Attention::calls), [true, true, false, false, false, false, false]);
+        assert_eq!(Attention::ALL.map(Attention::label), ["Needs you", "Unread", "New", "Unanswered", "Working", "Quiet", "Later", "Done"]);
+        assert_eq!(Attention::ALL.map(Attention::calls), [true, true, false, false, false, false, false, false]);
         let mut sorted = Attention::ALL;
         sorted.reverse();
         sorted.sort();
