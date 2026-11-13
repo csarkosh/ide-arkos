@@ -36,7 +36,7 @@ sessions. "Across projects" is then the repositories under the window's folder.
 ```toml
 [layout]
 name = "grid"            # "grid" or "inbox"
-placement = "inplace"    # where a tab a session opens goes in the Grid: "inplace" or "neighbor"
+placement = "neighbor"   # where a tab a session opens goes in the Grid: "neighbor" or "inplace"
 notify = true            # a macOS notification when a session needs you and the window is not in front
 ```
 
@@ -184,6 +184,10 @@ shown (its side is brought into the tree for the open and put away after); closi
 closes its tabs first. Each tab's session is remembered through the Grid (`Sides::owner`).
 This replaces "Choosing a session brings forward the tab that session opened last" and the
 fixed two panes: a split among a session's panes now stays.
+
+Cyrus, later the same day: "make "neighbor" the default new tab placement option." So
+`layout.placement` is `neighbor` unless the config says `inplace`, which changes where a plain
+`arkos open` lands for everyone who has not set it.
 
 Differences from the text above: a session's row says its folder only when it has no line of
 its own; a kept session is recorded when its tab closes (not when its shell exits, whose tab

@@ -90,8 +90,9 @@ Which session each file belongs to is remembered through the Grid, so a return t
 hands each session its tabs again.
 
 "A session's files open" (`[layout] placement`) says where a plain `arkos open` from a session
-lands in the Grid: In place, a new tab in the session's own pane, or Neighbor, the pane on its
-right, else the one on its left, else a new pane split off to its right.
+lands in the Grid: Neighbor, the default, the pane on its right, else the one on its left, else
+a new pane split off to its right, so the session stays in view; or In place, a new tab in the
+session's own pane.
 
 ## After a restart
 
@@ -838,8 +839,8 @@ window, as Keybindings (Cmd+/) does.
   The effect's intensity and `run_unfocused` are set in the config file only. Then "Show effects
   folder", which creates the folder, then reveals it. A change fades in or out
   over a fifth of a second, or cuts under Reduce Motion.
-- Layout: Grid or Inbox (see [Layouts](#layouts)), and "A session's files open", In place or
-  Neighbor: where a file a Claude Code session opens goes in the Grid.
+- Layout: Grid or Inbox (see [Layouts](#layouts)), and "A session's files open", Neighbor (the
+  default) or In place: where a file a Claude Code session opens goes in the Grid.
 - Text: the font family (installed monospace families; a configured family that is missing is
   listed first as "(not installed)"), the text preset, and Size and Line height steppers that
   write both values of the preset together and show the file's values as they are. The preset
@@ -1045,11 +1046,11 @@ drive the video, and it can make a theme, try it, check its contrast and switch 
 commands, and change the common settings the same way. `arkos guide` prints what the agent needs.
 
 `arkos open <file>` puts a video, a markdown file or any other text file in a pane of the window
-the agent runs in: by default as a new tab in the agent's own pane, made active, so it appears
-where you are working. With `[layout] placement = "neighbor"` in the config it goes beside the
-agent instead: a new tab in the pane to the right of the agent's, else the one to its left, else
-a new pane split off to its right, so the agent's own pane stays as it was. `--split
-right|down|left|up` shows it side by side whatever the setting (the guide tells
+the agent runs in: by default beside the agent, as a new tab in the pane to the right of the
+agent's, else the one to its left, else a new pane split off to its right, so the agent's own
+pane stays as it was. With `[layout] placement = "inplace"` in the config (Settings, Layout, "A
+session's files open", In place) it is a new tab in the agent's own pane instead, over the
+session. `--split right|down|left|up` shows it on that side whatever the setting (the guide tells
 agents to split only when you ask for that), and `--pane N` (numbered as Cmd+1 to Cmd+9) puts it
 in that pane. A file already open is shown where it is rather than opened twice or moved. The keyboard focus stays where you are typing unless the agent passes `--focus`. A video
 opens paused unless the agent asks otherwise, and `--at 0:12`, `--loop 0:12-0:18` and `--playing`

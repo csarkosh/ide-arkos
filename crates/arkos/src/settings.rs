@@ -1095,7 +1095,7 @@ impl SettingsWindow {
         }));
         out.push(heading("A session's files open", c).into_any_element());
         let mut places = div().flex().gap(px(6.0));
-        for (ix, (label, value, which)) in [("In place", "inplace", OpenPlacement::Inplace), ("Neighbor", "neighbor", OpenPlacement::Neighbor)].into_iter().enumerate() {
+        for (ix, (label, value, which)) in [("Neighbor", "neighbor", OpenPlacement::Neighbor), ("In place", "inplace", OpenPlacement::Inplace)].into_iter().enumerate() {
             let current = cfg.placement == which;
             let mut p = pill(("layout-placement", ix), label, current, enabled, c);
             if enabled && !current {

@@ -109,13 +109,14 @@ These are refused before anything is sent, with exit 1 and a line saying what to
 
 Where the tab goes:
 
-- With neither `--pane` nor `--split`, the tab is a new tab in your own pane (the one holding your
-  session), made its active tab. This is the default: the user asked you to show them something,
-  and your pane is where they are looking. No pane is split. The user may have chosen otherwise:
-  with `layout.placement = "neighbor"` in their config a plain open goes to the pane to the right
-  of yours, else the one to its left, else a new pane split off to your right (the answer then
-  says `(new pane)`). Either way a plain open is right; do not pass `--pane` or `--split` to
-  work round the user's choice.
+- With neither `--pane` nor `--split`, the tab goes where the user's `layout.placement` says.
+  `neighbor`, the default: a new tab in the pane to the right of yours (the one holding your
+  session), else the one to its left, else a new pane split off to your right (the answer then
+  says `(new pane)`), so your session stays in view beside what you opened. `inplace`: a new
+  tab in your own pane, over your session. In the Inbox layout it joins your session's own
+  panes, also while the user is looking at another session. Whichever it is, a plain open is
+  right: the user chose where they want to see what you show them, so do not pass `--pane` or
+  `--split` to work round it.
 - `--split right|down|left|up`: your own pane is split on that side and the tab is the new pane's
   first tab. Use it only when the user asks to see the file side by side with you ("beside you",
   "next to this", "in a split"). A later file for the same place goes in with `--pane N`, the number
@@ -138,9 +139,10 @@ position and its play state.
 `--paused`, `--playing` and `--loop` apply; a reused markdown or CSV tab switches to raw with `--raw`.
 
 Focus stays where it was. An open makes its tab the active one in its pane but never moves the
-keyboard focus to another pane, not even when it splits a new one. A plain open puts the tab in
-your pane, which is usually the focused pane, so the user's keys reach the tab they now see;
-switching back to your tab is theirs to do. `--focus` moves the focus to the tab, for when the user asks you
+keyboard focus to another pane, not even when it splits a new one. A plain open puts the tab
+beside your pane by default, so the user's keys stay in your session while they read; with
+`layout.placement = "inplace"` it is in your pane, over your session, and switching back to your
+tab is theirs to do. `--focus` moves the focus to the tab, for when the user asks you
 to hand it over ("put it in front of me").
 
 The flags:
@@ -944,8 +946,9 @@ For files in panes:
 
 - Open a file in a pane when the user asks to see, watch or review it, and offer it when you have
   just made one.
-- Open in your own pane by default; split only when the user asks to see something side by side,
-  and use `--pane N` when they name a pane. Name the pane number to the user.
+- Open with a plain `arkos open` by default, which puts the tab where the user's settings say
+  (beside your pane, unless they chose otherwise); split only when the user asks for a
+  particular side, and use `--pane N` when they name a pane. Name the pane number to the user.
 - Never open the same file twice: `open` reuses its tab for you.
 - Leave the tab open when you finish; the user closes it.
 - Pause before you talk about a frame.

@@ -122,10 +122,11 @@ pub enum LayoutName {
 #[serde(rename_all = "lowercase")]
 pub enum OpenPlacement {
     /// A new tab in the session's own pane.
-    #[default]
     Inplace,
     /// A new tab in the pane to the right of the session's, else the one to its left, else a
-    /// new pane split off to its right.
+    /// new pane split off to its right. The default: the session stays in view beside what it
+    /// opened.
+    #[default]
     Neighbor,
 }
 
@@ -139,7 +140,7 @@ pub struct LayoutConfig {
 
 impl Default for LayoutConfig {
     fn default() -> Self {
-        Self { name: LayoutName::Grid, placement: OpenPlacement::Inplace }
+        Self { name: LayoutName::Grid, placement: OpenPlacement::Neighbor }
     }
 }
 
@@ -857,9 +858,10 @@ collapsed = false
 # working, done), one shown at full size, and a side pane for the files they open.
 name = "grid"
 # Where a tab goes that a Claude Code session opens with a plain `arkos open`, in the grid.
-# "inplace": a new tab in the session's own pane. "neighbor": a new tab in the pane to its
-# right, else the one to its left, else a new pane split off to its right.
-placement = "inplace"
+# "neighbor": a new tab in the pane to its right, else the one to its left, else a new pane
+# split off to its right, so the session stays in view. "inplace": a new tab in the session's
+# own pane, over it.
+placement = "neighbor"
 
 [viewer]
 # Files larger than this open in the viewer without syntax colours; binaries show a notice.
@@ -1029,6 +1031,17 @@ pub(crate) mod tests {
         assert_eq!((c.look(), c.effect_choice()), (Look::Presets, EffectChoice::Theme));
         let c = parse("[appearance]\nlook = \"custom\"\n[custom]\neffect = \"runic\"\n[effect]\nname = \"material\"\n").unwrap();
         assert_eq!(c.effect_choice(), EffectChoice::Named("runic".into()));
+    }
+
+    #[test]
+    fn a_window_opens_in_the_grid_and_a_session_s_files_open_beside_it_unless_the_config_says_otherwise() {
+        let d = Config::default().layout;
+        assert_eq!((d.name, d.placement), (LayoutName::Grid, OpenPlacement::Neighbor));
+        assert_eq!(parse(DEFAULT_CONFIG).unwrap().layout, d, "the written defaults say the same");
+        assert_eq!(parse("").unwrap().layout, d, "and so does a config from before the layouts");
+        let c = parse("[layout]\nname = \"inbox\"\nplacement = \"inplace\"\n").unwrap();
+        assert_eq!((c.layout.name, c.layout.placement), (LayoutName::Inbox, OpenPlacement::Inplace));
+        assert!(parse("[layout]\nplacement = \"right\"\n").is_err());
     }
 
     #[test]
