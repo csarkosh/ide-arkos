@@ -520,7 +520,7 @@ Things only a person at the screen can check, in order of value:
 - sessions: every group's heading has a chevron and folds or opens its rows on a click, Quiet
   and Done folded on a first open; the Unread heading is visibly heavier than the others, in
   Departure Mono too; what is folded is the same after a relaunch
-- sessions: "+ New session" is a filled button with a line round it; the session it starts is
+- sessions: "+ New session" is a small filled button, as wide as its words, at the left under the filter; the session it starts is
   listed under New, leaves New at its first prompt, and an untouched one is under Quiet ten
   minutes later without a click
 - layouts: under overworld the Inbox header's "Mark unread" and "Done" end left of the gem,

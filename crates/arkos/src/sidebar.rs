@@ -283,21 +283,19 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
     // tab's colour with a line round it, lighter under the pointer.
     let new_row = (inbox && !files_view).then(|| {
         let (fill, line, text, hover) = (c.tab_active.hsla(), c.border.hsla(), c.text.hsla(), c.tab_inactive.hsla());
-        div()
+        // As wide as its words, at the list's left, under the filter.
+        let button = div()
             .id("inbox-new")
             .flex_none()
-            .h(px(26.0))
-            .mx(px(8.0 + style.sidebar_pad))
-            .mb(px(6.0))
-            .px(px(10.0))
+            .h(px(20.0))
+            .px(px(8.0))
             .flex()
             .items_center()
-            .justify_center()
-            .rounded(px(6.0))
+            .rounded(px(5.0))
             .border_1()
             .border_color(line)
             .bg(fill)
-            .text_size(px(style.ui(12.0)))
+            .text_size(px(style.ui(11.0)))
             .text_color(text)
             .cursor_pointer()
             .hover(move |s| s.bg(hover))
@@ -306,7 +304,8 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
                 // A new terminal joins the sessions pane, wherever the focus is.
                 let pane = root.tree.inbox_panes().map_or(root.tree.focused, |(sessions, _)| sessions);
                 root.new_terminal_tab(pane, cx);
-            }))
+            }));
+        div().flex_none().flex().pl(px(8.0 + style.sidebar_pad)).pb(px(4.0)).child(button)
     });
     if inbox && !files_view {
         // No Worktrees section to say where it starts.
