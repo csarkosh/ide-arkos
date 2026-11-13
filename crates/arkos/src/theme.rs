@@ -205,7 +205,7 @@ pub const BUILTIN: [(&str, &str); 10] = [
     ("lavender-watercolor", include_str!("../themes/lavender-watercolor.toml")),
     ("lavender-material", include_str!("../themes/lavender-material.toml")),
     ("matrix", include_str!("../themes/matrix.toml")),
-    ("navy-runic", include_str!("../themes/navy-runic.toml")),
+    ("tokyo-rain", include_str!("../themes/tokyo-rain.toml")),
     ("composition-notebook", include_str!("../themes/composition-notebook.toml")),
     ("material", include_str!("../themes/material.toml")),
     ("arabia-solar", include_str!("../themes/arabia-solar.toml")),
@@ -252,7 +252,7 @@ fn background_kind(window_bg: Rgb) -> Appearance {
 
 /// Built-in themes that were renamed: (the old name, the name now). A config, a command or a
 /// story written before the rename still names the old one.
-pub const RENAMED: &[(&str, &str)] = &[("peach-light", "peach-watercolor"), ("peach-material", "peach-watercolor"), ("lavender-light", "lavender-watercolor")];
+pub const RENAMED: &[(&str, &str)] = &[("peach-light", "peach-watercolor"), ("peach-material", "peach-watercolor"), ("lavender-light", "lavender-watercolor"), ("navy-runic", "tokyo-rain")];
 
 /// The theme's name now: a built-in's old name gives its new one, any other name itself.
 pub fn current_name(name: &str) -> &str {
@@ -885,13 +885,19 @@ mod tests {
     }
 
     #[test]
-    fn navy_runic_is_navy_s_colours_and_fonts_with_the_runic_effect() {
-        let (navy, runic) = (builtin("navy").unwrap(), builtin("navy-runic").expect("navy-runic is built in"));
-        assert_eq!(runic.name, "navy-runic");
+    fn tokyo_rain_is_navy_s_colours_and_fonts_with_the_runic_effect() {
+        let (navy, runic) = (builtin("navy").unwrap(), builtin("tokyo-rain").expect("tokyo-rain is built in"));
+        assert_eq!(runic.name, "tokyo-rain");
         assert_eq!((&runic.chrome, &runic.terminal, &runic.semantic, &runic.tree, &runic.viewer), (&navy.chrome, &navy.terminal, &navy.semantic, &navy.tree, &navy.viewer));
         assert_eq!((&runic.font, runic.appearance), (&navy.font, navy.appearance));
         assert_eq!(runic.recommended_effect(), Some("runic"));
         assert_eq!(navy.recommended_effect(), None, "navy, the default, still draws plain");
+        // It was `navy-runic`: the old name still loads it, and a config naming it is moved.
+        assert_eq!(current_name("navy-runic"), "tokyo-rain");
+        assert_eq!(builtin("navy-runic").unwrap().name, "tokyo-rain");
+        let dir = tempfile::tempdir().unwrap();
+        let moved = crate::config::rename_themes("[theme]\ndark = \"navy-runic\"\nlight = \"peach-watercolor\"\n", dir.path()).unwrap();
+        assert!(moved.contains("dark = \"tokyo-rain\""), "{moved}");
     }
 
     #[test]
@@ -903,7 +909,7 @@ mod tests {
             assert_eq!(t.kind(), declared, "{name}");
         }
         let dark: Vec<&str> = BUILTIN.iter().filter(|(n, _)| builtin(n).unwrap().kind() == Appearance::Dark).map(|(n, _)| *n).collect();
-        assert_eq!(dark, ["navy", "timo-purple", "matrix", "navy-runic"]);
+        assert_eq!(dark, ["navy", "timo-purple", "matrix", "tokyo-rain"]);
     }
 
     #[test]
@@ -1056,7 +1062,7 @@ mod tests {
         assert_eq!(load("navy", dir.path()).unwrap().chrome.window_bg, rgb(0x000000));
         std::fs::write(dir.path().join("mine.toml"), BUILTIN[1].1.replace("name = \"timo-purple\"", "name = \"mine\"")).unwrap();
         assert_eq!(load("mine", dir.path()).unwrap().name, "mine");
-        assert_eq!(names(dir.path()), vec!["arabia-solar".to_string(), "composition-notebook".to_string(), "lavender-material".to_string(), "lavender-watercolor".to_string(), "material".to_string(), "matrix".to_string(), "mine".to_string(), "navy".to_string(), "navy-runic".to_string(), "peach-watercolor".to_string(), "timo-purple".to_string()]);
+        assert_eq!(names(dir.path()), vec!["arabia-solar".to_string(), "composition-notebook".to_string(), "lavender-material".to_string(), "lavender-watercolor".to_string(), "material".to_string(), "matrix".to_string(), "mine".to_string(), "navy".to_string(), "peach-watercolor".to_string(), "timo-purple".to_string(), "tokyo-rain".to_string()]);
         let e = load("nope", dir.path()).unwrap_err();
         assert!(e.contains("nope") && e.contains(&dir.path().display().to_string()), "{e}");
         assert!(load("../navy", dir.path()).is_err());
@@ -1142,7 +1148,7 @@ mod tests {
         assert_eq!(l[3], ("lavender-watercolor".into(), Source::BuiltIn));
         assert_eq!(l[4], ("lavender-material".into(), Source::BuiltIn));
         assert_eq!(l[5], ("matrix".into(), Source::BuiltIn));
-        assert_eq!(l[6], ("navy-runic".into(), Source::BuiltIn));
+        assert_eq!(l[6], ("tokyo-rain".into(), Source::BuiltIn));
         assert_eq!(l[7], ("composition-notebook".into(), Source::BuiltIn));
         assert_eq!(l[8], ("material".into(), Source::BuiltIn));
         assert_eq!(l[9], ("arabia-solar".into(), Source::BuiltIn));
@@ -1160,7 +1166,7 @@ mod tests {
         assert_eq!(lines[3], "lavender-watercolor (built in, light)");
         assert_eq!(lines[4], "lavender-material (built in, light)");
         assert_eq!(lines[5], "matrix (built in, dark)");
-        assert_eq!(lines[6], "navy-runic (built in, dark)");
+        assert_eq!(lines[6], "tokyo-rain (built in, dark)");
         assert_eq!(lines[7], "composition-notebook (built in, light)");
         assert_eq!(lines[8], "material (built in, light)");
         assert_eq!(lines[9], "arabia-solar (built in, light)");

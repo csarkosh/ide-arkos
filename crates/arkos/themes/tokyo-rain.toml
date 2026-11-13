@@ -1,10 +1,10 @@
 # The schema of every key is in docs/themes.md.
-# Navy Runic: Navy's colours and fonts exactly, drawn with the runic effect: faint rune rain
+# Tokyo Rain (it was `navy-runic`, and that name still loads it): Navy's colours and fonts exactly, drawn with the runic effect: faint rune rain
 # behind the panes, glowing edges and glowing text, all in Navy's blue, since the effect turns
 # its greens to the hue of the theme's focus ring. A test holds every colour to Navy's, so a
 # change to Navy is made here too. Navy's dimmer colours (hints, comments) are under the glyph
 # shader's 0.45 and stay plain while the brighter text glows.
-name = "navy-runic"
+name = "tokyo-rain"
 appearance = "dark"
 
 [effect]

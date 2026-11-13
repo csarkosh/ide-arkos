@@ -527,9 +527,9 @@ config or `arkos effect use space` still draws it. It is a calm night sky of twi
 nebula, a planet drifting across over several minutes, and a shooting star every ten seconds
 or so; pane edges, videos and
 tables outlined in glowing lines with soft bars of light sweeping along them every few seconds, the highlights glowing softly, and the text as a still
-holo display (a cool tint, faint scanlines and a soft glow), emoji with it. Matrix and Navy Runic come
+holo display (a cool tint, faint scanlines and a soft glow), emoji with it. Matrix and Tokyo Rain come
 with `runic`: faint columns of runes falling at different speeds behind everything, pane edges in
-thin lines of the theme's accent (green under Matrix, blue under Navy Runic), and the text as glowing type; now and then a letter flickers, mirrored
+thin lines of the theme's accent (green under Matrix, blue under Tokyo Rain), and the text as glowing type; now and then a letter flickers, mirrored
 and brighter for a tenth of a second. In a terminal, a cell whose text changes scrambles through
 random characters for a moment before it settles (longer while Claude is working), and fresh
 text starts brighter and cools over a second and a half. Material and Lavender Material come with `material`: the
@@ -555,7 +555,7 @@ Timo Purple comes with `overworld`: a pixel-art night overworld across the windo
 carry any effect, since an effect reads the theme's colours. Settings, Appearance offers None,
 "Theme's choice" and Material; any other effect is chosen with `arkos effect use <name>` or
 `[effect] name` in the config file. "Theme's choice" follows the theme's own recommendation: `watercolor`
-for Peach Watercolor and Lavender Watercolor, `runic` for Matrix and Navy Runic, `material` for Material and Lavender Material, `notebook` for Composition Notebook, `overworld` for Timo Purple and Arabia Solar, and none for Navy (the default).
+for Peach Watercolor and Lavender Watercolor, `runic` for Matrix and Tokyo Rain, `material` for Material and Lavender Material, `notebook` for Composition Notebook, `overworld` for Timo Purple and Arabia Solar, and none for Navy (the default).
 Effects stay out of About, Settings, Keybindings and the chooser, which keep their plain look.
 Under Reduce Motion the wash holds still and draws only when something changes, no letter
 glitches, a changed cell settles at once, and a hidden,
@@ -942,7 +942,7 @@ theme sets every key Claude Code documents, on the `dark-ansi` base:
 | `rainbow_violet_shimmer` | text | `ansi:white` | the `ultrathink` rainbow, shimmer |
 
 Themes are one TOML file each in `~/.config/arkos/themes/`; `navy`,
-`timo-purple` (deep violet with cyan accents, set in the pixel face Departure Mono, recommending `overworld`), `arabia-solar` (Timo Purple by day: Peach Watercolor's sand and cream with a burnt-orange accent, the same pixel face and the same `overworld`, which on a light theme draws a desert kingdom of the old tales: a domed palace with minarets, palms, dunes and a carpet riding the air, under a sun, and has new terminal text gather out of blown sand, gold then orange then ink), `peach-watercolor` (warm cream and peach, recommending `watercolor`; it was `peach-light`, and `peach-material` in 0.8.11), `lavender-watercolor` (a VS Code lavender look, recommending `watercolor`; it was `lavender-light`), `lavender-material` (the same colours and fonts, recommending `material`; the old names still load, and a config naming one is moved to the new name at launch), `matrix` (black and phosphor green), `navy-runic` (Navy's colours with rune rain in Navy's blue), the last two recommending the `runic` effect, `composition-notebook` (ruled off-white pages in blue-black ballpoint, Chalkboard SE and Monaspace Radon, recommending `notebook`) and `material` (white cards on a pale cool frame with a deep blue accent, DM Sans and Roboto Mono, recommending `material`) are built in. Each theme says whether it is dark or light, and Settings lists the dark ones under Dark theme and the light ones under Light theme. [themes.md](themes.md) documents every key;
+`timo-purple` (deep violet with cyan accents, set in the pixel face Departure Mono, recommending `overworld`), `arabia-solar` (Timo Purple by day: Peach Watercolor's sand and cream with a burnt-orange accent, the same pixel face and the same `overworld`, which on a light theme draws a desert kingdom of the old tales: a domed palace with minarets, palms, dunes and a carpet riding the air, under a sun, and has new terminal text gather out of blown sand, gold then orange then ink), `peach-watercolor` (warm cream and peach, recommending `watercolor`; it was `peach-light`, and `peach-material` in 0.8.11), `lavender-watercolor` (a VS Code lavender look, recommending `watercolor`; it was `lavender-light`), `lavender-material` (the same colours and fonts, recommending `material`; the old names still load, and a config naming one is moved to the new name at launch), `matrix` (black and phosphor green), `tokyo-rain` (Navy's colours with rune rain in Navy's blue), the last two recommending the `runic` effect, `composition-notebook` (ruled off-white pages in blue-black ballpoint, Chalkboard SE and Monaspace Radon, recommending `notebook`) and `material` (white cards on a pale cool frame with a deep blue accent, DM Sans and Roboto Mono, recommending `material`) are built in. Each theme says whether it is dark or light, and Settings lists the dark ones under Dark theme and the light ones under Light theme. [themes.md](themes.md) documents every key;
 `arkos theme list` names the available themes and `arkos theme validate <file>` checks one
 (`ok: {name}`, or the error and exit status 1).
 "Extract built-in themes" in the palette writes the built-ins there to copy from. A theme chosen

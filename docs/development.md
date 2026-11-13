@@ -686,9 +686,9 @@ Things only a person at the screen can check, in order of value:
   --ignored` passes (the suite skips it, since the time means nothing under load)
 - colours: vim or htop with a 256-colour scheme in Matrix shows green-cast colours, not xterm's
 - colours: Claude Code's colours after a restart in Matrix are the theme's greens
-- effects: Navy Runic: the rain, the pane edges and the glowing text in Navy's blue, the hints
+- effects: Tokyo Rain: the rain, the pane edges and the glowing text in Navy's blue, the hints
   and comments plain; a config with `effect.name = "matrix"` still draws the runic effect
-- themes: Settings, Appearance: Dark theme lists navy, timo-purple, matrix and navy-runic, Light
+- themes: Settings, Appearance: Dark theme lists navy, timo-purple, matrix and tokyo-rain, Light
   theme lists peach-watercolor, lavender-watercolor, lavender-material, composition-notebook and
   material; a dark theme set under `[theme] light` shows there
   marked "(a dark theme)"
@@ -1018,7 +1018,7 @@ Things only a person at the screen can check, in order of value:
   `arkos theme current` showing it; afterwards `skills/arkos-ide/SKILL.md` exists in that
   session's config folder (`CLAUDE_CONFIG_DIR`, else `~/.claude`)
 - the same with the skill installed (`arkos guide --install`) and the hooks removed
-- `arkos theme list` shows `navy`, `timo-purple`, `peach-watercolor`, `lavender-watercolor`, `lavender-material`, `matrix`, `navy-runic`, `composition-notebook`, `material` and `arabia-solar` as built in, each dark or light; with Timo Purple
+- `arkos theme list` shows `navy`, `timo-purple`, `peach-watercolor`, `lavender-watercolor`, `lavender-material`, `matrix`, `tokyo-rain`, `composition-notebook`, `material` and `arabia-solar` as built in, each dark or light; with Timo Purple
   chosen, the purple, cyan and green match the screenshot (check at the offsite demo)
 - About open, close the project window with the red button: the app quits
 - Settings opened from the chooser, a theme or text change, then a folder: the project window

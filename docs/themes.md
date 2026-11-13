@@ -1,6 +1,6 @@
 # Themes
 
-A theme is one TOML file with a `name` and five tables: `chrome`, `terminal`, `semantic`, `tree` and `viewer`, plus an optional `font` table. Every colour key is required and every value is a `#rrggbb` colour; an unknown or missing key is an error. Arkos ships ten themes built in (`navy`, `timo-purple`, `peach-watercolor`, `lavender-watercolor`, `lavender-material`, `matrix`, `navy-runic`, `composition-notebook`, `material`, `arabia-solar`; `peach-light` and `peach-material` (0.8.11) are old names of `peach-watercolor`, and `lavender-light` of `lavender-watercolor`; they still load them); the files in `crates/arkos/themes/` are complete examples to copy.
+A theme is one TOML file with a `name` and five tables: `chrome`, `terminal`, `semantic`, `tree` and `viewer`, plus an optional `font` table. Every colour key is required and every value is a `#rrggbb` colour; an unknown or missing key is an error. Arkos ships ten themes built in (`navy`, `timo-purple`, `peach-watercolor`, `lavender-watercolor`, `lavender-material`, `matrix`, `tokyo-rain`, `composition-notebook`, `material`, `arabia-solar`; `peach-light` and `peach-material` (0.8.11) are old names of `peach-watercolor`, and `lavender-light` of `lavender-watercolor`; they still load them); the files in `crates/arkos/themes/` are complete examples to copy.
 
 ## Contrast rules
 
@@ -117,7 +117,7 @@ Optional. A shader effect drawn under the window's text.
 
 | Key | What it sets |
 | --- | --- |
-| `name` | The effect the theme was designed with; the user's `effect.name` in `config.toml` or Settings may choose another. `peach-watercolor` and `lavender-watercolor` set `watercolor`, `matrix` and `navy-runic` set `runic`, `composition-notebook` sets `notebook`, `timo-purple` and `arabia-solar` set `overworld`, and `material`, `peach-watercolor` and `lavender-material` set `material`; `navy`, the default, sets none and draws plain. |
+| `name` | The effect the theme was designed with; the user's `effect.name` in `config.toml` or Settings may choose another. `peach-watercolor` and `lavender-watercolor` set `watercolor`, `matrix` and `tokyo-rain` set `runic`, `composition-notebook` sets `notebook`, `timo-purple` and `arabia-solar` set `overworld`, and `material`, `peach-watercolor` and `lavender-material` set `material`; `navy`, the default, sets none and draws plain. |
 
 ## Adding a theme
 

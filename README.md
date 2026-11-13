@@ -37,7 +37,7 @@ the command palette once, and the tabs follow what each session is doing.
 
 ## Who it's for
 
-Six ways people use it, each in one of the built-in themes (navy-runic, lavender-material,
+Six ways people use it, each in one of the built-in themes (tokyo-rain, lavender-material,
 peach-watercolor, matrix, composition-notebook, material); every picture is a real session, taken
 by [`scripts/shoot.sh`](docs/development.md#screenshots).
 
