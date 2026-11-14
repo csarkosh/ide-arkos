@@ -66,6 +66,9 @@ name = "dark-inbox"
 theme = "dark"
 layout = "inbox"
 timeout_secs = 60
+# Side by side, as Cyrus asked for this one (2026-11-14): the files pane dragged by its number
+# from the top, where a narrow window stacks it, onto the session's right edge.
+drag = [[0.195, 0.07], [0.96, 0.72]]
 
 # The Arabia Solar picture in the Inbox layout, for the apps page's Inbox and Grid switch: the sessions as a list
 # by what they ask of you, one shown at full size with the files it opened beside it.

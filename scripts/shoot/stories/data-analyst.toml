@@ -53,3 +53,6 @@ name = "dark-inbox"
 theme = "dark"
 layout = "inbox"
 timeout_secs = 60
+# Side by side, as Cyrus asked for this one (2026-11-14): the files pane dragged by its number
+# from the top, where a narrow window stacks it, onto the session's right edge.
+drag = [[0.188, 0.06], [0.96, 0.72]]
