@@ -36,10 +36,26 @@ claude = "Add tests for parseDuration in src/time.js to test/time.test.js: 30s, 
 name = "site"
 browser = "http://localhost:4173/"
 
+# For the Inbox's range: more sessions, each in another state. Needs you (deps asks a question), Later (og tags, put off two hours) and Done (dark mode, closed this afternoon), beside the two that finish.
+[[pane]]
+name = "deps"
+claude = "Before you do anything else, use your AskUserQuestion tool to ask me one question: should I move the dependencies to their latest minor versions only, or to new major versions too? Offer those two as the options. Then wait for my answer."
+
+[[pane]]
+name = "og tags"
+claude = ""
+later_mins = 120
+line = "Add Open Graph tags and a share image to the home page"
+
+[[ended]]
+name = "dark mode"
+line = "The site follows the system's dark mode now, and both themes pass the contrast check."
+mins_ago = 180
+
 [layout]
 split = "horizontal"
 ratio = 0.6
-first = { tabs = ["rate limit", "durations"] }
+first = { tabs = ["rate limit", "durations", "deps", "og tags"] }
 second = { tabs = ["site"] }
 
 [[shot]]

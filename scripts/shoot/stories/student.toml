@@ -33,11 +33,30 @@ view = "psets/pset4/knapsack.py"
 name = "tutor"
 claude = "The tests in psets/pset4 fail. Read lectures/06-dynamic-programming.md first, then explain the bug to me in two or three plain sentences, as a classmate would. Fix psets/pset4/knapsack.py and run the tests with: cd psets/pset4 && python3 -m unittest. Then add a Practice section at the end of the lecture notes with three short questions on memoisation versus tabulation, and tick the knapsack item in its checklist. Change nothing else."
 
+# For the Inbox's range: more sessions, each in another state. Working (stress runs a five-minute check), New (essay, a session just opened) and Done (two from earlier in the week), beside the tutor.
+[[pane]]
+name = "stress"
+claude = "Run python3 psets/pset4/stress.py in the foreground with a ten minute timeout (it takes several minutes; do not run it in the background), then tell me in one line whether any case disagreed with the brute force."
+
+[[pane]]
+name = "essay"
+new = true
+
+[[ended]]
+name = "pset 3"
+line = "All 12 tests pass now: the memo table was one row short."
+mins_ago = 1500
+
+[[ended]]
+name = "flashcards"
+line = "I wrote 40 cards for lectures 1 to 5 into cards.csv."
+mins_ago = 2900
+
 [layout]
 split = "horizontal"
 ratio = 0.5
 first = { tabs = ["notes", "pset"] }
-second = { tabs = ["tutor"] }
+second = { tabs = ["tutor", "stress", "essay"] }
 
 [[shot]]
 name = "dark"

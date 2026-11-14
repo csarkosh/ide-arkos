@@ -45,11 +45,22 @@ name = "shell"
 # A short prompt: the runner's host name is forty characters of noise.
 run = "PS1='$ '; tail -n 30 logs/auth.log"
 
+# For the Inbox's range: more sessions, each in another state. Needs you (rotate asks a question) and Later (pentest, put off until tomorrow), beside the three at work and the shell (Quiet).
+[[pane]]
+name = "rotate"
+claude = "Before you do anything else, use your AskUserQuestion tool to ask me one question: should the session signing key be rotated now, signing everyone out, or at the next deploy? Offer those two as the options. Then wait for my answer."
+
+[[pane]]
+name = "pentest"
+claude = ""
+later_mins = 960
+line = "Write up the pentest findings for the client report"
+
 [layout]
 split = "horizontal"
 ratio = 0.58
 first = { tabs = ["audit", "traversal"] }
-second = { split = "vertical", ratio = 0.5, first = { tabs = ["logs"] }, second = { tabs = ["shell"] } }
+second = { split = "vertical", ratio = 0.5, first = { tabs = ["logs", "rotate", "pentest"] }, second = { tabs = ["shell"] } }
 
 [[shot]]
 name = "dark"

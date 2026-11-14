@@ -333,7 +333,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
     let mut frame = story::centred(w, h, screen.w, screen.h, screen.top);
     let ws_file = story::workspace_file(&dirs.state.join("workspaces"), &demo);
     std::fs::create_dir_all(ws_file.parent().expect("workspaces dir"))?;
-    std::fs::write(&ws_file, serde_json::to_string_pretty(&story::workspace_json(story, &demo, &sessions, &worktrees, frame))?)?;
+    std::fs::write(&ws_file, serde_json::to_string_pretty(&story::workspace_json(story, &demo, &sessions, &worktrees, frame, now_ms()))?)?;
 
     // 7. The window, from the dev build, on the demo. It writes Claude Code's Arkos theme at
     //    startup where Claude Code has a config folder; on a fresh runner that folder may not
@@ -398,6 +398,9 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
             client.input(SessionId(sessions[&pane.name]), "\r")?;
         }
         pause(Duration::from_secs(4))?;
+        // An empty prompt starts Claude Code and leaves it at its prompt, a session not yet asked
+        // anything; the rest are sent and waited on.
+        let claude: Vec<_> = claude.into_iter().filter(|p| p.claude.as_deref().is_some_and(|c| !c.is_empty())).collect();
         for pane in &claude {
             let id = SessionId(sessions[&pane.name]);
             client.input(id, pane.claude.as_deref().expect("filtered"))?;
@@ -688,7 +691,8 @@ fn wait_for(shot: &Waits, story: &Story, sessions: &BTreeMap<String, u64>, clien
     let started = Instant::now();
     let deadline = started + Duration::from_secs(shot.timeout_secs);
     let settle_until: Option<Instant> = None;
-    let claude_panes: Vec<&str> = story.panes.iter().filter(|p| p.claude.is_some()).map(|p| p.name.as_str()).collect();
+    // A session left at its prompt (an empty one) never works and is not waited on.
+    let claude_panes: Vec<&str> = story.panes.iter().filter(|p| p.claude.as_deref().is_some_and(|c| !c.is_empty())).map(|p| p.name.as_str()).collect();
     loop {
         let states = client.states()?;
         let state_of = |name: &str| sessions.get(name).and_then(|id| states.get(id)).copied().unwrap_or(ClaudeState::Idle);
@@ -1592,3 +1596,8 @@ mod tests {
     }
 }
 
+
+/// Now, in milliseconds since the Unix epoch, as the window dates its marks.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}

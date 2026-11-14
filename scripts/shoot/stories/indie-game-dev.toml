@@ -37,11 +37,25 @@ name = "tests"
 # A short prompt: the runner's host name is forty characters of noise.
 run = "PS1='$ '; clear; python3 -m unittest -q"
 
+# For the Inbox's range: more sessions, each in another state. Needs you (music asks a question), Working (balance simulates 10,000 fights) and Done (save files, closed this morning), beside rules and the tests shell (Quiet).
+[[pane]]
+name = "balance"
+claude = "Run python3 sim/balance.py --fights 10000 in the foreground with a ten minute timeout (it takes several minutes; do not run it in the background), then tell me in one line which enemy wins too often."
+
+[[pane]]
+name = "music"
+claude = "Before you do anything else, use your AskUserQuestion tool to ask me one question: what mood should the forest level's music have? Offer eerie, cozy and driving as the options. Then wait for my answer."
+
+[[ended]]
+name = "save files"
+line = "Saves now go to a temporary file and a rename, so a crash mid-save keeps the old one."
+mins_ago = 300
+
 [layout]
 split = "horizontal"
 # The enemies' table wants about three fifths of the width, or its headers wrap.
 ratio = 0.38
-first = { tabs = ["rules"] }
+first = { tabs = ["rules", "balance", "music"] }
 second = { split = "vertical", ratio = 0.66, first = { tabs = ["enemies"] }, second = { tabs = ["tests"] } }
 
 [[shot]]
