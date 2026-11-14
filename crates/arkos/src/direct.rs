@@ -76,11 +76,14 @@ pub fn plan_open_in(tree: &Tree, path: &Path, place: &Placement, reuse: bool, an
 
 /// Where a plain open lands beside `from`: a new tab in the pane to its right, else in the one
 /// to its left, else (a single pane, or panes only above and below) a new pane split off to its
-/// right.
+/// right. On a narrow window (`tree::is_narrow`, Inbox stacking spec, section 2) the panes above
+/// and below come first, then right and left, and the new pane goes on top.
 pub fn neighbor_step(tree: &Tree, from: PaneId, bounds: Rect) -> OpenStep {
-    match tree.neighbor(from, Side::Right, bounds).or_else(|| tree.neighbor(from, Side::Left, bounds)) {
+    let narrow = crate::tree::is_narrow(bounds.w);
+    let order: &[Side] = if narrow { &[Side::Top, Side::Bottom, Side::Right, Side::Left] } else { &[Side::Right, Side::Left] };
+    match order.iter().find_map(|side| tree.neighbor(from, *side, bounds)) {
         Some(pane) => OpenStep::AddTo { pane },
-        None => OpenStep::SplitFrom { pane: from, side: Side::Right },
+        None => OpenStep::SplitFrom { pane: from, side: if narrow { Side::Top } else { Side::Right } },
     }
 }
 
@@ -397,7 +400,16 @@ impl Root {
         // tree is regrouped at once, and the tab found again where it landed.
         let (pane, idx, new_pane) = if self.is_inbox() {
             let opened = self.tree.tab_id(pane, idx);
-            self.tree.arrange_inbox();
+            self.inbox.narrow = crate::tree::is_narrow(self.content.w);
+            self.tree.arrange_inbox(self.inbox.side_place());
+            // A new side: a plain open puts it where the Inbox puts sides, a split where it said,
+            // with the divider the Inbox keeps for that way round.
+            if !had_side {
+                if let Some(now) = self.tree.inbox_place() {
+                    let side = if matches!(a.place, Placement::Here) { self.inbox.new_side() } else { now.side };
+                    self.tree.inbox_set_place(self.inbox.place_at(side));
+                }
+            }
             let at = opened.and_then(|tab| self.tree.panes().into_iter().find_map(|p| self.tree.pane(p)?.ids.iter().position(|t| *t == tab).map(|i| (p, i))));
             let (pane, idx) = at.unwrap_or((pane, idx));
             (pane, idx, !reused && !had_side && self.tree.inbox_panes().is_some_and(|(sessions, _)| sessions != pane))
@@ -698,7 +710,7 @@ mod tests {
 
     #[test]
     fn a_neighbor_open_goes_to_the_pane_on_the_right_then_the_left_and_splits_right_with_neither() {
-        let bounds = Rect { x: 0.0, y: 0.0, w: 1200.0, h: 800.0 };
+        let bounds = Rect { x: 0.0, y: 0.0, w: 1800.0, h: 1000.0 };
         let plan = |tree: &Tree, from: PaneId, place: Placement| plan_open_in(tree, Path::new("/p/a.md"), &place, true, Some(from), OpenPlacement::Neighbor, bounds).unwrap();
         // A single pane: a new pane to its right, and from then on that pane takes the tabs.
         let mut tree = Tree::new(terminal(1));
@@ -720,6 +732,24 @@ mod tests {
         assert_eq!(plan_open_in(&stacked, Path::new("/p/b.md"), &Placement::Here, true, Some(top), OpenPlacement::Neighbor, bounds), Ok(OpenStep::SplitFrom { pane: top, side: Side::Right }));
         // In place, the config's default, is the session's own pane as before.
         assert_eq!(plan_open_in(&tree, Path::new("/p/b.md"), &Placement::Here, true, Some(agent), OpenPlacement::Inplace, bounds), Ok(OpenStep::AddTo { pane: agent }));
+    }
+
+    #[test]
+    fn on_a_narrow_window_a_neighbor_open_goes_above_then_below_then_beside_and_splits_on_top() {
+        let narrow = Rect { x: 0.0, y: 0.0, w: 1200.0, h: 800.0 };
+        let open = |tree: &Tree, from: PaneId| plan_open_in(tree, Path::new("/p/b.md"), &Placement::Here, true, Some(from), OpenPlacement::Neighbor, narrow).unwrap();
+        // A single pane: a new pane on top of it.
+        let mut tree = Tree::new(terminal(1));
+        let agent = tree.panes()[0];
+        assert_eq!(open(&tree, agent), OpenStep::SplitFrom { pane: agent, side: Side::Top });
+        let top = apply(&mut tree, OpenStep::SplitFrom { pane: agent, side: Side::Top }, viewer("/p/a.md"));
+        assert_eq!(open(&tree, agent), OpenStep::AddTo { pane: top }, "the pane above takes the tabs");
+        assert_eq!(open(&tree, top), OpenStep::AddTo { pane: agent }, "from the top one, the pane below");
+        // Panes only side by side: the one beside is used rather than splitting again.
+        let mut wide = Tree::new(terminal(1));
+        let a = wide.panes()[0];
+        let right = wide.split(a, Side::Right, terminal(2)).unwrap();
+        assert_eq!(open(&wide, a), OpenStep::AddTo { pane: right });
     }
 
     #[test]

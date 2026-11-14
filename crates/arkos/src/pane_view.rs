@@ -547,8 +547,12 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
             // gpui calls every drag-move listener, hovered or not.
             if ev.bounds.contains(&ev.event.position) {
+                let d = ev.drag(cx);
+                // A pane over itself has nowhere to go; nor, in the Inbox, has anything over the
+                // sessions' middle.
                 let zone = drag::zone_for(ev.bounds, ev.event.position);
-                root.drop_target = Some(drag::DropTarget::Pane { pane, zone });
+                let nowhere = (d.whole && d.pane == pane) || (zone == drag::Zone::Center && root.is_inbox() && root.tree.inbox_panes().is_some_and(|(s, _)| s == pane));
+                root.drop_target = (!nowhere).then_some(drag::DropTarget::Pane { pane, zone });
                 cx.notify();
             }
         }))
@@ -760,20 +764,41 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
         .text_color(fg.hsla())
         .font_family(root.ui_family())
         .text_size(px(style.ui(12.0)))
-        .child(match number_slot(style) {
-            // Painted with its ink centred on the slot, which is the chip's place.
-            Some((inset, width)) => {
-                let (label, family, size, color): (gpui::SharedString, _, _, _) = (format!("{number}").into(), root.ui_family(), style.ui(12.0), dim.hsla());
-                div().flex_none().ml(px(inset)).mr(px(6.0)).w(px(width)).h_full().child(gpui::canvas(|_, _, _| (), move |b, _, window, cx| paint_centred(&label, family.clone(), size, color, b, window, cx)).size_full())
-            }
-            None => div().px(px(8.0)).text_color(dim.hsla()).child(format!("{number}")),
+        .child({
+            // The pane's number is its grip: dragged, the whole pane goes with it.
+            let grip = p.ids.get(p.active).map(|id| drag::TabDrag {
+                pane,
+                idx: p.active,
+                tab: *id,
+                label: format!("Pane {number} \u{b7} {}", tabs.get(p.active).map(|t| t.0.as_str()).unwrap_or("")),
+                whole: true,
+                position: Default::default(),
+                bg: c.banner,
+                fg,
+                family: root.ui_family(),
+            });
+            let slot = match number_slot(style) {
+                // Painted with its ink centred on the slot, which is the chip's place.
+                Some((inset, width)) => {
+                    let (label, family, size, color): (gpui::SharedString, _, _, _) = (format!("{number}").into(), root.ui_family(), style.ui(12.0), dim.hsla());
+                    div().id(("grip", pane)).flex_none().ml(px(inset)).mr(px(6.0)).w(px(width)).h_full().child(gpui::canvas(|_, _, _| (), move |b, _, window, cx| paint_centred(&label, family.clone(), size, color, b, window, cx)).size_full())
+                }
+                None => div().id(("grip", pane)).h_full().flex().items_center().px(px(8.0)).text_color(dim.hsla()).child(format!("{number}")),
+            };
+            slot.cursor_grab().when_some(grip, |el, value| el.on_drag(value, |d: &drag::TabDrag, position, _window, cx| cx.new(|_| d.clone().at(position))))
         })
         .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
             // Off every tab, the bar appends. The bar's listener runs before its tabs', which
             // then claim the hover with an exact insertion point.
             if ev.bounds.contains(&ev.event.position) {
-                let (from, tab) = { let d = ev.drag(cx); (d.pane, d.tab) };
-                let at = if from == pane {
+                let (from, tab, whole) = { let d = ev.drag(cx); (d.pane, d.tab, d.whole) };
+                if whole && from == pane {
+                    // A pane onto its own bar goes nowhere.
+                    root.drop_target = None;
+                    cx.notify();
+                    return;
+                }
+                let at = if from == pane && !whole {
                     root.begin_reorder(pane, ev.drag(cx));
                     root.reorder_slot_for(pane, tab, ev.event.position)
                 } else {
@@ -831,6 +856,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
             idx,
             tab: *id,
             label: label.clone(),
+            whole: false,
             position: Default::default(),
             bg: c.banner,
             fg,

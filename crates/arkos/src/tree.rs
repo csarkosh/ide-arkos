@@ -14,6 +14,17 @@ pub type TabId = u64;
 
 /// The sessions pane's share of the Inbox's width when it has a side pane.
 pub const INBOX_RATIO: f32 = 0.6;
+/// The sessions pane's share of the height when the Inbox stacks its side with it, at first.
+pub const INBOX_STACKED: f32 = 0.5;
+/// A window whose panes' area is narrower than this, in points, is narrow (Inbox stacking spec,
+/// section 2): a 13 or 14 inch MacBook with the sidebar shown is, a 16 inch or an external
+/// display is not. There Neighbor and the Inbox put a new pane on top instead of to the right.
+pub const NARROW_W: f32 = 1500.0;
+
+/// Whether panes' area `w` points wide is narrow (`NARROW_W`). No width yet is not narrow.
+pub fn is_narrow(w: f32) -> bool {
+    w > 0.0 && w < NARROW_W
+}
 
 pub const MIN_PANE_W: f32 = 160.0;
 pub const MIN_PANE_H: f32 = 80.0;
@@ -29,7 +40,8 @@ pub enum Orientation {
     Vertical,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Side {
     Left,
     Right,
@@ -38,7 +50,7 @@ pub enum Side {
 }
 
 impl Side {
-    fn orientation(self) -> Orientation {
+    pub fn orientation(self) -> Orientation {
         match self {
             Side::Left | Side::Right => Orientation::Horizontal,
             Side::Top | Side::Bottom => Orientation::Vertical,
@@ -46,8 +58,35 @@ impl Side {
     }
 
     /// Whether the new pane goes before the existing one in the split.
-    fn new_pane_first(self) -> bool {
+    pub fn new_pane_first(self) -> bool {
         matches!(self, Side::Left | Side::Top)
+    }
+}
+
+/// Whether every tab of `p` is a terminal (an empty pane too).
+fn all_terminals(p: &Pane) -> bool {
+    p.tabs.iter().all(|t| matches!(t, Tab::Terminal { .. }))
+}
+
+/// Where the Inbox's side sits (Inbox stacking spec, section 1): on which side of the sessions
+/// pane, and the sessions pane's share of the split, whichever of the two comes first in it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SidePlace {
+    pub side: Side,
+    pub share: f32,
+}
+
+impl Default for SidePlace {
+    fn default() -> Self {
+        SidePlace { side: Side::Right, share: INBOX_RATIO }
+    }
+}
+
+impl SidePlace {
+    /// The split that holds the sessions pane and the side in this place.
+    fn split(self, id: SplitId, sessions: Node, side: Node) -> Node {
+        let (first, second, ratio) = if self.side.new_pane_first() { (side, sessions, 1.0 - self.share) } else { (sessions, side, self.share) };
+        Node::Split { id, orientation: self.side.orientation(), ratio, first: Box::new(first), second: Box::new(second) }
     }
 }
 
@@ -605,18 +644,43 @@ impl Tree {
         Some((tab, id))
     }
 
-    /// Whether the tree has the Inbox layout's shape (layouts spec, "The Inbox layout"): one
-    /// pane holding only terminal tabs, the sessions, alone or with a **side** to its right: one
-    /// pane or several, none of them empty and none holding a terminal. The side belongs to the
-    /// session shown, and the window swaps it as another is chosen (`inbox_take_side`).
+    /// Whether the tree has the Inbox layout's shape (layouts spec, "The Inbox layout"; Inbox
+    /// stacking spec, section 1): one pane holding only terminal tabs, the sessions, alone or
+    /// with a **side** on any of its four sides: one pane or several, none of them empty and none
+    /// holding a terminal. The side belongs to the session shown, and the window swaps it as
+    /// another is chosen (`inbox_take_side`).
     pub fn is_inbox(&self) -> bool {
-        let terminals = |p: &Pane| p.tabs.iter().all(|t| matches!(t, Tab::Terminal { .. }));
-        let others = |p: &Pane| !p.tabs.is_empty() && p.tabs.iter().all(|t| !matches!(t, Tab::Terminal { .. }));
         match &self.root {
-            Node::Leaf(p) => terminals(p),
-            Node::Split { orientation: Orientation::Horizontal, first, second, .. } => matches!(&**first, Node::Leaf(a) if terminals(a)) && second.panes().into_iter().all(others),
-            Node::Split { .. } => false,
+            Node::Leaf(p) => all_terminals(p),
+            Node::Split { .. } => self.inbox_sessions_first().is_some(),
         }
+    }
+
+    /// With the root a split in the Inbox's shape, whether the sessions pane is its first child.
+    fn inbox_sessions_first(&self) -> Option<bool> {
+        let others = |n: &Node| n.panes().into_iter().all(|p| !p.tabs.is_empty() && p.tabs.iter().all(|t| !matches!(t, Tab::Terminal { .. })));
+        let sessions = |n: &Node| matches!(n, Node::Leaf(a) if all_terminals(a));
+        let Node::Split { first, second, .. } = &self.root else { return None };
+        if sessions(first) && others(second) {
+            Some(true)
+        } else if sessions(second) && others(first) {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    /// Where the Inbox's side sits, while the tree has the shape and a side.
+    pub fn inbox_place(&self) -> Option<SidePlace> {
+        let sessions_first = self.inbox_sessions_first()?;
+        let Node::Split { orientation, ratio, .. } = &self.root else { return None };
+        let side = match (orientation, sessions_first) {
+            (Orientation::Horizontal, true) => Side::Right,
+            (Orientation::Horizontal, false) => Side::Left,
+            (Orientation::Vertical, true) => Side::Bottom,
+            (Orientation::Vertical, false) => Side::Top,
+        };
+        Some(SidePlace { side, share: if sessions_first { *ratio } else { 1.0 - *ratio } })
     }
 
     /// The Inbox's panes while the tree has its shape: the sessions pane, and the side pane a
@@ -629,22 +693,23 @@ impl Tree {
         match &self.root {
             Node::Leaf(p) => Some((p.id, None)),
             Node::Split { first, second, .. } => {
-                let Node::Leaf(sessions) = &**first else { return None };
-                let side: Vec<PaneId> = second.panes().into_iter().map(|p| p.id).collect();
+                let (sessions, others) = if self.inbox_sessions_first()? { (first, second) } else { (second, first) };
+                let Node::Leaf(sessions) = &**sessions else { return None };
+                let side: Vec<PaneId> = others.panes().into_iter().map(|p| p.id).collect();
                 Some((sessions.id, side.iter().copied().find(|id| *id == self.focused).or(side.first().copied())))
             }
         }
     }
 
     /// Lifts the Inbox's side out of the tree, leaving the sessions pane alone: the side as it
-    /// is, panes, tabs, ids and all, and the share of the width the sessions had beside it. None
-    /// when there is no side. The focus goes to the sessions when it was in the side.
-    pub fn inbox_take_side(&mut self) -> Option<(Node, f32)> {
-        if !self.is_inbox() || matches!(self.root, Node::Leaf(_)) {
-            return None;
-        }
-        let Node::Split { ratio, first, second, .. } = std::mem::replace(&mut self.root, placeholder()) else { unreachable!("checked above") };
-        self.root = *first;
+    /// is, panes, tabs, ids and all, and where it sat. None when there is no side. The focus goes
+    /// to the sessions when it was in the side.
+    pub fn inbox_take_side(&mut self) -> Option<(Node, SidePlace)> {
+        let place = self.inbox_place()?;
+        let sessions_first = !place.side.new_pane_first();
+        let Node::Split { first, second, .. } = std::mem::replace(&mut self.root, placeholder()) else { unreachable!("checked above") };
+        let (sessions, side) = if sessions_first { (first, second) } else { (second, first) };
+        self.root = *sessions;
         let sessions = self.panes()[0];
         if self.pane(self.focused).is_none() {
             self.focused = sessions;
@@ -652,28 +717,41 @@ impl Tree {
         if self.maximized.is_some_and(|m| self.pane(m).is_none()) {
             self.maximized = None;
         }
-        Some((*second, ratio))
+        Some((*side, place))
     }
 
-    /// Puts `side` beside the sessions pane, which must be alone (the tree in the Inbox's shape
-    /// with no side): the reverse of `inbox_take_side`. False, with nothing changed, otherwise.
-    pub fn inbox_put_side(&mut self, side: Node, ratio: f32) -> bool {
+    /// Puts `side` by the sessions pane, in `place`, the sessions pane alone (the tree in the
+    /// Inbox's shape with no side): the reverse of `inbox_take_side`. False, with nothing
+    /// changed, otherwise.
+    pub fn inbox_put_side(&mut self, side: Node, place: SidePlace) -> bool {
         if !self.is_inbox() || !matches!(self.root, Node::Leaf(_)) {
             return false;
         }
         self.next_id = self.next_id.max(side.max_id() + 1);
         let id = self.fresh_id();
         let sessions = std::mem::replace(&mut self.root, placeholder());
-        self.root = Node::Split { id, orientation: Orientation::Horizontal, ratio, first: Box::new(sessions), second: Box::new(side) };
+        self.root = place.split(id, sessions, side);
+        true
+    }
+
+    /// Moves the Inbox's side to `place`, its panes and their arrangement as they are, the focus
+    /// where it was. False when there is no side.
+    pub fn inbox_set_place(&mut self, place: SidePlace) -> bool {
+        let focused = self.focused;
+        let Some((side, _)) = self.inbox_take_side() else { return false };
+        self.inbox_put_side(side, place);
+        if self.pane(focused).is_some() {
+            self.focused = focused;
+        }
         true
     }
 
     /// Adds every tab of `side` to the tree's own side, each with its id: to the pane a new tab
-    /// goes to, or with no side yet, `side` itself becomes it.
-    pub fn inbox_absorb(&mut self, side: Node, ratio: f32) {
+    /// goes to, or with no side yet, `side` itself becomes it, in `place`.
+    pub fn inbox_absorb(&mut self, side: Node, place: SidePlace) {
         let Some((_, target)) = self.inbox_panes() else { return };
         let Some(target) = target else {
-            self.inbox_put_side(side, ratio);
+            self.inbox_put_side(side, place);
             return;
         };
         self.next_id = self.next_id.max(side.max_id() + 1);
@@ -714,9 +792,9 @@ impl Tree {
 
     /// Puts right a tree that is out of the Inbox's shape by a tab or two, without disturbing
     /// the rest: a terminal among the side's tabs joins the sessions (and is the one shown), a
-    /// tab that is no terminal among the sessions goes to the side (to a new pane on the right
+    /// tab that is no terminal among the sessions goes to the side (to a new pane at `place`
     /// when there is no side), and a pane left empty goes. True when the tree then has the shape.
-    fn settle_inbox(&mut self) -> bool {
+    fn settle_inbox(&mut self, place: SidePlace) -> bool {
         let is_term = |t: &Tab| matches!(t, Tab::Terminal { .. });
         let Some(sessions) = self.panes().into_iter().find(|id| self.pane(*id).is_some_and(|p| p.tabs.iter().any(is_term))).or(self.panes().first().copied()) else { return false };
         let was_focused = self.focused;
@@ -736,9 +814,9 @@ impl Tree {
                 }
                 None => {
                     let Some((tab, id)) = self.remove_tab(sessions, idx) else { break };
-                    target = self.split_with_tab(sessions, Side::Right, id, tab);
+                    target = self.split_with_tab(sessions, place.side, id, tab);
                     if let Node::Split { ratio, .. } = &mut self.root {
-                        *ratio = INBOX_RATIO;
+                        *ratio = if place.side.new_pane_first() { 1.0 - place.share } else { place.share };
                     }
                 }
             }
@@ -762,7 +840,7 @@ impl Tree {
     /// (none when there is no such tab). Each pane shows the tab the user was on: the tab of its
     /// kind used last in the focused pane, else the first tab that was active in its pane. The focus stays on the kind of tab it was on. Pane ids are kept where they
     /// can be, so what is kept per pane stays with its tabs. True when the tree changed.
-    pub fn gather_inbox(&mut self) -> bool {
+    pub fn gather_inbox(&mut self, place: SidePlace) -> bool {
         if self.is_inbox() {
             return false;
         }
@@ -800,7 +878,7 @@ impl Tree {
                 Node::Split { id, .. } => *id,
                 Node::Leaf(_) => self.fresh_id(),
             };
-            Node::Split { id, orientation: Orientation::Horizontal, ratio: INBOX_RATIO, first: Box::new(Node::Leaf(sessions)), second: Box::new(Node::Leaf(pane_of(side_id, others))) }
+            place.split(id, Node::Leaf(sessions), Node::Leaf(pane_of(side_id, others)))
         } else {
             Node::Leaf(sessions)
         };
@@ -812,16 +890,64 @@ impl Tree {
     /// Holds the Inbox's shape while the layout is on: a tab or two out of place is put right
     /// where the tree stands (`settle_inbox`), so a side of several panes keeps its arrangement,
     /// and anything further off is gathered afresh (`gather_inbox`). True when the tree changed.
-    pub fn arrange_inbox(&mut self) -> bool {
+    pub fn arrange_inbox(&mut self, place: SidePlace) -> bool {
         if self.is_inbox() {
             return false;
         }
         let mut settled = self.clone();
-        if settled.settle_inbox() {
+        if settled.settle_inbox(place) {
             *self = settled;
             return true;
         }
-        self.gather_inbox()
+        self.gather_inbox(place)
+    }
+
+    /// Moves pane `pane`, tabs and all, to the `side` of pane `to` (Inbox stacking spec, section
+    /// 3): its old place goes to its sibling, and the two share `to`'s space half and half. The
+    /// moved pane is focused. False, with nothing changed, onto itself or a pane that is not.
+    pub fn move_pane(&mut self, pane: PaneId, to: PaneId, side: Side) -> bool {
+        if pane == to || self.pane(to).is_none() {
+            return false;
+        }
+        let Some(moved) = self.pane(pane).cloned() else { return false };
+        let before = self.clone();
+        if !self.close_pane(pane) {
+            return false;
+        }
+        let split_id = self.fresh_id();
+        if !self.root.split_leaf(to, side, moved, split_id) {
+            *self = before;
+            return false;
+        }
+        self.focused = pane;
+        self.maximized = None;
+        true
+    }
+
+    /// Moves every tab of pane `pane` into pane `to`, in order, at `at` (appended with None),
+    /// and closes `pane`; `to` shows the tab `pane` showed. False onto itself or a missing pane.
+    pub fn merge_pane(&mut self, pane: PaneId, to: PaneId, at: Option<usize>) -> bool {
+        if pane == to || self.pane(to).is_none() {
+            return false;
+        }
+        let Some(p) = self.pane(pane).cloned() else { return false };
+        let start = at.unwrap_or(usize::MAX).min(self.pane(to).map_or(0, |t| t.tabs.len()));
+        // Moved one by one: the first tab of `pane` to `start`, the next after it, and so on.
+        for i in 0..p.tabs.len() {
+            if !self.move_tab(pane, 0, to, Some(start + i)) {
+                return false;
+            }
+        }
+        if let Some(shown) = p.ids.get(p.active).copied() {
+            if let Some(idx) = self.pane(to).and_then(|t| t.ids.iter().position(|id| *id == shown)) {
+                self.activate(to, idx);
+            }
+        }
+        if self.pane(pane).is_some_and(|q| q.tabs.is_empty()) {
+            self.close_pane(pane);
+        }
+        self.focused = to;
+        true
     }
 
     /// The Grid's arrangement `grid`, kept aside while the Inbox was on, holding the tabs this
@@ -1572,7 +1698,7 @@ mod tests {
         assert!(!t.is_inbox());
         let ids_before: Vec<TabId> = t.tabs().iter().map(|(pane, idx, _)| t.tab_id(*pane, *idx).unwrap()).collect();
         let grid = t.clone();
-        assert!(t.gather_inbox());
+        assert!(t.gather_inbox(SidePlace::default()));
         assert!(t.is_inbox());
         let (sessions, side) = t.inbox_panes().unwrap();
         let side = side.expect("two files make a side pane");
@@ -1587,13 +1713,13 @@ mod tests {
         sorted.sort();
         assert_eq!(ids_after, sorted, "every tab keeps its id");
         assert_eq!(t.tab_name(t.tab_id(sessions, 2).unwrap()), Some("Film"));
-        assert!(!t.arrange_inbox(), "already arranged: nothing moves");
+        assert!(!t.arrange_inbox(SidePlace::default()), "already arranged: nothing moves");
         // A terminal that lands among the files, or a file among the sessions, is put right,
         // and a file opened among the sessions leaves the session the user was on showing.
         t.add_tab(side, term(4));
         t.focus(sessions);
         t.add_tab(sessions, doc("/p/c.md"));
-        assert!(t.arrange_inbox());
+        assert!(t.arrange_inbox(SidePlace::default()));
         let (sessions, side) = t.inbox_panes().unwrap();
         assert_eq!(t.pane(sessions).unwrap().tabs.len(), 4);
         let side_pane = t.pane(side.unwrap()).unwrap();
@@ -1603,10 +1729,10 @@ mod tests {
         let mut alone = Tree::new(term(1));
         let first = alone.panes()[0];
         alone.split(first, Side::Bottom, term(2)).unwrap();
-        assert!(alone.gather_inbox());
+        assert!(alone.gather_inbox(SidePlace::default()));
         assert_eq!(alone.inbox_panes(), Some((first, None)));
         let mut files = Tree::new(doc("/p/a.md"));
-        assert!(files.gather_inbox());
+        assert!(files.gather_inbox(SidePlace::default()));
         let (sessions, side) = files.inbox_panes().unwrap();
         assert!(files.pane(sessions).unwrap().tabs.is_empty() && files.pane(side.unwrap()).unwrap().tabs.len() == 1);
         assert_eq!(files.focused, side.unwrap(), "the focus stays on the file it was on");
@@ -1631,45 +1757,129 @@ mod tests {
         t.focus(sessions);
         t.add_tab(sessions, doc("/p/c.md"));
         t.focus(bottom);
-        assert!(t.arrange_inbox());
+        assert!(t.arrange_inbox(SidePlace::default()));
         assert_eq!(t.panes(), vec![sessions, top, bottom], "the side keeps its two panes");
         assert_eq!(t.pane(bottom).unwrap().tabs, vec![doc("/p/b.md"), doc("/p/c.md")]);
         assert_eq!(t.pane(sessions).unwrap().active, 0, "still on the session it was on");
         // A terminal opened in the side joins the sessions and is the one shown.
         t.add_tab(top, term(3));
-        assert!(t.arrange_inbox());
+        assert!(t.arrange_inbox(SidePlace::default()));
         assert_eq!(t.pane(sessions).unwrap().tabs, vec![term(1), term(2), term(3)]);
         assert_eq!((t.pane(sessions).unwrap().active, t.focused), (2, sessions));
         assert_eq!(t.pane(top).unwrap().tabs, vec![doc("/p/a.md")]);
         // The side comes out whole, with the width the sessions had, and goes back as it was.
         let before = t.clone();
         let ids = t.pane(top).unwrap().ids.clone();
-        let (side, ratio) = t.inbox_take_side().unwrap();
+        let (side, place) = t.inbox_take_side().unwrap();
+        assert_eq!(place, SidePlace { side: Side::Right, share: 0.5 }, "split by hand, half and half");
         assert_eq!(t.panes(), vec![sessions]);
         assert_eq!(side.tab_ids().len(), 3);
         assert!(t.inbox_take_side().is_none(), "nothing left to take");
         assert!(t.is_inbox());
         let mut back = t.clone();
-        assert!(back.inbox_put_side(side.clone(), ratio));
+        assert!(back.inbox_put_side(side.clone(), place));
         assert_eq!(back.panes(), before.panes());
         assert_eq!(back.pane(top).unwrap().ids, ids);
-        assert!(!back.inbox_put_side(side.clone(), ratio), "one side at a time");
+        assert!(!back.inbox_put_side(side.clone(), place), "one side at a time");
         // Another session's side, opened meanwhile, never shares an id with the one put away.
         t.add_tab(sessions, doc("/p/d.md"));
-        t.arrange_inbox();
+        t.arrange_inbox(SidePlace::default());
         let fresh: Vec<TabId> = t.panes().into_iter().flat_map(|p| t.pane(p).unwrap().ids.clone()).collect();
         assert!(side.tab_ids().iter().all(|id| !fresh.contains(id)));
         // Absorbed, the side's tabs join the pane a new tab goes to; split off, tabs leave as one pane.
         let d = t.inbox_panes().unwrap().1.unwrap();
-        t.inbox_absorb(side.clone(), ratio);
+        t.inbox_absorb(side.clone(), place);
         assert_eq!(t.pane(d).unwrap().tabs.len(), 4);
         let off = t.inbox_split_off(&side.tab_ids()).unwrap();
         assert_eq!(off.tab_ids(), side.tab_ids());
         assert_eq!(t.pane(d).unwrap().tabs, vec![doc("/p/d.md")]);
         assert!(t.inbox_split_off(&[9999]).is_none());
         let mut alone = Tree::new(term(1));
-        alone.inbox_absorb(off, 0.6);
+        alone.inbox_absorb(off, SidePlace::default());
         assert_eq!(alone.panes().len(), 2, "with no side yet, the absorbed one becomes it");
+    }
+
+    #[test]
+    fn the_inbox_s_side_may_sit_on_any_side_of_the_sessions_and_keeps_its_place_through_take_and_put() {
+        let doc = |p: &str| Tab::Viewer { path: p.into(), mode: ViewMode::Rendered, presenting: false, outline: false };
+        for side in [Side::Left, Side::Right, Side::Top, Side::Bottom] {
+            let mut t = Tree::new(term(1));
+            let sessions = t.panes()[0];
+            let files = t.split(sessions, side, doc("/p/a.md")).unwrap();
+            assert!(t.is_inbox(), "{side:?}");
+            assert_eq!(t.inbox_panes(), Some((sessions, Some(files))), "{side:?}");
+            assert_eq!(t.inbox_place().map(|p| p.side), Some(side));
+            let place = SidePlace { side, share: 0.7 };
+            assert!(t.inbox_set_place(place));
+            assert_eq!(t.inbox_place(), Some(place), "the sessions keep their share whichever comes first");
+            let (taken, at) = t.inbox_take_side().unwrap();
+            assert_eq!((t.panes(), at), (vec![sessions], place));
+            assert!(t.inbox_put_side(taken, at));
+            assert_eq!(t.inbox_place(), Some(place));
+        }
+        // Two sessions panes, or a terminal in the side, are not the shape.
+        let mut t = Tree::new(term(1));
+        let a = t.panes()[0];
+        t.split(a, Side::Top, term(2)).unwrap();
+        assert!(!t.is_inbox());
+    }
+
+    #[test]
+    fn a_new_side_goes_where_the_inbox_says_whether_settled_or_gathered() {
+        let doc = |p: &str| Tab::Viewer { path: p.into(), mode: ViewMode::Rendered, presenting: false, outline: false };
+        let on_top = SidePlace { side: Side::Top, share: INBOX_STACKED };
+        // A file opened among the sessions with no side yet: a new pane on top.
+        let mut t = Tree::new(term(1));
+        let sessions = t.panes()[0];
+        t.add_tab(sessions, doc("/p/a.md"));
+        assert!(t.arrange_inbox(on_top));
+        assert_eq!(t.inbox_place(), Some(on_top));
+        assert_eq!(t.pane(sessions).unwrap().tabs, vec![term(1)]);
+        // Any tree gathered: the side at the place asked.
+        let mut g = Tree::new(term(1));
+        let first = g.panes()[0];
+        g.split(first, Side::Right, term(2)).unwrap();
+        g.add_tab(first, doc("/p/a.md"));
+        assert!(g.gather_inbox(on_top));
+        assert_eq!(g.inbox_place(), Some(on_top));
+    }
+
+    #[test]
+    fn a_pane_dragged_to_an_edge_moves_there_whole_and_one_dropped_in_the_middle_joins() {
+        let doc = |p: &str| Tab::Viewer { path: p.into(), mode: ViewMode::Rendered, presenting: false, outline: false };
+        // left | right, right holding two files.
+        let mut t = Tree::new(term(1));
+        let left = t.panes()[0];
+        let right = t.split(left, Side::Right, doc("/p/a.md")).unwrap();
+        t.add_tab(right, doc("/p/b.md"));
+        t.activate(right, 0);
+        let ids = t.pane(right).unwrap().ids.clone();
+        assert!(t.move_pane(right, left, Side::Top));
+        assert_eq!(t.panes(), vec![right, left], "now on top");
+        assert!(matches!(t.root, Node::Split { orientation: Orientation::Vertical, .. }));
+        assert_eq!((t.pane(right).unwrap().ids.clone(), t.focused), (ids.clone(), right), "tabs, ids and all, and focused");
+        assert!(!t.move_pane(right, right, Side::Left), "onto itself");
+        assert!(!t.move_pane(right, 999, Side::Left));
+        // Dropped in the middle of another, its tabs join it in order and it goes.
+        assert!(t.merge_pane(right, left, None));
+        assert_eq!(t.panes(), vec![left]);
+        assert_eq!(t.pane(left).unwrap().tabs, vec![term(1), doc("/p/a.md"), doc("/p/b.md")]);
+        assert_eq!(t.pane(left).unwrap().active, 1, "showing the tab the dragged pane showed");
+        // Onto a tab bar, at a place in it.
+        let mut u = Tree::new(term(1));
+        let a = u.panes()[0];
+        u.add_tab(a, term(2));
+        let b = u.split(a, Side::Right, doc("/p/x.md")).unwrap();
+        u.add_tab(b, doc("/p/y.md"));
+        assert!(u.merge_pane(b, a, Some(1)));
+        assert_eq!(u.pane(a).unwrap().tabs, vec![term(1), doc("/p/x.md"), doc("/p/y.md"), term(2)]);
+    }
+
+    #[test]
+    fn a_window_is_narrow_under_1500_points_of_panes() {
+        assert!(is_narrow(1230.0), "a 13 inch MacBook with the sidebar");
+        assert!(!is_narrow(1700.0));
+        assert!(!is_narrow(0.0), "no width yet is not narrow");
     }
 
     #[test]
@@ -1682,7 +1892,7 @@ mod tests {
         let below = grid.split(right, Side::Bottom, doc("/p/b.md")).unwrap();
         grid.focus(left);
         let mut inbox = grid.clone();
-        inbox.gather_inbox();
+        inbox.gather_inbox(SidePlace::default());
         let (sessions, side) = inbox.inbox_panes().unwrap();
         let side = side.unwrap();
         // In the inbox: b.md closes (its pane was its own), a session and a file open, a tab is

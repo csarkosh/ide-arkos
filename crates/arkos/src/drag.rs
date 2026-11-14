@@ -17,6 +17,9 @@ pub struct TabDrag {
     pub idx: usize,
     pub tab: TabId,
     pub label: String,
+    /// The whole pane, dragged by its number (Inbox stacking spec, section 3): `tab` is then its
+    /// active tab, and the drop moves every tab of `pane`.
+    pub whole: bool,
     pub position: Point<Pixels>,
     /// The chip's colours, from the theme where the drag started.
     pub bg: Rgb,

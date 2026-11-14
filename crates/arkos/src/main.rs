@@ -757,6 +757,8 @@ impl Root {
             inbox_sides.kept = w.sides.iter().cloned().collect();
             inbox_sides.shown = w.side_of;
             inbox_sides.ratio = w.side_ratio.unwrap_or(tree::INBOX_RATIO);
+            inbox_sides.stacked = w.side_stacked.unwrap_or(tree::INBOX_STACKED);
+            inbox_sides.place = w.side_place;
             inbox_sides.owner = w.owners.iter().copied().collect();
         }
         let mut tree = saved.map(|ws| ws.tree).unwrap_or_else(Tree::empty);
@@ -2013,7 +2015,7 @@ impl Root {
         owners.sort();
         let mut lines: Vec<(SessionId, String)> = self.sessions.lines.iter().filter(|(s, _)| shown.contains(s)).map(|(s, l)| (*s, l.clone())).collect();
         lines.sort_by_key(|(s, _)| s.0);
-        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), marks, grid: self.grid_tree.clone(), ended: self.ended.clone(), sides, side_of: self.inbox.shown, side_ratio: Some(self.inbox.ratio), owners, lines, folded_sections: Some(self.sessions_folded.iter().copied().collect()), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone(), folds: self.folds.clone(), diagram_modes: self.diagram_modes.clone() };
+        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), marks, grid: self.grid_tree.clone(), ended: self.ended.clone(), sides, side_of: self.inbox.shown, side_ratio: Some(self.inbox.ratio), side_stacked: Some(self.inbox.stacked), side_place: self.inbox.place, owners, lines, folded_sections: Some(self.sessions_folded.iter().copied().collect()), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone(), folds: self.folds.clone(), diagram_modes: self.diagram_modes.clone() };
         request_save(&self.save_queue, ws, cx);
     }
 
@@ -2269,6 +2271,7 @@ impl Root {
     /// aside and the tabs regrouped. To the Grid: that arrangement comes back, less what closed
     /// and with what opened meanwhile. What is kept per pane is measured again.
     pub fn apply_layout(&mut self, cx: &mut Context<Self>) {
+        self.inbox.narrow = tree::is_narrow(self.content.w);
         if self.is_inbox() {
             if self.grid_tree.is_none() {
                 self.grid_tree = Some(self.inbox.enter(&mut self.tree));
@@ -2290,6 +2293,7 @@ impl Root {
     /// files, a file among the sessions, a split): called as each frame begins, so nothing is
     /// ever drawn out of place. True when something moved.
     fn keep_inbox_shape(&mut self, cx: &mut Context<Self>) -> bool {
+        self.inbox.narrow = tree::is_narrow(self.content.w);
         if !self.is_inbox() || !self.inbox.keep_shape(&mut self.tree) {
             return false;
         }
@@ -2804,7 +2808,8 @@ impl Root {
         if self.tree.locate(d.tab).is_some() {
             self.preview_tab = after_drop(self.preview_tab, d.tab);
         }
-        if self.place_tab(d.tab, target) {
+        let placed = if d.whole { self.place_pane(d.pane, target) } else { self.place_tab(d.tab, target) };
+        if placed {
             // The tab lands in the gap the reorder opened, which was its own width: nothing to slide.
             self.reorder = None;
             self.save(cx);
@@ -2820,6 +2825,11 @@ impl Root {
     /// False when nothing changed.
     fn place_tab(&mut self, tab: TabId, target: drag::DropTarget) -> bool {
         let Some((source, idx)) = self.tree.locate(tab) else { return false };
+        if let Some(side) = self.inbox_edge(target) {
+            // The side's tab shown where it is, and the whole side to that edge of the sessions.
+            self.tree.activate(source, idx);
+            return self.inbox.drag_to(&mut self.tree, side);
+        }
         match target {
             drag::DropTarget::TabBar { pane, at } => {
                 // Back onto its own place, `move_tab` changes nothing.
@@ -2852,6 +2862,47 @@ impl Root {
             self.tree.close_pane(source);
         }
         true
+    }
+
+    /// In the Inbox, the edge of the sessions pane a drop aims at (Inbox stacking spec, section
+    /// 3): whatever of the side is dropped there takes the whole side with it.
+    fn inbox_edge(&self, target: drag::DropTarget) -> Option<Side> {
+        let drag::DropTarget::Pane { pane, zone } = target else { return None };
+        let sessions = self.tree.inbox_panes().map(|(s, _)| s).filter(|_| self.is_inbox())?;
+        (pane == sessions).then_some(())?;
+        match zone {
+            drag::Zone::Left => Some(Side::Left),
+            drag::Zone::Right => Some(Side::Right),
+            drag::Zone::Top => Some(Side::Top),
+            drag::Zone::Bottom => Some(Side::Bottom),
+            drag::Zone::Center => None,
+        }
+    }
+
+    /// Moves pane `source` whole, dragged by its number (Inbox stacking spec, section 3): to an
+    /// edge of another pane, or its tabs into another pane's middle or tab bar. In the Inbox an
+    /// edge of the sessions pane takes the whole side there. False when nothing changed.
+    fn place_pane(&mut self, source: PaneId, target: drag::DropTarget) -> bool {
+        if self.tree.pane(source).is_none() {
+            return false;
+        }
+        if let Some(side) = self.inbox_edge(target) {
+            return self.inbox.drag_to(&mut self.tree, side);
+        }
+        let sessions = self.tree.inbox_panes().map(|(s, _)| s).filter(|_| self.is_inbox());
+        match target {
+            drag::DropTarget::TabBar { pane, at } => Some(pane) != sessions && self.tree.merge_pane(source, pane, Some(at)),
+            drag::DropTarget::Pane { pane, zone: drag::Zone::Center } => Some(pane) != sessions && self.tree.merge_pane(source, pane, None),
+            drag::DropTarget::Pane { pane, zone } => {
+                let side = match zone {
+                    drag::Zone::Left => Side::Left,
+                    drag::Zone::Right => Side::Right,
+                    drag::Zone::Top => Side::Top,
+                    _ => Side::Bottom,
+                };
+                self.tree.move_pane(source, pane, side)
+            }
+        }
     }
 
     pub fn new_terminal_tab(&mut self, pane: PaneId, cx: &mut Context<Self>) {

@@ -859,8 +859,9 @@ collapsed = false
 name = "grid"
 # Where a tab goes that a Claude Code session opens with a plain `arkos open`, in the grid.
 # "neighbor": a new tab in the pane to its right, else the one to its left, else a new pane
-# split off to its right, so the session stays in view. "inplace": a new tab in the session's
-# own pane, over it.
+# split off to its right, so the session stays in view; on a narrow window (under 1500 points
+# of panes) the panes above and below first, and a new pane on top. "inplace": a new tab in the
+# session's own pane, over it.
 placement = "neighbor"
 
 [viewer]
