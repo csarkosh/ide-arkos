@@ -21,6 +21,9 @@ sessions pane it is on, and the sessions pane's share of the split.
 - **The divider.** One position for side by side (the sessions' share, 0.6 at first) and one for
   stacked (0.5 at first), each kept for every session as the single one was, so going from
   session to session keeps the divider where the user put it.
+- **Switching to the Inbox.** The side goes to the Inbox's place, even when the Grid already had
+  the shape (a session with its files beside it), so the Inbox is its own arrangement; the Grid
+  comes back as it was.
 - **Going from session to session.** A session's side comes back at the window's place: the
   user's choice, else what the window's width says now. A side is never moved while it is shown
   because the window was resized.
