@@ -122,10 +122,12 @@ impl Sides {
 
     /// The layout is switched to the Inbox: the tree is gathered into its shape, the Grid's
     /// arrangement returned to be kept aside, and each session is handed the tabs it owned, the
-    /// rest staying with the session shown.
+    /// rest staying with the session shown. The side goes where the Inbox puts sides, even when
+    /// the Grid already had the shape (a session beside its files), so the Inbox is its own.
     pub fn enter(&mut self, tree: &mut Tree) -> Tree {
         let grid = tree.clone();
         tree.gather_inbox(self.side_place());
+        tree.inbox_set_place(self.side_place());
         let now = selected(tree);
         let sessions: Vec<TabId> = tree.inbox_panes().and_then(|(s, _)| tree.pane(s)).map(|p| p.ids.clone()).unwrap_or_default();
         self.kept.clear();
@@ -321,5 +323,21 @@ mod tests {
         assert!(sides.drag_to(&mut tree, Side::Left));
         assert_eq!(tree.inbox_place(), Some(SidePlace { side: Side::Left, share: 0.7 }));
         assert!((sides.stacked - 0.4).abs() < 1e-6, "stacked, as it was left: {}", sides.stacked);
+    }
+    #[test]
+    fn switching_to_the_inbox_puts_the_side_where_the_inbox_puts_sides_even_from_a_grid_of_that_shape() {
+        // The Grid: a session on the left, its file on the right; already the Inbox's shape.
+        let mut tree = Tree::new(term(1));
+        let sessions = tree.panes()[0];
+        tree.split(sessions, Side::Right, doc("/p/a.md")).unwrap();
+        tree.focus(sessions);
+        let mut sides = Sides::default();
+        sides.narrow = true;
+        let grid = sides.enter(&mut tree);
+        assert_eq!(tree.inbox_place(), Some(SidePlace { side: Side::Top, share: INBOX_STACKED }), "on top on a narrow window");
+        // And the Grid comes back as it was.
+        sides.leave(&mut tree, Some(grid.clone()));
+        assert_eq!(tree.panes(), grid.panes());
+        assert_eq!(tree.inbox_place().map(|p| p.side), Some(Side::Right), "beside, as the Grid had it");
     }
 }
