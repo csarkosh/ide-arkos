@@ -24,7 +24,8 @@ Built for Apple silicon, macOS 14 or later.
 ## Install
 
 ```sh
-brew trust --cask csarkosh/tap/arkos-ide && brew install --cask csarkosh/tap/arkos-ide
+brew trust --cask csarkosh/tap/arkos-ide
+brew install --cask csarkosh/tap/arkos-ide
 ```
 
 Releases are signed with a Developer ID and notarized, so the download opens as any app does,
