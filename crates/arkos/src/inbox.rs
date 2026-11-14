@@ -2,7 +2,7 @@
 //! belong to the session shown, and exist only within it. Choosing another session puts them
 //! away whole and brings that session's own in their place. Pure over the tree, so it is tested;
 //! the window keeps one `Sides` and calls it as each frame begins.
-use crate::tree::{Node, Tab, TabId, Tree, INBOX_RATIO};
+use crate::tree::{Node, Orientation, Side, SidePlace, Tab, TabId, Tree, INBOX_RATIO, INBOX_STACKED};
 use std::collections::HashMap;
 
 /// Each session's side while it is not the one shown, and which session the side in the tree
@@ -14,9 +14,16 @@ pub struct Sides {
     pub kept: HashMap<TabId, Node>,
     /// The session whose side is in the tree. None before the first frame in the layout.
     pub shown: Option<TabId>,
-    /// The sessions pane's share of the width beside a side: one for every session, so the
-    /// divider stays where the user put it as they go from one to another.
+    /// The sessions pane's share of the width beside a side, and of the height stacked with
+    /// one: one of each for every session, so the divider stays where the user put it as they
+    /// go from one to another (Inbox stacking spec, section 1).
     pub ratio: f32,
+    pub stacked: f32,
+    /// Where the user last dragged a side to; until they have, a new side follows the window.
+    pub place: Option<Side>,
+    /// Whether the window is narrow (`tree::is_narrow`), set by the window as each frame begins:
+    /// with no place chosen, a narrow window puts a new side on top, a wide one to the right.
+    pub narrow: bool,
     /// Which session each tab that is no terminal belongs to, by tab. Kept through the Grid, so
     /// a return to the Inbox hands each session its tabs again.
     pub owner: HashMap<TabId, TabId>,
@@ -24,7 +31,7 @@ pub struct Sides {
 
 impl Default for Sides {
     fn default() -> Self {
-        Sides { kept: HashMap::new(), shown: None, ratio: INBOX_RATIO, owner: HashMap::new() }
+        Sides { kept: HashMap::new(), shown: None, ratio: INBOX_RATIO, stacked: INBOX_STACKED, place: None, narrow: false, owner: HashMap::new() }
     }
 }
 
@@ -42,6 +49,41 @@ fn side_tabs(tree: &Tree) -> Vec<TabId> {
 }
 
 impl Sides {
+    /// Where a side that comes into the tree goes: the user's place, else on top of the session
+    /// on a narrow window and to its right on a wide one.
+    pub fn new_side(&self) -> Side {
+        self.place.unwrap_or(if self.narrow { Side::Top } else { Side::Right })
+    }
+
+    /// `side` with the divider kept for its orientation.
+    pub fn place_at(&self, side: Side) -> SidePlace {
+        SidePlace { side, share: if side.orientation() == Orientation::Horizontal { self.ratio } else { self.stacked } }
+    }
+
+    /// Where a side that comes into the tree goes, divider and all.
+    pub fn side_place(&self) -> SidePlace {
+        self.place_at(self.new_side())
+    }
+
+    /// Keeps the divider of a side as it stands, for its orientation.
+    fn remember(&mut self, place: SidePlace) {
+        if place.side.orientation() == Orientation::Horizontal {
+            self.ratio = place.share;
+        } else {
+            self.stacked = place.share;
+        }
+    }
+
+    /// The user dragged the side to `side` of the sessions: it moves there, and every side after
+    /// it goes there too. False when there is no side to move.
+    pub fn drag_to(&mut self, tree: &mut Tree, side: Side) -> bool {
+        if tree.inbox_place().is_none() {
+            return false;
+        }
+        self.place = Some(side);
+        tree.inbox_set_place(self.place_at(side))
+    }
+
     /// Puts the side in the tree away under the session it belongs to, and brings `to`'s in its
     /// place. With no session shown yet the side there is `to`'s already.
     pub fn swap(&mut self, tree: &mut Tree, to: Option<TabId>) {
@@ -49,8 +91,8 @@ impl Sides {
             return;
         }
         if let Some(from) = self.shown {
-            if let Some((side, ratio)) = tree.inbox_take_side() {
-                self.ratio = ratio;
+            if let Some((side, place)) = tree.inbox_take_side() {
+                self.remember(place);
                 for tab in side.tab_ids() {
                     self.owner.insert(tab, from);
                 }
@@ -58,7 +100,7 @@ impl Sides {
             }
         }
         if let Some(side) = to.and_then(|s| self.kept.remove(&s)) {
-            tree.inbox_absorb(side, self.ratio);
+            tree.inbox_absorb(side, self.side_place());
         }
         self.shown = to;
     }
@@ -66,7 +108,10 @@ impl Sides {
     /// Holds the Inbox's shape and shows the chosen session's side, whatever changed the tree
     /// since the last frame. True when the tree changed.
     pub fn keep_shape(&mut self, tree: &mut Tree) -> bool {
-        let mut changed = tree.arrange_inbox();
+        let mut changed = tree.arrange_inbox(self.side_place());
+        if let Some(place) = tree.inbox_place() {
+            self.remember(place);
+        }
         let now = selected(tree);
         if now != self.shown {
             self.swap(tree, now);
@@ -80,7 +125,7 @@ impl Sides {
     /// rest staying with the session shown.
     pub fn enter(&mut self, tree: &mut Tree) -> Tree {
         let grid = tree.clone();
-        tree.gather_inbox();
+        tree.gather_inbox(self.side_place());
         let now = selected(tree);
         let sessions: Vec<TabId> = tree.inbox_panes().and_then(|(s, _)| tree.pane(s)).map(|p| p.ids.clone()).unwrap_or_default();
         self.kept.clear();
@@ -109,7 +154,7 @@ impl Sides {
             for tab in side.tab_ids() {
                 self.owner.insert(tab, session);
             }
-            tree.inbox_absorb(side, self.ratio);
+            tree.inbox_absorb(side, self.side_place());
         }
         self.shown = None;
         if let Some(grid) = grid {
@@ -218,5 +263,63 @@ mod tests {
         tree.close_pane_if_empty(side);
         sides.prune(&tree);
         assert_eq!(sides.owner.len(), 1, "only b.md, put away with session 2, is still owned");
+    }
+    #[test]
+    fn a_side_comes_back_on_top_on_a_narrow_window_beside_on_a_wide_one_and_where_the_user_dragged_it_after() {
+        // Sessions 1 and 2, each with a file.
+        let mut tree = Tree::new(term(1));
+        let sessions = tree.panes()[0];
+        tree.add_tab(sessions, term(2));
+        tree.activate(sessions, 0);
+        let mut sides = Sides::default();
+        sides.narrow = true;
+        tree.add_tab(sessions, doc("/p/a.md"));
+        tree.activate(sessions, 0);
+        sides.keep_shape(&mut tree);
+        assert_eq!(tree.inbox_place().map(|p| p.side), Some(Side::Top), "narrow: a new side on top");
+        // To session 2, which opens a file of its own, and back: session 1's side comes back on top.
+        tree.activate(sessions, 1);
+        sides.keep_shape(&mut tree);
+        tree.add_tab(sessions, doc("/p/b.md"));
+        tree.activate(sessions, 1);
+        sides.keep_shape(&mut tree);
+        assert_eq!(tree.inbox_place().map(|p| p.side), Some(Side::Top));
+        // The window widens: the side shown stays, the next one to come back goes to the right.
+        sides.narrow = false;
+        sides.keep_shape(&mut tree);
+        assert_eq!(tree.inbox_place().map(|p| p.side), Some(Side::Top), "never moved while shown");
+        tree.activate(sessions, 0);
+        sides.keep_shape(&mut tree);
+        assert_eq!(tree.inbox_place().map(|p| p.side), Some(Side::Right));
+        // Dragged below: there it stays, and every side after it goes there, narrow or not.
+        assert!(sides.drag_to(&mut tree, Side::Bottom));
+        assert_eq!(tree.inbox_place().map(|p| p.side), Some(Side::Bottom));
+        sides.narrow = true;
+        tree.activate(sessions, 1);
+        sides.keep_shape(&mut tree);
+        assert_eq!(tree.inbox_place().map(|p| p.side), Some(Side::Bottom));
+    }
+
+    #[test]
+    fn each_orientation_keeps_its_own_divider_for_every_session() {
+        let mut tree = Tree::new(term(1));
+        let sessions = tree.panes()[0];
+        tree.add_tab(sessions, term(2));
+        tree.add_tab(sessions, doc("/p/a.md"));
+        tree.activate(sessions, 0);
+        let mut sides = Sides::default();
+        sides.keep_shape(&mut tree);
+        assert_eq!(tree.inbox_place(), Some(SidePlace { side: Side::Right, share: INBOX_RATIO }));
+        // The user moves the divider beside, then drags the side on top and moves that one.
+        assert!(tree.inbox_set_place(SidePlace { side: Side::Right, share: 0.7 }));
+        sides.keep_shape(&mut tree);
+        assert!(sides.drag_to(&mut tree, Side::Top));
+        assert_eq!(tree.inbox_place(), Some(SidePlace { side: Side::Top, share: INBOX_STACKED }));
+        assert!(tree.inbox_set_place(SidePlace { side: Side::Top, share: 0.4 }));
+        sides.keep_shape(&mut tree);
+        // Back beside, the divider is where it was beside.
+        assert!(sides.drag_to(&mut tree, Side::Left));
+        assert_eq!(tree.inbox_place(), Some(SidePlace { side: Side::Left, share: 0.7 }));
+        assert!((sides.stacked - 0.4).abs() < 1e-6, "stacked, as it was left: {}", sides.stacked);
     }
 }

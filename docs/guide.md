@@ -86,10 +86,14 @@ and files:
   pages and videos open in panes to its right, and those panes belong to the session: they
   exist only within it. Choosing another session replaces all of them with that session's own
   (none, if it has opened nothing), and coming back brings them back as they were, split and
-  all. A file you open from the Explorer joins the session you are on; a file a Claude Code
+  all. The panes sit to the session's right on a wide window and on top of it on a narrow one
+  (under 1500 points of panes: a 13 or 14 inch MacBook with the sidebar shown); drag a pane by
+  its number onto an edge of the session to put them on that side instead, which every
+  session's panes then follow. A file you open from the Explorer joins the session you are on; a file a Claude Code
   session opens with `arkos open` joins that session, also while you are looking at another
   one, whose panes are left as they are. Ending a session closes its tabs with it. The divider
-  between the session and its panes stays where you put it from one session to the next. The
+  between the session and its panes stays where you put it from one session to the next, one
+  position for side by side and one for stacked. The
   sidebar's top switches between Sessions and Files (the Explorer and Worktrees); choosing the
   Inbox opens the sidebar on Sessions. Under the filter, "+ New session" starts one. Under it a filter field narrows the list as you type to the sessions whose
   name or line holds every word, closed ones under Done included; Enter goes to the first of
@@ -105,7 +109,12 @@ hands each session its tabs again.
 "A session's files open" (`[layout] placement`) says where a plain `arkos open` from a session
 lands in the Grid: Neighbor, the default, the pane on its right, else the one on its left, else
 a new pane split off to its right, so the session stays in view; or In place, a new tab in the
-session's own pane.
+session's own pane. On a narrow window Neighbor looks above and below first, then right and
+left, and a new pane goes on top.
+
+A pane moves by its number at the left end of its tab bar: drag it onto an edge of another pane
+to put it there, tabs and all, or into another pane's middle or tab bar to join its tabs to
+that pane's.
 
 ## After a restart
 

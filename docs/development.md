@@ -531,6 +531,16 @@ Things only a person at the screen can check, in order of value:
   which is the right-most thing in the header, with an art pixel of air between
 - layouts: "A session's files open" on Neighbor: with one pane an `arkos open` splits a pane
   to the right, the next goes into that pane, and from the right pane it goes to the left one
+- Inbox stacking: on a 13 or 14 inch MacBook with the sidebar shown, the first file a session
+  opens in the Inbox goes on top of the session, and the next session's comes back on top too;
+  on an external display it goes to the right. In the Grid, Neighbor's first open splits on top
+  on the MacBook and to the right on the display
+- Inbox stacking: drag a side pane by its number onto the session's left, right, top or bottom
+  edge: the zone tints as for a tab, and the side moves there whole; another session's panes
+  come back on that side; the divider of each way round stays where it was left
+- Pane drag: in the Grid, a pane dragged by its number onto another's edge moves there with
+  its tabs; into its middle or tab bar, its tabs join that pane and it goes; over itself
+  nothing tints
 - Settings, Appearance: two pills, Presets and Custom, the one in force selected. Presets
   shows Mode and the dark and the light preset lists; a click on Custom shows Color on the
   left and Font above Effect on the right instead, every row readable at the window's

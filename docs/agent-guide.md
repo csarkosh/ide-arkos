@@ -112,7 +112,9 @@ Where the tab goes:
 - With neither `--pane` nor `--split`, the tab goes where the user's `layout.placement` says.
   `neighbor`, the default: a new tab in the pane to the right of yours (the one holding your
   session), else the one to its left, else a new pane split off to your right (the answer then
-  says `(new pane)`), so your session stays in view beside what you opened. `inplace`: a new
+  says `(new pane)`), so your session stays in view beside what you opened. On a narrow window
+  (under 1500 points of panes) the panes above and below come first, then right and left, and
+  a new pane goes on top of yours. `inplace`: a new
   tab in your own pane, over your session. In the Inbox layout it joins your session's own
   panes, also while the user is looking at another session. Whichever it is, a plain open is
   right: the user chose where they want to see what you show them, so do not pass `--pane` or
