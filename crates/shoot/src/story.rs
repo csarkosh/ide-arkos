@@ -446,6 +446,10 @@ pub struct Shot {
     /// before the keys: the left button held over a dozen moves.
     #[serde(default)]
     pub drag: Option<[[f64; 2]; 2]>,
+    /// More drags after `drag`, in order, each from its first point to its second: a pane moved
+    /// and then the divider beside it set, for one picture.
+    #[serde(default)]
+    pub drags: Vec<[[f64; 2]; 2]>,
     /// The pointer moved to `[x, y]`, fractions of the window, after the keys, and left there: a
     /// hover's tooltip or highlight for the picture.
     #[serde(default)]
@@ -901,6 +905,16 @@ theme = "light"
         assert_eq!(Story::parse(&inbox).unwrap().shots[1].layout, "inbox");
         let err = Story::parse(&STORY.replacen("theme = \"light\"", "theme = \"light\"\nlayout = \"journal\"", 1)).unwrap_err().to_string();
         assert!(err.contains("layout must be grid or inbox"), "{err}");
+    }
+
+    #[test]
+    fn a_shot_may_drag_several_times_in_order_after_its_one_drag() {
+        let s = Story::parse(STORY).unwrap();
+        assert!(s.shots.iter().all(|shot| shot.drags.is_empty()), "none unless named");
+        let two = STORY.replacen("theme = \"light\"", "theme = \"light\"\ndrag = [[0.2, 0.06], [0.96, 0.72]]\ndrags = [[[0.66, 0.72], [0.5, 0.72]]]", 1);
+        let shot = &Story::parse(&two).unwrap().shots[1];
+        assert_eq!(shot.drag, Some([[0.2, 0.06], [0.96, 0.72]]));
+        assert_eq!(shot.drags, vec![[[0.66, 0.72], [0.5, 0.72]]]);
     }
 
     #[test]

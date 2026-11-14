@@ -441,7 +441,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
             say(&format!("{}: after {} s these were not as asked: {}", shot.name, shot.timeout_secs, unmet.join(", ")));
             failures.push(format!("{} ({})", shot.name, unmet.join(", ")));
         }
-        if shot.click.is_some() || shot.right_click.is_some() || shot.drag.is_some() || shot.hover.is_some() || !shot.keys.is_empty() {
+        if shot.click.is_some() || shot.right_click.is_some() || shot.drag.is_some() || !shot.drags.is_empty() || shot.hover.is_some() || !shot.keys.is_empty() {
             if shot.activate {
                 activate(window_pid);
             }
@@ -753,7 +753,7 @@ fn send_input(shot: &Shot, frame: (f64, f64, f64, f64)) -> Result<()> {
         post(CGEvent::new_mouse_event(source.clone(), CGEventType::RightMouseUp, at, CGMouseButton::Right))?;
         std::thread::sleep(Duration::from_millis(300));
     }
-    if let Some([[ax, ay], [bx, by]]) = shot.drag {
+    for &[[ax, ay], [bx, by]] in shot.drag.iter().chain(shot.drags.iter()) {
         let at = |fx: f64, fy: f64| CGPoint::new(frame.0 + fx * frame.2, frame.1 + fy * frame.3);
         post(CGEvent::new_mouse_event(source.clone(), CGEventType::MouseMoved, at(ax, ay), CGMouseButton::Left))?;
         std::thread::sleep(Duration::from_millis(120));

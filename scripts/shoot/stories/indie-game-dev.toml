@@ -39,7 +39,8 @@ run = "PS1='$ '; clear; python3 -m unittest -q"
 
 [layout]
 split = "horizontal"
-ratio = 0.5
+# The enemies' table wants about three fifths of the width, or its headers wrap.
+ratio = 0.38
 first = { tabs = ["rules"] }
 second = { split = "vertical", ratio = 0.66, first = { tabs = ["enemies"] }, second = { tabs = ["tests"] } }
 
@@ -69,6 +70,9 @@ timeout_secs = 60
 # Side by side, as Cyrus asked for this one (2026-11-14): the files pane dragged by its number
 # from the top, where a narrow window stacks it, onto the session's right edge.
 drag = [[0.195, 0.07], [0.96, 0.72]]
+# Then the divider, from where the Inbox leaves it (the session 60%) to give the files pane the
+# room its table needs, so no column header wraps.
+drags = [[[0.665, 0.72], [0.488, 0.72]]]
 
 # The Arabia Solar picture in the Inbox layout, for the apps page's Inbox and Grid switch: the sessions as a list
 # by what they ask of you, one shown at full size with the files it opened beside it.

@@ -6,14 +6,15 @@
   <img alt="Seven Arkos IDE windows fanned out like postcards, each in its own theme. In front, the multi tasker: three Claude Code sessions side by side, each running its own subagents on an unrelated project. Behind, the blogger with a launch plan in the markdown editor, the data analyst with a weekly report and its chart, the hacker hardening a service in Matrix green, the indie game dev with a dungeon crawl in pixel-framed purple, the student with lecture notes on a ruled notebook page, and the web developer with the app's page in a web tab" src="docs/images/hero-dark.png" width="900">
 </picture>
 
-<p align="center">
-<b>Panes and tabs</b> for your sessions · <b>a daemon</b> that keeps them alive · <b>a web pane</b> · <b>a file tree</b> and <b>a live worktree list</b> across every repo · <b>a markdown editor</b> · <b>a CSV and spreadsheet grid</b> · <b>a video pane</b>
-</p>
-
-Arkos is a terminal layout manager built for Claude Code: a grid of terminal panes with tabs
-that say which session is working and which is waiting on you, a web page in a pane beside the
-code, a file tree, a live list of every repository's worktrees with how long each has sat
-untouched, and a markdown editor for the documents the sessions write. Every session lives in a separate daemon, so a frozen window, an
+Arkos is a terminal layout manager built for Claude Code, in two layouts. The Inbox lists your
+sessions by what they need from you, the ones waiting on you first, then the unread answers,
+the new and the unanswered, the working and the quiet, and shows one at full size with the
+files, pages and videos it opened beside it, so you always know which session to answer next;
+put one off with "Remind me in" and it comes back when you asked. The Grid is panes of tabs
+you split and arrange, each tab saying whether its session is working or waiting on you.
+Either way there is a web page in a pane beside the code, a file tree, a live list of every
+repository's worktrees with how long each has sat untouched, and a markdown editor for the
+documents the sessions write. Every session lives in a separate daemon, so a frozen window, an
 update or a restart never loses work: the window comes back and every tab is where you left
 it, with Claude Code resumed. Written in Rust with GPUI, it stays light on memory and scrolls
 smoothly with dozens of sessions open.
@@ -23,13 +24,8 @@ Built for Apple silicon, macOS 14 or later.
 ## Install
 
 ```sh
-brew install --cask csarkosh/tap/arkos-ide
+brew trust --cask csarkosh/tap/arkos-ide && brew install --cask csarkosh/tap/arkos-ide
 ```
-
-Homebrew 6 and later install from a tap like this one only once you trust it, and the full name
-above trusts the cask. If you ran `brew tap csarkosh/tap` first, or use a command with the short
-name, and Homebrew answers `Refusing to load cask csarkosh/tap/arkos-ide from untrusted tap
-csarkosh/tap`, run `brew trust --cask csarkosh/tap/arkos-ide` and try again.
 
 Releases are signed with a Developer ID and notarized, so the download opens as any app does,
 and from then on the app updates itself (see [Updating](docs/guide.md#updating)). Run "Install Claude Code hooks" from
