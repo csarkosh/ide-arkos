@@ -1,5 +1,5 @@
 //! The window's sessions as a list sorted by what they ask of the user (layouts spec, "The
-//! session list"): the sidebar's Sessions section in the Grid, and the Inbox's own list. The
+//! session list"): the Inbox's sidebar (the Grid's has none since 2026-11-14). The
 //! grouping, the menu's items and the times are pure and tested; the rows read the root.
 use crate::attention::{self, Attention, MoveTo};
 use crate::effects::blocks;
@@ -177,11 +177,6 @@ pub fn toggle_fold(folded: &mut Folded, kind: Attention) {
 /// filter shows every row it finds.
 pub fn is_folded(folded: &Folded, kind: Attention, filtering: bool) -> bool {
     !filtering && folded.contains(&kind)
-}
-
-/// The list's height: every group's heading, and the rows of each that is open.
-pub fn content_height(groups: &[(Attention, Vec<Entry>)], folded: &Folded) -> f32 {
-    groups.iter().map(|(kind, rows)| GROUP_H + if folded.contains(kind) { 0.0 } else { rows.len() as f32 * ROW_H }).sum()
 }
 
 /// What a row's right-click menu does.
@@ -807,9 +802,6 @@ mod tests {
         let shape: Vec<(Attention, Vec<u64>)> = groups.iter().map(|(k, rows)| (*k, rows.iter().map(|e| e.session.0).collect())).collect();
         assert_eq!(shape, vec![(Attention::NeedsYou, vec![3]), (Attention::Unread, vec![4, 6, 2]), (Attention::Working, vec![1]), (Attention::Done, vec![5])]);
         assert_eq!(calling(&groups), 4, "needs you and unread");
-        let first: Folded = Attention::FOLDED_AT_FIRST.into_iter().collect();
-        assert_eq!(content_height(&groups, &first), 4.0 * GROUP_H + 5.0 * ROW_H, "Done is folded");
-        assert_eq!(content_height(&groups, &Folded::new()), 4.0 * GROUP_H + 6.0 * ROW_H);
         assert!(grouped(Vec::new()).is_empty());
     }
 

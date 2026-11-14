@@ -479,9 +479,9 @@ Things only a person at the screen can check, in order of value:
   makes it Unanswered (a ring), and the next prompt Working; a stop while the tab is focused
   in the window in front arrives as Unanswered; the Dock icon shows the count of Needs you and
   Unread and loses it at zero
-- sessions: the sidebar's Sessions section shows every terminal tab under its group, two lines
-  a row, the second ending in an ellipsis at any sidebar width; the header closes it and still
-  shows the count; a right click on a row opens its menu at the pointer; End closes the tab
+- sessions: in the Inbox the sidebar's Sessions list shows every terminal tab under its group,
+  two lines a row, the second ending in an ellipsis at any sidebar width; the Grid's sidebar
+  has no session list, the Explorer at its top; a right click on a row opens its menu at the pointer; End closes the tab
   (Shift+Cmd+T brings it back); "Remind me in" opens Slack's five times and Custom beside the menu, level with its row,
   "Tomorrow" and "Next week" with their times on the right; "In 1 hour" moves it under Later with
   "in 60 min"; Custom opens a field with the keys in it, Enter on `2h` sets it, Enter on `soon`
