@@ -22,8 +22,8 @@ or restart `claude` in a tab:
 Each session also carries a line: what it is doing ("Bash: cargo test"), what it asks ("Allow
 Bash: ffmpeg …", or its question), or the first line of what Claude last said, kept with the
 window so an update does not lose it; a session that has said nothing yet shows its terminal's
-title (Claude Code titles it with the conversation's topic), else the folder it runs in. The sidebar's
-Sessions section lists every session of the window under Needs you, Unread, New, Unanswered,
+title (Claude Code titles it with the conversation's topic), else the folder it runs in. In the
+Inbox, the sidebar's Sessions list holds every session of the window under Needs you, Unread, New, Unanswered,
 Working, Quiet, Later and Done, newest change first, each with its mark, name, age and line. A session you start (a new tab, "+ New session", or one resumed) is New until something
 happens in it, and one left untouched for ten minutes moves to Quiet. A click on a
 group's heading folds it or opens it; Quiet (not finished, nothing happening) and Done start
@@ -78,8 +78,8 @@ lists each folder and each session that reports nothing under "Claude Code confi
 Settings, Layout (or `[layout] name` in the config) chooses how a window arranges its sessions
 and files:
 
-- **Grid**, the default: panes of tabs that you split and arrange, with the Sessions section in
-  the sidebar.
+- **Grid**, the default: panes of tabs that you split and arrange, with the Explorer and
+  Worktrees in the sidebar; each tab says whether its session is working or waiting on you.
 - **Inbox**: the sessions are a list in the sidebar, sorted by what needs you, and the window
   shows one session at full size, as a chat app shows one conversation. The session's header
   (in the tab bar's place) has its mark, name and folder, with "Mark unread" and "Done". Files,
@@ -159,9 +159,9 @@ turning it off deletes the file but does not stop a daemon already running.
 
 ## Sidebar and viewer
 
-Cmd+B shows the sidebar. At its top the Sessions section lists the window's sessions (see
-[Session awareness](#session-awareness)); it takes up to two fifths of the sidebar and closes
-to its header, which still says how many sessions need you. Under it is a file tree rooted at the folder, read one directory at a time as you
+Cmd+B shows the sidebar. In the Inbox its top switches between Sessions (see
+[Session awareness](#session-awareness)) and Files; in the Grid it is the files alone. Files is
+a file tree rooted at the folder, read one directory at a time as you
 expand it, with `.git` hidden and anything `.gitignore` ignores left out (the palette's "Show
 ignored files" lists them dimmed). It follows the file system within a second. A single click
 opens a file in a preview tab in the focused pane, which the next single click replaces; a

@@ -49,8 +49,8 @@ pub struct Sidebar {
     /// list would still take clicks).
     pub explorer_fade: Transient<()>,
     pub worktrees_fade: Transient<()>,
-    /// The Sessions section (`sessions_list`), above the Explorer: whether it shows its rows,
-    /// and their fade as it opens.
+    /// The session list's fade (`sessions_list`), and whether the Grid's Sessions section was
+    /// open when it had one: still saved, so a file from before reads back the same.
     pub sessions_open: bool,
     pub sessions_fade: Transient<()>,
     /// In the Inbox layout, whether the column shows the files (the Explorer and Worktrees) in
@@ -173,14 +173,16 @@ pub fn sidebar_split(total: f32, explorer_rows_h: f32, explorer_open: bool, work
     }
 }
 
-/// The Sessions section's height in a sidebar `total` tall, its header included: closed, or
-/// with no session to list, the header alone; open, its rows up to two fifths of the sidebar,
-/// past which they scroll, so the Explorer under it always keeps the larger part.
-pub fn sessions_height(total: f32, rows_h: f32, open: bool) -> f32 {
-    if !open || rows_h <= 0.0 {
-        return ROW_H;
+/// The session list's height in a sidebar `total` tall under a switch `switch_h` tall: the
+/// Inbox's whole column while it shows Sessions, and nothing in the Grid, whose sidebar is the
+/// Explorer and Worktrees alone (Cyrus, 2026-11-14: "Grid layout should not have the sessions
+/// view. That's for Inbox only").
+pub fn sessions_height(inbox: bool, files_view: bool, total: f32, switch_h: f32) -> f32 {
+    if inbox && !files_view {
+        (total - switch_h).max(0.0)
+    } else {
+        0.0
     }
-    (ROW_H + rows_h).min((total * 0.4).max(ROW_H))
 }
 
 /// The column: the Sessions, Explorer and Worktrees sections, each under a header that opens and closes
@@ -240,7 +242,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
     // The sidebar's own height: the panes' area and the gap an effect keeps above and below it.
     let total_h = root.content.h + 2.0 * style.gap;
     // The Inbox layout: the column is the session list, or the files, chosen by a switch at
-    // its top. The Grid: a Sessions section over the Explorer and Worktrees.
+    // its top. The Grid: the Explorer and Worktrees, no session list.
     let inbox = root.is_inbox();
     let files_view = !inbox || root.sidebar.inbox_files;
     let switch_h = if inbox { ROW_H + 6.0 } else { 0.0 };
@@ -312,35 +314,18 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         root.effect_divider = None;
     }
     // The sessions first: what they take is taken from the two sections under them.
-    let sessions_open = inbox || root.sidebar.sessions_open;
     let session_groups = crate::sessions_list::grouped(crate::sessions_list::entries(root, crate::sessions::now_ms()));
-    let calling = crate::sessions_list::calling(&session_groups);
-    let sessions_h = match (inbox, files_view) {
-        (true, true) => 0.0,
-        (true, false) => (total_h - switch_h).max(0.0),
-        (false, _) => sessions_height(total_h, crate::sessions_list::content_height(&session_groups, &root.sessions_folded), sessions_open),
-    };
+    let sessions_h = sessions_height(inbox, files_view, total_h, switch_h);
     let sessions = div()
         .flex()
         .flex_col()
         .flex_none()
         .h(px(sessions_h))
         .min_h_0()
-        .when(!inbox, |d| d.border_b_1().border_color(if style.ink_borders { c.border.alpha(0.0) } else { c.border.hsla() }))
         .when(inbox && !files_view, |d| d.child(crate::sessions_list::render_filter(root, cx)))
         .children(new_row)
         .when(inbox && session_groups.is_empty(), |d| d.child(div().px(px(12.0 + style.sidebar_pad)).py(px(8.0)).text_size(px(style.ui(12.0))).text_color(c.text_dim.hsla()).child("No sessions yet.")).child(sidebar_end_marker(cx)))
-        .when(!inbox, |d| d.child(
-            header("sessions-header", "Sessions", sessions_open)
-                // How many call for the user, said on the header so a closed section still tells.
-                .when(calling > 0, |d| d.child(div().flex_none().text_color(theme.semantic.waiting.hsla()).child(calling.to_string())))
-                .on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
-                    root.sidebar.sessions_open = !root.sidebar.sessions_open;
-                    root.save(cx);
-                    cx.notify();
-                })),
-        ))
-        .when(sessions_open && !session_groups.is_empty() && sessions_h > 0.0, |d| d.child(crate::sessions_list::render(root, width, inbox, cx).opacity(sessions_o)));
+        .when(!session_groups.is_empty() && sessions_h > 0.0, |d| d.child(crate::sessions_list::render(root, width, inbox, cx).opacity(sessions_o)));
     let (explorer_h, worktrees_h) = sidebar_split(total_h - sessions_h - switch_h, tree_rows as f32 * ROW_H, explorer_open, worktrees_open);
     let explorer = div()
         .flex()
@@ -2265,13 +2250,10 @@ mod tests {
     }
 
     #[test]
-    fn the_sessions_section_is_its_rows_up_to_two_fifths_of_the_sidebar_and_a_header_when_closed_or_empty() {
-        let h = super::ROW_H;
-        assert_eq!(super::sessions_height(900.0, 100.0, true), h + 100.0);
-        assert_eq!(super::sessions_height(900.0, 2000.0, true), 360.0, "past two fifths the rows scroll");
-        assert_eq!(super::sessions_height(900.0, 2000.0, false), h);
-        assert_eq!(super::sessions_height(900.0, 0.0, true), h, "no session: the header alone");
-        assert_eq!(super::sessions_height(30.0, 2000.0, true), h, "never less than its header");
+    fn the_session_list_fills_the_inbox_s_column_and_the_grid_s_sidebar_has_none() {
+        assert_eq!(super::sessions_height(true, false, 900.0, 30.0), 870.0, "the Inbox on Sessions: all of it under the switch");
+        assert_eq!(super::sessions_height(true, true, 900.0, 30.0), 0.0, "the Inbox on Files");
+        assert_eq!(super::sessions_height(false, true, 900.0, 0.0), 0.0, "the Grid: Explorer and Worktrees alone");
     }
 
     #[test]
