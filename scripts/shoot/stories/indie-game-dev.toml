@@ -58,3 +58,19 @@ name = "solar"
 theme = "light"
 wait = { rules = "waiting" }
 timeout_secs = 60
+
+# The Timo Purple picture in the Inbox layout, for the apps page's Inbox and Grid switch: the sessions as a list
+# by what they ask of you, one shown at full size with the files it opened beside it.
+[[shot]]
+name = "dark-inbox"
+theme = "dark"
+layout = "inbox"
+timeout_secs = 60
+
+# The Arabia Solar picture in the Inbox layout, for the apps page's Inbox and Grid switch: the sessions as a list
+# by what they ask of you, one shown at full size with the files it opened beside it.
+[[shot]]
+name = "solar-inbox"
+theme = "light"
+layout = "inbox"
+timeout_secs = 60

@@ -50,9 +50,10 @@ changed = { "rate limit" = 3 }
 after_secs = 30
 timeout_secs = 360
 
-# The Worktrees list close up, for the README's figure: both worktrees, the old one dimmed. The
-# section grows upward with rate-limit's changed files: this fits two (measured on the cloud run
-# of 2026-11-04); if a retake shows more, the top edge moves up by a row (about 0.033) each.
-[[shot.crop]]
-name = "worktrees"
-rect = [0.0, 0.823, 0.183, 0.177]
+# The same moment in the Inbox layout, for the apps page's Inbox and Grid switch: the sessions as a list
+# by what they ask of you, one shown at full size with the files it opened beside it.
+[[shot]]
+name = "dark-inbox"
+theme = "dark"
+layout = "inbox"
+timeout_secs = 60

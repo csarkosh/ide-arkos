@@ -21,7 +21,7 @@ width = 1320
 height = 860
 preset = "compact"
 sidebar = "collapsed"
-theme = { dark = "tokyo-rain", light = "tokyo-rain" }
+theme = { dark = "tokyo-rain", light = "navy" }
 
 [[pane]]
 name = "lantern"
@@ -78,6 +78,30 @@ rect = [0.0, 0.0, 1.0, 0.075]
 # two watercolor themes' wash and ink, Matrix's phosphor rain and decode, Composition
 # Notebook's cover and ruled pages, and Material's and Lavender Material's cards. The two short
 # sessions have answered by then; the long ones go on working through the theme changes.
+
+# The same moment in the Inbox layout, for the apps page's Inbox and Grid switch: the sessions as a list
+# by what they ask of you, one shown at full size with the files it opened beside it.
+[[shot]]
+name = "dark-inbox"
+theme = "dark"
+layout = "inbox"
+timeout_secs = 60
+
+# The same moment in Navy, the theme Arkos starts in (the light slot here), for the apps page's
+# gallery of every theme: `multitasker-navy.png`.
+[[shot]]
+name = "navy"
+theme = "light"
+timeout_secs = 60
+
+# The Navy picture in the Inbox layout, for the apps page's Inbox and Grid switch: the sessions as a list
+# by what they ask of you, one shown at full size with the files it opened beside it.
+[[shot]]
+name = "navy-inbox"
+theme = "light"
+layout = "inbox"
+timeout_secs = 60
+
 [[recording]]
 name = "themes"
 wait = { blog = "waiting", budget = "waiting" }

@@ -274,7 +274,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
 
     // 3. The window's config: the first shot's theme, the storyboard's text size and sidebar,
     //    no login item and no update checks.
-    write_config(&dirs.config_file(), story, &story.shots[0].theme, &story.window.theme)?;
+    write_config(&dirs.config_file(), story, &story.shots[0].theme, &story.shots[0].layout, &story.window.theme)?;
     install_effects(repo, dirs, story, density)?;
     // The recorder, before anything slow: a Mac without swiftc fails here, not after a scene.
     let recorder = if story.recordings.is_empty() { None } else { Some(build_recorder(repo, &dirs.cache)?) };
@@ -426,11 +426,14 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
 
     // 9. The shots.
     let mut theme = story.shots[0].theme.clone();
+    let mut layout = story.shots[0].layout.clone();
     let mut failures = Vec::new();
     for shot in story.shots.iter().filter(|s| Story::wants(only, &s.name)) {
-        if shot.theme != theme {
-            write_config(&dirs.config_file(), story, &shot.theme, &story.window.theme)?;
+        if shot.theme != theme || shot.layout != layout {
+            write_config(&dirs.config_file(), story, &shot.theme, &shot.layout, &story.window.theme)?;
             theme = shot.theme.clone();
+            layout = shot.layout.clone();
+            // The theme's fade, or the window regrouped into the other layout.
             pause(Duration::from_millis(1500))?;
         }
         let unmet = wait_for(&shot.waits(), story, &sessions, client, &progress, &demo)?;
@@ -480,7 +483,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
         let recorder = recorder.as_deref().expect("built when the story has a recording");
         let result = record(rec, story, repo, recorder, dirs, window_id, window_pid, &progress, out);
         // The shot's look again, whatever happened, for anything that follows.
-        write_config(&dirs.config_file(), story, &theme, &story.window.theme)?;
+        write_config(&dirs.config_file(), story, &theme, &layout, &story.window.theme)?;
         result?;
     }
     if !failures.is_empty() {
@@ -500,7 +503,7 @@ fn record(rec: &Recording, story: &Story, repo: &Path, recorder: &Path, dirs: &D
     let hold = Duration::from_secs_f64(rec.hold_secs);
     let show = |name: &str| -> Result<()> {
         let mode = theme_appearance(repo, name)?;
-        write_config(&dirs.config_file(), story, &mode, &ThemePair { dark: name.to_string(), light: name.to_string() })
+        write_config(&dirs.config_file(), story, &mode, "grid", &ThemePair { dark: name.to_string(), light: name.to_string() })
     };
     // In front, so macOS draws it at its full rate (a window behind others is drawn less often).
     activate(window_pid);
@@ -1111,11 +1114,15 @@ fn wait_for_daemon(socket: &Path) -> Result<Daemon> {
 /// The window's config for the shoot: the storyboard's text size and sidebar, the themes and
 /// the mode (`theme`, `dark` or `light`) in force, and nothing that reaches outside (no login
 /// item, no update checks). The window reloads it as it changes.
-fn write_config(path: &Path, story: &Story, theme: &str, themes: &ThemePair) -> Result<()> {
+/// The window's config for a shot: its theme slot (`theme`, dark or light, of `themes`) and its
+/// `layout`, grid or inbox. A session's files open in its own pane, as every storyboard's
+/// layout was drawn for.
+fn write_config(path: &Path, story: &Story, theme: &str, layout: &str, themes: &ThemePair) -> Result<()> {
     let text = format!(
         "# Written by arkos-shoot for each run; edit scripts/shoot/story.toml instead.\n\
          [font]\npreset = \"{preset}\"\n\n\
          [sidebar]\nwidth = {sidebar:.1}\ncollapsed = {collapsed}\n\n\
+         [layout]\nname = \"{layout}\"\nplacement = \"inplace\"\n\n\
          [theme]\ndark = \"{dark}\"\nlight = \"{light}\"\n\n\
          [appearance]\nmode = \"{theme}\"\n\n\
          [recovery]\nstart_at_login = \"off\"\n\n\
@@ -1271,10 +1278,12 @@ fn claude_settings(arkos_exe: &Path, claude_theme: &str) -> serde_json::Value {
         "hooks": {
             "SessionStart": [{ "hooks": [cmd("--event session-start")] }],
             "SessionEnd": [{ "hooks": [cmd("--event session-end")] }],
-            "UserPromptSubmit": [{ "hooks": [cmd("--state working")] }],
-            "PreToolUse": [{ "hooks": [cmd("--state working")] }],
-            "Notification": [{ "matcher": "permission_prompt|idle_prompt", "hooks": [cmd("--state waiting")] }],
-            "Stop": [{ "hooks": [cmd("--state waiting")] }]
+            "UserPromptSubmit": [{ "hooks": [cmd("--hook")] }],
+            "PreToolUse": [{ "hooks": [cmd("--hook")] }],
+            "PostToolUse": [{ "hooks": [cmd("--hook")] }],
+            "PermissionRequest": [{ "hooks": [cmd("--hook")] }],
+            "Notification": [{ "matcher": "permission_prompt|elicitation_dialog|agent_needs_input", "hooks": [cmd("--hook")] }],
+            "Stop": [{ "hooks": [cmd("--hook")] }]
         }
     })
 }

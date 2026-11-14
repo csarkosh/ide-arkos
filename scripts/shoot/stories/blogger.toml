@@ -58,3 +58,19 @@ name = "lavender"
 theme = "light"
 wait = { assistant = "waiting" }
 timeout_secs = 60
+
+# The Peach Watercolor picture in the Inbox layout, for the apps page's Inbox and Grid switch: the sessions as a list
+# by what they ask of you, one shown at full size with the files it opened beside it.
+[[shot]]
+name = "dark-inbox"
+theme = "dark"
+layout = "inbox"
+timeout_secs = 60
+
+# The Lavender Watercolor picture in the Inbox layout, for the apps page's Inbox and Grid switch: the sessions as a list
+# by what they ask of you, one shown at full size with the files it opened beside it.
+[[shot]]
+name = "lavender-inbox"
+theme = "light"
+layout = "inbox"
+timeout_secs = 60

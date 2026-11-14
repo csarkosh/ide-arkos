@@ -62,14 +62,6 @@ lavender frame, each pane's number on a chip of its own colour and its active ta
   <img alt="An Arkos IDE window in Lavender Material, its panes as rounded near-white cards on a lavender frame: the file tree and the Worktrees list on the left, two Claude Code tabs in the middle pane, one working and one waiting, and a web tab showing the app's page the whole height of the window on the right" src="docs/images/web-developer-dark.png" width="760">
 </picture>
 
-Close up, the Worktrees list: the side worktrees of every repository under the open folder,
-newest change first, each with how long since any of its files changed; a spike untouched for
-three weeks reads dimmer.
-
-<picture>
-  <img alt="The Worktrees section of the sidebar in Lavender Material: rate-limit, changed now, with its two changed files under it, over old-spike, clean and untouched for three weeks, dimmed, each with its folder under .worktrees" src="docs/images/web-developer-dark-worktrees.png" width="380">
-</picture>
-
 **The blogger** lives in markdown: a launch plan rendered in the editor, with its status table
 as a grid, a Mermaid diagram, a checklist and a folded open-questions section, and a Claude Code
 session beside it bringing the plan up to date from the review notes.

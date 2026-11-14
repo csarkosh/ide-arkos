@@ -415,6 +415,10 @@ pub struct Shot {
     pub name: String,
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// The window's layout for the shot: `grid` (the default) or `inbox`, the sessions as a list
+    /// with one shown at full size.
+    #[serde(default = "default_layout")]
+    pub layout: String,
     /// Pane name to the Claude Code state it must be in: `working`, `waiting` or `idle`.
     #[serde(default)]
     pub wait: BTreeMap<String, String>,
@@ -533,6 +537,10 @@ fn yes() -> bool {
 
 fn default_theme() -> String {
     "dark".into()
+}
+
+fn default_layout() -> String {
+    "grid".into()
 }
 
 fn default_timeout() -> u64 {
@@ -677,6 +685,9 @@ impl Story {
             waits_ok("recording", &r.waits())?;
         }
         for s in &self.shots {
+            if !["grid", "inbox"].contains(&s.layout.as_str()) {
+                bail!("shot {:?}: layout must be grid or inbox", s.name);
+            }
             if !["dark", "light"].contains(&s.theme.as_str()) {
                 bail!("shot {:?}: theme must be dark or light", s.name);
             }
@@ -880,6 +891,16 @@ theme = "light"
         assert_eq!(s.shots[0].crops[0].name, "tabs");
         assert_eq!(s.shots[1].theme, "light");
         assert_eq!(s.window.preset, "compact");
+    }
+
+    #[test]
+    fn a_shot_is_taken_in_the_grid_unless_it_names_the_inbox_and_no_other_layout() {
+        let s = Story::parse(STORY).unwrap();
+        assert!(s.shots.iter().all(|shot| shot.layout == "grid"));
+        let inbox = STORY.replacen("theme = \"light\"", "theme = \"light\"\nlayout = \"inbox\"", 1);
+        assert_eq!(Story::parse(&inbox).unwrap().shots[1].layout, "inbox");
+        let err = Story::parse(&STORY.replacen("theme = \"light\"", "theme = \"light\"\nlayout = \"journal\"", 1)).unwrap_err().to_string();
+        assert!(err.contains("layout must be grid or inbox"), "{err}");
     }
 
     #[test]
