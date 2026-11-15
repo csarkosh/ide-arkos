@@ -274,7 +274,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
 
     // 3. The window's config: the first shot's theme, the storyboard's text size and sidebar,
     //    no login item and no update checks.
-    write_config(&dirs.config_file(), story, &story.shots[0].theme, &story.shots[0].layout, &story.window.theme)?;
+    write_look(repo, &dirs.config_file(), story, &story.shots[0].theme, &story.shots[0].layout)?;
     install_effects(repo, dirs, story, density)?;
     // The recorder, before anything slow: a Mac without swiftc fails here, not after a scene.
     // Each shot's theme's effect, which says whether the shot is also looped (`Shot::wants_loop`).
@@ -444,7 +444,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
     let mut failures = Vec::new();
     for shot in story.shots.iter().filter(|s| Story::wants(only, &s.name)) {
         if shot.theme != theme || shot.layout != layout {
-            write_config(&dirs.config_file(), story, &shot.theme, &shot.layout, &story.window.theme)?;
+            write_look(repo, &dirs.config_file(), story, &shot.theme, &shot.layout)?;
             theme = shot.theme.clone();
             layout = shot.layout.clone();
             // The theme's fade, or the window regrouped into the other layout.
@@ -515,7 +515,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
         let recorder = recorder.as_deref().expect("built when the story has a recording");
         let result = record(rec, story, repo, recorder, dirs, window_id, window_pid, &progress, out);
         // The shot's look again, whatever happened, for anything that follows.
-        write_config(&dirs.config_file(), story, &theme, &layout, &story.window.theme)?;
+        write_look(repo, &dirs.config_file(), story, &theme, &layout)?;
         result?;
     }
     if !failures.is_empty() {
@@ -1243,6 +1243,15 @@ fn wait_for_daemon(socket: &Path) -> Result<Daemon> {
 /// The window's config for a shot: its theme slot (`theme`, dark or light, of `themes`) and its
 /// `layout`, grid or inbox. A session's files open in its own pane, as every storyboard's
 /// layout was drawn for.
+/// The config for a shot's `theme` and `layout`: `dark` or `light` shows that slot of the story's
+/// pair; a built-in theme's name shows that theme in both slots, in the mode it is drawn in.
+fn write_look(repo: &Path, path: &Path, story: &Story, theme: &str, layout: &str) -> Result<()> {
+    match theme {
+        "dark" | "light" => write_config(path, story, theme, layout, &story.window.theme),
+        name => write_config(path, story, &theme_appearance(repo, name)?, layout, &ThemePair { dark: name.into(), light: name.into() }),
+    }
+}
+
 fn write_config(path: &Path, story: &Story, theme: &str, layout: &str, themes: &ThemePair) -> Result<()> {
     let text = format!(
         "# Written by arkos-shoot for each run; edit scripts/shoot/story.toml instead.\n\

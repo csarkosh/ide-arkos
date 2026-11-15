@@ -388,7 +388,10 @@ and at CRF 24 that seam changed three times the pixels an ordinary frame step do
 frames themselves follow on exactly; at 18 with `-tune grain` it is an ordinary step, about 2 MB
 for Matrix's rain. Every built-in effect
 must be in `MOVING_EFFECTS` or `STILL_EFFECTS` (a test), so a new effect's themes are looped or not
-on purpose; a shot can say `loop = true` or `loop = false` to overrule its theme. The apps page
+on purpose; a shot can say `loop = true` or `loop = false` to overrule its theme. A shot's
+`theme` is `dark` or `light` (the story's pair) or any built-in theme by name, so a persona can
+be shot in a theme not its own: the multi tasker's `solar` and `solar-inbox` are its window in
+Arabia Solar, for the apps page's "Two layouts." band. The apps page
 (csarko.sh's `apps/build.mjs`) finds each picture's `.mp4` beside it and plays it over the
 picture's window, only while it is on screen and chosen.
 

@@ -545,9 +545,14 @@ pub fn theme_effect(themes: &Path, theme: &str) -> Result<Option<String>> {
 }
 
 impl ThemePair {
-    /// The theme a shot's `theme` (`dark` or `light`) shows.
-    pub fn for_mode(&self, mode: &str) -> &str {
-        if mode == "light" { &self.light } else { &self.dark }
+    /// The theme a shot's `theme` shows: `dark` or `light` picks from the pair, and any other
+    /// word is a built-in theme by name (`arabia-solar`), for a persona shot in a theme not its own.
+    pub fn for_mode<'a>(&'a self, mode: &'a str) -> &'a str {
+        match mode {
+            "dark" => &self.dark,
+            "light" => &self.light,
+            name => name,
+        }
     }
 }
 
@@ -783,8 +788,8 @@ impl Story {
             if !["grid", "inbox"].contains(&s.layout.as_str()) {
                 bail!("shot {:?}: layout must be grid or inbox", s.name);
             }
-            if !["dark", "light"].contains(&s.theme.as_str()) {
-                bail!("shot {:?}: theme must be dark or light", s.name);
+            if s.theme.is_empty() || !s.theme.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') {
+                bail!("shot {:?}: theme must be dark, light or a built-in theme's name", s.name);
             }
             waits_ok("shot", &s.waits())?;
             for c in &s.crops {
@@ -992,10 +997,11 @@ mod tests {
     }
 
     #[test]
-    fn a_theme_pair_gives_the_dark_theme_unless_the_shot_is_light() {
-        let pair = ThemePair { dark: "timo-purple".into(), light: "arabia-solar".into() };
-        assert_eq!(pair.for_mode("dark"), "timo-purple");
-        assert_eq!(pair.for_mode("light"), "arabia-solar");
+    fn a_shot_s_theme_is_the_pair_s_dark_or_light_or_a_built_in_theme_by_name() {
+        let pair = ThemePair { dark: "tokyo-rain".into(), light: "navy".into() };
+        assert_eq!(pair.for_mode("dark"), "tokyo-rain");
+        assert_eq!(pair.for_mode("light"), "navy");
+        assert_eq!(pair.for_mode("arabia-solar"), "arabia-solar");
     }
 
     const STORY: &str = r#"
@@ -1118,6 +1124,10 @@ theme = "light"
             }
             for effect in &story.effects {
                 assert!(root.join("crates/arkos/effects").join(&effect.name).join("effect.toml").is_file(), "{}: no built-in effect {}", path.display(), effect.name);
+            }
+            for shot in &story.shots {
+                let theme = story.window.theme.for_mode(&shot.theme);
+                assert!(root.join("crates/arkos/themes").join(format!("{theme}.toml")).is_file(), "{}: shot {} names no built-in theme {theme}", path.display(), shot.name);
             }
             for recording in &story.recordings {
                 for theme in &recording.themes {
