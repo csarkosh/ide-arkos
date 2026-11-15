@@ -13,8 +13,8 @@ Arkos keeps all your Claude Code sessions in one window and shows you which one 
 - The Grid lays your sessions out side by side, arranged however you like.
 - A file browser, a web page and an editor for the documents Claude writes sit beside your
   sessions.
-- If the window freezes, the app updates or your Mac restarts, every session comes back where
-  you left it.
+- Sessions that last: they keep running through a frozen window, an update or a restart, and
+  pick up right where you left them.
 
 Built for Apple silicon, macOS 14 or later.
 
