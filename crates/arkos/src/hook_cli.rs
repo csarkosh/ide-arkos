@@ -133,6 +133,15 @@ pub fn tool_line(tool: &str, input: &serde_json::Value) -> String {
     note_line(&line).unwrap_or_else(|| tool.to_string())
 }
 
+/// The line for a tool that is itself a call on the user: its question, or a plan to approve.
+fn asks(tool: &str, input: &serde_json::Value) -> Option<String> {
+    match tool {
+        "AskUserQuestion" => Some(input.pointer("/questions/0/question").and_then(|q| q.as_str()).and_then(note_line).unwrap_or_else(|| "Asks you a question".to_string())),
+        "ExitPlanMode" => Some("Plan ready for review".to_string()),
+        _ => None,
+    }
+}
+
 /// What a hook event's JSON says about its session, or None for an event that says nothing
 /// (one this does not know, or a notification that is no call on the user). A prompt sent or a
 /// tool starting or ending is work; a permission dialog, a question put to the user and a plan
@@ -146,16 +155,14 @@ pub fn hook_report(v: &serde_json::Value) -> Option<HookReport> {
     let blocked = |note: Option<String>| Some(HookReport { state: ClaudeState::Waiting, blocked: true, note });
     match text("hook_event_name")? {
         "UserPromptSubmit" | "PostToolUse" | "PostToolUseFailure" => working(None),
-        "PreToolUse" => match tool {
-            "AskUserQuestion" => {
-                let question = input.pointer("/questions/0/question").and_then(|q| q.as_str()).and_then(note_line);
-                blocked(Some(question.unwrap_or_else(|| "Asks you a question".to_string())))
-            }
-            "ExitPlanMode" => blocked(Some("Plan ready for review".to_string())),
-            "" => working(None),
-            _ => working(Some(tool_line(tool, input))),
+        "PreToolUse" => match asks(tool, input) {
+            Some(line) => blocked(Some(line)),
+            None if tool.is_empty() => working(None),
+            None => working(Some(tool_line(tool, input))),
         },
-        "PermissionRequest" => blocked(Some(format!("Allow {}", tool_line(if tool.is_empty() { "this" } else { tool }, input)))),
+        // Claude Code asks permission for its question and its plan too: the line is still the
+        // question or the plan, never "Allow AskUserQuestion".
+        "PermissionRequest" => blocked(Some(asks(tool, input).unwrap_or_else(|| format!("Allow {}", tool_line(if tool.is_empty() { "this" } else { tool }, input))))),
         "Notification" => match text("notification_type") {
             // The permission's own event said which tool; this one says only that it waits.
             Some("permission_prompt") => blocked(None),
@@ -835,6 +842,12 @@ mod tests {
             says(ClaudeState::Waiting, true, Some("Which device pool should I use?"))
         );
         assert_eq!(report(r#"{"hook_event_name":"PreToolUse","tool_name":"ExitPlanMode","tool_input":{}}"#), says(ClaudeState::Waiting, true, Some("Plan ready for review")));
+        assert_eq!(
+            report(r#"{"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which device pool should I use?"}]}}"#),
+            says(ClaudeState::Waiting, true, Some("Which device pool should I use?")),
+            "the permission for a question still shows the question"
+        );
+        assert_eq!(report(r#"{"hook_event_name":"PermissionRequest","tool_name":"ExitPlanMode","tool_input":{}}"#), says(ClaudeState::Waiting, true, Some("Plan ready for review")));
         assert_eq!(report(r#"{"hook_event_name":"Notification","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}"#), says(ClaudeState::Waiting, true, None));
         assert_eq!(report(r#"{"hook_event_name":"Notification","notification_type":"elicitation_dialog","message":"Pick a workspace"}"#), says(ClaudeState::Waiting, true, Some("Pick a workspace")));
         // Finished: waiting, with the first line of what it last said, its markdown marks off.
