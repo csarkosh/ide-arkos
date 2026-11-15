@@ -57,11 +57,12 @@ window in pigment and ink.
   <img alt="An Arkos IDE window in Peach Watercolor, two panes one above the other: a launch plan rendered in the markdown editor on top, its status table drawn as a grid with a wash over its header and an ink outline; below it a Claude Code session updating the plan from the notes, the window washed in the theme's pigments with ink lines round each pane" src="docs/images/blogger-dark.png" width="620">
 </picture>
 
-**The hacker** has Claude Code audit a file-drop service and harden its sign-in, while a second
-session reads the ssh log for the intruder. Shot in Matrix, with rune rain behind the panes.
+**The indie game dev** builds a dungeon crawl: Claude Code fixes the combat rule a test caught and
+designs the next room's enemy. Shot in Timo Purple, a pixel-art night, and Arabia Solar, the same
+world by day.
 
 <picture>
-  <img alt="An Arkos IDE window in the Matrix theme, black with green text and rune rain falling behind the panes: the file tree on the left, Claude Code hardening a service's sign-in with its newest line still scrambling into place and a second tab fixing a path traversal, a session reading an ssh log for a break-in, and a shell showing the end of that log" src="docs/images/hacker-dark.png" width="760">
+  <img alt="An Arkos IDE window in Timo Purple, deep violet with cyan accents and pixel art: each pane in a notched pixel frame on a dark checkered ground, the focused one framed in cyan, stone tab bars with a small lantern on each active tab, stars and a cloud in the title bar and a castle under a crescent moon at the foot of the file tree; Claude Code on the left adding an enemy to a dungeon crawl, the design notes with their roster table rendered on the right, and a shell showing the failing test below them" src="docs/images/indie-game-dev-dark.png" width="760">
 </picture>
 
 **The student** keeps a course in one folder: the lecture notes on the left, and Claude Code on
@@ -79,12 +80,11 @@ fills in, chart and all. Shot in Material.
   <img alt="An Arkos IDE window in Material, its panes as white rounded cards on a pale frame: a weekly signups report rendered on the left with this week's table by channel filled in and a light blue bar chart, Claude Code on the right summing up the numbers it computed, and the CSV export of signups by week and channel below it" src="docs/images/data-analyst-dark.png" width="760">
 </picture>
 
-**The indie game dev** builds a dungeon crawl: Claude Code fixes the combat rule a test caught and
-designs the next room's enemy. Shot in Timo Purple, a pixel-art night, and Arabia Solar, the same
-world by day.
+**The hacker** has Claude Code audit a file-drop service and harden its sign-in, while a second
+session reads the ssh log for the intruder. Shot in Matrix, with rune rain behind the panes.
 
 <picture>
-  <img alt="An Arkos IDE window in Timo Purple, deep violet with cyan accents and pixel art: each pane in a notched pixel frame on a dark checkered ground, the focused one framed in cyan, stone tab bars with a small lantern on each active tab, stars and a cloud in the title bar and a castle under a crescent moon at the foot of the file tree; Claude Code on the left adding an enemy to a dungeon crawl, the design notes with their roster table rendered on the right, and a shell showing the failing test below them" src="docs/images/indie-game-dev-dark.png" width="760">
+  <img alt="An Arkos IDE window in the Matrix theme, black with green text and rune rain falling behind the panes: the file tree on the left, Claude Code hardening a service's sign-in with its newest line still scrambling into place and a second tab fixing a path traversal, a session reading an ssh log for a break-in, and a shell showing the end of that log" src="docs/images/hacker-dark.png" width="760">
 </picture>
 
 ## Privacy
