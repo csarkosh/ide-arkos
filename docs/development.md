@@ -382,8 +382,11 @@ SIGSTOP (parents first, so a shell never sees its child stop; SIGCONT after, chi
 the text stands still and only the effect moves, and the still matches the loop's frames. The
 window is recorded for the loop and its fade, and `loop.py --still 6 --fade 1.5` cuts six seconds
 and dissolves the second and a half recorded after them into their start: the loop's first frame
-is the one that followed its last in the recording, so it plays round with no seam. CRF 24, since
-rain and stars are fine grain and 19 kept them at about four times the size. Every built-in effect
+is the one that followed its last in the recording, so it plays round with no seam. CRF 18 tuned
+for grain: the loop's one keyframe is its first frame, where x264's drifting noise starts afresh,
+and at CRF 24 that seam changed three times the pixels an ordinary frame step does, though the
+frames themselves follow on exactly; at 18 with `-tune grain` it is an ordinary step, about 2 MB
+for Matrix's rain. Every built-in effect
 must be in `MOVING_EFFECTS` or `STILL_EFFECTS` (a test), so a new effect's themes are looped or not
 on purpose; a shot can say `loop = true` or `loop = false` to overrule its theme. The apps page
 (csarko.sh's `apps/build.mjs`) finds each picture's `.mp4` beside it and plays it over the

@@ -34,9 +34,14 @@ GUARD = 0.1
 # a theme alone: a soft sweep's trailing edge is still a band of the old theme at its last tick.
 MARGIN = 0.5
 TRANSITIONS = {"sweep": "smoothright", "dissolve": "fade"}
-# x264's quality for a picture's loop (`--still`): 19 kept a Retina window's rain at about four
-# times the size for no difference a page shows.
-STILL_CRF = 24
+# x264 for a picture's loop (`--still`). The loop's one keyframe is its first frame, and it meets
+# the last: x264's noise, which drifts over the frames after a keyframe, starts afresh there, and
+# at CRF 24 that made the seam change three times the pixels an ordinary frame step does (Matrix's
+# rain, measured frame by frame), though the frames themselves follow on exactly. CRF 18 tuned
+# for grain brings the seam down to an ordinary step (0.78% of pixels moved more than six levels,
+# against 0.79%), at about 2 MB for the busiest rain.
+STILL_CRF = 18
+STILL_TUNE = ["-tune", "grain"]
 
 
 def duration_of(path):
@@ -136,11 +141,11 @@ def main():
     print(f"{a.out}: {got:.2f} s loop ({a.transition}, {a.fade} s each) from {have:.2f} s recorded")
 
 
-def encode(source, graph, out, crf=19):
+def encode(source, graph, out, crf=19, tune=()):
     subprocess.run([
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", source,
         "-filter_complex", graph, "-map", "[out]",
-        "-c:v", "libx264", "-preset", "slow", "-crf", str(crf), "-profile:v", "high", "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-preset", "slow", "-crf", str(crf), *tune, "-profile:v", "high", "-pix_fmt", "yuv420p",
         "-movflags", "+faststart", "-an", out,
     ], check=True)
 
@@ -157,9 +162,7 @@ def still(a):
     need = a.settle + a.still + a.fade
     if have + GUARD < need:
         sys.exit(f"loop.py: {a.source} is {have:.2f} s, shorter than the settle, the loop and its fade ({need:.2f} s)")
-    # A web page's loop rather than the themes' showcase: the effects are fine grain (rain,
-    # stars), which a lower quality keeps at a fraction of the size.
-    encode(a.source, graph, a.out, crf=STILL_CRF)
+    encode(a.source, graph, a.out, crf=STILL_CRF, tune=STILL_TUNE)
     if a.poster:
         subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", a.out, "-frames:v", "1", "-q:v", "2", a.poster], check=True)
     got = duration_of(a.out)
