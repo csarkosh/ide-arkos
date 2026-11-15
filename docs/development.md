@@ -372,6 +372,23 @@ little from the side with the backs out of focus, pulling back and straightening
 still) at 2880 by 1600 and 24 fps with its last frame as `<name>.jpg`; the multi tasker's is
 `hero`. `cinema.py --preview` renders a quarter of the size in seconds, to look before a run.
 
+**A shot's loop** (Cyrus, 2026-11-15: the animated themes should play "as a smooth video loop so
+prospective users can be enticed by the themes", the end running into the start with no seam, and
+paused when out of view). Every shot whose theme's effect moves on its own (`MOVING_EFFECTS` in
+`crates/shoot/src/story.rs`: runic, overworld and space, so Tokyo Rain, Matrix, Timo Purple and
+Arabia Solar) is also written as `docs/images/<scene>-<shot>.mp4`, beside its still. From just
+before the still to the end of the loop every process under the shoot's daemon is held with
+SIGSTOP (parents first, so a shell never sees its child stop; SIGCONT after, children first), so
+the text stands still and only the effect moves, and the still matches the loop's frames. The
+window is recorded for the loop and its fade, and `loop.py --still 6 --fade 1.5` cuts six seconds
+and dissolves the second and a half recorded after them into their start: the loop's first frame
+is the one that followed its last in the recording, so it plays round with no seam. CRF 24, since
+rain and stars are fine grain and 19 kept them at about four times the size. Every built-in effect
+must be in `MOVING_EFFECTS` or `STILL_EFFECTS` (a test), so a new effect's themes are looped or not
+on purpose; a shot can say `loop = true` or `loop = false` to overrule its theme. The apps page
+(csarko.sh's `apps/build.mjs`) finds each picture's `.mp4` beside it and plays it over the
+picture's window, only while it is on screen and chosen.
+
 **Redoing one shot or one recording.** A scene's sessions have to run either way, but the
 captures can be picked: `scripts/shoot.sh --only themes multitasker` (or the workflow's `only`
 input, `gh workflow run shoot -f scenes=multitasker -f only=themes`) takes only the shots and
