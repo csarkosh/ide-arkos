@@ -6,18 +6,12 @@
   <img alt="Seven Arkos IDE windows fanned out like postcards, each in its own theme. In front, the multi tasker: three Claude Code sessions side by side, each running its own subagents on an unrelated project. Behind, the blogger with a launch plan in the markdown editor, the data analyst with a weekly report and its chart, the hacker hardening a service in Matrix green, the indie game dev with a dungeon crawl in pixel-framed purple, the student with lecture notes on a ruled notebook page, and the web developer with the app's page in a web tab" src="docs/images/hero-dark.png" width="900">
 </picture>
 
-Arkos is a terminal layout manager built for Claude Code, in two layouts. The Inbox lists your
-sessions by what they need from you, the ones waiting on you first, then the unread answers,
-the new and the unanswered, the working and the quiet, and shows one at full size with the
-files, pages and videos it opened beside it, so you always know which session to answer next;
-put one off with "Remind me in" and it comes back when you asked. The Grid is panes of tabs
-you split and arrange, each tab saying whether its session is working or waiting on you.
-Either way there is a web page in a pane beside the code, a file tree, a live list of every
-repository's worktrees with how long each has sat untouched, and a markdown editor for the
-documents the sessions write. Every session lives in a separate daemon, so a frozen window, an
-update or a restart never loses work: the window comes back and every tab is where you left
-it, with Claude Code resumed. Written in Rust with GPUI, it stays light on memory and scrolls
-smoothly with dozens of sessions open.
+Arkos keeps all your Claude Code sessions in one window and shows you which one needs you
+next. Pick a layout: the Inbox sorts your sessions by what they need from you and shows one at
+a time with its files beside it, while the Grid lays them out side by side. Next to your
+sessions sit a file browser, a web page and an editor for the documents Claude writes. If the
+window freezes, the app updates or your Mac restarts, nothing is lost: every session comes back
+where you left it.
 
 Built for Apple silicon, macOS 14 or later.
 
