@@ -21,7 +21,7 @@ width = 1320
 height = 860
 preset = "compact"
 sidebar = "collapsed"
-theme = { dark = "tokyo-rain", light = "tokyo-rain" }
+theme = { dark = "tokyo-rain", light = "navy" }
 
 [[pane]]
 name = "lantern"
@@ -48,11 +48,28 @@ name = "lisbon"
 cwd = "trip"
 claude = "Plan the trip in notes.md. Write itinerary.md day by day with times and how we get around, budget.md with a table that totals against the budget in the notes, and packing.md. Use one subagent for the itinerary and one for the budget, then reconcile them so the budget matches the plan."
 
+# For the Inbox's range: more sessions, each in another state. Needs you (flights asks a question), Later (gifts, put off ten hours) and Done (taxes, closed yesterday), beside the five at work.
+[[pane]]
+name = "flights"
+cwd = "trip"
+claude = "Before you do anything else, use your AskUserQuestion tool to ask me one question: should we fly out Tuesday evening or Wednesday morning? Offer those two as the options. Then wait for my answer."
+
+[[pane]]
+name = "gifts"
+claude = ""
+later_mins = 600
+line = "Gift ideas for Mum's birthday, under 80 dollars"
+
+[[ended]]
+name = "taxes"
+line = "The Q3 estimate is paid; the receipt is in taxes/2026-q3.pdf."
+mins_ago = 1500
+
 [layout]
 split = "horizontal"
 ratio = 0.5
 first = { tabs = ["lantern", "blog"] }
-second = { split = "vertical", ratio = 0.5, first = { tabs = ["inbox", "budget"] }, second = { tabs = ["lisbon"] } }
+second = { split = "vertical", ratio = 0.5, first = { tabs = ["inbox", "budget"] }, second = { tabs = ["lisbon", "flights", "gifts"] } }
 
 # The moment: the sessions have fanned out their subagents and the first files are in, and
 # the two short sessions behind them have answered and wait on you (the waiting mark on an
@@ -78,6 +95,30 @@ rect = [0.0, 0.0, 1.0, 0.075]
 # two watercolor themes' wash and ink, Matrix's phosphor rain and decode, Composition
 # Notebook's cover and ruled pages, and Material's and Lavender Material's cards. The two short
 # sessions have answered by then; the long ones go on working through the theme changes.
+
+# The same moment in the Inbox layout, for the apps page's Inbox and Grid switch: the sessions as a list
+# by what they ask of you, one shown at full size with the files it opened beside it.
+[[shot]]
+name = "dark-inbox"
+theme = "dark"
+layout = "inbox"
+timeout_secs = 60
+
+# The same moment in Navy, the theme Arkos starts in (the light slot here), for the apps page's
+# gallery of every theme: `multitasker-navy.png`.
+[[shot]]
+name = "navy"
+theme = "light"
+timeout_secs = 60
+
+# The Navy picture in the Inbox layout, for the apps page's Inbox and Grid switch: the sessions as a list
+# by what they ask of you, one shown at full size with the files it opened beside it.
+[[shot]]
+name = "navy-inbox"
+theme = "light"
+layout = "inbox"
+timeout_secs = 60
+
 [[recording]]
 name = "themes"
 wait = { blog = "waiting", budget = "waiting" }

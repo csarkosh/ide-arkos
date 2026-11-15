@@ -32,11 +32,26 @@ claude = "Bring report.md up to this week. Write scripts/weekly.py (Python stand
 name = "data"
 view = "data/signups.csv"
 
+# For the Inbox's range: more sessions, each in another state. Needs you (churn asks a question), Working (backfill rebuilds 52 weeks) and Later (q3 deck, put off three hours), beside numbers.
+[[pane]]
+name = "backfill"
+claude = "Run python3 scripts/backfill.py in the foreground with a ten minute timeout (it takes several minutes; do not run it in the background), then tell me in one line whether any week's totals changed."
+
+[[pane]]
+name = "churn"
+claude = "Before you do anything else, use your AskUserQuestion tool to ask me one question: should churn count paused accounts as churned? Offer yes and no as the options. Then wait for my answer."
+
+[[pane]]
+name = "q3 deck"
+claude = ""
+later_mins = 180
+line = "Turn the Q3 numbers into five slides for Monday's review"
+
 [layout]
 split = "horizontal"
 ratio = 0.55
 first = { tabs = ["report"] }
-second = { split = "vertical", ratio = 0.6, first = { tabs = ["numbers"] }, second = { tabs = ["data"] } }
+second = { split = "vertical", ratio = 0.6, first = { tabs = ["numbers", "backfill", "churn", "q3 deck"] }, second = { tabs = ["data"] } }
 
 [[shot]]
 name = "dark"
@@ -45,3 +60,18 @@ wait = { numbers = "waiting" }
 changed = { numbers = 1 }
 after_secs = 30
 timeout_secs = 300
+
+# The same moment in the Inbox layout, for the apps page's Inbox and Grid switch: the sessions as a list
+# by what they ask of you, one shown at full size with the files it opened beside it.
+[[shot]]
+name = "dark-inbox"
+theme = "dark"
+layout = "inbox"
+timeout_secs = 60
+# Side by side, as Cyrus asked for this one (2026-11-14): the files pane dragged by its number
+# from the top, where a narrow window stacks it, onto the session's right edge.
+drag = [[0.188, 0.06], [0.96, 0.72]]
+# Then the divider, from where the Inbox leaves it (the session 60%) to give the files pane the
+# room its table needs, so no column header wraps; the session keeps 46%, or the table Claude
+# Code prints in the terminal wraps instead.
+drags = [[[0.6655, 0.72], [0.55, 0.72]]]

@@ -35,11 +35,36 @@ view = "posts/2026-10-02-decision-logs.md"
 name = "assistant"
 claude = "Read notes/launch-review.md and bring posts/2026-10-16-launch-plan.md up to date with it: change the status table rows the notes mention (keep the table's columns and the pipes aligned), tick the checklist item that is done, and add the new open question to the Open questions section. Keep the file's shape and voice, change nothing else, no em-dashes. When it is written, read it back once."
 
+# For the Inbox's range: more sessions, each in another state. Needs you (newsletter asks a question), New (drafts, a session just opened), Later (book review, put off four hours) and Done (two closed earlier), beside the assistant.
+[[pane]]
+name = "newsletter"
+claude = "Before you do anything else, use your AskUserQuestion tool to ask me one question: which post should lead this month's newsletter? Offer the three newest posts in posts/ as the options. Then wait for my answer."
+
+[[pane]]
+name = "drafts"
+new = true
+
+[[pane]]
+name = "book review"
+claude = ""
+later_mins = 240
+line = "Outline the book review for Friday's post"
+
+[[ended]]
+name = "typos"
+line = "I fixed 14 typos across six posts and changed no wording."
+mins_ago = 90
+
+[[ended]]
+name = "rss"
+line = "The feed validates now: every item has a date and a link."
+mins_ago = 2000
+
 [layout]
 split = "vertical"
 ratio = 0.52
 first = { tabs = ["launch plan", "decision logs"] }
-second = { tabs = ["assistant"] }
+second = { tabs = ["assistant", "newsletter", "drafts", "book review"] }
 
 [[shot]]
 name = "dark"
@@ -57,4 +82,20 @@ click = [0.42, 0.17]
 name = "lavender"
 theme = "light"
 wait = { assistant = "waiting" }
+timeout_secs = 60
+
+# The Peach Watercolor picture in the Inbox layout, for the apps page's Inbox and Grid switch: the sessions as a list
+# by what they ask of you, one shown at full size with the files it opened beside it.
+[[shot]]
+name = "dark-inbox"
+theme = "dark"
+layout = "inbox"
+timeout_secs = 60
+
+# The Lavender Watercolor picture in the Inbox layout, for the apps page's Inbox and Grid switch: the sessions as a list
+# by what they ask of you, one shown at full size with the files it opened beside it.
+[[shot]]
+name = "lavender-inbox"
+theme = "light"
+layout = "inbox"
 timeout_secs = 60

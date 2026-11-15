@@ -274,7 +274,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
 
     // 3. The window's config: the first shot's theme, the storyboard's text size and sidebar,
     //    no login item and no update checks.
-    write_config(&dirs.config_file(), story, &story.shots[0].theme, &story.window.theme)?;
+    write_config(&dirs.config_file(), story, &story.shots[0].theme, &story.shots[0].layout, &story.window.theme)?;
     install_effects(repo, dirs, story, density)?;
     // The recorder, before anything slow: a Mac without swiftc fails here, not after a scene.
     let recorder = if story.recordings.is_empty() { None } else { Some(build_recorder(repo, &dirs.cache)?) };
@@ -333,7 +333,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
     let mut frame = story::centred(w, h, screen.w, screen.h, screen.top);
     let ws_file = story::workspace_file(&dirs.state.join("workspaces"), &demo);
     std::fs::create_dir_all(ws_file.parent().expect("workspaces dir"))?;
-    std::fs::write(&ws_file, serde_json::to_string_pretty(&story::workspace_json(story, &demo, &sessions, &worktrees, frame))?)?;
+    std::fs::write(&ws_file, serde_json::to_string_pretty(&story::workspace_json(story, &demo, &sessions, &worktrees, frame, now_ms()))?)?;
 
     // 7. The window, from the dev build, on the demo. It writes Claude Code's Arkos theme at
     //    startup where Claude Code has a config folder; on a fresh runner that folder may not
@@ -398,6 +398,9 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
             client.input(SessionId(sessions[&pane.name]), "\r")?;
         }
         pause(Duration::from_secs(4))?;
+        // An empty prompt starts Claude Code and leaves it at its prompt, a session not yet asked
+        // anything; the rest are sent and waited on.
+        let claude: Vec<_> = claude.into_iter().filter(|p| p.claude.as_deref().is_some_and(|c| !c.is_empty())).collect();
         for pane in &claude {
             let id = SessionId(sessions[&pane.name]);
             client.input(id, pane.claude.as_deref().expect("filtered"))?;
@@ -426,11 +429,14 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
 
     // 9. The shots.
     let mut theme = story.shots[0].theme.clone();
+    let mut layout = story.shots[0].layout.clone();
     let mut failures = Vec::new();
     for shot in story.shots.iter().filter(|s| Story::wants(only, &s.name)) {
-        if shot.theme != theme {
-            write_config(&dirs.config_file(), story, &shot.theme, &story.window.theme)?;
+        if shot.theme != theme || shot.layout != layout {
+            write_config(&dirs.config_file(), story, &shot.theme, &shot.layout, &story.window.theme)?;
             theme = shot.theme.clone();
+            layout = shot.layout.clone();
+            // The theme's fade, or the window regrouped into the other layout.
             pause(Duration::from_millis(1500))?;
         }
         let unmet = wait_for(&shot.waits(), story, &sessions, client, &progress, &demo)?;
@@ -438,7 +444,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
             say(&format!("{}: after {} s these were not as asked: {}", shot.name, shot.timeout_secs, unmet.join(", ")));
             failures.push(format!("{} ({})", shot.name, unmet.join(", ")));
         }
-        if shot.click.is_some() || shot.right_click.is_some() || shot.drag.is_some() || shot.hover.is_some() || !shot.keys.is_empty() {
+        if shot.click.is_some() || shot.right_click.is_some() || shot.drag.is_some() || !shot.drags.is_empty() || shot.hover.is_some() || !shot.keys.is_empty() {
             if shot.activate {
                 activate(window_pid);
             }
@@ -480,7 +486,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
         let recorder = recorder.as_deref().expect("built when the story has a recording");
         let result = record(rec, story, repo, recorder, dirs, window_id, window_pid, &progress, out);
         // The shot's look again, whatever happened, for anything that follows.
-        write_config(&dirs.config_file(), story, &theme, &story.window.theme)?;
+        write_config(&dirs.config_file(), story, &theme, &layout, &story.window.theme)?;
         result?;
     }
     if !failures.is_empty() {
@@ -500,7 +506,7 @@ fn record(rec: &Recording, story: &Story, repo: &Path, recorder: &Path, dirs: &D
     let hold = Duration::from_secs_f64(rec.hold_secs);
     let show = |name: &str| -> Result<()> {
         let mode = theme_appearance(repo, name)?;
-        write_config(&dirs.config_file(), story, &mode, &ThemePair { dark: name.to_string(), light: name.to_string() })
+        write_config(&dirs.config_file(), story, &mode, "grid", &ThemePair { dark: name.to_string(), light: name.to_string() })
     };
     // In front, so macOS draws it at its full rate (a window behind others is drawn less often).
     activate(window_pid);
@@ -685,7 +691,8 @@ fn wait_for(shot: &Waits, story: &Story, sessions: &BTreeMap<String, u64>, clien
     let started = Instant::now();
     let deadline = started + Duration::from_secs(shot.timeout_secs);
     let settle_until: Option<Instant> = None;
-    let claude_panes: Vec<&str> = story.panes.iter().filter(|p| p.claude.is_some()).map(|p| p.name.as_str()).collect();
+    // A session left at its prompt (an empty one) never works and is not waited on.
+    let claude_panes: Vec<&str> = story.panes.iter().filter(|p| p.claude.as_deref().is_some_and(|c| !c.is_empty())).map(|p| p.name.as_str()).collect();
     loop {
         let states = client.states()?;
         let state_of = |name: &str| sessions.get(name).and_then(|id| states.get(id)).copied().unwrap_or(ClaudeState::Idle);
@@ -750,7 +757,7 @@ fn send_input(shot: &Shot, frame: (f64, f64, f64, f64)) -> Result<()> {
         post(CGEvent::new_mouse_event(source.clone(), CGEventType::RightMouseUp, at, CGMouseButton::Right))?;
         std::thread::sleep(Duration::from_millis(300));
     }
-    if let Some([[ax, ay], [bx, by]]) = shot.drag {
+    for &[[ax, ay], [bx, by]] in shot.drag.iter().chain(shot.drags.iter()) {
         let at = |fx: f64, fy: f64| CGPoint::new(frame.0 + fx * frame.2, frame.1 + fy * frame.3);
         post(CGEvent::new_mouse_event(source.clone(), CGEventType::MouseMoved, at(ax, ay), CGMouseButton::Left))?;
         std::thread::sleep(Duration::from_millis(120));
@@ -1111,11 +1118,15 @@ fn wait_for_daemon(socket: &Path) -> Result<Daemon> {
 /// The window's config for the shoot: the storyboard's text size and sidebar, the themes and
 /// the mode (`theme`, `dark` or `light`) in force, and nothing that reaches outside (no login
 /// item, no update checks). The window reloads it as it changes.
-fn write_config(path: &Path, story: &Story, theme: &str, themes: &ThemePair) -> Result<()> {
+/// The window's config for a shot: its theme slot (`theme`, dark or light, of `themes`) and its
+/// `layout`, grid or inbox. A session's files open in its own pane, as every storyboard's
+/// layout was drawn for.
+fn write_config(path: &Path, story: &Story, theme: &str, layout: &str, themes: &ThemePair) -> Result<()> {
     let text = format!(
         "# Written by arkos-shoot for each run; edit scripts/shoot/story.toml instead.\n\
          [font]\npreset = \"{preset}\"\n\n\
          [sidebar]\nwidth = {sidebar:.1}\ncollapsed = {collapsed}\n\n\
+         [layout]\nname = \"{layout}\"\nplacement = \"inplace\"\n\n\
          [theme]\ndark = \"{dark}\"\nlight = \"{light}\"\n\n\
          [appearance]\nmode = \"{theme}\"\n\n\
          [recovery]\nstart_at_login = \"off\"\n\n\
@@ -1271,10 +1282,12 @@ fn claude_settings(arkos_exe: &Path, claude_theme: &str) -> serde_json::Value {
         "hooks": {
             "SessionStart": [{ "hooks": [cmd("--event session-start")] }],
             "SessionEnd": [{ "hooks": [cmd("--event session-end")] }],
-            "UserPromptSubmit": [{ "hooks": [cmd("--state working")] }],
-            "PreToolUse": [{ "hooks": [cmd("--state working")] }],
-            "Notification": [{ "matcher": "permission_prompt|idle_prompt", "hooks": [cmd("--state waiting")] }],
-            "Stop": [{ "hooks": [cmd("--state waiting")] }]
+            "UserPromptSubmit": [{ "hooks": [cmd("--hook")] }],
+            "PreToolUse": [{ "hooks": [cmd("--hook")] }],
+            "PostToolUse": [{ "hooks": [cmd("--hook")] }],
+            "PermissionRequest": [{ "hooks": [cmd("--hook")] }],
+            "Notification": [{ "matcher": "permission_prompt|elicitation_dialog|agent_needs_input", "hooks": [cmd("--hook")] }],
+            "Stop": [{ "hooks": [cmd("--hook")] }]
         }
     })
 }
@@ -1583,3 +1596,8 @@ mod tests {
     }
 }
 
+
+/// Now, in milliseconds since the Unix epoch, as the window dates its marks.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}

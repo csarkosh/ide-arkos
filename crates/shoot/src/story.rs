@@ -23,6 +23,20 @@ pub struct Story {
     /// different effects wants each at the runner's scale.
     #[serde(default, rename = "effect", deserialize_with = "one_or_many")]
     pub effects: Vec<EffectSpec>,
+    /// `[[ended]]`: Claude Code sessions closed before the window opened, which the Inbox's
+    /// list keeps under Done with their names and last lines.
+    #[serde(default, rename = "ended")]
+    pub ended: Vec<Ended>,
+}
+
+/// `[[ended]]`: a session whose tab was closed `mins_ago` minutes before the shoot, with the
+/// last line its Claude Code gave.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ended {
+    pub name: String,
+    pub line: String,
+    pub mins_ago: u64,
 }
 
 fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<EffectSpec>, D::Error> {
@@ -368,6 +382,16 @@ pub struct Pane {
     pub run: Option<String>,
     pub browser: Option<String>,
     pub view: Option<String>,
+    /// For the Inbox's list, what the user did with the session before the window opened: put
+    /// off for this many minutes with "Remind me in" (Later), which only a session with no turn
+    /// of its own during the shoot keeps (a `claude` with an empty prompt), since a finished
+    /// answer brings a session back.
+    pub later_mins: Option<u64>,
+    /// Just started by the user, with nothing in it yet (New): a plain shell.
+    #[serde(default)]
+    pub new: bool,
+    /// The line the list shows under the session's name until its agent says something.
+    pub line: Option<String>,
 }
 
 impl Pane {
@@ -415,6 +439,10 @@ pub struct Shot {
     pub name: String,
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// The window's layout for the shot: `grid` (the default) or `inbox`, the sessions as a list
+    /// with one shown at full size.
+    #[serde(default = "default_layout")]
+    pub layout: String,
     /// Pane name to the Claude Code state it must be in: `working`, `waiting` or `idle`.
     #[serde(default)]
     pub wait: BTreeMap<String, String>,
@@ -442,6 +470,10 @@ pub struct Shot {
     /// before the keys: the left button held over a dozen moves.
     #[serde(default)]
     pub drag: Option<[[f64; 2]; 2]>,
+    /// More drags after `drag`, in order, each from its first point to its second: a pane moved
+    /// and then the divider beside it set, for one picture.
+    #[serde(default)]
+    pub drags: Vec<[[f64; 2]; 2]>,
     /// The pointer moved to `[x, y]`, fractions of the window, after the keys, and left there: a
     /// hover's tooltip or highlight for the picture.
     #[serde(default)]
@@ -535,6 +567,10 @@ fn default_theme() -> String {
     "dark".into()
 }
 
+fn default_layout() -> String {
+    "grid".into()
+}
+
 fn default_timeout() -> u64 {
     300
 }
@@ -623,6 +659,15 @@ impl Story {
             if !p.is_terminal() && p.cwd.is_some() {
                 bail!("pane {:?}: only a shell has a cwd", p.name);
             }
+            if !p.is_terminal() && (p.later_mins.is_some() || p.new || p.line.is_some()) {
+                bail!("pane {:?}: only a shell has later_mins, new or a line", p.name);
+            }
+            if p.later_mins.is_some() && p.claude.as_deref().is_none_or(|c| !c.is_empty()) {
+                bail!("pane {:?}: later_mins needs claude = \"\" (a finished answer brings a session back from Later)", p.name);
+            }
+            if p.new && (p.claude.is_some() || p.run.is_some() || p.later_mins.is_some()) {
+                bail!("pane {:?}: a new session is a plain shell, with no claude, run or later_mins", p.name);
+            }
             for rel in p.cwd.iter().chain(p.view.iter()) {
                 let path = Path::new(rel);
                 if path.is_absolute() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
@@ -654,6 +699,11 @@ impl Story {
         if let Some(name) = self.demo.aged.keys().find(|n| !self.demo.worktrees.contains(n)) {
             bail!("demo.aged names {name:?}, which is not one of demo.worktrees");
         }
+        for e in &self.ended {
+            if e.name.is_empty() || e.line.is_empty() || e.mins_ago == 0 {
+                bail!("[[ended]] {:?}: a name, a line and mins_ago above 0", e.name);
+            }
+        }
         if self.shots.is_empty() {
             bail!("no [[shot]]");
         }
@@ -677,6 +727,9 @@ impl Story {
             waits_ok("recording", &r.waits())?;
         }
         for s in &self.shots {
+            if !["grid", "inbox"].contains(&s.layout.as_str()) {
+                bail!("shot {:?}: layout must be grid or inbox", s.name);
+            }
             if !["dark", "light"].contains(&s.theme.as_str()) {
                 bail!("shot {:?}: theme must be dark or light", s.name);
             }
@@ -736,14 +789,40 @@ pub fn centred(w: f64, h: f64, screen_w: f64, screen_h: f64, menu_bar: f64) -> (
 /// The workspace file (`workspace.rs`, version 3) the window opens with: the layout's panes
 /// and tabs over the sessions already created, the browser tabs, the sidebar open on the
 /// demo's folders and worktrees, and the window's frame.
-pub fn workspace_json(story: &Story, project: &Path, sessions: &BTreeMap<String, u64>, worktree_dirs: &BTreeMap<String, PathBuf>, frame: (f64, f64, f64, f64)) -> serde_json::Value {
+/// `now` (milliseconds since the Unix epoch) dates the Inbox's marks and closed sessions.
+pub fn workspace_json(story: &Story, project: &Path, sessions: &BTreeMap<String, u64>, worktree_dirs: &BTreeMap<String, PathBuf>, frame: (f64, f64, f64, f64), now: u64) -> serde_json::Value {
     let mut ids = 1u64;
     let mut names = Vec::new();
     let mut focused = None;
     let root = node_json(&story.layout, story, project, sessions, &mut ids, &mut names, &mut focused);
     let expanded: Vec<_> = story.window.expanded.iter().map(|d| project.join(d)).collect();
     let (x, y, w, h) = frame;
-    serde_json::json!({
+    const MIN: u64 = 60_000;
+    let mut marks = Vec::new();
+    let mut lines = Vec::new();
+    for p in story.panes.iter().filter(|p| p.is_terminal()) {
+        let id = sessions[&p.name];
+        if let Some(mins) = p.later_mins {
+            // Put off a while ago, by the user, who had looked at it.
+            marks.push(serde_json::json!([id, { "seen": true, "later_until": now + mins * MIN, "since": now - 25 * MIN }]));
+        } else if p.new {
+            marks.push(serde_json::json!([id, { "since": now, "new_until": now + 60 * MIN }]));
+        }
+        if let Some(line) = &p.line {
+            lines.push(serde_json::json!([id, line]));
+        }
+    }
+    let ended: Vec<_> = story
+        .ended
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            // No daemon session has these ids, and a resume names a conversation of its own.
+            let session = 9_000 + i as u64;
+            serde_json::json!({ "session": session, "name": e.name, "line": e.line, "resume": ["claude", "--resume", format!("00000000-0000-4000-8000-{session:012}")], "ended": now - e.mins_ago * MIN })
+        })
+        .collect();
+    let mut ws = serde_json::json!({
         "version": 3,
         "project": project,
         "tree": { "root": root, "next_id": ids, "focused": focused.unwrap_or(1), "maximized": null, "names": names },
@@ -755,7 +834,19 @@ pub fn workspace_json(story: &Story, project: &Path, sessions: &BTreeMap<String,
         },
         // No display has this id, so the window centres itself at this size (`open_bounds`).
         "window": { "display": "shoot", "x": x, "y": y, "w": w, "h": h }
-    })
+    });
+    if !marks.is_empty() {
+        ws["marks"] = marks.into();
+    }
+    if !lines.is_empty() {
+        ws["lines"] = lines.into();
+    }
+    if !ended.is_empty() {
+        ws["ended"] = ended.into();
+        // Done open, so its sessions show; Quiet folded, as the list starts.
+        ws["folded_sections"] = serde_json::json!(["quiet"]);
+    }
+    ws
 }
 
 fn node_json(node: &Node, story: &Story, project: &Path, sessions: &BTreeMap<String, u64>, ids: &mut u64, names: &mut Vec<(u64, String)>, focused: &mut Option<u64>) -> serde_json::Value {
@@ -880,6 +971,26 @@ theme = "light"
         assert_eq!(s.shots[0].crops[0].name, "tabs");
         assert_eq!(s.shots[1].theme, "light");
         assert_eq!(s.window.preset, "compact");
+    }
+
+    #[test]
+    fn a_shot_is_taken_in_the_grid_unless_it_names_the_inbox_and_no_other_layout() {
+        let s = Story::parse(STORY).unwrap();
+        assert!(s.shots.iter().all(|shot| shot.layout == "grid"));
+        let inbox = STORY.replacen("theme = \"light\"", "theme = \"light\"\nlayout = \"inbox\"", 1);
+        assert_eq!(Story::parse(&inbox).unwrap().shots[1].layout, "inbox");
+        let err = Story::parse(&STORY.replacen("theme = \"light\"", "theme = \"light\"\nlayout = \"journal\"", 1)).unwrap_err().to_string();
+        assert!(err.contains("layout must be grid or inbox"), "{err}");
+    }
+
+    #[test]
+    fn a_shot_may_drag_several_times_in_order_after_its_one_drag() {
+        let s = Story::parse(STORY).unwrap();
+        assert!(s.shots.iter().all(|shot| shot.drags.is_empty()), "none unless named");
+        let two = STORY.replacen("theme = \"light\"", "theme = \"light\"\ndrag = [[0.2, 0.06], [0.96, 0.72]]\ndrags = [[[0.66, 0.72], [0.5, 0.72]]]", 1);
+        let shot = &Story::parse(&two).unwrap().shots[1];
+        assert_eq!(shot.drag, Some([[0.2, 0.06], [0.96, 0.72]]));
+        assert_eq!(shot.drags, vec![[[0.66, 0.72], [0.5, 0.72]]]);
     }
 
     #[test]
@@ -1067,11 +1178,47 @@ theme = "light"
     }
 
     #[test]
+    fn the_inbox_staging_puts_one_session_off_marks_a_plain_shell_new_and_keeps_closed_ones_under_done() {
+        let text = STORY
+            .replace("claude = \"test the thing\"", "claude = \"\"\nlater_mins = 180\nline = \"Draft the release notes\"")
+            .replace("run = \"npm test\"", "new = true")
+            .replace("[layout]", "[[ended]]\nname = \"dark mode\"\nline = \"The site follows the system's dark mode now.\"\nmins_ago = 120\n\n[layout]");
+        let s = Story::parse(&text).unwrap();
+        let project = Path::new("/tmp/lantern");
+        let worktrees: BTreeMap<String, PathBuf> = [("rate-limit".to_string(), project.join(".worktrees/rate-limit"))].into_iter().collect();
+        let now = 1_000_000_000;
+        let ws = workspace_json(&s, project, &sessions(), &worktrees, (55.0, 48.0, 1360.0, 860.0), now);
+        assert_eq!(ws["marks"], serde_json::json!([[12, { "seen": true, "later_until": now + 180 * 60_000, "since": now - 25 * 60_000 }], [13, { "since": now, "new_until": now + 60 * 60_000 }]]));
+        assert_eq!(ws["lines"], serde_json::json!([[12, "Draft the release notes"]]));
+        assert_eq!(ws["ended"][0]["name"], "dark mode");
+        assert_eq!(ws["ended"][0]["ended"], now - 120 * 60_000);
+        assert_eq!(ws["ended"][0]["resume"][0], "claude");
+        assert_eq!(ws["folded_sections"], serde_json::json!(["quiet"]));
+    }
+
+    #[test]
+    fn a_session_put_off_must_have_no_turn_of_its_own_and_a_new_one_is_a_plain_shell() {
+        let later = STORY.replace("claude = \"test the thing\"", "claude = \"test the thing\"\nlater_mins = 60");
+        assert!(Story::parse(&later).unwrap_err().to_string().contains("later_mins needs claude"));
+        let new = STORY.replace("claude = \"test the thing\"", "claude = \"test the thing\"\nnew = true");
+        assert!(Story::parse(&new).unwrap_err().to_string().contains("a new session is a plain shell"));
+    }
+
+    #[test]
+    fn a_story_without_staging_writes_no_marks_lines_or_ended() {
+        let s = Story::parse(STORY).unwrap();
+        let ws = workspace_json(&s, Path::new("/tmp/lantern"), &sessions(), &BTreeMap::new(), (55.0, 48.0, 1360.0, 860.0), 1_000_000_000);
+        for key in ["marks", "lines", "ended", "folded_sections"] {
+            assert!(ws.get(key).is_none(), "{key}");
+        }
+    }
+
+    #[test]
     fn the_workspace_file_matches_the_windows_format() {
         let s = Story::parse(STORY).unwrap();
         let project = Path::new("/tmp/lantern");
         let worktrees: BTreeMap<String, PathBuf> = [("rate-limit".to_string(), project.join(".worktrees/rate-limit"))].into_iter().collect();
-        let ws = workspace_json(&s, project, &sessions(), &worktrees, (55.0, 48.0, 1360.0, 860.0));
+        let ws = workspace_json(&s, project, &sessions(), &worktrees, (55.0, 48.0, 1360.0, 860.0), 1_000_000_000);
         assert_eq!(ws["version"], 3);
         assert_eq!(ws["project"], "/tmp/lantern");
         let root = &ws["tree"]["root"]["Split"];

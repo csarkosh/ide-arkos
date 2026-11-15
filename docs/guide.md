@@ -1169,13 +1169,12 @@ The IDE is installed as `/Applications/Arkos IDE.app` through the Homebrew cask 
 `homebrew/arkos-ide.rb`, published in `csarkosh/homebrew-tap`), which holds both `arkos` and `arkosd`:
 
 ```
+brew trust --cask csarkosh/tap/arkos-ide
 brew install --cask csarkosh/tap/arkos-ide
 ```
 
-Homebrew 6 and later install from a tap only once you trust it; the full name above trusts the
-cask. If Homebrew answers `Refusing to load cask csarkosh/tap/arkos-ide from untrusted tap`
-(after a bare `brew tap csarkosh/tap`, or for a command with the short name), run
-`brew trust --cask csarkosh/tap/arkos-ide` and try again.
+Homebrew 6 and later load a cask from a tap only once you trust it; the first line does that,
+by name, before the tap is even added.
 
 Releases from 0.3.2 on are signed with a Developer ID and notarized, so the download opens as any
 app does. The cask says `auto_updates`, so

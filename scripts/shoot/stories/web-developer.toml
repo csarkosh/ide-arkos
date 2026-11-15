@@ -36,10 +36,26 @@ claude = "Add tests for parseDuration in src/time.js to test/time.test.js: 30s, 
 name = "site"
 browser = "http://localhost:4173/"
 
+# For the Inbox's range: more sessions, each in another state. Needs you (deps asks a question), Later (og tags, put off two hours) and Done (dark mode, closed this afternoon), beside the two that finish.
+[[pane]]
+name = "deps"
+claude = "Before you do anything else, use your AskUserQuestion tool to ask me one question: should I move the dependencies to their latest minor versions only, or to new major versions too? Offer those two as the options. Then wait for my answer."
+
+[[pane]]
+name = "og tags"
+claude = ""
+later_mins = 120
+line = "Add Open Graph tags and a share image to the home page"
+
+[[ended]]
+name = "dark mode"
+line = "The site follows the system's dark mode now, and both themes pass the contrast check."
+mins_ago = 180
+
 [layout]
 split = "horizontal"
 ratio = 0.6
-first = { tabs = ["rate limit", "durations"] }
+first = { tabs = ["rate limit", "durations", "deps", "og tags"] }
 second = { tabs = ["site"] }
 
 [[shot]]
@@ -50,9 +66,13 @@ changed = { "rate limit" = 3 }
 after_secs = 30
 timeout_secs = 360
 
-# The Worktrees list close up, for the README's figure: both worktrees, the old one dimmed. The
-# section grows upward with rate-limit's changed files: this fits two (measured on the cloud run
-# of 2026-11-04); if a retake shows more, the top edge moves up by a row (about 0.033) each.
-[[shot.crop]]
-name = "worktrees"
-rect = [0.0, 0.823, 0.183, 0.177]
+# The same moment in the Inbox layout, for the apps page's Inbox and Grid switch: the sessions as a list
+# by what they ask of you, one shown at full size with the files it opened beside it.
+[[shot]]
+name = "dark-inbox"
+theme = "dark"
+layout = "inbox"
+timeout_secs = 60
+# Side by side, as Cyrus asked for this one (2026-11-14): the files pane dragged by its number
+# from the top, where a narrow window stacks it, onto the session's right edge.
+drag = [[0.203, 0.059], [0.96, 0.72]]
