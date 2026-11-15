@@ -496,6 +496,59 @@ pub struct Shot {
     /// framed into the progress folder, so a person can choose another.
     #[serde(default)]
     pub burst: Option<usize>,
+    /// Whether the picture also gets a loop, `<picture>.mp4` beside it: the window recorded
+    /// with its sessions held still, so only the theme's effect moves, and cut so its end runs
+    /// into its start (`scripts/shoot/loop.py --still`). Unset, a shot is looped when its
+    /// theme's effect moves on its own (`MOVING_EFFECTS`), so a moving theme added later gets
+    /// its loop without a word here.
+    #[serde(default, rename = "loop")]
+    pub looped: Option<bool>,
+}
+
+impl Shot {
+    /// Whether this shot gets a loop, given its theme's effect (`None` for a theme drawn plain).
+    pub fn wants_loop(&self, effect: Option<&str>) -> bool {
+        self.looped.unwrap_or_else(|| effect.is_some_and(|e| MOVING_EFFECTS.contains(&e)))
+    }
+}
+
+/// The built-in effects whose picture moves while nothing else does: rain falling, a night
+/// sky, a pixel-art world. A still of a theme with one of these misses what the theme is, so
+/// its shots are also recorded as loops for the apps page.
+pub const MOVING_EFFECTS: &[&str] = &["overworld", "runic", "space"];
+/// The built-in effects that hold still at rest: they move only with the window (a paint-in, a
+/// spinner, a hover), which a still shows well enough.
+pub const STILL_EFFECTS: &[&str] = &["material", "notebook", "watercolor"];
+
+/// How long a shot's loop runs, and how much of the recording past its end is faded into its
+/// start so the end runs into the beginning with no seam.
+pub const LOOP_SECS: f64 = 6.0;
+pub const LOOP_FADE_SECS: f64 = 1.5;
+
+/// The effect a built-in theme (`<themes>/<name>.toml`) is drawn with: the `name` in its
+/// `[effect]` table, or `None` for a theme without one.
+pub fn theme_effect(themes: &Path, theme: &str) -> Result<Option<String>> {
+    let path = themes.join(format!("{theme}.toml"));
+    let text = std::fs::read_to_string(&path).with_context(|| format!("no built-in theme {theme} ({})", path.display()))?;
+    let mut in_effect = false;
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_effect = line == "[effect]";
+        } else if in_effect {
+            if let Some(rest) = line.strip_prefix("name") {
+                let value = rest.trim_start().strip_prefix('=').map(str::trim).unwrap_or_default();
+                return Ok(Some(value.split('#').next().unwrap_or_default().trim().trim_matches('"').to_string()));
+            }
+        }
+    }
+    Ok(None)
+}
+
+impl ThemePair {
+    /// The theme a shot's `theme` (`dark` or `light`) shows.
+    pub fn for_mode(&self, mode: &str) -> &str {
+        if mode == "light" { &self.light } else { &self.dark }
+    }
 }
 
 /// One key of a shot's `keys`: a virtual key code or a character, its modifiers, repeated
@@ -900,6 +953,50 @@ fn node_json(node: &Node, story: &Story, project: &Path, sessions: &BTreeMap<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_built_in_effect_is_known_to_move_or_to_hold_still() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../arkos/effects");
+        let mut names: Vec<String> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        assert!(!names.is_empty(), "no effects in {}", dir.display());
+        for name in &names {
+            let moving = MOVING_EFFECTS.contains(&name.as_str());
+            let still = STILL_EFFECTS.contains(&name.as_str());
+            assert!(moving != still, "the effect {name} must be in exactly one of MOVING_EFFECTS and STILL_EFFECTS, so its themes' pictures are looped or not on purpose");
+        }
+        for name in MOVING_EFFECTS.iter().chain(STILL_EFFECTS) {
+            assert!(names.iter().any(|n| n == name), "{name} is listed but is not a built-in effect");
+        }
+    }
+
+    #[test]
+    fn a_theme_s_effect_is_read_from_its_effect_table() {
+        let themes = Path::new(env!("CARGO_MANIFEST_DIR")).join("../arkos/themes");
+        assert_eq!(theme_effect(&themes, "tokyo-rain").unwrap().as_deref(), Some("runic"));
+        assert_eq!(theme_effect(&themes, "timo-purple").unwrap().as_deref(), Some("overworld"));
+        assert_eq!(theme_effect(&themes, "peach-watercolor").unwrap().as_deref(), Some("watercolor"));
+        assert_eq!(theme_effect(&themes, "navy").unwrap(), None);
+        assert!(theme_effect(&themes, "no-such-theme").is_err());
+    }
+
+    #[test]
+    fn a_shot_in_a_moving_theme_is_looped_unless_it_says_loop_false() {
+        let shot = |extra: &str| -> Shot { toml::from_str(&format!("name = \"dark\"\n{extra}")).unwrap() };
+        assert!(shot("").wants_loop(Some("runic")));
+        assert!(shot("").wants_loop(Some("overworld")));
+        assert!(!shot("").wants_loop(Some("watercolor")));
+        assert!(!shot("").wants_loop(None));
+        assert!(!shot("loop = false").wants_loop(Some("runic")));
+        assert!(shot("loop = true").wants_loop(Some("material")));
+    }
+
+    #[test]
+    fn a_theme_pair_gives_the_dark_theme_unless_the_shot_is_light() {
+        let pair = ThemePair { dark: "timo-purple".into(), light: "arabia-solar".into() };
+        assert_eq!(pair.for_mode("dark"), "timo-purple");
+        assert_eq!(pair.for_mode("light"), "arabia-solar");
+    }
 
     const STORY: &str = r#"
 [scene]

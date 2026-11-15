@@ -14,6 +14,13 @@ the last frame leads into the first with no cut.
     python3 -I scripts/shoot/loop.py <in.mp4> <out.mp4> --hold 6 --themes 4 [--settle 1] [--fade 1.2]
         [--transition sweep|dissolve] [--fps 30] [--width 2000] [--poster out.jpg]
 
+`--still LENGTH` cuts a loop of one picture instead: a window whose sessions were held still
+while its theme's effect moved (a shot's loop). The recording from `settle` seconds on gives
+`LENGTH` seconds, and the `fade` seconds recorded after them are cross-faded into their start,
+so the loop's last frame runs into its first as any frame runs into the next:
+
+    python3 -I scripts/shoot/loop.py <in.mp4> <out.mp4> --still 6 --fade 1.5 [--settle 0.5]
+
 The frames are re-timed at a constant rate (ScreenCaptureKit delivers one only when the window
 changes), scaled to at most `width` across, and written as H.264 without sound, tagged sRGB and
 BT.709 as Apple's are, ready to stream; `--poster` writes the first frame as a JPEG. Needs ffmpeg."""
@@ -27,6 +34,9 @@ GUARD = 0.1
 # a theme alone: a soft sweep's trailing edge is still a band of the old theme at its last tick.
 MARGIN = 0.5
 TRANSITIONS = {"sweep": "smoothright", "dissolve": "fade"}
+# x264's quality for a picture's loop (`--still`): 19 kept a Retina window's rain at about four
+# times the size for no difference a page shows.
+STILL_CRF = 24
 
 
 def duration_of(path):
@@ -40,6 +50,25 @@ def stretches(hold, themes, settle):
     return [(hold * k + settle, hold * (k + 1) - GUARD) for k in range(themes)], length
 
 
+def prep_filter(fps, width):
+    """The frames re-timed, scaled and tagged as every loop's are."""
+    # The colour tags go on the frames (setparams), which is where libx264 reads them from.
+    return f"fps={fps},scale='min(iw,{width})':-2:flags=lanczos:out_color_matrix=bt709:out_range=tv,setparams=color_primaries=bt709:color_trc=iec61966-2-1:colorspace=bt709:range=tv,format=yuv420p,setpts=PTS-STARTPTS"
+
+
+def still_filter(length, fade, settle, fps, width):
+    """One picture's loop: `length` seconds from `settle` on (the head), and the `fade` seconds
+    after them (the tail) dissolved into the head's start. The loop opens on the tail's first
+    frame, the one that followed the head's last in the recording, so the seam is no cut."""
+    head, tail = (settle, settle + length), (settle + length, settle + length + fade)
+    return ";".join([
+        f"[0:v]{prep_filter(fps, width)},split=2[a][b]",
+        f"[a]trim=start={head[0]}:end={head[1]},setpts=PTS-STARTPTS[head]",
+        f"[b]trim=start={tail[0]}:end={tail[1]},setpts=PTS-STARTPTS[tail]",
+        f"[tail][head]xfade=transition=fade:duration={fade}:offset=0[out]",
+    ])
+
+
 def loop_filter(hold, themes, settle, fade, transition, fps, width):
     """The ffmpeg filter graph. The stretches are t0 to t(n-1), then t0 again as tn (long enough
     to carry the seam and `fade` more); each is swept into the next at the point where the one
@@ -47,8 +76,7 @@ def loop_filter(hold, themes, settle, fade, transition, fps, width):
     tn (both half a second clear of the transitions' edges), which is the same frame."""
     spans, length = stretches(hold, themes, settle)
     n = themes
-    # The colour tags go on the frames (setparams), which is where libx264 reads them from.
-    prep = f"fps={fps},scale='min(iw,{width})':-2:flags=lanczos:out_color_matrix=bt709:out_range=tv,setparams=color_primaries=bt709:color_trc=iec61966-2-1:colorspace=bt709:range=tv,format=yuv420p,setpts=PTS-STARTPTS"
+    prep = prep_filter(fps, width)
     parts = [f"[0:v]{prep},split={n + 1}" + "".join(f"[s{k}]" for k in range(n + 1))]
     for k, (a, b) in enumerate(spans):
         parts.append(f"[s{k}]trim=start={a}:end={b},setpts=PTS-STARTPTS[t{k}]")
@@ -70,8 +98,9 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("source")
     p.add_argument("out")
-    p.add_argument("--hold", type=float, required=True, help="seconds each theme was held")
-    p.add_argument("--themes", type=int, required=True, help="how many themes were shown, the first again at the end not counted")
+    p.add_argument("--hold", type=float, help="seconds each theme was held")
+    p.add_argument("--themes", type=int, help="how many themes were shown, the first again at the end not counted")
+    p.add_argument("--still", type=float, metavar="LENGTH", help="one picture's loop of this many seconds, its end faded into its start")
     p.add_argument("--settle", type=float, default=1.0, help="seconds after a switch before its theme counts as steady")
     p.add_argument("--fade", type=float, default=1.2, help="seconds a transition takes")
     p.add_argument("--transition", choices=sorted(TRANSITIONS), default="sweep")
@@ -80,6 +109,10 @@ def main():
     p.add_argument("--poster", help="write the first frame here as a JPEG")
     p.add_argument("--plan", action="store_true", help="print the filter graph and the loop's length, and stop")
     a = p.parse_args()
+    if a.still is not None:
+        return still(a)
+    if a.hold is None or a.themes is None:
+        sys.exit("loop.py: --hold and --themes, or --still")
     if a.themes < 2:
         sys.exit("loop.py: at least two themes")
     _, length = stretches(a.hold, a.themes, a.settle)
@@ -96,16 +129,41 @@ def main():
     need = a.hold * a.themes
     if have + GUARD < need:
         sys.exit(f"loop.py: {a.source} is {have:.2f} s, shorter than the holds together ({need:.2f} s)")
-    subprocess.run([
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", a.source,
-        "-filter_complex", graph, "-map", "[out]",
-        "-c:v", "libx264", "-preset", "slow", "-crf", "19", "-profile:v", "high", "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart", "-an", a.out,
-    ], check=True)
+    encode(a.source, graph, a.out)
     if a.poster:
         subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", a.out, "-frames:v", "1", "-q:v", "2", a.poster], check=True)
     got = duration_of(a.out)
     print(f"{a.out}: {got:.2f} s loop ({a.transition}, {a.fade} s each) from {have:.2f} s recorded")
+
+
+def encode(source, graph, out, crf=19):
+    subprocess.run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", source,
+        "-filter_complex", graph, "-map", "[out]",
+        "-c:v", "libx264", "-preset", "slow", "-crf", str(crf), "-profile:v", "high", "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart", "-an", out,
+    ], check=True)
+
+
+def still(a):
+    if not 0.3 <= a.fade <= a.still / 2:
+        sys.exit(f"loop.py: a fade of {a.fade} s for a loop of {a.still} s; it must be 0.3 s to half the loop")
+    graph = still_filter(a.still, a.fade, a.settle, a.fps, a.width)
+    if a.plan:
+        print(graph.replace(";", ";\n"))
+        print(f"loop: {a.still:.2f} s, one picture")
+        return
+    have = duration_of(a.source)
+    need = a.settle + a.still + a.fade
+    if have + GUARD < need:
+        sys.exit(f"loop.py: {a.source} is {have:.2f} s, shorter than the settle, the loop and its fade ({need:.2f} s)")
+    # A web page's loop rather than the themes' showcase: the effects are fine grain (rain,
+    # stars), which a lower quality keeps at a fraction of the size.
+    encode(a.source, graph, a.out, crf=STILL_CRF)
+    if a.poster:
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", a.out, "-frames:v", "1", "-q:v", "2", a.poster], check=True)
+    got = duration_of(a.out)
+    print(f"{a.out}: {got:.2f} s loop of one picture, its last {a.fade} s faded into its start, from {have:.2f} s recorded")
 
 
 if __name__ == "__main__":

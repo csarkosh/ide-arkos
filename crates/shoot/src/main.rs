@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
-use story::{Recording, Shot, Story, ThemePair, Waits, SETTLE_SECS};
+use story::{Recording, Shot, Story, ThemePair, Waits, LOOP_FADE_SECS, LOOP_SECS, SETTLE_SECS};
 
 const USAGE: &str = "usage: arkos-shoot run [--story scripts/shoot/story.toml] [--out docs/images] [--bin target/debug] [--app <an Arkos IDE.app to start instead of one made from --bin>] [--only <shot or recording names, comma-separated>]
        arkos-shoot recut --raw <scene>-<name>.raw.mp4 [--story ...] [--out docs/images] [--name <recording>]   (the loop again from a recording already made, no window)
@@ -277,7 +277,18 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
     write_config(&dirs.config_file(), story, &story.shots[0].theme, &story.shots[0].layout, &story.window.theme)?;
     install_effects(repo, dirs, story, density)?;
     // The recorder, before anything slow: a Mac without swiftc fails here, not after a scene.
-    let recorder = if story.recordings.is_empty() { None } else { Some(build_recorder(repo, &dirs.cache)?) };
+    // Each shot's theme's effect, which says whether the shot is also looped (`Shot::wants_loop`).
+    let themes_dir = repo.join("crates/arkos/themes");
+    let mut effects = BTreeMap::new();
+    for shot in &story.shots {
+        let effect = story::theme_effect(&themes_dir, story.window.theme.for_mode(&shot.theme))?;
+        if let Some(e) = effect.as_deref().filter(|e| !story::MOVING_EFFECTS.contains(e) && !story::STILL_EFFECTS.contains(e)) {
+            say(&format!("{}: the effect {e} is in neither story::MOVING_EFFECTS nor STILL_EFFECTS; no loop unless the shot says loop = true", shot.name));
+        }
+        effects.insert(shot.name.clone(), effect);
+    }
+    let loops = story.shots.iter().any(|s| Story::wants(only, &s.name) && s.wants_loop(effects[&s.name].as_deref()));
+    let recorder = if story.recordings.is_empty() && !loops { None } else { Some(build_recorder(repo, &dirs.cache)?) };
 
     // 4. The shoot's own daemon.
     let log = std::fs::File::create(dirs.state.join("arkosd.log"))?;
@@ -455,6 +466,18 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
         // The captures themselves stay with the progress files; `out` gets the framed pictures.
         let picture = format!("{}-{}", story.scene.name, shot.name);
         let raw = progress.dir.join(format!("{picture}.raw.png"));
+        // A looped shot: the window in front (macOS draws a window behind others less often, and
+        // its title bar in grey) and every session held still from here to the end of the loop,
+        // so the still and the loop show the same text and only the theme's effect moves.
+        let looped = shot.wants_loop(effects[&shot.name].as_deref());
+        let frozen = if looped {
+            activate(window_pid);
+            pause(Duration::from_millis(600))?;
+            let daemon = running.daemon.as_ref().map(|c| c.id()).context("the shoot's daemon is not running")?;
+            Some(Frozen::sessions_of(daemon, window_pid))
+        } else {
+            None
+        };
         match shot.burst {
             Some(n) => {
                 // In front, so macOS draws it at its full rate: a window behind others is drawn
@@ -474,6 +497,12 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
             }
         }
         say(&format!("{}: {}", shot.name, out.join(format!("{picture}.png")).display()));
+        if let Some(frozen) = frozen {
+            let recorder = recorder.as_deref().expect("built when a shot is looped");
+            let result = record_still_loop(repo, recorder, window_id, &progress, out, &picture);
+            drop(frozen);
+            result?;
+        }
     }
 
     // 10. The recordings: the window through its themes, after the stills, each a loop.
@@ -546,6 +575,99 @@ fn record(rec: &Recording, story: &Story, repo: &Path, recorder: &Path, dirs: &D
     stopped?;
     cut_loop(repo, rec, &raw, out, &picture, &story.scene.name)?;
     Ok(())
+}
+
+/// A looped shot's loop: the window recorded as it stands, its sessions held still, for the
+/// loop and its fade, then cut by `loop.py --still` into `<out>/<picture>.mp4`, the end faded
+/// into the start so it plays round with no seam. The still (`<picture>.png`) is its poster.
+fn record_still_loop(repo: &Path, recorder: &Path, window_id: u32, progress: &Progress, out: &Path, picture: &str) -> Result<()> {
+    const SETTLE: f64 = 0.5;
+    const FPS: u32 = 30;
+    let raw = progress.dir.join(format!("{picture}.loop.raw.mp4"));
+    let secs = SETTLE + LOOP_SECS + LOOP_FADE_SECS + 0.5;
+    say(&format!("{picture}: recording {secs:.1} s for its loop"));
+    let child = start_recorder(recorder, window_id, &raw, FPS, secs + 20.0)?;
+    let held = pause(Duration::from_secs_f64(secs));
+    let stopped = stop_recorder(child);
+    held?;
+    stopped?;
+    let mp4 = out.join(format!("{picture}.mp4"));
+    let status = Command::new("python3")
+        .arg("-I")
+        .arg(repo.join("scripts/shoot/loop.py"))
+        .arg(&raw)
+        .arg(&mp4)
+        .args(["--still", &LOOP_SECS.to_string(), "--fade", &LOOP_FADE_SECS.to_string(), "--settle", &SETTLE.to_string(), "--fps", &FPS.to_string()])
+        .status()
+        .context("loop.py")?;
+    if !status.success() {
+        bail!("loop.py failed for {}", raw.display());
+    }
+    say(&format!("{picture}: {}", mp4.display()));
+    Ok(())
+}
+
+/// The daemon's sessions held still: every process under it (its shells and all they started)
+/// stopped with SIGSTOP, parents first, so a shell never sees its child stop and prints over
+/// the picture; dropped, they go on (SIGCONT), children first. The window and the daemon run
+/// on, so the theme's effect still moves over text that does not.
+struct Frozen(Vec<u32>);
+
+impl Frozen {
+    /// `spare` (the window, should the daemon ever have started it) and all under it run on.
+    fn sessions_of(daemon: u32, spare: u32) -> Frozen {
+        let mut stopped: Vec<u32> = Vec::new();
+        // Twice: a process that started a child between the listing and its own stop is caught
+        // on the second pass, when nothing above it can start another.
+        for _ in 0..2 {
+            let table = process_table();
+            let spared: Vec<u32> = std::iter::once(spare).chain(descendants(&table, spare)).collect();
+            for pid in descendants(&table, daemon) {
+                if !stopped.contains(&pid) && !spared.contains(&pid) {
+                    unsafe { libc::kill(pid as libc::pid_t, libc::SIGSTOP) };
+                    stopped.push(pid);
+                }
+            }
+        }
+        say(&format!("{} session processes held still", stopped.len()));
+        Frozen(stopped)
+    }
+}
+
+impl Drop for Frozen {
+    fn drop(&mut self) {
+        for pid in self.0.iter().rev() {
+            unsafe { libc::kill(*pid as libc::pid_t, libc::SIGCONT) };
+        }
+    }
+}
+
+/// Every process's id and its parent's, from `ps`.
+fn process_table() -> Vec<(u32, u32)> {
+    let Ok(out) = Command::new("ps").args(["-A", "-o", "pid=,ppid="]).output() else { return Vec::new() };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.split_whitespace().map(|n| n.parse::<u32>());
+            Some((it.next()?.ok()?, it.next()?.ok()?))
+        })
+        .collect()
+}
+
+/// The processes under `root` in `table` (id, parent), each after its parent, `root` itself not
+/// among them.
+fn descendants(table: &[(u32, u32)], root: u32) -> Vec<u32> {
+    let mut found = Vec::new();
+    let mut next = vec![root];
+    while let Some(parent) = next.pop() {
+        for &(pid, ppid) in table {
+            if ppid == parent && pid != root && !found.contains(&pid) {
+                found.push(pid);
+                next.insert(0, pid);
+            }
+        }
+    }
+    found
 }
 
 /// `scripts/shoot/loop.py` on a raw recording: the loop as `<out>/<picture>.mp4`, its first
@@ -1575,6 +1697,18 @@ fn clean(dirs: &Dirs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_daemon_s_descendants_come_each_after_its_parent_and_leave_out_the_daemon_and_strangers() {
+        // 10 the daemon; 11 and 12 its shells; 13 under 11, 14 under 13; 20 and 21 elsewhere.
+        let table = [(14, 13), (21, 20), (13, 11), (12, 10), (11, 10), (10, 1), (20, 1)];
+        let found = super::descendants(&table, 10);
+        let mut sorted = found.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec![11, 12, 13, 14]);
+        let at = |p: u32| found.iter().position(|&x| x == p).unwrap();
+        assert!(at(11) < at(13) && at(13) < at(14), "a parent is stopped before its children: {found:?}");
+    }
+
     use super::*;
 
     #[test]
