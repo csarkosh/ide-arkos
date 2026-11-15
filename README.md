@@ -6,12 +6,15 @@
   <img alt="Seven Arkos IDE windows fanned out like postcards, each in its own theme. In front, the multi tasker: three Claude Code sessions side by side, each running its own subagents on an unrelated project. Behind, the blogger with a launch plan in the markdown editor, the data analyst with a weekly report and its chart, the hacker hardening a service in Matrix green, the indie game dev with a dungeon crawl in pixel-framed purple, the student with lecture notes on a ruled notebook page, and the web developer with the app's page in a web tab" src="docs/images/hero-dark.png" width="900">
 </picture>
 
-Arkos keeps all your Claude Code sessions in one window and shows you which one needs you
-next. Pick a layout: the Inbox sorts your sessions by what they need from you and shows one at
-a time with its files beside it, while the Grid lays them out side by side. Next to your
-sessions sit a file browser, a web page and an editor for the documents Claude writes. If the
-window freezes, the app updates or your Mac restarts, nothing is lost: every session comes back
-where you left it.
+Arkos keeps all your Claude Code sessions in one window and shows you which one needs you next.
+
+- The Inbox sorts your sessions by what they need from you and shows one at a time, with its
+  files beside it.
+- The Grid lays your sessions out side by side, arranged however you like.
+- A file browser, a web page and an editor for the documents Claude writes sit beside your
+  sessions.
+- If the window freezes, the app updates or your Mac restarts, every session comes back where
+  you left it.
 
 Built for Apple silicon, macOS 14 or later.
 
