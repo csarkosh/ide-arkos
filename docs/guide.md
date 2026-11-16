@@ -52,7 +52,7 @@ label in place of its age, until you look at it; a repeating one then goes back 
 Scheduled until its next time, once you choose another session. A moved session stays there
 until its agent next does something (a new answer, a prompt, a question or a permission), and
 then follows it again; Unread lasts until you next look at it. The same menu renames the
-session or ends it (each terminal closes as Cmd+W closes it, with the same minute in which
+session (the row shows the name as you type it) or ends it (each terminal closes as Cmd+W closes it, with the same minute in which
 Shift+Cmd+T brings it back, and the session's other tabs close with the last). A session put
 off or away comes back by itself when Claude next stops or needs you; a one-time reminder is
 then dropped, and a repeating one waits for you to look. The Dock icon counts the sessions that
@@ -218,7 +218,7 @@ plain, and above 64 MB a notice; binaries show a notice. The text preset applies
 terminals, and Cmd+= and Cmd+- resize the focused one. A file in a git repository shows its
 changes against the worktree's HEAD in the gutter: an added line a green bar, a changed line an
 amber one, a deletion a red mark at the top of the line that follows; Shift+Cmd+D (or Inline
-diff in a markdown tab's `⋯` menu, or the "inline diff" chip at the top right of any other file)
+diff, the "inline diff" chip at the top right of the file, left of a markdown tab's view group)
 shows the deleted lines in red between the current ones.
 
 Menus, the palette, notices, find bars and the drop preview ease in over 120 ms and out over
@@ -293,11 +293,13 @@ lists, quotes, code blocks, links and images as they read; Raw shows the file's 
 Arkos's light markdown colouring (not a TextMate grammar, so a 5 MB file stays quick).
 Shift+Cmd+M switches between them, and each tab remembers its mode across a relaunch.
 
-The `⋯` button at the top right of a markdown tab (below the find bar when that is open) opens a
-small menu of the tab's view toggles, each with its shortcut and a check mark when it is on: Show
-raw or Show rendered (Shift+Cmd+M), Inline diff (Shift+Cmd+D, while the file has changes against
-git), Present or Edit (Option+Cmd+P) and Outline (Option+Cmd+O, when the document has headings).
-Choosing one does it and closes the menu; Escape or a click elsewhere closes it too.
+At the top right of a markdown tab (below the find bar when that is open) three icon buttons in
+one group switch its view: Present (a screen: read without editing), Edit (a pencil: the
+rendered document you edit in place; Read for a file that cannot be written) and Raw (code
+brackets: the file's own text). The view in force is lit; rest the pointer on a button for a
+tooltip that says what it does and its keys (Option+Cmd+P for Present, Shift+Cmd+M between Edit
+and Raw). While the file has changes against git, an "inline diff" chip sits left of the group
+(Shift+Cmd+D); the outline opens from the ☰ at the top of its rail (Option+Cmd+O).
 
 In Rendered mode one block is active at a time: the one holding the caret. A paragraph, heading,
 list or quote stays as it reads while you edit it; the markdown element under the caret shows its
@@ -403,11 +405,11 @@ small raised number; hover it to read the note, Cmd+click it to scroll to the no
 after a note scrolls back. Front matter shows as its `title`, its `date` (or `created`) and a faint
 "front matter" label; click it for its source.
 
-Presentation mode reads a document without editing it: choose Present in the tab's `⋯` menu, or
+Presentation mode reads a document without editing it: click Present at the tab's top right, or
 press Alt+Cmd+P. There is no caret and nothing reveals, a single click follows a link or a
 footnote, and the drag handles, the table's strips, the code block's language list, the
-right-click menu and the front matter label are gone; the `⋯` button stays, and Edit in its menu
-(or Alt+Cmd+P again, or Raw mode) ends it. A tab remembers it: reopen the window and the tab is still presenting. To read in a column a letter page wide (816 px) in a wide pane, choose "Letter" under
+right-click menu and the front matter label are gone; the view group stays, and Edit in it (or
+Alt+Cmd+P again, or Raw) ends it. A tab remembers it: reopen the window and the tab is still presenting. To read in a column a letter page wide (816 px) in a wide pane, choose "Letter" under
 "Page width" in Settings, or run `arkos settings set viewer.page_width letter`. Cmd+= and Cmd+-
 make the focused document's text larger and smaller.
 
@@ -468,7 +470,9 @@ the text out and leaves the file. To keep images in a folder, set `image_destina
 `[viewer]`, say to `images` or `{name}.assets` (`{name}` is the document's name), or run
 `arkos settings set viewer.image_destination images`.
 
-A plain click on an image, a video's poster or a badge places the caret in the block. Cmd+click
+A double click on an image, presenting or editing, zooms it: the picture as large as the pane
+holds it, over the document. Another double click on it, or Escape, puts it back; so does
+leaving the tab. A plain click on an image, a video's poster or a badge places the caret in the block. Cmd+click
 opens it: an image in Preview, or the link for a linked image. A video (`.mp4`, `.mov` and the
 like) shows a poster frame made by Quick Look, with "loading" first. Click its play button and it
 plays right there in the page, at the poster's size, with the video tab's controls under it
@@ -1192,7 +1196,10 @@ app does. The cask says `auto_updates`, so
 Updates arrive by themselves: the daemon checks the release manifest every five minutes, downloads
 and verifies a newer build, and the window applies it once you have been idle for thirty seconds
 (no typing, nothing open): `arkosd` swaps in place and the window relaunches with every shell
-still there. `[update] auto = false` keeps the bell's dot and "Update now" instead.
+still there, each window on the desktop (Mission Control Space) it was on, without taking you
+there; a desktop that has gone since leaves its window on the one in front. Arkos reads the
+desktops through macOS's private SkyLight calls, as window managers do; a macOS without them only
+loses this. `[update] auto = false` keeps the bell's dot and "Update now" instead.
 
 "Check for updates" in the palette asks now and waits for that check (up to 30 seconds) before
 saying one thing: "update ready: X" when it found a release (the bell gets its dot too), "update

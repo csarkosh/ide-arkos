@@ -1020,8 +1020,8 @@ Things only a person at the screen can check, in order of value:
 - reading: the five alerts show their icons and colours, `> [!TIP] Shortcut` reads "Shortcut";
   footnote references are raised numbers by first reference, hovering one shows its note, the
   notes are numbered with a `↩` back; front matter shows its title, date and a faint label;
-  Present in the `⋯` menu (or Alt+Cmd+P) turns presentation on: no handle, no label, a click and typing change
-  nothing, a click on a footnote scrolls to it and `↩` back; the `⋯` button stays and Edit in its menu ends it; with
+  Present in the view group (or Alt+Cmd+P) turns presentation on: no handle, no label, a click and typing change
+  nothing, a click on a footnote scrolls to it and `↩` back; the view group stays and Edit in it ends it; with
   `page_width = "letter"` a wide pane centres an 816 px column; Cmd+= enlarges the text in it
 - links and images: click a link to `#a-heading` and then its address: the view scrolls to the
   heading; a link to `other.md#a-heading` opens the other file scrolled there; `[[other|text]]`
@@ -1035,12 +1035,22 @@ Things only a person at the screen can check, in order of value:
   Copy puts the code on the clipboard and reads "Copied"; a header click and Delete remove the
   block; click a Mermaid diagram: its code shows with the caret at its start, and Shift+Enter on
   its last line leaves it and the diagram draws again
-- view menu: `⋯` on a markdown tab opens the menu under it, rising into place (instantly under
-  Reduce Motion); each item does its toggle and closes it (Show raw and back, Inline diff with a
-  change against git, Present then Edit, Outline with a check mark); Escape and a click outside
-  close it, and so does `⋯` again; with the find bar open it sits below the bar; under an effect
-  with menu edges it is drawn like the other menus; a CSV's grid keeps its own pill in the strip
-- Shift+Cmd+M, with the menu closed, shows the raw file and back; the choice survives a
+- view group: a markdown tab's top right has three icon buttons, Present (a screen), Edit (a
+  pencil) and Raw (code brackets), the one in force lit; each click switches and lights its own;
+  resting the pointer on one shows a tooltip with its name, keys and a line on what it does, the
+  text inside its box; with the find bar open the group sits below the bar; with a change against
+  git the "inline diff" chip sits left of it; under each effect the icons are legible; a CSV's
+  grid keeps its own pill in the strip
+- image zoom: a double click on an image, presenting or editing, shows it as large as the pane
+  holds it over a dimmed document, fading in; a double click on it, Escape, or switching tabs
+  puts it back; the wheel does not scroll the document under it
+- session rename: Rename in a row's menu, then typing: the row's name follows each key; Escape
+  puts the old name back in the row
+- window desktops: with three desktops, a window on each, an update (or `arkos` run by the
+  daemon after `arkos update` in a dev sandbox) brings each window back on its own desktop, and
+  the desktop in front stays in front; a desktop removed meanwhile leaves its window on the one
+  in front
+- Shift+Cmd+M shows the raw file and back; the choice survives a
   relaunch; another markdown tab keeps its own mode
 - edit the file in another editor while a line is half typed: the banner offers Reload and
   Keep mine; Cmd+S means Keep mine; with nothing unsaved the file simply reloads
@@ -1090,7 +1100,7 @@ Things only a person at the screen can check, in order of value:
   and Shift+Enter step with the count; Escape or a click in the terminal closes it; `.` and `*`
   match literally; output arriving keeps the bar open
 - a pane with eight tabs: the bar scrolls, Option+Cmd+Right keeps the active tab in view, and
-  there is no ⋯ button
+  there is no view group
 - closing a tab whose shell has ended, then Shift+Cmd+T: a new shell opens
 - Cmd+, opens Settings; "Open config" in the palette opens the config file in the default text
   editor

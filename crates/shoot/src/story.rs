@@ -466,6 +466,10 @@ pub struct Shot {
     /// opens a context menu for the picture.
     #[serde(default)]
     pub right_click: Option<[f64; 2]>,
+    /// A double click at `[x, y]`, fractions of the window, after `click` and before the right
+    /// click: two presses macOS counts as one double click (an image zoomed, a word selected).
+    #[serde(default)]
+    pub double_click: Option<[f64; 2]>,
     /// A drag from the first point to the second, fractions of the window, after the clicks and
     /// before the keys: the left button held over a dozen moves.
     #[serde(default)]

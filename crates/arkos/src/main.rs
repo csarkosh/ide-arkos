@@ -84,6 +84,7 @@ mod reminder;
 mod remote_image;
 mod render_view;
 mod sandbox;
+mod spaces;
 mod screen;
 mod scroll;
 mod settings;
@@ -2000,7 +2001,8 @@ impl Root {
             return;
         }
         let Some(display) = window.display(cx).and_then(|d| d.uuid().ok()) else { return };
-        self.window_saved = Some(workspace::WindowSaved { display: display.to_string(), x, y, w, h });
+        let space = self.window_saved.as_ref().and_then(|s| s.space.clone());
+        self.window_saved = Some(workspace::WindowSaved { display: display.to_string(), x, y, w, h, space });
         self.save(cx);
     }
 
@@ -4145,6 +4147,7 @@ impl Root {
             eprintln!("arkos: quitting with unsaved edits: {e}");
         }
         self.recover_unsaved(cx);
+        self.note_window_space(cx);
         let killed = self.end_closed_tabs();
         // The process may exit before the writer thread sends what is queued; wait for it, once
         // and briefly. The client is the current connection's, whichever reconnect that is.
@@ -4159,6 +4162,18 @@ impl Root {
             eprintln!("arkos: could not send {killed} kill requests{also} before quitting");
         }
         workspace::flush_now(&self.save_queue);
+    }
+
+    /// Remembers the desktop the window is on, so a relaunch by the daemon (an update) brings it
+    /// back there (`spaces`): as the window is activated or left, and as it quits, saved with the
+    /// quit's final write.
+    fn note_window_space(&mut self, cx: &mut App) {
+        let Some(ns) = self.ns_window.as_ref() else { return };
+        let space = spaces::space_of(ns.windowNumber());
+        if let Some(saved) = self.window_saved.as_mut().filter(|s| s.space != space) {
+            saved.space = space;
+            self.save(cx);
+        }
     }
 
     /// The user asked to quit, or to close the window: every markdown tab's unsaved edits are
@@ -5913,13 +5928,23 @@ fn open_project_window(
                             // Coming back to the window is a look at its focused tab; leaving
                             // it means the next answer there arrives unseen.
                             root.acknowledge_focused(cx);
+                            // The desktop it is on, kept current as the user comes and goes.
+                            root.note_window_space(cx);
                             if !root.window_active && root.close_popovers(Instant::now()) {
                                 cx.notify();
                             }
                         })
                         .detach();
+                        let space = view_saved.as_ref().and_then(|s| s.window.as_ref()).and_then(|w| w.space.clone());
                         let mut root = Root::new(client_for_view, view_project, view_saved, view_config, view_theme, system_is_dark, installed, cx);
                         root.ns_window = screen::ns_window_of(window);
+                        // Relaunched by the daemon (an update, the watchdog), the window goes back
+                        // to the desktop it was on; opened by the user, it opens where they are.
+                        if let (false, Some(ns), Some(space)) = (should_activate(std::env::var("ARKOS_RELAUNCH").ok().as_deref()), root.ns_window.as_ref(), space) {
+                            if !spaces::move_to(ns.windowNumber(), &space) {
+                                eprintln!("arkos: the desktop this window was on is gone; it opens on this one");
+                            }
+                        }
                         root.ns_view = screen::ns_view_of(window);
                         // The hidden web view diagrams and equations are drawn in.
                         if let (Some(w), Some(v)) = (root.ns_window.as_ref(), root.ns_view.as_ref()) {

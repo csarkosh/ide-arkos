@@ -108,8 +108,10 @@ struct Tip {
 
 impl gpui::Render for Tip {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        // A set width: gpui sizes a tooltip from its content unwrapped, so a wrapped line would
+        // run out of its box.
         div()
-            .max_w(px(260.0))
+            .w(px(240.0))
             .px(px(10.0))
             .py(px(6.0))
             .rounded(px(6.0))

@@ -164,6 +164,11 @@ pub struct WindowSaved {
     pub y: f64,
     pub w: f64,
     pub h: f64,
+    /// The desktop (Mission Control Space) it was on when it quit, by uuid (`spaces`): a window
+    /// the daemon relaunches comes back there. Absent in files from before 2026-11-16, and for a
+    /// window whose desktop could not be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
 }
 
 /// A `w` by `h` frame at (`x`, `y`) kept within a `dw` by `dh` display (top-left origin) below
@@ -518,7 +523,7 @@ mod tests {
         let file = dir.path().join("ws.json");
         let project = Path::new("/p");
         let mut ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), marks: Vec::new(), reminders: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
-        ws.window = Some(WindowSaved { display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(), x: 40.0, y: 22.5, w: 1440.0, h: 860.0 });
+        ws.window = Some(WindowSaved { display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(), x: 40.0, y: 22.5, w: 1440.0, h: 860.0, space: Some("A-1".into()) });
         save_to(&file, &ws).unwrap();
         assert_eq!(load_from(&file, project), Some(ws));
     }

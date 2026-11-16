@@ -455,7 +455,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
             say(&format!("{}: after {} s these were not as asked: {}", shot.name, shot.timeout_secs, unmet.join(", ")));
             failures.push(format!("{} ({})", shot.name, unmet.join(", ")));
         }
-        if shot.click.is_some() || shot.right_click.is_some() || shot.drag.is_some() || !shot.drags.is_empty() || shot.hover.is_some() || !shot.keys.is_empty() {
+        if shot.click.is_some() || shot.right_click.is_some() || shot.double_click.is_some() || shot.drag.is_some() || !shot.drags.is_empty() || shot.hover.is_some() || !shot.keys.is_empty() {
             if shot.activate {
                 activate(window_pid);
             }
@@ -868,6 +868,23 @@ fn send_input(shot: &Shot, frame: (f64, f64, f64, f64)) -> Result<()> {
         post(CGEvent::new_mouse_event(source.clone(), CGEventType::LeftMouseDown, at, CGMouseButton::Left))?;
         std::thread::sleep(Duration::from_millis(60));
         post(CGEvent::new_mouse_event(source.clone(), CGEventType::LeftMouseUp, at, CGMouseButton::Left))?;
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    if let Some([fx, fy]) = shot.double_click {
+        use core_graphics::event::EventField;
+        let at = CGPoint::new(frame.0 + fx * frame.2, frame.1 + fy * frame.3);
+        post(CGEvent::new_mouse_event(source.clone(), CGEventType::MouseMoved, at, CGMouseButton::Left))?;
+        std::thread::sleep(Duration::from_millis(80));
+        // The second press carries a click count of 2, as a real double click's does.
+        for count in [1, 2] {
+            for kind in [CGEventType::LeftMouseDown, CGEventType::LeftMouseUp] {
+                let e = CGEvent::new_mouse_event(source.clone(), kind, at, CGMouseButton::Left).map_err(|_| anyhow::anyhow!("could not make an event"))?;
+                e.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, count);
+                e.set_flags(CGEventFlags::CGEventFlagNull);
+                e.post(CGEventTapLocation::HID);
+                std::thread::sleep(Duration::from_millis(40));
+            }
+        }
         std::thread::sleep(Duration::from_millis(300));
     }
     if let Some([fx, fy]) = shot.right_click {

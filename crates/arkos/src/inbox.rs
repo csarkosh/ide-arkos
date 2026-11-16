@@ -98,15 +98,22 @@ pub fn into_pages(tree: &mut Tree, mut sides: Sides) {
     if tree.paged {
         return;
     }
+    // A window of files alone has no session to hand them to: it is one page as it stands.
+    if !tree.tabs().iter().any(|(_, _, t)| matches!(t, Tab::Terminal { .. })) {
+        tree.paged = true;
+        return;
+    }
     if !tree.is_inbox() {
         sides.enter(tree);
     }
     let shown = selected(tree);
     let focus = tree.focused;
     let mut by_session: HashMap<TabId, (Node, SidePlace)> = HashMap::new();
-    if let (Some(s), Some((side, place))) = (shown, tree.inbox_take_side()) {
-        sides.remember(place);
-        by_session.insert(s, (side, place));
+    if let Some(s) = shown {
+        if let Some((side, place)) = tree.inbox_take_side() {
+            sides.remember(place);
+            by_session.insert(s, (side, place));
+        }
     }
     for (session, side) in std::mem::take(&mut sides.kept) {
         by_session.entry(session).or_insert((side, sides.side_place()));
@@ -212,6 +219,19 @@ mod tests {
         assert_eq!(all.len(), 4, "no tab is lost");
         let mine = old.page_tabs(first).into_iter().map(|(_, _, t)| t.clone()).collect::<Vec<_>>();
         assert!(mine.contains(&doc("/p/a.md")), "the file it owned stays with it: {mine:?}");
+    }
+
+    #[test]
+    fn an_old_window_of_files_alone_keeps_every_tab_where_it_was() {
+        let mut tree = Tree::new(doc("/p/a.md"));
+        let left = tree.panes()[0];
+        tree.split(left, Side::Right, doc("/p/b.md")).unwrap();
+        let before: Vec<Tab> = tree.tabs().into_iter().map(|(_, _, t)| t.clone()).collect();
+        let mut old: Tree = serde_json::from_str(&serde_json::to_string(&tree).unwrap().replace("\"paged\":true", "\"paged\":false")).unwrap();
+        into_pages(&mut old, Sides::default());
+        assert!(old.paged);
+        assert_eq!(old.tabs().into_iter().map(|(_, _, t)| t.clone()).collect::<Vec<_>>(), before, "nothing lost");
+        assert_eq!(old.panes().len(), 2, "split as it was");
     }
 
     #[test]
