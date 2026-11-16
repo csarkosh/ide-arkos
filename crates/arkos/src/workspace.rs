@@ -24,6 +24,10 @@ pub struct Workspace {
     /// window knows it. Absent in files from before the layouts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub marks: Vec<(SessionId, crate::attention::Marks)>,
+    /// Each session's reminder, by its page (sessions hold grids spec, section 4). Absent in
+    /// files from before them, whose put-off times were in `marks`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reminders: Vec<(crate::tree::PageKey, crate::reminder::Reminder)>,
     /// The Grid layout's arrangement, kept aside while the Inbox layout is on, so switching back
     /// restores it (`Tree::regridded`). Absent while the Grid is on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -83,7 +87,7 @@ pub struct Workspace {
 /// An empty layout for no project, with nothing saved beside it.
 impl Default for Workspace {
     fn default() -> Workspace {
-        Workspace { version: FORMAT_VERSION, project: PathBuf::new(), tree: Tree::empty(), marks: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() }
+        Workspace { version: FORMAT_VERSION, project: PathBuf::new(), tree: Tree::empty(), marks: Vec::new(), reminders: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() }
     }
 }
 
@@ -477,7 +481,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("ws.json");
         let project = Path::new("/p");
-        let mut ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), marks: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: Some("relaxed".into()), sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
+        let mut ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), marks: Vec::new(), reminders: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: Some("relaxed".into()), sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
         save_to(&file, &ws).unwrap();
         assert_eq!(load_from(&file, project), Some(ws.clone()));
         let text = std::fs::read_to_string(&file).unwrap();
@@ -513,7 +517,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("ws.json");
         let project = Path::new("/p");
-        let mut ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), marks: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
+        let mut ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), marks: Vec::new(), reminders: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
         ws.window = Some(WindowSaved { display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(), x: 40.0, y: 22.5, w: 1440.0, h: 860.0 });
         save_to(&file, &ws).unwrap();
         assert_eq!(load_from(&file, project), Some(ws));
@@ -524,7 +528,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("ws.json");
         let project = Path::new("/p");
-        let mut ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), marks: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: Some(0.6), side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
+        let mut ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), marks: Vec::new(), reminders: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: Some(0.6), side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
         save_to(&file, &ws).unwrap();
         let text = std::fs::read_to_string(&file).unwrap();
         assert!(!text.contains("side_stacked") && !text.contains("side_place"), "a file from before has neither");
@@ -541,7 +545,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("ws.json");
         let project = Path::new("/p");
-        let mut ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), marks: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
+        let mut ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), marks: Vec::new(), reminders: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
         save_to(&file, &ws).unwrap();
         assert_eq!(load_from(&file, project), Some(ws.clone()));
         ws.sidebar = Some(SidebarSaved { width: 300.0, collapsed: true, show_ignored: true, expanded: vec![PathBuf::from("/p/src")], worktrees_expanded: vec![PathBuf::from("/p-f")], explorer_open: true, worktrees_open: false, sessions_open: false });
@@ -579,7 +583,7 @@ mod tests {
         tree.add_tab(pane, Tab::Terminal { session: SessionId(3), cwd: Some(PathBuf::from("/projects/x-feat")) });
         tree.add_tab(pane, Tab::Browser { url: "https://example.com/docs".into() });
         tree.add_tab(pane, Tab::Browser { url: String::new() });
-        let ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree, marks: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
+        let ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree, marks: Vec::new(), reminders: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
         save_to(&file, &ws).unwrap();
         let loaded = load_from(&file, project).unwrap();
         let tabs = &loaded.tree.pane(loaded.tree.focused).unwrap().tabs;
@@ -604,7 +608,7 @@ mod tests {
         let mut tree = Tree::new(Tab::Video { path: "/projects/x/cut.mp4".into(), at: Some(12.0), loop_range: Some((12.0, 18.0)) });
         let pane = tree.focused;
         tree.add_tab(pane, Tab::Video { path: "/projects/x/b.mov".into(), at: None, loop_range: None });
-        let ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree, marks: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
+        let ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree, marks: Vec::new(), reminders: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
         save_to(&file, &ws).unwrap();
         assert_eq!(load_from(&file, project), Some(ws));
     }
@@ -682,7 +686,7 @@ mod tests {
     fn save_leaves_no_temp_file_behind() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("workspaces").join("ws.json");
-        let ws = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/p"), tree: tree_with_two(), marks: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
+        let ws = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/p"), tree: tree_with_two(), marks: Vec::new(), reminders: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
         save_to(&file, &ws).unwrap();
         save_to(&file, &ws).unwrap();
         let names: Vec<String> = std::fs::read_dir(file.parent().unwrap())
@@ -697,15 +701,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let blocker = dir.path().join("blocker");
         std::fs::write(&blocker, "").unwrap();
-        let ws = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/p"), tree: tree_with_two(), marks: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
+        let ws = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/p"), tree: tree_with_two(), marks: Vec::new(), reminders: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
         assert!(save_to(&blocker.join("ws.json"), &ws).is_err());
     }
 
     #[test]
     fn save_queue_coalesces_until_taken() {
         let mut q = SaveQueue::default();
-        let a = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/a"), tree: tree_with_two(), marks: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
-        let b = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/b"), tree: tree_with_two(), marks: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
+        let a = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/a"), tree: tree_with_two(), marks: Vec::new(), reminders: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
+        let b = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/b"), tree: tree_with_two(), marks: Vec::new(), reminders: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
         assert!(q.offer(a.clone()), "first offer schedules a flush");
         assert!(!q.offer(b.clone()), "a flush is already pending");
         assert_eq!(q.take().map(|j| j.ws), Some(b.clone()), "the latest offer wins");
@@ -719,8 +723,8 @@ mod tests {
     #[test]
     fn writes_never_go_back_a_generation() {
         let mut q = SaveQueue::default();
-        let a = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/a"), tree: tree_with_two(), marks: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
-        let b = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/b"), tree: tree_with_two(), marks: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
+        let a = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/a"), tree: tree_with_two(), marks: Vec::new(), reminders: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
+        let b = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/b"), tree: tree_with_two(), marks: Vec::new(), reminders: Vec::new(), grid: None, ended: Vec::new(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines: Vec::new(), folded_sections: None, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new(), folds: BTreeMap::new(), diagram_modes: BTreeMap::new() };
         q.offer(a);
         let old = q.take().unwrap();
         q.offer(b);

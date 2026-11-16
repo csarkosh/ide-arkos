@@ -22,31 +22,46 @@ or restart `claude` in a tab:
 Each session also carries a line: what it is doing ("Bash: cargo test"), what it asks ("Allow
 Bash: ffmpeg …", or its question), or the first line of what Claude last said, kept with the
 window so an update does not lose it; a session that has said nothing yet shows its terminal's
-title (Claude Code titles it with the conversation's topic), else the folder it runs in. In the
-Inbox, the sidebar's Sessions list holds every session of the window under Needs you, Unread, New, Unanswered,
-Working, Quiet, Later and Done, newest change first, each with its mark, name, age and line. A session you start (a new tab, "+ New session", or one resumed) is New until something
-happens in it, and one left untouched for ten minutes moves to Quiet. A click on a
-group's heading folds it or opens it; Quiet (not finished, nothing happening) and Done start
-folded, the window remembers what you leave folded, and typing in the Inbox's filter opens
-them all while it finds. A click on a row goes to the session, and Shift+Cmd+U ("next session that needs you") goes to the first that is your
-move: a blocked one, then an unread one, then an unanswered one. A row you click
-stays where it was until you choose another session, so an unread one stays under Unread
-(marked read) rather than moving from under the pointer. Right click a row for "Move to", which
-lists every section but the one the session is in: Needs you, Unread, New, Unanswered, Working,
-Quiet and Done. Beside it, "Remind me in" puts the session under Later until a time, as
-Slack's reminders do: In 20 minutes, In 1 hour, In 3 hours, Tomorrow (at 9:00), Next week
-(Monday at 9:00), or Custom, where you type a time such as `45m`, `2h`, `3d`, `1w`, `14:30` or
-`2pm` (the next one to come) and press Enter. A moved session stays there until its
-agent next does something (a new answer, a prompt, a question or a permission), and then
-follows it again; Unread lasts until you next look at it, and Later until its time, when a
-session that is waiting comes back as unread. The same menu renames the session or ends it (as Cmd+W
-closes its tab, with the same minute in which Shift+Cmd+T brings it back). A session put off or away comes back
-by itself when Claude next stops or needs you. The Dock icon counts the sessions that need you
-or are unread. A Claude Code session whose tab you close (End, or Cmd+W) is kept under Done,
-the last 50 of them, with its name and line: a click resumes it, in its own shell again within
-the closed tab's minute and after that in a new tab that runs `claude --resume` for it; its
-right click has Resume and "Remove from the list". What you did with each session (seen, done, later) is this window's own and is
-saved with it; another window on another folder keeps its own list.
+title (Claude Code titles it with the conversation's topic), else the folder it runs in. The
+sidebar's Sessions list has a row for every session of the window (see [Layouts](#layouts): a
+session is a page of panes, and may hold several Claude Code sessions) under Needs you, Unread,
+New, Unanswered, Working, Quiet, Scheduled and Done, newest change first, each with its mark,
+name, age and line. A session holding several terminals is listed by the one that most needs
+you (a question beats an answer, an answer beats work), with that one's line and a count
+("3 sessions") beside its age; its name is its first terminal's. A session you start ("+ New
+session", or one resumed) is New until something happens in it, and one left untouched for ten
+minutes moves to Quiet. A click on a group's heading folds it or opens it; Quiet (not
+finished, nothing happening) and Done start folded, the window remembers what you leave
+folded, and typing in the filter opens them all while it finds. A click on a row shows its
+session, on the pane that needs you when one does, else as you left it, and Shift+Cmd+U
+("next session that needs you") goes to the first that is your move: a blocked one, then an
+unread one, then an unanswered one. A row you click stays where it was until you choose
+another session, so an unread one stays under Unread (marked read) rather than moving from
+under the pointer. Right click a row for "Move to", which lists every section but the one the
+session is in: Needs you, Unread, New, Unanswered, Working, Quiet and Done; every terminal of
+the session moves, except that Unread marks only the one that leads it. Beside it, "Remind me
+in" puts the session under Scheduled until a time, as Slack's reminders do: In 20 minutes, In 1
+hour, In 3 hours, Tomorrow (at 9:00), Next week (Monday at 9:00), or Custom, which opens a date
+and time picker: a month of days (the arrow keys move the day, Page Up and Page Down the
+month), a time from a list every 15 minutes or typed (`14:30`, `2pm`, `9:15am`, then Enter),
+and Repeat: Never, Every day, Every weekday, Every week on that weekday or Every month on that
+day (the month's last day when it is shorter). Save sets it, Enter too; Escape closes it. A
+scheduled row says how long until its time, with an arrow when it repeats. When the time comes
+the session comes up under Unread (or Needs you, or Working, when it is so) with a Reminder
+label in place of its age, until you look at it; a repeating one then goes back under
+Scheduled until its next time, once you choose another session. A moved session stays there
+until its agent next does something (a new answer, a prompt, a question or a permission), and
+then follows it again; Unread lasts until you next look at it. The same menu renames the
+session or ends it (each terminal closes as Cmd+W closes it, with the same minute in which
+Shift+Cmd+T brings it back, and the session's other tabs close with the last). A session put
+off or away comes back by itself when Claude next stops or needs you; a one-time reminder is
+then dropped, and a repeating one waits for you to look. The Dock icon counts the sessions that
+need you or are unread. A Claude Code session whose tab you close (End, or Cmd+W) is kept under
+Done, the last 50 of them, with its name and line: a click resumes it, as a session of its own,
+in its own shell again within the closed tab's minute and after that in a new tab that runs
+`claude --resume` for it; its right click has Resume and "Remove from the list". What you did
+with each session (seen, done, its reminder) is this window's own and is saved with it; another
+window on another folder keeps its own list.
 
 No hook says a permission or a question was answered, so Enter or a digit typed into a session
 that needs you counts as the answer and shows it working again.
@@ -75,46 +90,40 @@ lists each folder and each session that reports nothing under "Claude Code confi
 
 ## Layouts
 
-Settings, Layout (or `[layout] name` in the config) chooses how a window arranges its sessions
-and files:
+The window shows its sessions as a list in the sidebar, sorted by what needs you, and one
+session at a time beside it, as a chat app shows one conversation. A session is a page of panes
+of tabs that you split and arrange: its first terminal (where you run Claude Code), and
+whatever it opens and you open in it. Choosing another session shows that session's page,
+split as you left it, and coming back brings this one back the same way.
 
-- **Grid**, the default: panes of tabs that you split and arrange, with the Explorer and
-  Worktrees in the sidebar; each tab says whether its session is working or waiting on you.
-- **Inbox**: the sessions are a list in the sidebar, sorted by what needs you, and the window
-  shows one session at full size, as a chat app shows one conversation. The session's header
-  (in the tab bar's place) has its mark, name and folder, with "Mark unread" and "Done". Files,
-  pages and videos open in panes to its right, and those panes belong to the session: they
-  exist only within it. Choosing another session replaces all of them with that session's own
-  (none, if it has opened nothing), and coming back brings them back as they were, split and
-  all. The panes sit to the session's right on a wide window and on top of it on a narrow one
-  (under 1500 points of panes: a 13 or 14 inch MacBook with the sidebar shown); drag a pane by
-  its number onto an edge of the session to put them on that side instead, which every
-  session's panes then follow. A file you open from the Explorer joins the session you are on; a file a Claude Code
-  session opens with `arkos open` joins that session, also while you are looking at another
-  one, whose panes are left as they are. Ending a session closes its tabs with it. The divider
-  between the session and its panes stays where you put it from one session to the next, one
-  position for side by side and one for stacked. The
-  sidebar's top switches between Sessions and Files (the Explorer and Worktrees); choosing the
-  Inbox opens the sidebar on Sessions. Under the filter, "+ New session" starts one. Under it a filter field narrows the list as you type to the sessions whose
-  name or line holds every word, closed ones under Done included; Enter goes to the first of
-  them (a closed one is resumed) and Escape clears it. Every terminal is a session: a terminal opened among a session's panes
-  joins the list instead.
+- Open another terminal in the session (Cmd+T, a split, the tab bar's "+") for another Claude
+  Code session beside the first: it belongs to the same session, and the list counts it.
+  "+ New session", under the filter, starts a session of its own instead.
+- Every pane has its tab bar, the session's first one included. A pane moves by its number at
+  the left end of its tab bar: drag it onto an edge of another pane to put it there, tabs and
+  all, or into another pane's middle or tab bar to join its tabs to that pane's. A tab drags
+  the same way.
+- A file you open from the Explorer joins the session you are on. A file a Claude Code session
+  opens with `arkos open` joins that session's page, also while you are looking at another,
+  whose page is left as it is.
+- Closing a session's last terminal closes its other tabs with it (a file's edits are saved
+  first), and the list shows the session next to it.
 
-Switching layouts moves nothing out of the window: the same sessions and files are regrouped,
-and the Grid's arrangement is kept while the Inbox is on and restored when you switch back,
-less the tabs closed meanwhile and with the tabs opened meanwhile added to its focused pane.
-Which session each file belongs to is remembered through the Grid, so a return to the Inbox
-hands each session its tabs again.
+The sidebar's top switches between Sessions and Files (the Explorer and Worktrees). Under the
+filter, "+ New session" starts one; the filter field narrows the list as you type to the
+sessions whose name or line holds every word, or any of their terminals' names, closed ones
+under Done included; Enter goes to the first of them (a closed one is resumed) and Escape
+clears it.
+
+Until 2026-11-16 there were two layouts, Grid and Inbox. A window saved in either opens with
+each terminal a session of its own, keeping the files it had opened beside it.
 
 "A session's files open" (`[layout] placement`) says where a plain `arkos open` from a session
-lands in the Grid: Neighbor, the default, the pane on its right, else the one on its left, else
+lands on its page: Neighbor, the default, the pane on its right, else the one on its left, else
 a new pane split off to its right, so the session stays in view; or In place, a new tab in the
-session's own pane. On a narrow window Neighbor looks above and below first, then right and
-left, and a new pane goes on top.
-
-A pane moves by its number at the left end of its tab bar: drag it onto an edge of another pane
-to put it there, tabs and all, or into another pane's middle or tab bar to join its tabs to
-that pane's.
+session's own pane. On a narrow window (under 1500 points of panes: a 13 or 14 inch MacBook
+with the sidebar shown) Neighbor looks above and below first, then right and left, and a new
+pane goes on top.
 
 ## After a restart
 
@@ -159,8 +168,8 @@ turning it off deletes the file but does not stop a daemon already running.
 
 ## Sidebar and viewer
 
-Cmd+B shows the sidebar. In the Inbox its top switches between Sessions (see
-[Session awareness](#session-awareness)) and Files; in the Grid it is the files alone. Files is
+Cmd+B shows the sidebar. Its top switches between Sessions (see
+[Session awareness](#session-awareness)) and Files. Files is
 a file tree rooted at the folder, read one directory at a time as you
 expand it, with `.git` hidden and anything `.gitignore` ignores left out (the palette's "Show
 ignored files" lists them dimmed). It follows the file system within a second. A single click
@@ -865,8 +874,8 @@ window, as Keybindings (Cmd+/) does.
   The effect's intensity and `run_unfocused` are set in the config file only. Then "Show effects
   folder", which creates the folder, then reveals it. A change fades in or out
   over a fifth of a second, or cuts under Reduce Motion.
-- Layout: Grid or Inbox (see [Layouts](#layouts)), and "A session's files open", Neighbor (the
-  default) or In place: where a file a Claude Code session opens goes in the Grid.
+- Layout: "A session's files open", Neighbor (the default) or In place: where a file a Claude
+  Code session opens goes on its page (see [Layouts](#layouts)).
 - Text: the font family (installed monospace families; a configured family that is missing is
   listed first as "(not installed)"), the text preset, and Size and Line height steppers that
   write both values of the preset together and show the file's values as they are. The preset

@@ -79,6 +79,8 @@ mod paths;
 mod pulse;
 mod recent;
 mod reflow;
+mod remind_picker;
+mod reminder;
 mod remote_image;
 mod render_view;
 mod sandbox;
@@ -348,27 +350,28 @@ pub struct Root {
     pub session_filter: line_edit::LineEdit,
     pub session_filter_focus: FocusHandle,
     pub session_filter_focused: bool,
-    /// The Grid layout's arrangement while the Inbox layout is on (`Tree::regridded` brings it
-    /// back); None while the Grid is on.
-    pub grid_tree: Option<Tree>,
-    /// The Inbox's sides: each session's own panes, put away while another session is shown
-    /// (`inbox::Sides`). Saved with the workspace.
-    pub inbox: inbox::Sides,
+    /// Each session's reminder, by its page (sessions hold grids spec, section 4). Saved with
+    /// the workspace.
+    pub reminders: HashMap<tree::PageKey, reminder::Reminder>,
+    /// When `reminder_came` last looked, in milliseconds since the Unix epoch.
+    pub reminders_checked: u64,
     /// The count the Dock icon shows: this window's sessions that call for the user.
     pub dock_badge: usize,
     /// The session the user chose and where it stood then. An unread one stays among the
     /// unread, read, until the user chooses another session, so the row they clicked does not
     /// move from under the pointer (`sessions_list::hold`).
-    pub held: Option<(SessionId, attention::Attention)>,
+    pub held: Option<(tree::PageKey, attention::Attention)>,
     /// The session menu's "Move to" sections are open beside it, and where that row was last
     /// drawn, which the sections are placed by.
     pub session_submenu: Option<sessions_list::Sub>,
     pub session_submenu_at: [Option<gpui::Bounds<gpui::Pixels>>; 2],
-    /// "Remind me in"'s Custom field while it is open, whether what was typed last could not be
-    /// read as a time, and the field's focus.
-    pub remind_custom: Option<line_edit::LineEdit>,
-    pub remind_custom_bad: bool,
+    /// "Remind me in"'s Custom: the date and time picker while it is open (sessions hold grids
+    /// spec, section 5), its time field while one is typed in it, its focus, and the scroll of
+    /// its list of times.
+    pub remind_picker: Transient<remind_picker::Picker>,
+    pub remind_time: Option<line_edit::LineEdit>,
     pub remind_focus: FocusHandle,
+    pub remind_scroll: gpui::ScrollHandle,
     /// The Worktrees section's focus handle.
     pub wt_focus: FocusHandle,
     /// The pointer is over the Worktrees list (wired by the section's paint): the order holds.
@@ -751,28 +754,27 @@ impl Root {
         let saved_lines: HashMap<SessionId, String> = saved.as_ref().map(|w| w.lines.iter().cloned().collect()).unwrap_or_default();
         let saved_marks: HashMap<SessionId, attention::Marks> = saved.as_ref().map(|w| w.marks.iter().copied().collect()).unwrap_or_default();
         let saved_ended = saved.as_ref().map(|w| w.ended.clone()).unwrap_or_default();
-        let mut grid_tree = saved.as_ref().and_then(|w| w.grid.clone());
-        let mut inbox_sides = inbox::Sides::default();
-        if let Some(w) = saved.as_ref() {
-            inbox_sides.kept = w.sides.iter().cloned().collect();
-            inbox_sides.shown = w.side_of;
-            inbox_sides.ratio = w.side_ratio.unwrap_or(tree::INBOX_RATIO);
-            inbox_sides.stacked = w.side_stacked.unwrap_or(tree::INBOX_STACKED);
-            inbox_sides.place = w.side_place;
-            inbox_sides.owner = w.owners.iter().copied().collect();
-        }
-        let mut tree = saved.map(|ws| ws.tree).unwrap_or_else(Tree::empty);
-        // The config's layout over what was saved: the Inbox's shape, with the Grid's
-        // arrangement kept aside, or the Grid's arrangement back with every session's tabs.
-        match config.layout.name {
-            config::LayoutName::Inbox if grid_tree.is_none() && !tree.is_inbox() => grid_tree = Some(inbox_sides.enter(&mut tree)),
-            config::LayoutName::Inbox => {}
-            config::LayoutName::Grid => {
-                if grid_tree.is_some() || !inbox_sides.kept.is_empty() {
-                    inbox_sides.leave(&mut tree, grid_tree.take());
-                }
+        let mut reminders: HashMap<tree::PageKey, reminder::Reminder> = saved.as_ref().map(|w| w.reminders.iter().copied().collect()).unwrap_or_default();
+        let mut saved_marks = saved_marks;
+        let tree = match saved {
+            // A file from before pages: its Inbox's sides, or its Grid, made into a page per
+            // session (sessions hold grids spec, section 6).
+            Some(ws) if !ws.tree.paged => {
+                let mut sides = inbox::Sides::default();
+                sides.kept = ws.sides.iter().cloned().collect();
+                sides.shown = ws.side_of;
+                sides.ratio = ws.side_ratio.unwrap_or(tree::INBOX_RATIO);
+                sides.stacked = ws.side_stacked.unwrap_or(tree::INBOX_STACKED);
+                sides.place = ws.side_place;
+                sides.owner = ws.owners.iter().copied().collect();
+                let mut tree = ws.tree;
+                inbox::into_pages(&mut tree, sides);
+                reminders.extend(inbox::reminders_from_marks(&tree, &mut saved_marks));
+                tree
             }
-        }
+            Some(ws) => ws.tree,
+            None => Tree::empty(),
+        };
         let mut sessions = SessionManager::new(client.clone(), Some(client), project.clone());
         let t = &config.terminal;
         sessions.set_defaults(t.scrollback, t.shell.clone(), t.nice);
@@ -789,8 +791,8 @@ impl Root {
         let fonts = look_fonts(&config, &theme, cx);
         Self {
             tree,
-            grid_tree,
-            inbox: inbox_sides,
+            reminders,
+            reminders_checked: sessions::now_ms(),
             sessions,
             save_queue: SharedSaveQueue::default(),
             project,
@@ -848,9 +850,10 @@ impl Root {
             held: None,
             session_submenu: None,
             session_submenu_at: [None, None],
-            remind_custom: None,
-            remind_custom_bad: false,
+            remind_picker: Transient::Hidden,
+            remind_time: None,
             remind_focus: cx.focus_handle(),
+            remind_scroll: gpui::ScrollHandle::new(),
             wt_focus: cx.focus_handle(),
             wt_hovered: false,
             wt_open: wt_open.clone(),
@@ -1557,6 +1560,7 @@ impl Root {
             || self.popover.animating(now)
             || self.wt_menu.animating(now)
             || self.session_menu.animating(now)
+            || self.remind_picker.animating(now)
             || self.palette.animating(now)
             || self.notice.animating(now)
             || self.url_prompt.animating(now)
@@ -1597,6 +1601,7 @@ impl Root {
         self.popover.settle(now);
         self.wt_menu.settle(now);
         self.session_menu.settle(now);
+        self.remind_picker.settle(now);
         self.palette.settle(now);
         self.notice.settle(now);
         self.url_prompt.settle(now);
@@ -1826,9 +1831,6 @@ impl Root {
             // An open Keybindings window shows the saved override at once.
             aux::push_keybindings(cx, &self.config.keybindings);
         }
-        if old.layout.name != self.config.layout.name {
-            self.apply_layout(cx);
-        }
         self.switch_theme(cx);
         // The custom look's font may have changed under the same colours.
         let theme = self.base_theme.clone();
@@ -2007,15 +2009,14 @@ impl Root {
         let shown: HashSet<SessionId> = self.tree.tabs().into_iter().filter_map(|(_, _, tab)| if let Tab::Terminal { session, .. } = tab { Some(*session) } else { None }).collect();
         let mut marks: Vec<(SessionId, attention::Marks)> = self.sessions.marks.iter().filter(|(s, m)| shown.contains(s) && **m != attention::Marks::default()).map(|(s, m)| (*s, *m)).collect();
         marks.sort_by_key(|(s, _)| s.0);
-        // The Inbox's sides, in a steady order, less the owners of tabs that are gone.
-        self.inbox.prune(&self.tree);
-        let mut sides: Vec<(TabId, tree::Node)> = self.inbox.kept.iter().map(|(session, side)| (*session, side.clone())).collect();
-        sides.sort_by_key(|(session, _)| *session);
-        let mut owners: Vec<(TabId, TabId)> = self.inbox.owner.iter().map(|(tab, session)| (*tab, *session)).collect();
-        owners.sort();
+        // The reminders of the pages still there, in a steady order.
+        let pages = self.tree.page_keys();
+        self.reminders.retain(|page, _| pages.contains(page));
+        let mut reminders: Vec<(tree::PageKey, reminder::Reminder)> = self.reminders.iter().map(|(p, r)| (*p, *r)).collect();
+        reminders.sort_by_key(|(p, _)| *p);
         let mut lines: Vec<(SessionId, String)> = self.sessions.lines.iter().filter(|(s, _)| shown.contains(s)).map(|(s, l)| (*s, l.clone())).collect();
         lines.sort_by_key(|(s, _)| s.0);
-        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), marks, grid: self.grid_tree.clone(), ended: self.ended.clone(), sides, side_of: self.inbox.shown, side_ratio: Some(self.inbox.ratio), side_stacked: Some(self.inbox.stacked), side_place: self.inbox.place, owners, lines, folded_sections: Some(self.sessions_folded.iter().copied().collect()), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone(), folds: self.folds.clone(), diagram_modes: self.diagram_modes.clone() };
+        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), marks, reminders, grid: None, ended: self.ended.clone(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines, folded_sections: Some(self.sessions_folded.iter().copied().collect()), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone(), folds: self.folds.clone(), diagram_modes: self.diagram_modes.clone() };
         request_save(&self.save_queue, ws, cx);
     }
 
@@ -2148,20 +2149,23 @@ impl Root {
     pub fn acknowledge_focused(&mut self, cx: &mut Context<Self>) {
         self.sync_shown();
         if let Some(s) = self.sessions.shown {
-            // Chosen now, or new again since: where it stands before the look reads it.
-            let before = self.sessions.attention_of(s, sessions::now_ms());
-            if self.held.map(|h| h.0) != Some(s) || before == attention::Attention::Unread {
-                self.held = Some((s, before));
+            // Chosen now, or new again since: where its row stands before the look reads it.
+            let page = self.tree.page;
+            if let Some(before) = self.page_row(page).map(|e| e.attention) {
+                if self.held.map(|h| h.0) != Some(page) || before == attention::Attention::Unread {
+                    self.held = Some((page, before));
+                }
             }
-            if self.sessions.acknowledge(s) {
+            let looked = self.look_at_page();
+            if self.sessions.acknowledge(s) | looked {
                 self.save(cx);
                 cx.notify();
             }
         }
     }
 
-    /// Shows `session`: its tab made the active one of its pane, and that pane focused. In the
-    /// Inbox the side panes become that session's own as the next frame begins.
+    /// Shows `session`: its page shown, its tab made the active one of its pane, and that pane
+    /// focused.
     pub fn show_session(&mut self, session: SessionId, cx: &mut Context<Self>) {
         let Some((pane, idx)) = self.tree.find_session(session) else { return };
         self.activate_tab(pane, idx, cx);
@@ -2176,7 +2180,9 @@ impl Root {
             return;
         }
         let e = self.ended.remove(i);
-        let pane = self.tree.inbox_panes().filter(|_| self.is_inbox()).map_or(self.tree.focused, |(sessions, _)| sessions);
+        // A page of its own, as a new session has.
+        let pane = self.tree.blank_page();
+        self.held = None;
         let session = SessionId(e.session);
         match self.closed.take_session(session).filter(|c| c.in_grace(Instant::now())) {
             Some(_) => self.reopen_session(pane, session, e.cwd, cx),
@@ -2231,133 +2237,309 @@ impl Root {
     pub fn close_session_menu(&mut self) {
         self.session_menu.hide(Instant::now());
         self.session_submenu = None;
-        self.remind_custom = None;
     }
 
-    /// A key in "Remind me in"'s Custom field: Enter sets the reminder when what is typed reads
-    /// as a time (`sessions_list::parse_when`) and says how to write one when it does not;
-    /// Escape goes back to the list of times.
-    pub fn remind_custom_key(&mut self, session: SessionId, ks: &gpui::Keystroke, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(edit) = self.remind_custom.as_mut() else { return };
-        if ks.modifiers.platform && ks.key == "v" {
-            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                edit.insert_str(text.lines().next().unwrap_or(""));
-                cx.notify();
+    /// "Remind me in", Custom: the row's menu gives way to the date and time picker, on the
+    /// page's own reminder when it has one.
+    pub fn open_remind_picker(&mut self, page: tree::PageKey, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_session_menu();
+        let p = remind_picker::Picker::new(page, sessions::now_ms(), self.reminders.get(&page));
+        self.remind_time = None;
+        self.remind_picker.show(p, Instant::now());
+        window.focus(&self.remind_focus);
+        cx.notify();
+    }
+
+    pub fn close_remind_picker(&mut self) {
+        self.remind_picker.hide(Instant::now());
+        self.remind_time = None;
+    }
+
+    /// Opens a dropdown of the picker, or closes it when open. The time's opens with its field
+    /// taking typing, the time shown selected, and its list scrolled to the time chosen.
+    pub fn toggle_remind_drop(&mut self, which: remind_picker::Drop) {
+        let Some(p) = self.remind_picker.value_mut() else { return };
+        if p.open == Some(which) {
+            p.open = None;
+            self.remind_time = None;
+            return;
+        }
+        p.open = Some(which);
+        p.time_bad = false;
+        if which == remind_picker::Drop::Time {
+            let mut edit = line_edit::LineEdit::new();
+            edit.set(&remind_picker::time_label(p.minutes));
+            edit.select_all();
+            self.remind_time = Some(edit);
+            self.remind_scroll.scroll_to_item((p.minutes / remind_picker::STEP) as usize);
+        } else {
+            self.remind_time = None;
+        }
+    }
+
+    /// Save: the page's reminder is set at the time chosen, with its repeat. Nothing for a time
+    /// already past.
+    pub fn save_remind_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(p) = self.remind_picker.value() else { return };
+        if !p.can_save(sessions::now_ms()) {
+            return;
+        }
+        let ((at, repeat), page) = (p.reminder(), p.page);
+        self.close_remind_picker();
+        self.session_row_action(page, sessions_list::RowAction::Remind(at, repeat), window, cx);
+    }
+
+    /// A key in the picker: in the time field, typing a time (Enter reads it, Escape leaves the
+    /// field); else the arrows move the day, Page Up and Page Down the month, Enter saves and
+    /// Escape closes a dropdown, then the picker.
+    pub fn remind_picker_key(&mut self, ks: &gpui::Keystroke, window: &mut Window, cx: &mut Context<Self>) {
+        let now = sessions::now_ms();
+        cx.stop_propagation();
+        cx.notify();
+        if let Some(edit) = self.remind_time.as_mut() {
+            if ks.modifiers.platform && ks.key == "v" {
+                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                    edit.insert_str(text.lines().next().unwrap_or(""));
+                }
+                return;
+            }
+            let outcome = edit.handle(ks);
+            let text = edit.text.clone();
+            let Some(p) = self.remind_picker.value_mut() else { return };
+            match outcome {
+                line_edit::Edit::Submit | line_edit::Edit::SubmitBack => {
+                    if p.type_time(&text) {
+                        p.open = None;
+                        self.remind_time = None;
+                    }
+                }
+                line_edit::Edit::Cancel => {
+                    p.open = None;
+                    p.time_bad = false;
+                    self.remind_time = None;
+                }
+                line_edit::Edit::Changed => p.time_bad = false,
+                _ => {}
             }
             return;
         }
-        match edit.handle(ks) {
-            line_edit::Edit::Submit | line_edit::Edit::SubmitBack => match sessions_list::parse_when(&edit.text, sessions::now_ms()) {
-                Some(at) => {
-                    self.close_session_menu();
-                    self.session_row_action(session, sessions_list::RowAction::Move(attention::MoveTo::Later(at)), window, cx);
-                }
-                None => self.remind_custom_bad = true,
-            },
-            line_edit::Edit::Cancel => self.remind_custom = None,
-            line_edit::Edit::Changed => self.remind_custom_bad = false,
+        let Some(p) = self.remind_picker.value_mut() else { return };
+        match ks.key.as_str() {
+            "left" => p.move_day(-1, now),
+            "right" => p.move_day(1, now),
+            "up" => p.move_day(-7, now),
+            "down" => p.move_day(7, now),
+            "pageup" => p.turn_month(-1),
+            "pagedown" => p.turn_month(1),
+            "escape" if p.open.is_some() => p.open = None,
+            "escape" => self.close_remind_picker(),
+            "enter" => self.save_remind_picker(window, cx),
             _ => {}
         }
-        cx.stop_propagation();
-        cx.notify();
     }
 
-    /// Whether the window is in the Inbox layout.
-    pub fn is_inbox(&self) -> bool {
-        self.config.layout.name == config::LayoutName::Inbox
-    }
-
-    /// Puts the window in the config's layout. To the Inbox: the Grid's arrangement is kept
-    /// aside and the tabs regrouped. To the Grid: that arrangement comes back, less what closed
-    /// and with what opened meanwhile. What is kept per pane is measured again.
-    pub fn apply_layout(&mut self, cx: &mut Context<Self>) {
-        self.inbox.narrow = tree::is_narrow(self.content.w);
-        if self.is_inbox() {
-            if self.grid_tree.is_none() {
-                self.grid_tree = Some(self.inbox.enter(&mut self.tree));
+    /// Hands each new turn to its page's reminder (`reminder::Reminder::turned`). True when a
+    /// reminder changed.
+    fn take_turns(&mut self) -> bool {
+        let now = sessions::now_ms();
+        let mut changed = false;
+        for session in self.sessions.take_turns() {
+            let Some(page) = self.tree.find_session(session).and_then(|(pane, _)| self.tree.page_of(pane)) else { continue };
+            let Some(r) = self.reminders.get(&page).copied() else { continue };
+            match r.turned(now) {
+                Some(n) if n == r => {}
+                Some(n) => {
+                    self.reminders.insert(page, n);
+                    changed = true;
+                }
+                None => {
+                    self.reminders.remove(&page);
+                    changed = true;
+                }
             }
-            // The Inbox opens on its sessions, the sidebar shown.
-            self.sidebar.inbox_files = false;
-            self.sidebar.set_collapsed(false, Instant::now());
-        } else {
-            let grid = self.grid_tree.take();
-            self.inbox.leave(&mut self.tree, grid);
         }
-        self.grids.clear();
-        self.acknowledge_focused(cx);
-        self.save(cx);
-        cx.notify();
+        changed
     }
 
-    /// Holds the Inbox's shape after whatever changed the tree (a terminal opened beside the
-    /// files, a file among the sessions, a split): called as each frame begins, so nothing is
-    /// ever drawn out of place. True when something moved.
-    fn keep_inbox_shape(&mut self, cx: &mut Context<Self>) -> bool {
-        self.inbox.narrow = tree::is_narrow(self.content.w);
-        if !self.is_inbox() || !self.inbox.keep_shape(&mut self.tree) {
+    /// Whether a reminder's time has come since this was last asked, at `now`: true once for
+    /// each, so the window repaints as its session comes up.
+    pub fn reminder_came(&mut self, now: u64) -> bool {
+        let since = std::mem::replace(&mut self.reminders_checked, now);
+        self.reminders.values().any(|r| r.up.is_none() && r.at <= now && r.at > since)
+    }
+
+    /// The user looked at the page shown, the window in front: a reminder up there is done, or
+    /// waits for its next time (`reminder::Reminder::looked`). True when it changed.
+    fn look_at_page(&mut self) -> bool {
+        if !self.window_active {
             return false;
         }
-        self.grids.clear();
-        self.save(cx);
-        true
+        let page = self.tree.page;
+        let Some(r) = self.reminders.get(&page).copied() else { return false };
+        match r.looked(sessions::now_ms()) {
+            Some(n) if n == r => false,
+            Some(n) => {
+                self.reminders.insert(page, n);
+                true
+            }
+            None => {
+                self.reminders.remove(&page);
+                true
+            }
+        }
     }
 
-    /// Closes every tab of the side that belongs to the session whose terminal tab is `owner`:
-    /// a session's tabs exist only within it, so they go when it does. Each closes as Cmd+W
-    /// closes it (a file's edits are saved first), and a tab that will not close (its file
-    /// changed on disk) stops this and is why the session stays: false then.
-    fn close_side_of(&mut self, owner: TabId, cx: &mut Context<Self>) -> bool {
-        let shown = self.inbox.shown;
-        self.inbox.swap(&mut self.tree, Some(owner));
-        let closed_all = loop {
-            let Some((sessions, _)) = self.tree.inbox_panes() else { break true };
-            let Some(pane) = self.tree.panes().into_iter().find(|p| *p != sessions) else { break true };
-            let before = self.tree.tabs().len();
-            self.close_tab(pane, 0, cx);
-            if self.tree.tabs().len() == before {
-                break false;
+    /// Starts a new session (sessions hold grids spec, section 1): a page of its own with a fresh
+    /// terminal, shown.
+    pub fn new_session(&mut self, cx: &mut Context<Self>) {
+        let pane = self.tree.blank_page();
+        self.held = None;
+        self.new_terminal_tab(pane, cx);
+        self.focus_pane(pane, cx);
+    }
+
+    /// The row a page has in the list now, as `sessions_list::entries` makes it.
+    pub fn page_row(&self, page: tree::PageKey) -> Option<sessions_list::Entry> {
+        sessions_list::entries(self, sessions::now_ms()).into_iter().find(|e| e.ended.is_none() && e.page == page)
+    }
+
+    /// Shows a row's page (sessions hold grids spec, section 2): focused on its lead terminal
+    /// when that one calls for the user, else as the user left it.
+    pub fn show_row(&mut self, page: tree::PageKey, cx: &mut Context<Self>) {
+        let lead = self.page_row(page).filter(|e| e.attention.calls()).and_then(|e| self.tree.find_session(e.session));
+        if !self.tree.show_page(page) {
+            return;
+        }
+        match lead {
+            Some((pane, idx)) => {
+                self.activate_tab(pane, idx, cx);
+                self.focus_pane(pane, cx);
             }
-        };
-        self.inbox.swap(&mut self.tree, shown);
+            None => {
+                let pane = self.tree.focused;
+                self.focus_pane(pane, cx);
+            }
+        }
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// The page to show when `page`, shown, goes: the row listed after it, else the one before.
+    fn row_beside(&self, page: tree::PageKey) -> Option<tree::PageKey> {
+        let rows: Vec<tree::PageKey> = sessions_list::grouped(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held)).into_iter().flat_map(|(_, rows)| rows).filter(|e| e.ended.is_none()).map(|e| e.page).collect();
+        let at = rows.iter().position(|p| *p == page)?;
+        rows.get(at + 1).or_else(|| at.checked_sub(1).and_then(|i| rows.get(i))).copied()
+    }
+
+    /// Closes every other tab of the page holding terminal tab `id` when it is that page's last
+    /// terminal: a session's tabs go with it. Each closes as Cmd+W closes it (a file's edits
+    /// are saved first), and a tab that will not close stops this and is why the terminal stays:
+    /// false then.
+    fn close_rest_of_page(&mut self, id: TabId, cx: &mut Context<Self>) -> bool {
+        let Some(page) = self.tree.locate(id).and_then(|(pane, _)| self.tree.page_of(pane)) else { return true };
+        let tabs: Vec<(TabId, bool)> = self.tree.page_tabs(page).into_iter().filter_map(|(pane, idx, tab)| Some((self.tree.tab_id(pane, idx)?, matches!(tab, Tab::Terminal { .. })))).collect();
+        if tabs.iter().any(|(t, term)| *term && *t != id) {
+            return true;
+        }
+        let shown = self.tree.page;
+        self.tree.show_page_for(page);
+        let mut closed_all = true;
+        for (tab, _) in tabs.into_iter().filter(|(t, _)| *t != id) {
+            let Some((pane, idx)) = self.tree.locate(tab) else { continue };
+            self.close_tab(pane, idx, cx);
+            if self.tree.locate(tab).is_some() {
+                closed_all = false;
+                break;
+            }
+        }
+        self.tree.show_page_for(shown);
         closed_all
+    }
+
+    /// Lets a page that has lost every tab go: a kept one at once, the one shown for the row
+    /// beside it (`next`, found before it emptied), unless it is the window's only page, which
+    /// stays as the empty screen.
+    fn settle_page(&mut self, page: tree::PageKey, next: Option<tree::PageKey>, cx: &mut Context<Self>) {
+        if !self.tree.page_tabs(page).is_empty() || self.tree.page_keys().len() < 2 {
+            return;
+        }
+        let next = next.filter(|n| *n != page && self.tree.page_keys().contains(n)).or_else(|| self.tree.page_keys().into_iter().find(|k| *k != page));
+        self.tree.close_page(page, next);
+        self.reminders.remove(&page);
+        if self.held.is_some_and(|h| h.0 == page) {
+            self.held = None;
+        }
+        self.grids.clear();
+        let focused = self.tree.focused;
+        self.focus_pane(focused, cx);
+    }
+
+    /// Ends a row's session: each of its terminals closes as Cmd+W closes it, the last taking the
+    /// page's other tabs with it.
+    fn end_page(&mut self, page: tree::PageKey, cx: &mut Context<Self>) {
+        let terms: Vec<TabId> = self.tree.page_tabs(page).into_iter().filter(|(_, _, t)| matches!(t, Tab::Terminal { .. })).filter_map(|(pane, idx, _)| self.tree.tab_id(pane, idx)).collect();
+        for tab in terms {
+            let Some((pane, idx)) = self.tree.locate(tab) else { continue };
+            self.close_tab(pane, idx, cx);
+            if self.tree.locate(tab).is_some() {
+                break;
+            }
+        }
     }
 
     /// Goes to the next session that is the user's move: a blocked one first, then an unread
     /// one, then one looked at and not answered. A notice says so when there is none.
     pub fn next_calling_session(&mut self, cx: &mut Context<Self>) {
         let groups = sessions_list::grouped(sessions_list::entries(self, sessions::now_ms()));
-        match sessions_list::next_calling(&groups, self.focused_session()) {
-            Some(session) => self.show_session(session, cx),
+        match sessions_list::next_calling(&groups, Some(self.tree.page)) {
+            Some(page) => self.show_row(page, cx),
             None => self.show_notice("no session needs you".to_string(), cx),
         }
     }
 
-    /// What a session row's menu does (`sessions_list::menu_items`).
-    pub fn session_row_action(&mut self, session: SessionId, action: sessions_list::RowAction, window: &mut Window, cx: &mut Context<Self>) {
+    /// What a session row's menu does (`sessions_list::menu_items`), for the row of `page`.
+    pub fn session_row_action(&mut self, page: tree::PageKey, action: sessions_list::RowAction, window: &mut Window, cx: &mut Context<Self>) {
         use sessions_list::RowAction;
-        let now = sessions::now_ms();
         // What the user says of a session is shown at once, wherever the row was held.
-        if self.held.is_some_and(|h| h.0 == session) {
+        if self.held.is_some_and(|h| h.0 == page) {
             self.held = None;
         }
+        let terms: Vec<SessionId> = self.tree.page_tabs(page).into_iter().filter_map(|(_, _, t)| if let Tab::Terminal { session, .. } = t { Some(*session) } else { None }).collect();
+        let lead = self.page_row(page).map(|e| e.session);
         match action {
-            RowAction::Seen(seen) => self.sessions.set_seen(session, seen),
-            RowAction::Done(done) => self.sessions.set_done(session, done),
-            RowAction::LaterFor(ms) => self.sessions.set_later(session, Some(now + ms)),
-            RowAction::LaterTomorrow => self.sessions.set_later(session, Some(sessions_list::tomorrow_at_nine(now))),
-            RowAction::BackToList => self.sessions.set_later(session, None),
             RowAction::Rename => {
-                if let Some((pane, idx)) = self.tree.find_session(session) {
+                // The original terminal: the oldest on the page.
+                let first = self.tree.page_tabs(page).into_iter().filter(|(_, _, t)| matches!(t, Tab::Terminal { .. })).min_by_key(|(pane, idx, _)| self.tree.tab_id(*pane, *idx));
+                if let Some((pane, idx, _)) = first {
                     self.activate_tab(pane, idx, cx);
                     self.begin_tab_rename(pane, idx, window, cx);
                 }
             }
-            RowAction::End => {
-                if let Some((pane, idx)) = self.tree.find_session(session) {
-                    self.close_tab(pane, idx, cx);
+            RowAction::End => self.end_page(page, cx),
+            RowAction::Move(to) => {
+                // Unread marks the lead alone, which a look then clears; every other section
+                // takes every terminal there. A move ends the reminder.
+                self.reminders.remove(&page);
+                match to {
+                    attention::MoveTo::To(attention::Attention::Unread) => {
+                        if let Some(s) = lead {
+                            self.sessions.move_to(s, to);
+                        }
+                    }
+                    _ => {
+                        for s in terms {
+                            self.sessions.move_to(s, to);
+                        }
+                    }
                 }
             }
-            RowAction::Move(to) => self.sessions.move_to(session, to),
+            RowAction::Remind(at, repeat) => {
+                self.reminders.insert(page, reminder::Reminder::new(at, repeat));
+                // Put off: whatever the user had moved it to or marked gives way.
+                for s in terms {
+                    self.sessions.put_off(s);
+                }
+            }
             RowAction::Resume(i) => self.resume_ended(i, cx),
             RowAction::Forget(i) => {
                 if i < self.ended.len() {
@@ -2375,10 +2557,10 @@ impl Root {
         self.sessions.shown = if self.window_active { self.focused_session() } else { None };
         // A held session that has moved on (it works, it needs the user, it is put away) is
         // listed where it now stands.
-        if let Some((s, _)) = self.held {
-            let now = self.sessions.attention_of(s, sessions::now_ms());
-            if !matches!(now, attention::Attention::Unread | attention::Attention::Unanswered) || self.tree.find_session(s).is_none() {
-                self.held = None;
+        if let Some((page, _)) = self.held {
+            match self.page_row(page) {
+                Some(e) if sessions_list::is_held(e.attention) => {}
+                _ => self.held = None,
             }
         }
     }
@@ -2413,9 +2595,11 @@ impl Root {
     /// on disk, or whose write failed, stays open with its banner.
     pub fn close_tab(&mut self, pane: PaneId, idx: usize, cx: &mut Context<Self>) {
         let Some(id) = self.tree.tab_id(pane, idx) else { return };
-        // In the Inbox a session's tabs go with it.
+        // A session's tabs go with its last terminal, and its page with them.
+        let page = self.tree.page_of(pane);
+        let next = page.filter(|p| *p == self.tree.page).and_then(|p| self.row_beside(p));
         let is_session = matches!(self.tree.pane(pane).and_then(|p| p.tabs.get(idx)), Some(Tab::Terminal { .. }));
-        if self.is_inbox() && is_session && !self.close_side_of(id, cx) {
+        if is_session && !self.close_rest_of_page(id, cx) {
             return;
         }
         // Closing them may have closed a pane: the session's tab is found again.
@@ -2475,6 +2659,9 @@ impl Root {
                     self.sessions.detach(session);
                     self.sessions.tab_closed(id);
                     self.close_emptied_pane(pane);
+                    if let Some(page) = page {
+                        self.settle_page(page, next, cx);
+                    }
                     self.save(cx);
                     cx.notify();
                     return;
@@ -2504,6 +2691,9 @@ impl Root {
             }
         }
         self.close_emptied_pane(pane);
+        if let Some(page) = page {
+            self.settle_page(page, next, cx);
+        }
         self.save(cx);
         cx.notify();
     }
@@ -2825,11 +3015,6 @@ impl Root {
     /// False when nothing changed.
     fn place_tab(&mut self, tab: TabId, target: drag::DropTarget) -> bool {
         let Some((source, idx)) = self.tree.locate(tab) else { return false };
-        if let Some(side) = self.inbox_edge(target) {
-            // The side's tab shown where it is, and the whole side to that edge of the sessions.
-            self.tree.activate(source, idx);
-            return self.inbox.drag_to(&mut self.tree, side);
-        }
         match target {
             drag::DropTarget::TabBar { pane, at } => {
                 // Back onto its own place, `move_tab` changes nothing.
@@ -2864,35 +3049,16 @@ impl Root {
         true
     }
 
-    /// In the Inbox, the edge of the sessions pane a drop aims at (Inbox stacking spec, section
-    /// 3): whatever of the side is dropped there takes the whole side with it.
-    fn inbox_edge(&self, target: drag::DropTarget) -> Option<Side> {
-        let drag::DropTarget::Pane { pane, zone } = target else { return None };
-        let sessions = self.tree.inbox_panes().map(|(s, _)| s).filter(|_| self.is_inbox())?;
-        (pane == sessions).then_some(())?;
-        match zone {
-            drag::Zone::Left => Some(Side::Left),
-            drag::Zone::Right => Some(Side::Right),
-            drag::Zone::Top => Some(Side::Top),
-            drag::Zone::Bottom => Some(Side::Bottom),
-            drag::Zone::Center => None,
-        }
-    }
-
     /// Moves pane `source` whole, dragged by its number (Inbox stacking spec, section 3): to an
-    /// edge of another pane, or its tabs into another pane's middle or tab bar. In the Inbox an
-    /// edge of the sessions pane takes the whole side there. False when nothing changed.
+    /// edge of another pane, or its tabs into another pane's middle or tab bar, the session's
+    /// original pane as any other. False when nothing changed.
     fn place_pane(&mut self, source: PaneId, target: drag::DropTarget) -> bool {
         if self.tree.pane(source).is_none() {
             return false;
         }
-        if let Some(side) = self.inbox_edge(target) {
-            return self.inbox.drag_to(&mut self.tree, side);
-        }
-        let sessions = self.tree.inbox_panes().map(|(s, _)| s).filter(|_| self.is_inbox());
         match target {
-            drag::DropTarget::TabBar { pane, at } => Some(pane) != sessions && self.tree.merge_pane(source, pane, Some(at)),
-            drag::DropTarget::Pane { pane, zone: drag::Zone::Center } => Some(pane) != sessions && self.tree.merge_pane(source, pane, None),
+            drag::DropTarget::TabBar { pane, at } => self.tree.merge_pane(source, pane, Some(at)),
+            drag::DropTarget::Pane { pane, zone: drag::Zone::Center } => self.tree.merge_pane(source, pane, None),
             drag::DropTarget::Pane { pane, zone } => {
                 let side = match zone {
                     drag::Zone::Left => Side::Left,
@@ -3794,7 +3960,7 @@ impl Root {
     fn chrome_state(&self, cx: &App) -> idle::Chrome {
         idle::Chrome {
             palette: self.palette.value().is_some(),
-            menu: self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.session_menu.value().is_some() || self.link_menu.value().is_some() || self.md_menu.value().is_some() || self.view_menu.value().is_some() || self.popover.value().is_some(),
+            menu: self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.session_menu.value().is_some() || self.remind_picker.value().is_some() || self.link_menu.value().is_some() || self.md_menu.value().is_some() || self.view_menu.value().is_some() || self.popover.value().is_some(),
             prompt: self.url_prompt.value().is_some(),
             find: self.active_terminal(cx).is_some_and(|t| t.read(cx).find.is_some()) || self.active_viewer().is_some_and(|v| v.read(cx).find.is_some()),
             drag: self.drop_target.is_some() || self.resizing.is_some() || self.sidebar_resizing,
@@ -3925,7 +4091,8 @@ impl Root {
         if self.sessions.route_events(events, cx) {
             cx.notify();
         }
-        if self.sessions.take_marks_changed() {
+        let turned = self.take_turns();
+        if self.sessions.take_marks_changed() || turned {
             self.save(cx);
         }
         // A Claude Code the probe found silent has reported since: its row clears without one.
@@ -4448,6 +4615,7 @@ impl Root {
             || self.link_menu.value().is_some()
             || self.md_menu.value().is_some()
             || self.wt_menu.value().is_some() || self.session_menu.value().is_some()
+            || self.remind_picker.value().is_some()
             || self.drop_target.is_some()
             || self.reorder.is_some()
             || self.picking_folder
@@ -4835,7 +5003,6 @@ impl Render for Root {
         self.effect_shapes.clear();
         self.effect_menus.clear();
         self.window_active = window.is_window_active();
-        self.keep_inbox_shape(cx);
         self.sync_shown();
         // The Dock icon says how many sessions call for the user.
         let calling = sessions_list::calling(&sessions_list::grouped(sessions_list::entries(self, sessions::now_ms())));
@@ -4949,9 +5116,9 @@ impl Render for Root {
             Some(self.url_prompt_focus.clone())
         } else if self.tab_rename.is_some() {
             Some(self.tab_rename_focus.clone())
-        } else if self.remind_custom.is_some() && self.session_menu.value().is_some() {
+        } else if self.remind_picker.value().is_some() {
             Some(self.remind_focus.clone())
-        } else if self.session_filter_focused && self.is_inbox() {
+        } else if self.session_filter_focused {
             Some(self.session_filter_focus.clone())
         } else if self.wt_focused {
             Some(self.wt_focus.clone())
@@ -5157,7 +5324,8 @@ impl Render for Root {
             .children(lang_menu::render_lang_menu(self, cx))
             .children(self.render_popover(window, cx))
             .children(sidebar::render_worktree_menu(self, cx))
-            .children(sessions_list::render_menu(self, cx));
+            .children(sessions_list::render_menu(self, cx))
+            .children(remind_picker::render(self, cx));
         // One request per frame while anything eases; an idle window asks for none.
         if self.any_motion(now) {
             window.request_animation_frame();
@@ -5940,8 +6108,10 @@ fn open_project_window(
             cx.background_executor().timer(KILL_RETRY).await;
             let alive = retry_root.update(cx, |root, cx| {
                 root.sessions.resend_kills();
-                // A session put off until a time that has come is back in the list: repaint.
-                if root.sessions.later_came(sessions::now_ms()) {
+                // A session new for a while goes quiet, and a reminder whose time has come brings
+                // its session up: repaint.
+                let now = sessions::now_ms();
+                if root.sessions.later_came(now) | root.reminder_came(now) {
                     cx.notify();
                 }
             });

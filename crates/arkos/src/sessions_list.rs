@@ -1,12 +1,13 @@
 //! The window's sessions as a list sorted by what they ask of the user (layouts spec, "The
 //! session list"): the Inbox's sidebar (the Grid's has none since 2026-11-14). The
 //! grouping, the menu's items and the times are pure and tested; the rows read the root.
-use crate::attention::{self, Attention, MoveTo};
+use crate::attention::{self, Attention};
 use crate::effects::blocks;
 use crate::motion;
 use crate::pane_view::TabMark;
 use crate::sessions::now_ms;
-use crate::tree::{PaneId, Tab};
+use crate::reminder::{self, Reminder};
+use crate::tree::{PageKey, PaneId, Tab, TabId};
 use crate::Root;
 use gpui::{div, prelude::*, px, ClickEvent, Context, Div, MouseButton, MouseDownEvent, Stateful};
 use protocol::SessionId;
@@ -64,27 +65,35 @@ pub fn resume_line(argv: &[String]) -> Vec<u8> {
     line.into_bytes()
 }
 
-/// Which row a menu or a click is for: a session the window shows, or a closed one kept for
-/// resuming, by its place in the kept list.
+/// Which row a menu or a click is for: a session of the window, by its page, or a closed one
+/// kept for resuming, by its place in the kept list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowKey {
-    Live(SessionId),
+    Live(PageKey),
     Ended(usize),
 }
 
-/// One session of the window as the list shows it.
+/// One session of the window as the list shows it: a page and its terminals (sessions hold
+/// grids spec, section 2), or a closed Claude Code session kept for resuming.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
     /// A closed session kept for resuming, by its place in the kept list; None for a session
     /// the window shows.
     pub ended: Option<usize>,
+    /// The page; 0 for a closed session.
+    pub page: PageKey,
+    /// The lead terminal's session: the one that decides where the row is listed.
     pub session: SessionId,
     pub pane: PaneId,
     pub idx: usize,
-    /// The tab's name: the user's own for it, else its program's title.
+    /// The original terminal's name: the user's own for it, else its program's title.
     pub name: String,
-    /// What its agent asks or last said; for a session with nothing said, its folder.
+    /// What the lead's agent asks or last said; for a session with nothing said, its folder.
     pub line: String,
+    /// Every terminal's name, for the filter.
+    pub names: Vec<String>,
+    /// How many terminals the page holds.
+    pub count: usize,
     pub attention: Attention,
     /// The group it is listed under: its attention, except for the session the user has just
     /// chosen, which stays among the unread until they choose another (`hold`).
@@ -92,8 +101,59 @@ pub struct Entry {
     pub alive: bool,
     /// When its state last changed, in milliseconds since the Unix epoch; 0, unknown.
     pub since: u64,
-    /// The time it is put off until, while it is.
-    pub later_until: Option<u64>,
+    /// While its reminder is pending, the time it comes up.
+    pub scheduled_until: Option<u64>,
+    /// Its reminder repeats.
+    pub repeats: bool,
+    /// Its reminder's time came and the user has not looked: the row is labelled.
+    pub reminded: bool,
+}
+
+/// One terminal of a page, as `page_entry` reads it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Term {
+    pub session: SessionId,
+    pub tab: TabId,
+    pub pane: PaneId,
+    pub idx: usize,
+    pub name: String,
+    pub line: String,
+    pub attention: Attention,
+    pub alive: bool,
+    pub since: u64,
+}
+
+/// A page's row from its terminals (sessions hold grids spec, section 2): listed by the most
+/// urgent of them (the lead; among equals the one `focused` in the page, else the oldest),
+/// named for the oldest (the original), with the lead's line, under its reminder when it has
+/// one. None for a page with no terminal.
+pub fn page_entry(page: PageKey, mut terms: Vec<Term>, focused: Option<SessionId>, reminder: Option<&Reminder>, now: u64) -> Option<Entry> {
+    terms.sort_by_key(|t| t.tab);
+    let original = terms.first()?.clone();
+    let lead = terms.iter().min_by_key(|t| (t.attention, Some(t.session) != focused, t.tab))?.clone();
+    let (attention, reminded) = match reminder {
+        Some(r) => r.listed(lead.attention, now),
+        None => (lead.attention, false),
+    };
+    let pending = reminder.filter(|r| r.state(now) == reminder::State::Pending);
+    Some(Entry {
+        ended: None,
+        page,
+        session: lead.session,
+        pane: lead.pane,
+        idx: lead.idx,
+        name: original.name,
+        line: lead.line,
+        names: terms.iter().map(|t| t.name.clone()).collect(),
+        count: terms.len(),
+        attention,
+        group: attention,
+        alive: terms.iter().any(|t| t.alive),
+        since: terms.iter().map(|t| t.since).max().unwrap_or(0),
+        scheduled_until: pending.map(|r| r.at),
+        repeats: reminder.is_some_and(|r| r.repeat != reminder::Repeat::Never),
+        reminded,
+    })
 }
 
 /// The entries under their groups, in `Attention::ALL`'s order, a group with nothing in it left
@@ -114,14 +174,21 @@ pub fn grouped(entries: Vec<Entry>) -> Vec<(Attention, Vec<Entry>)> {
 
 /// The entries with the session the user chose (`held`, and where it stood then) listed where
 /// it stood: one that was unread stays under Unread, read, until another is chosen, so the row
-/// clicked does not move from under the pointer.
-pub fn hold(mut entries: Vec<Entry>, held: Option<(SessionId, Attention)>) -> Vec<Entry> {
-    if let Some((session, Attention::Unread)) = held {
-        for e in entries.iter_mut().filter(|e| e.ended.is_none() && e.session == session && e.attention == Attention::Unanswered) {
+/// clicked does not move from under the pointer; a reminder looked at that goes back to wait
+/// for its next time included. One that has moved on (it works, it needs the user, it is done)
+/// is listed where it now stands.
+pub fn hold(mut entries: Vec<Entry>, held: Option<(PageKey, Attention)>) -> Vec<Entry> {
+    if let Some((page, Attention::Unread)) = held {
+        for e in entries.iter_mut().filter(|e| e.ended.is_none() && e.page == page && is_held(e.attention)) {
             e.group = Attention::Unread;
         }
     }
     entries
+}
+
+/// Whether a row held among the unread still stays there, standing where it now does.
+pub fn is_held(now: Attention) -> bool {
+    matches!(now, Attention::Unread | Attention::Unanswered | Attention::New | Attention::Quiet | Attention::Scheduled)
 }
 
 /// What a terminal's title says that its name does not, for a row's second line: Claude Code
@@ -142,7 +209,7 @@ pub fn matching(entries: Vec<Entry>, query: &str) -> Vec<Entry> {
     entries
         .into_iter()
         .filter(|e| {
-            let text = format!("{} {}", e.name, e.line).to_lowercase();
+            let text = format!("{} {} {}", e.name, e.line, e.names.join(" ")).to_lowercase();
             words.iter().all(|w| text.contains(w.as_str()))
         })
         .collect()
@@ -151,9 +218,9 @@ pub fn matching(entries: Vec<Entry>, query: &str) -> Vec<Entry> {
 /// The session to go to for "the next session that needs you": the first of Needs you, then of
 /// Unread, then of Unanswered that is not `current`, and `current` itself when it is the only
 /// one. None when no session is the user's move.
-pub fn next_calling(groups: &[(Attention, Vec<Entry>)], current: Option<SessionId>) -> Option<SessionId> {
+pub fn next_calling(groups: &[(Attention, Vec<Entry>)], current: Option<PageKey>) -> Option<PageKey> {
     let mine = |kind: &Attention| matches!(kind, Attention::NeedsYou | Attention::Unread | Attention::Unanswered);
-    let all: Vec<SessionId> = groups.iter().filter(|(kind, _)| mine(kind)).flat_map(|(_, rows)| rows.iter().map(|e| e.session)).collect();
+    let all: Vec<PageKey> = groups.iter().filter(|(kind, _)| mine(kind)).flat_map(|(_, rows)| rows.iter().filter(|e| e.ended.is_none()).map(|e| e.page)).collect();
     all.iter().copied().find(|s| Some(*s) != current).or(all.first().copied())
 }
 
@@ -182,12 +249,6 @@ pub fn is_folded(folded: &Folded, kind: Attention, filtering: bool) -> bool {
 /// What a row's right-click menu does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowAction {
-    Seen(bool),
-    Done(bool),
-    /// Put off for this many milliseconds, or until tomorrow at nine.
-    LaterFor(u64),
-    LaterTomorrow,
-    BackToList,
     Rename,
     End,
     /// A closed session: start it again, or forget it.
@@ -195,6 +256,8 @@ pub enum RowAction {
     Forget(usize),
     /// To another section, from "Move to".
     Move(crate::attention::MoveTo),
+    /// A reminder at this time, with this repeat, from "Remind me in".
+    Remind(u64, reminder::Repeat),
 }
 
 /// A row of a session's menu: something it does, or "Move to", which opens the sections the
@@ -295,104 +358,60 @@ pub fn remind_options(now: u64) -> Vec<(&'static str, &'static str, u64)> {
     ]
 }
 
-/// What "Custom" reads as a time from `now`: a span ("45m", "2h", "3d", "1w", spelled out or
-/// not), a clock time ("14:30", "9:15am", "2pm") that is the next one to come, today or
-/// tomorrow, or "tomorrow" (at nine). None for anything else, or nothing at all.
-pub fn parse_when(text: &str, now: u64) -> Option<u64> {
-    let t = text.trim().to_lowercase();
-    if t == "tomorrow" {
-        return Some(tomorrow_at_nine(now));
-    }
-    let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
-    let rest = t[digits.len()..].trim();
-    if let (Ok(n), false) = (digits.parse::<u64>(), digits.is_empty()) {
-        let unit = match rest {
-            "m" | "min" | "mins" | "minute" | "minutes" => Some(60_000),
-            "h" | "hr" | "hrs" | "hour" | "hours" => Some(3_600_000),
-            "d" | "day" | "days" => Some(24 * 3_600_000),
-            "w" | "wk" | "week" | "weeks" => Some(7 * 24 * 3_600_000),
-            _ => None,
-        };
-        if let Some(unit) = unit.filter(|_| n > 0) {
-            return Some(now + n * unit);
-        }
-    }
-    // A clock time: h, h:mm, either with am or pm.
-    let (clock, half) = match t.strip_suffix("am").or_else(|| t.strip_suffix("a.m.")) {
-        Some(c) => (c.trim(), Some(false)),
-        None => match t.strip_suffix("pm").or_else(|| t.strip_suffix("p.m.")) {
-            Some(c) => (c.trim(), Some(true)),
-            None => (t.as_str(), None),
-        },
-    };
-    let (h, m) = match clock.split_once(':') {
-        Some((h, m)) if m.len() == 2 => (h.parse::<i32>().ok()?, m.parse::<i32>().ok()?),
-        None if half.is_some() => (clock.parse::<i32>().ok()?, 0),
-        _ => return None,
-    };
-    let hour = match half {
-        Some(pm) if (1..=12).contains(&h) => (h % 12) + if pm { 12 } else { 0 },
-        None if (0..=23).contains(&h) => h,
-        _ => return None,
-    };
-    if !(0..=59).contains(&m) {
-        return None;
-    }
-    match local_at(now, 0, hour, m) {
-        Some((at, _)) if at > now => Some(at),
-        _ => local_at(now, 1, hour, m).map(|(at, _)| at),
-    }
-}
-
-/// The window's sessions, one entry for each terminal tab, in the tabs' own order.
+/// The window's sessions: one entry for each page with a terminal, in the order the pages were
+/// made, then the closed ones kept for resuming.
 pub fn entries(root: &Root, now: u64) -> Vec<Entry> {
-    root.tree
-        .tabs()
-        .into_iter()
-        .filter_map(|(pane, idx, tab)| {
-            let Tab::Terminal { session, cwd } = tab else { return None };
-            let label = root.sessions.labels.get(session);
-            let named = root.tree.tab_id(pane, idx).and_then(|id| root.tree.tab_name(id)).map(str::to_string);
-            let name = named.or_else(|| label.map(|l| l.title.clone()).filter(|t| !t.is_empty())).unwrap_or_else(|| root.shell_name.clone());
-            let folder = || {
-                let dir = cwd.as_deref().unwrap_or(&root.project);
-                dir.file_name().map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().into_owned())
-            };
-            let marks = root.sessions.marks.get(session).copied().unwrap_or_default();
-            let line = root
-                .sessions
-                .note_of(*session)
-                .map(str::to_string)
-                .or_else(|| label.and_then(|l| title_line(&l.title, &name, &root.shell_name)))
-                .unwrap_or_else(|| format!("in {}", folder()));
-            Some(Entry {
-                ended: None,
-                session: *session,
-                pane,
-                idx,
-                name,
-                line,
-                attention: root.sessions.attention_of(*session, now),
-                group: root.sessions.attention_of(*session, now),
-                alive: label.is_none_or(|l| l.alive),
-                since: marks.since,
-                later_until: marks.later_until,
+    let tree = &root.tree;
+    let mut out = Vec::new();
+    for page in tree.page_keys() {
+        let terms: Vec<Term> = tree
+            .page_tabs(page)
+            .into_iter()
+            .filter_map(|(pane, idx, tab)| {
+                let Tab::Terminal { session, cwd } = tab else { return None };
+                let id = tree.tab_id(pane, idx)?;
+                let label = root.sessions.labels.get(session);
+                let named = tree.tab_name(id).map(str::to_string);
+                let name = named.or_else(|| label.map(|l| l.title.clone()).filter(|t| !t.is_empty())).unwrap_or_else(|| root.shell_name.clone());
+                let folder = || {
+                    let dir = cwd.as_deref().unwrap_or(&root.project);
+                    dir.file_name().map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().into_owned())
+                };
+                let marks = root.sessions.marks.get(session).copied().unwrap_or_default();
+                let line = root
+                    .sessions
+                    .note_of(*session)
+                    .map(str::to_string)
+                    .or_else(|| label.and_then(|l| title_line(&l.title, &name, &root.shell_name)))
+                    .unwrap_or_else(|| format!("in {}", folder()));
+                Some(Term { session: *session, tab: id, pane, idx, name, line, attention: root.sessions.attention_of(*session, now), alive: label.is_none_or(|l| l.alive), since: marks.since })
             })
-        })
-        .chain(root.ended.iter().enumerate().map(|(i, e)| Entry {
-            ended: Some(i),
-            session: SessionId(e.session),
-            pane: 0,
-            idx: 0,
-            name: e.name.clone(),
-            line: e.line.clone(),
-            attention: Attention::Done,
-            group: Attention::Done,
-            alive: false,
-            since: e.ended,
-            later_until: None,
-        }))
-        .collect()
+            .collect();
+        let focused = tree.page_focused(page).and_then(|p| tree.pane(p)).and_then(|p| match p.tabs.get(p.active) {
+            Some(Tab::Terminal { session, .. }) => Some(*session),
+            _ => None,
+        });
+        out.extend(page_entry(page, terms, focused, root.reminders.get(&page), now));
+    }
+    out.extend(root.ended.iter().enumerate().map(|(i, e)| Entry {
+        ended: Some(i),
+        page: 0,
+        session: SessionId(e.session),
+        pane: 0,
+        idx: 0,
+        name: e.name.clone(),
+        line: e.line.clone(),
+        names: Vec::new(),
+        count: 1,
+        attention: Attention::Done,
+        group: Attention::Done,
+        alive: false,
+        since: e.ended,
+        scheduled_until: None,
+        repeats: false,
+        reminded: false,
+    }));
+    out
 }
 
 /// The list's rows under their groups. `width` is the list's own, for the lines' ellipses.
@@ -403,13 +422,13 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
     let theme = root.theme.clone();
     let c = &theme.chrome;
     let now = now_ms();
-    // The Inbox's filter narrows the list, and opens Done so a closed session can be found.
-    let query = if root.is_inbox() { root.session_filter.text.clone() } else { String::new() };
+    // The filter narrows the list, and opens Done so a closed session can be found.
+    let query = root.session_filter.text.clone();
     let filtering = !query.trim().is_empty();
     let groups = grouped(matching(hold(entries(root, now), root.held), &query));
     let weak = cx.weak_entity();
     let (highlights, hovered) = (root.effect_highlights(), root.effect_hover);
-    let shown = root.focused_session();
+    let shown = root.tree.page;
     let breath = root.breath.alpha(root.frame_now, motion::reduce_motion());
     let (selected_bg, hover_bg, dim) = (c.tab_active.hsla(), c.tab_inactive.hsla(), c.text_dim.hsla());
 
@@ -449,28 +468,32 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
             let mark = TabMark::of(e.attention, e.alive);
             let bold = e.attention.calls();
             let muted = e.attention == Attention::Done;
-            let when = match (e.attention, e.later_until) {
-                (Attention::Later, Some(until)) => until_text(until, now),
-                _ => attention::age(e.since, now),
+            // A reminder up says so in place of the age; one pending says when it comes, with a
+            // repeat's arrow; a page of several sessions says how many.
+            let when = match e.scheduled_until {
+                Some(until) => format!("{}{}", if e.repeats { "\u{21bb} " } else { "" }, until_text(until, now)),
+                None => attention::age(e.since, now),
             };
+            let when = if e.count > 1 { format!("{} sessions{}{}", e.count, if when.is_empty() { "" } else { " \u{b7} " }, when) } else { when };
+            let reminded = e.reminded;
             let key = match e.ended {
                 Some(i) => RowKey::Ended(i),
-                None => RowKey::Live(e.session),
+                None => RowKey::Live(e.page),
             };
-            let session = e.session;
+            let page = e.page;
             let name_color = if muted { dim } else { c.text.hsla() };
             let line_color = if bold { c.text.hsla() } else { dim };
             // Under an effect that paints the highlights the row reports a mark, as the
             // Explorer's rows do, and the effect draws it inside its frame; else the app fills it.
             let mark_key = match key {
-                RowKey::Live(s) => MARK_LIVE ^ s.0,
+                RowKey::Live(p) => MARK_LIVE ^ p,
                 RowKey::Ended(i) => MARK_ENDED + i as u64,
             };
-            let is_selected = key == RowKey::Live(session) && shown == Some(session);
+            let is_selected = key == RowKey::Live(page) && shown == page;
             let state = blocks::HighlightState::of(is_selected, hovered == Some(mark_key)).filter(|_| highlights);
             let row = div()
                 .id(match key {
-                    RowKey::Live(s) => ("session-row", s.0 as usize),
+                    RowKey::Live(p) => ("session-row", p as usize),
                     RowKey::Ended(i) => ("ended-row", i),
                 })
                 .relative()
@@ -522,7 +545,8 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
                                 .gap(px(6.0))
                                 .line_height(px(style.ui(18.0)))
                                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(name_color).when(bold, |d| d.font_weight(gpui::FontWeight::BOLD)).child(e.name))
-                                .when(!when.is_empty(), |d| d.child(div().flex_none().text_size(px(style.ui(11.0))).text_color(dim).child(when))),
+                                .when(reminded, |d| d.child(div().flex_none().px(px(5.0)).rounded(px(4.0)).border_1().border_color(c.focus_ring.hsla()).text_size(px(style.ui(10.0))).text_color(c.text.hsla()).child("Reminder")))
+                                .when(!reminded && !when.is_empty(), |d| d.child(div().flex_none().text_size(px(style.ui(11.0))).text_color(dim).child(when))),
                         )
                         // A definite width, as the worktree rows give their second line: gpui
                         // keeps a no-wrap text's first measure, and a long line must end in an
@@ -530,7 +554,7 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
                         .child(div().w(px((width - pad - 26.0).max(0.0))).line_height(px(style.ui(15.0))).overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(style.ui(11.0))).text_color(line_color).child(e.line)),
                 )
                 .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| match key {
-                    RowKey::Live(session) => root.show_session(session, cx),
+                    RowKey::Live(page) => root.show_row(page, cx),
                     RowKey::Ended(i) => root.resume_ended(i, cx),
                 }))
                 .on_mouse_down(
@@ -544,7 +568,6 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
                         root.link_menu.hide(now);
                         root.view_menu.hide(now);
                         root.session_submenu = None;
-                        root.remind_custom = None;
                         root.session_menu.show((key, ev.position), now);
                         cx.notify();
                     }),
@@ -602,21 +625,19 @@ pub fn render_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     let style = root.effect_style();
     let ((key, at), opacity) = root.session_menu.current(root.frame_now).map(|(m, o)| (*m, o))?;
     let now = now_ms();
-    let targets = match key {
-        RowKey::Live(session) => root.sessions.move_targets(session, now),
-        RowKey::Ended(_) => Vec::new(),
+    let row = match key {
+        RowKey::Live(page) => root.page_row(page),
+        RowKey::Ended(_) => None,
     };
+    let targets = row.as_ref().map(|e| attention::row_targets(e.attention, e.alive)).unwrap_or_default();
     let items = match key {
-        RowKey::Live(session) if root.tree.find_session(session).is_some() => {
-            let alive = root.sessions.labels.get(&session).is_none_or(|l| l.alive);
-            menu_items(!targets.is_empty(), alive)
-        }
+        RowKey::Live(_) => row.as_ref().map(|e| menu_items(!targets.is_empty(), e.alive)).unwrap_or_default(),
         RowKey::Ended(i) if i < root.ended.len() => vec![("Resume", MenuEntry::Do(RowAction::Resume(i))), ("Remove from the list", MenuEntry::Do(RowAction::Forget(i)))],
         _ => Vec::new(),
     };
-    let session = match key {
-        RowKey::Live(session) => session,
-        RowKey::Ended(_) => SessionId(0),
+    let page = match key {
+        RowKey::Live(page) => page,
+        RowKey::Ended(_) => 0,
     };
     if items.is_empty() {
         // The session went away: the menu goes too, at once, since nothing is left to draw.
@@ -681,7 +702,6 @@ pub fn render_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
                     // Over a row with a card it opens; over another row it closes.
                     if *over && root.session_submenu != sub {
                         root.session_submenu = sub;
-                        root.remind_custom = None;
                         cx.notify();
                     }
                 }))
@@ -690,7 +710,7 @@ pub fn render_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
                         MenuEntry::MoveTo | MenuEntry::RemindMe => root.session_submenu = sub,
                         MenuEntry::Do(action) => {
                             root.close_session_menu();
-                            root.session_row_action(session, action, window, cx);
+                            root.session_row_action(page, action, window, cx);
                         }
                     }
                     cx.notify();
@@ -704,7 +724,7 @@ pub fn render_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     let mut sub = card(div().absolute().left(anchor.origin.x + anchor.size.width).top(anchor.origin.y - px(4.0)).min_w(px(190.0)))
         .occlude()
         .on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation());
-    let pick = |id: (&'static str, usize), label: &'static str, hint: &'static str, to: MoveTo, cx: &mut Context<Root>| {
+    let pick = |id: (&'static str, usize), label: &'static str, hint: &'static str, action: RowAction, cx: &mut Context<Root>| {
         let key = blocks::menu_row_key(if id.0 == "session-move-row" { 0x15 } else { 0x16 }, id.1);
         crate::chrome::menu_row_hover(
             div()
@@ -725,56 +745,26 @@ pub fn render_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
         )
         .on_click(cx.listener(move |root, _ev: &ClickEvent, window, cx| {
             root.close_session_menu();
-            root.session_row_action(session, RowAction::Move(to), window, cx);
+            root.session_row_action(page, action, window, cx);
             cx.notify();
         }))
     };
     match which {
         Sub::Move => {
             for (i, (label, to)) in targets.into_iter().enumerate() {
-                sub = sub.child(pick(("session-move-row", i), label, "", to, cx));
+                sub = sub.child(pick(("session-move-row", i), label, "", RowAction::Move(to), cx));
             }
         }
         Sub::Remind => {
             for (i, (label, hint, at)) in remind_options(now).into_iter().enumerate() {
-                sub = sub.child(pick(("session-remind-row", i), label, hint, MoveTo::Later(at), cx));
+                sub = sub.child(pick(("session-remind-row", i), label, hint, RowAction::Remind(at, reminder::Repeat::Never), cx));
             }
-            // Custom: a time typed in place, read by `parse_when`.
-            match root.remind_custom.clone() {
-                None => {
-                    let key = blocks::menu_row_key(0x16, 9);
-                    sub = sub.child(
-                        crate::chrome::menu_row_hover(div().id("session-remind-custom").px(px(10.0)).py(px(4.0)).cursor_pointer().child("Custom\u{2026}"), key, hovered == Some(key), effect_rows, hover, cx).on_click(cx.listener(
-                            |root, _ev: &ClickEvent, _window, cx| {
-                                root.remind_custom = Some(crate::line_edit::LineEdit::new());
-                                root.remind_custom_bad = false;
-                                cx.notify();
-                            },
-                        )),
-                    );
-                }
-                Some(edit) => {
-                    let bad = root.remind_custom_bad;
-                    sub = sub.child(
-                        div()
-                            .id("session-remind-field")
-                            .key_context("RemindCustom")
-                            .track_focus(&root.remind_focus)
-                            .mx(px(8.0))
-                            .my(px(2.0))
-                            .h(px(22.0))
-                            .px(px(6.0))
-                            .flex()
-                            .items_center()
-                            .rounded(px(4.0))
-                            .border_1()
-                            .border_color(c.focus_ring.hsla())
-                            .on_key_down(cx.listener(move |root, ev: &gpui::KeyDownEvent, window, cx| root.remind_custom_key(session, &ev.keystroke, window, cx)))
-                            .child(crate::line_edit::render(&edit, "45m, 2h, 3d, 14:30", &root.theme, root.ui_family(), style.ui(12.0))),
-                    );
-                    sub = sub.child(div().px(px(10.0)).pb(px(2.0)).text_size(px(style.ui(11.0))).text_color(c.text_dim.hsla()).child(if bad { "Try 45m, 2h, 3d, 1w, 14:30 or 2pm" } else { "Enter sets it, Escape goes back" }));
-                }
-            }
+            // Custom: the date and time picker, in the menu's place.
+            let key = blocks::menu_row_key(0x16, 9);
+            sub = sub.child(
+                crate::chrome::menu_row_hover(div().id("session-remind-custom").px(px(10.0)).py(px(4.0)).cursor_pointer().child("Custom\u{2026}"), key, hovered == Some(key), effect_rows, hover, cx)
+                    .on_click(cx.listener(move |root, _ev: &ClickEvent, window, cx| root.open_remind_picker(page, window, cx))),
+            );
         }
     }
     out = out.child(sub);
@@ -786,7 +776,40 @@ mod tests {
     use super::*;
 
     fn entry(id: u64, attention: Attention, since: u64) -> Entry {
-        Entry { ended: None, session: SessionId(id), pane: 1, idx: 0, name: format!("s{id}"), line: String::new(), attention, group: attention, alive: true, since, later_until: None }
+        Entry { ended: None, page: id, session: SessionId(id), pane: 1, idx: 0, name: format!("s{id}"), line: String::new(), names: vec![format!("s{id}")], count: 1, attention, group: attention, alive: true, since, scheduled_until: None, repeats: false, reminded: false }
+    }
+
+    fn term(id: u64, tab: TabId, attention: Attention) -> Term {
+        Term { session: SessionId(id), tab, pane: tab, idx: 0, name: format!("t{id}"), line: format!("line {id}"), attention, alive: true, since: id * 10 }
+    }
+
+    #[test]
+    fn a_page_is_one_row_listed_by_its_most_urgent_terminal_and_named_for_its_first() {
+        let e = page_entry(7, vec![term(2, 20, Attention::Working), term(1, 10, Attention::Quiet), term(3, 30, Attention::NeedsYou)], None, None, 0).unwrap();
+        assert_eq!((e.page, e.attention, e.session, e.name.as_str(), e.line.as_str(), e.count), (7, Attention::NeedsYou, SessionId(3), "t1", "line 3", 3));
+        assert_eq!(e.since, 30, "its newest change");
+        assert_eq!(e.names, ["t1", "t2", "t3"]);
+        // Among equals the focused one leads, else the oldest.
+        let two = || vec![term(1, 10, Attention::Unread), term(2, 20, Attention::Unread)];
+        assert_eq!(page_entry(7, two(), Some(SessionId(2)), None, 0).unwrap().session, SessionId(2));
+        assert_eq!(page_entry(7, two(), None, None, 0).unwrap().session, SessionId(1));
+        assert_eq!(page_entry(7, Vec::new(), None, None, 0), None, "a page with no terminal has no row");
+    }
+
+    #[test]
+    fn a_page_s_reminder_lists_it_under_scheduled_and_labels_it_when_it_comes_up() {
+        let r = Reminder::new(100, reminder::Repeat::Daily);
+        let e = page_entry(7, vec![term(1, 10, Attention::Unanswered)], None, Some(&r), 50).unwrap();
+        assert_eq!((e.attention, e.scheduled_until, e.repeats, e.reminded), (Attention::Scheduled, Some(100), true, false));
+        let e = page_entry(7, vec![term(1, 10, Attention::Quiet)], None, Some(&r), 100).unwrap();
+        assert_eq!((e.attention, e.scheduled_until, e.reminded), (Attention::Unread, None, true));
+    }
+
+    #[test]
+    fn the_filter_finds_a_row_by_any_of_its_terminals_names() {
+        let e = page_entry(7, vec![term(1, 10, Attention::Quiet), term(2, 20, Attention::Quiet)], None, None, 0).unwrap();
+        assert_eq!(matching(vec![e.clone()], "t2").len(), 1);
+        assert_eq!(matching(vec![e], "t9").len(), 0);
     }
 
     #[test]
@@ -810,10 +833,14 @@ mod tests {
         let list = vec![entry(1, Attention::Unanswered, 10), entry(2, Attention::Unread, 20), entry(3, Attention::Unanswered, 5)];
         let groups = |held| grouped(hold(list.clone(), held)).into_iter().map(|(k, rows)| (k, rows.iter().map(|e| e.session.0).collect::<Vec<_>>())).collect::<Vec<_>>();
         // Session 1 was unread when chosen: it stays there, read, among the unread.
-        assert_eq!(groups(Some((SessionId(1), Attention::Unread))), vec![(Attention::Unread, vec![2, 1]), (Attention::Unanswered, vec![3])]);
-        assert_eq!(hold(list.clone(), Some((SessionId(1), Attention::Unread)))[0].attention, Attention::Unanswered, "its mark says it was read");
+        assert_eq!(groups(Some((1, Attention::Unread))), vec![(Attention::Unread, vec![2, 1]), (Attention::Unanswered, vec![3])]);
+        assert_eq!(hold(list.clone(), Some((1, Attention::Unread)))[0].attention, Attention::Unanswered, "its mark says it was read");
         // One that was read already, or nothing held: each where it stands.
-        assert_eq!(groups(Some((SessionId(3), Attention::Unanswered))), vec![(Attention::Unread, vec![2]), (Attention::Unanswered, vec![1, 3])]);
+        assert_eq!(groups(Some((3, Attention::Unanswered))), vec![(Attention::Unread, vec![2]), (Attention::Unanswered, vec![1, 3])]);
+        // A reminder looked at, gone back to wait, stays too; one at work does not.
+        let back = vec![entry(1, Attention::Scheduled, 10), entry(2, Attention::Working, 20)];
+        assert_eq!(hold(back.clone(), Some((1, Attention::Unread)))[0].group, Attention::Unread);
+        assert_eq!(hold(back, Some((2, Attention::Unread)))[1].group, Attention::Working);
         assert_eq!(groups(None), vec![(Attention::Unread, vec![2]), (Attention::Unanswered, vec![1, 3])]);
     }
 
@@ -857,11 +884,11 @@ mod tests {
     #[test]
     fn the_next_session_that_needs_you_is_a_block_first_then_the_unread_then_the_unanswered() {
         let groups = grouped(vec![entry(1, Attention::Working, 9), entry(2, Attention::Unanswered, 8), entry(3, Attention::Unread, 7), entry(4, Attention::NeedsYou, 6)]);
-        assert_eq!(next_calling(&groups, None), Some(SessionId(4)));
-        assert_eq!(next_calling(&groups, Some(SessionId(4))), Some(SessionId(3)), "from the block, on to the unread");
-        assert_eq!(next_calling(&groups, Some(SessionId(1))), Some(SessionId(4)));
+        assert_eq!(next_calling(&groups, None), Some(4));
+        assert_eq!(next_calling(&groups, Some(4)), Some(3), "from the block, on to the unread");
+        assert_eq!(next_calling(&groups, Some(1)), Some(4));
         let one = grouped(vec![entry(2, Attention::Unanswered, 8), entry(1, Attention::Working, 9)]);
-        assert_eq!(next_calling(&one, Some(SessionId(2))), Some(SessionId(2)), "the only one is where the user is");
+        assert_eq!(next_calling(&one, Some(2)), Some(2), "the only one is where the user is");
         assert_eq!(next_calling(&grouped(vec![entry(1, Attention::Working, 9), entry(5, Attention::Done, 1)]), None), None);
     }
 
@@ -892,7 +919,7 @@ mod tests {
     }
 
     #[test]
-    fn remind_me_in_offers_slack_s_times_and_custom_reads_a_span_or_a_clock_time() {
+    fn remind_me_in_offers_slack_s_times() {
         let now = 1_794_000_000_000u64;
         let labels: Vec<&str> = remind_options(now).iter().map(|o| o.0).collect();
         assert_eq!(labels, ["In 20 minutes", "In 1 hour", "In 3 hours", "Tomorrow", "Next week"]);
@@ -901,26 +928,10 @@ mod tests {
         assert!(at.windows(2).all(|w| w[0] < w[1]), "each later than the one before: {at:?}");
         let week = next_week(now);
         assert!(week > now && week - now <= 8 * 24 * 3_600_000 && week - now > 24 * 3_600_000 - 1);
-        // Spans.
-        for (text, ms) in [("45m", 45 * 60_000), ("45 min", 45 * 60_000), ("2h", 7_200_000), ("2 hours", 7_200_000), ("3d", 3 * 86_400_000), ("1w", 7 * 86_400_000), (" 10 MINUTES ", 600_000)] {
-            assert_eq!(parse_when(text, now), Some(now + ms), "{text}");
-        }
-        // Clock times: the next one to come, within a day.
-        for text in ["14:30", "2:30pm", "2:30 PM", "2pm", "9:15am", "0:05", "12am", "12pm"] {
-            let at = parse_when(text, now).unwrap_or_else(|| panic!("{text}"));
-            assert!(at > now && at - now <= 24 * 3_600_000, "{text}: {}", at.saturating_sub(now));
-        }
-        assert_eq!(parse_when("2pm", now), parse_when("14:00", now));
-        assert_eq!(parse_when("12am", now), parse_when("0:00", now));
-        assert_eq!(parse_when("tomorrow", now), Some(tomorrow_at_nine(now)));
-        // Anything else is refused.
-        for text in ["", "soon", "0m", "-5m", "25:00", "13pm", "9:7", "9:60", "h", "5 parsecs"] {
-            assert_eq!(parse_when(text, now), None, "{text}");
-        }
     }
 
     #[test]
-    fn a_later_row_says_how_long_until_it_is_back_and_tomorrow_at_nine_is_the_next_morning() {
+    fn a_scheduled_row_says_how_long_until_it_is_back_and_tomorrow_at_nine_is_the_next_morning() {
         let min = 60_000;
         assert_eq!(until_text(10 * min, 0), "in 10 min");
         assert_eq!(until_text(10 * min + 1000, 0), "in 11 min");

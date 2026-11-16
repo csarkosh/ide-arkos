@@ -115,8 +115,9 @@ Where the tab goes:
   says `(new pane)`), so your session stays in view beside what you opened. On a narrow window
   (under 1500 points of panes) the panes above and below come first, then right and left, and
   a new pane goes on top of yours. `inplace`: a new
-  tab in your own pane, over your session. In the Inbox layout it joins your session's own
-  panes, also while the user is looking at another session. Whichever it is, a plain open is
+  tab in your own pane, over your session. Either way it goes on your session's own page (each
+  session in the window's list is a page of panes), also while the user is looking at another
+  session, whose page is left as it is. Whichever it is, a plain open is
   right: the user chose where they want to see what you show them, so do not pass `--pane` or
   `--split` to work round it.
 - `--split right|down|left|up`: your own pane is split on that side and the tab is the new pane's
@@ -505,9 +506,8 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
   shows, or `default` for none of a theme's, so the config's `font.family`; never set, the
   fonts are the colour's own),
   `custom.effect` (theme, none, or an installed effect's name), `theme.dark`, `theme.light`, `font.family`, `font.preset`,
-  `layout.name` (grid, inbox: the window's layout; in the inbox what you open always goes to
-  the side pane), `layout.placement` (inplace, neighbor: where a plain `arkos open` from a
-  session lands in the grid),
+  `layout.placement` (inplace, neighbor: where a plain `arkos open` from a session lands on
+  that session's own page),
   `font.presets.<name>.size` (8 to 48), `font.presets.<name>.line_height` (1.0 to 2.5),
   `effect.name` (the older key, kept: `theme` puts the presets in force; `none` or an installed
   effect's name puts the custom look in force with that effect), `effect.intensity` (0.0 to 1.0),
@@ -721,7 +721,7 @@ key and the range.
 | `frame_rate` | 1 to 60 | 30 | The wash's frames per second while anything moves; sixty while a highlight fades. |
 | `scale` | 0.1 to 1.0 | 0.5 | The wash's pixels per window pixel, each side; the drawable is stretched to the window. |
 | `ui_text_bump` | 0 to 4 | 0 | Points added to the project window's UI text. |
-| `bar_end_clear` | 0 to 64 | 0 | Points at the right end of a pane's bar that the wash draws in (overworld's gem). The Inbox layout's session header, which stands in the tab bar's place with no + button, keeps its buttons left of them. Like `ui_text_bump`, it comes in once the effect has faded in. |
+| `bar_end_clear` | 0 to 64 | 0 | Points at the right end of a pane's bar that the wash draws in (overworld's gem). Like `ui_text_bump`, it comes in once the effect has faded in. |
 | `sidebar_pad` | 0 to 24 | 0 | Points added before every row and header of the sidebar, so their text sits clear of a frame and a cursor the wash draws along the sidebar's left edge (overworld's). Like `ui_text_bump`, it comes in once the effect has faded in. |
 | `title_grow` | 0 to 16 | 0 | Points added to the title bar's height, at its foot: its words, its icons and the traffic lights keep their places, with that much more of the bar under them (overworld's, for room under the lights inside its frame). Like `ui_text_bump`, it comes in once the effect has faded in. |
 | `title_pad` | 0 to 24 | 0 | Points added inside the title bar at both ends, so its words and icons sit clear of a shape the wash draws round them (the `notebook` cover's labels). |

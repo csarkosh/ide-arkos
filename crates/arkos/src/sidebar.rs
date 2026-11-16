@@ -241,9 +241,9 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
     let tree_rows = entries.len() + usize::from(root.new_file.current(root.frame_now).is_some());
     // The sidebar's own height: the panes' area and the gap an effect keeps above and below it.
     let total_h = root.content.h + 2.0 * style.gap;
-    // The Inbox layout: the column is the session list, or the files, chosen by a switch at
-    // its top. The Grid: the Explorer and Worktrees, no session list.
-    let inbox = root.is_inbox();
+    // The column is the session list, or the files, chosen by a switch at its top (the Grid
+    // layout, with the files alone, went on 2026-11-16).
+    let inbox = true;
     let files_view = !inbox || root.sidebar.inbox_files;
     let switch_h = if inbox { ROW_H + 6.0 } else { 0.0 };
     let switch = inbox.then(|| {
@@ -302,11 +302,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
             .cursor_pointer()
             .hover(move |s| s.bg(hover))
             .child("+ New session")
-            .on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
-                // A new terminal joins the sessions pane, wherever the focus is.
-                let pane = root.tree.inbox_panes().map_or(root.tree.focused, |(sessions, _)| sessions);
-                root.new_terminal_tab(pane, cx);
-            }));
+            .on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| root.new_session(cx)));
         div().flex_none().flex().pl(px(8.0 + style.sidebar_pad)).pb(px(4.0)).child(button)
     });
     if inbox && !files_view {

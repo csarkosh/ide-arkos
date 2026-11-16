@@ -42,12 +42,6 @@ pub fn selected(tree: &Tree) -> Option<TabId> {
     matches!(p.tabs.get(p.active)?, Tab::Terminal { .. }).then(|| p.ids.get(p.active).copied()).flatten()
 }
 
-/// The tabs of the side that is in the tree.
-fn side_tabs(tree: &Tree) -> Vec<TabId> {
-    let Some((sessions, _)) = tree.inbox_panes() else { return Vec::new() };
-    tree.panes().into_iter().filter(|p| *p != sessions).filter_map(|p| tree.pane(p)).flat_map(|p| p.ids.clone()).collect()
-}
-
 impl Sides {
     /// Where a side that comes into the tree goes: the user's place, else on top of the session
     /// on a narrow window and to its right on a wide one.
@@ -74,52 +68,6 @@ impl Sides {
         }
     }
 
-    /// The user dragged the side to `side` of the sessions: it moves there, and every side after
-    /// it goes there too. False when there is no side to move.
-    pub fn drag_to(&mut self, tree: &mut Tree, side: Side) -> bool {
-        if tree.inbox_place().is_none() {
-            return false;
-        }
-        self.place = Some(side);
-        tree.inbox_set_place(self.place_at(side))
-    }
-
-    /// Puts the side in the tree away under the session it belongs to, and brings `to`'s in its
-    /// place. With no session shown yet the side there is `to`'s already.
-    pub fn swap(&mut self, tree: &mut Tree, to: Option<TabId>) {
-        if self.shown == to {
-            return;
-        }
-        if let Some(from) = self.shown {
-            if let Some((side, place)) = tree.inbox_take_side() {
-                self.remember(place);
-                for tab in side.tab_ids() {
-                    self.owner.insert(tab, from);
-                }
-                self.kept.insert(from, side);
-            }
-        }
-        if let Some(side) = to.and_then(|s| self.kept.remove(&s)) {
-            tree.inbox_absorb(side, self.side_place());
-        }
-        self.shown = to;
-    }
-
-    /// Holds the Inbox's shape and shows the chosen session's side, whatever changed the tree
-    /// since the last frame. True when the tree changed.
-    pub fn keep_shape(&mut self, tree: &mut Tree) -> bool {
-        let mut changed = tree.arrange_inbox(self.side_place());
-        if let Some(place) = tree.inbox_place() {
-            self.remember(place);
-        }
-        let now = selected(tree);
-        if now != self.shown {
-            self.swap(tree, now);
-            changed = true;
-        }
-        changed
-    }
-
     /// The layout is switched to the Inbox: the tree is gathered into its shape, the Grid's
     /// arrangement returned to be kept aside, and each session is handed the tabs it owned, the
     /// rest staying with the session shown. The side goes where the Inbox puts sides, even when
@@ -141,36 +89,6 @@ impl Sides {
         grid
     }
 
-    /// The layout is switched to the Grid: every session's tabs come back into the tree, each
-    /// remembered as its session's, and the Grid's arrangement `grid` is restored around them
-    /// (`Tree::regridded`); with none kept, the tree stays as it stands.
-    pub fn leave(&mut self, tree: &mut Tree, grid: Option<Tree>) {
-        if let Some(shown) = self.shown {
-            for tab in side_tabs(tree) {
-                self.owner.insert(tab, shown);
-            }
-        }
-        let mut kept: Vec<(TabId, Node)> = self.kept.drain().collect();
-        kept.sort_by_key(|(session, _)| *session);
-        for (session, side) in kept {
-            for tab in side.tab_ids() {
-                self.owner.insert(tab, session);
-            }
-            tree.inbox_absorb(side, self.side_place());
-        }
-        self.shown = None;
-        if let Some(grid) = grid {
-            *tree = tree.regridded(&grid);
-        }
-    }
-
-    /// Forgets the owners of tabs that are gone, and of sessions that are: `live` is every tab
-    /// in the tree and in the sides put away.
-    pub fn prune(&mut self, tree: &Tree) {
-        let mut live: Vec<TabId> = tree.tabs().iter().filter_map(|(pane, idx, _)| tree.tab_id(*pane, *idx)).collect();
-        live.extend(self.kept.values().flat_map(|side| side.tab_ids()));
-        self.owner.retain(|tab, session| live.contains(tab) && live.contains(session));
-    }
 }
 
 /// Makes a tree from before pages into pages (sessions hold grids spec, section 6): a Grid's
@@ -196,23 +114,60 @@ pub fn into_pages(tree: &mut Tree, mut sides: Sides) {
     tree.into_pages(by_session, shown, focus);
 }
 
+/// The reminders of a file from before pages, whose put-off times were in each terminal's marks:
+/// each page gets the earliest of its terminals', one-time, and the marks lose theirs.
+pub fn reminders_from_marks(tree: &Tree, marks: &mut HashMap<protocol::SessionId, crate::attention::Marks>) -> Vec<(crate::tree::PageKey, crate::reminder::Reminder)> {
+    let mut out = Vec::new();
+    for page in tree.page_keys() {
+        let at = tree
+            .page_tabs(page)
+            .into_iter()
+            .filter_map(|(_, _, tab)| match tab {
+                Tab::Terminal { session, .. } => marks.get_mut(session).and_then(|m| m.later_until.take()),
+                _ => None,
+            })
+            .min();
+        if let Some(at) = at {
+            out.push((page, crate::reminder::Reminder::new(at, crate::reminder::Repeat::Never)));
+        }
+    }
+    for m in marks.values_mut() {
+        m.later_until = None;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
 
     #[test]
+    fn an_old_put_off_time_becomes_its_page_s_one_time_reminder() {
+        let mut tree = Tree::new(term(1));
+        let p = tree.panes()[0];
+        tree.split(p, Side::Right, term(2));
+        let page = tree.page;
+        let mut marks: HashMap<protocol::SessionId, crate::attention::Marks> = HashMap::new();
+        marks.insert(SessionId(1), crate::attention::Marks { later_until: Some(900), ..Default::default() });
+        marks.insert(SessionId(2), crate::attention::Marks { later_until: Some(500), ..Default::default() });
+        let got = reminders_from_marks(&tree, &mut marks);
+        assert_eq!(got, vec![(page, crate::reminder::Reminder::new(500, crate::reminder::Repeat::Never))]);
+        assert!(marks.values().all(|m| m.later_until.is_none()));
+    }
+
+
+    #[test]
     fn an_old_inbox_becomes_a_page_per_session_each_with_its_own_side() {
+        // The old shape: the sessions pane, the shown session's side beside it, the other's kept.
         let mut tree = Tree::new(term(1));
         let sessions = tree.panes()[0];
         tree.add_tab(sessions, term(2));
-        tree.activate(sessions, 0);
-        let mut sides = Sides::default();
-        sides.keep_shape(&mut tree);
-        tree.split(sessions, Side::Right, doc("/p/one.md")).unwrap();
-        sides.keep_shape(&mut tree);
         tree.activate(sessions, 1);
-        sides.keep_shape(&mut tree);
         tree.split(sessions, Side::Right, doc("/p/two.md")).unwrap();
-        sides.keep_shape(&mut tree);
+        assert!(tree.is_inbox());
+        let mut sides = Sides::default();
+        let one = tree.tab_id(sessions, 0).unwrap();
+        sides.kept.insert(one, Node::Leaf(crate::tree::Pane { id: 90, tabs: vec![doc("/p/one.md")], active: 0, mru: vec![0], ids: vec![91] }));
+        sides.shown = Some(tree.tab_id(sessions, 1).unwrap());
         let focus = tree.focused;
         let two = tree.tab_id(sessions, 1).unwrap();
         let mut old: Tree = serde_json::from_str(&serde_json::to_string(&tree).unwrap().replace("\"paged\":true", "\"paged\":false")).unwrap();
@@ -279,159 +234,5 @@ mod tests {
 
     fn doc(p: &str) -> Tab {
         Tab::Viewer { path: p.into(), mode: ViewMode::Rendered, presenting: false, outline: false }
-    }
-
-    fn side_docs(tree: &Tree) -> Vec<Tab> {
-        let (sessions, _) = tree.inbox_panes().unwrap();
-        tree.panes().into_iter().filter(|p| *p != sessions).flat_map(|p| tree.pane(p).unwrap().tabs.clone()).collect()
-    }
-
-    #[test]
-    fn choosing_another_session_replaces_every_side_pane_with_that_session_s_own() {
-        let mut tree = Tree::new(term(1));
-        let sessions = tree.panes()[0];
-        tree.add_tab(sessions, term(2));
-        tree.activate(sessions, 0);
-        let mut sides = Sides::default();
-        assert!(sides.keep_shape(&mut tree), "the first frame notes the session shown");
-        let (one, two) = (tree.tab_id(sessions, 0).unwrap(), tree.tab_id(sessions, 1).unwrap());
-        assert_eq!(sides.shown, Some(one));
-        // Session 1 opens two files, the second in a pane of its own.
-        tree.add_tab(sessions, doc("/p/a.md"));
-        sides.keep_shape(&mut tree);
-        let a_pane = tree.inbox_panes().unwrap().1.unwrap();
-        tree.split(a_pane, Side::Bottom, doc("/p/b.md")).unwrap();
-        assert!(!sides.keep_shape(&mut tree), "a side of two panes is in shape");
-        assert_eq!(tree.panes().len(), 3);
-        // Choosing session 2: its side is empty, so the sessions take the window.
-        tree.activate(sessions, 1);
-        assert!(sides.keep_shape(&mut tree));
-        assert_eq!(tree.panes(), vec![sessions]);
-        assert_eq!((sides.shown, sides.kept.len()), (Some(two), 1));
-        // A file opened now is session 2's.
-        tree.add_tab(sessions, doc("/p/c.md"));
-        sides.keep_shape(&mut tree);
-        assert_eq!(side_docs(&tree), vec![doc("/p/c.md")]);
-        assert_eq!(tree.pane(sessions).unwrap().active, 1, "still on session 2");
-        // Back to session 1: both its panes, as they were, and session 2's file is put away.
-        tree.activate(sessions, 0);
-        assert!(sides.keep_shape(&mut tree));
-        assert_eq!(tree.panes().len(), 3);
-        assert_eq!(side_docs(&tree), vec![doc("/p/a.md"), doc("/p/b.md")]);
-        assert_eq!(sides.kept.keys().copied().collect::<Vec<_>>(), vec![two]);
-        assert!(!sides.keep_shape(&mut tree), "nothing more to do");
-    }
-
-    #[test]
-    fn the_grid_and_back_keeps_each_session_s_tabs_its_own() {
-        // In the Inbox: session 1 with a.md, session 2 with b.md.
-        let mut tree = Tree::new(term(1));
-        let sessions = tree.panes()[0];
-        tree.add_tab(sessions, term(2));
-        tree.activate(sessions, 0);
-        let mut sides = Sides::default();
-        sides.keep_shape(&mut tree);
-        tree.add_tab(sessions, doc("/p/a.md"));
-        sides.keep_shape(&mut tree);
-        tree.activate(sessions, 1);
-        sides.keep_shape(&mut tree);
-        tree.add_tab(sessions, doc("/p/b.md"));
-        sides.keep_shape(&mut tree);
-        let (one, two) = (tree.tab_id(sessions, 0).unwrap(), tree.tab_id(sessions, 1).unwrap());
-        // To the Grid with no arrangement kept: every tab is in the tree, none lost.
-        sides.leave(&mut tree, None);
-        let all: Vec<Tab> = tree.tabs().into_iter().map(|(_, _, t)| t.clone()).collect();
-        assert!(all.contains(&doc("/p/a.md")) && all.contains(&doc("/p/b.md")) && all.len() == 4);
-        assert!(sides.kept.is_empty() && sides.shown.is_none());
-        // And back: session 2 is the one shown, with b.md; a.md waits with session 1.
-        let grid = sides.enter(&mut tree);
-        assert_eq!(grid.tabs().len(), 4, "the grid's arrangement is handed back to be kept");
-        assert_eq!(sides.shown, Some(two));
-        assert_eq!(side_docs(&tree), vec![doc("/p/b.md")]);
-        assert_eq!(sides.kept.get(&one).map(|n| n.tab_ids().len()), Some(1));
-        let sessions = tree.inbox_panes().unwrap().0;
-        tree.activate(sessions, 0);
-        sides.keep_shape(&mut tree);
-        assert_eq!(side_docs(&tree), vec![doc("/p/a.md")]);
-        // A closed tab's owner is forgotten.
-        let side = tree.inbox_panes().unwrap().1.unwrap();
-        tree.close_tab(side, 0);
-        tree.close_pane_if_empty(side);
-        sides.prune(&tree);
-        assert_eq!(sides.owner.len(), 1, "only b.md, put away with session 2, is still owned");
-    }
-    #[test]
-    fn a_side_comes_back_on_top_on_a_narrow_window_beside_on_a_wide_one_and_where_the_user_dragged_it_after() {
-        // Sessions 1 and 2, each with a file.
-        let mut tree = Tree::new(term(1));
-        let sessions = tree.panes()[0];
-        tree.add_tab(sessions, term(2));
-        tree.activate(sessions, 0);
-        let mut sides = Sides::default();
-        sides.narrow = true;
-        tree.add_tab(sessions, doc("/p/a.md"));
-        tree.activate(sessions, 0);
-        sides.keep_shape(&mut tree);
-        assert_eq!(tree.inbox_place().map(|p| p.side), Some(Side::Top), "narrow: a new side on top");
-        // To session 2, which opens a file of its own, and back: session 1's side comes back on top.
-        tree.activate(sessions, 1);
-        sides.keep_shape(&mut tree);
-        tree.add_tab(sessions, doc("/p/b.md"));
-        tree.activate(sessions, 1);
-        sides.keep_shape(&mut tree);
-        assert_eq!(tree.inbox_place().map(|p| p.side), Some(Side::Top));
-        // The window widens: the side shown stays, the next one to come back goes to the right.
-        sides.narrow = false;
-        sides.keep_shape(&mut tree);
-        assert_eq!(tree.inbox_place().map(|p| p.side), Some(Side::Top), "never moved while shown");
-        tree.activate(sessions, 0);
-        sides.keep_shape(&mut tree);
-        assert_eq!(tree.inbox_place().map(|p| p.side), Some(Side::Right));
-        // Dragged below: there it stays, and every side after it goes there, narrow or not.
-        assert!(sides.drag_to(&mut tree, Side::Bottom));
-        assert_eq!(tree.inbox_place().map(|p| p.side), Some(Side::Bottom));
-        sides.narrow = true;
-        tree.activate(sessions, 1);
-        sides.keep_shape(&mut tree);
-        assert_eq!(tree.inbox_place().map(|p| p.side), Some(Side::Bottom));
-    }
-
-    #[test]
-    fn each_orientation_keeps_its_own_divider_for_every_session() {
-        let mut tree = Tree::new(term(1));
-        let sessions = tree.panes()[0];
-        tree.add_tab(sessions, term(2));
-        tree.add_tab(sessions, doc("/p/a.md"));
-        tree.activate(sessions, 0);
-        let mut sides = Sides::default();
-        sides.keep_shape(&mut tree);
-        assert_eq!(tree.inbox_place(), Some(SidePlace { side: Side::Right, share: INBOX_RATIO }));
-        // The user moves the divider beside, then drags the side on top and moves that one.
-        assert!(tree.inbox_set_place(SidePlace { side: Side::Right, share: 0.7 }));
-        sides.keep_shape(&mut tree);
-        assert!(sides.drag_to(&mut tree, Side::Top));
-        assert_eq!(tree.inbox_place(), Some(SidePlace { side: Side::Top, share: INBOX_STACKED }));
-        assert!(tree.inbox_set_place(SidePlace { side: Side::Top, share: 0.4 }));
-        sides.keep_shape(&mut tree);
-        // Back beside, the divider is where it was beside.
-        assert!(sides.drag_to(&mut tree, Side::Left));
-        assert_eq!(tree.inbox_place(), Some(SidePlace { side: Side::Left, share: 0.7 }));
-        assert!((sides.stacked - 0.4).abs() < 1e-6, "stacked, as it was left: {}", sides.stacked);
-    }
-    #[test]
-    fn switching_to_the_inbox_puts_the_side_where_the_inbox_puts_sides_even_from_a_grid_of_that_shape() {
-        // The Grid: a session on the left, its file on the right; already the Inbox's shape.
-        let mut tree = Tree::new(term(1));
-        let sessions = tree.panes()[0];
-        tree.split(sessions, Side::Right, doc("/p/a.md")).unwrap();
-        tree.focus(sessions);
-        let mut sides = Sides::default();
-        sides.narrow = true;
-        let grid = sides.enter(&mut tree);
-        assert_eq!(tree.inbox_place(), Some(SidePlace { side: Side::Top, share: INBOX_STACKED }), "on top on a narrow window");
-        // And the Grid comes back as it was.
-        sides.leave(&mut tree, Some(grid.clone()));
-        assert_eq!(tree.panes(), grid.panes());
-        assert_eq!(tree.inbox_place().map(|p| p.side), Some(Side::Right), "beside, as the Grid had it");
     }
 }

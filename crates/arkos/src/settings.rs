@@ -1072,28 +1072,13 @@ impl SettingsWindow {
         row.into_any_element()
     }
 
-    /// The Layout section: how the window arranges its sessions and files, and where a file a
-    /// session opens goes in the Grid.
+    /// The Layout section: where a file a session opens goes on its page (sessions hold grids
+    /// spec, section 1; the Grid and Inbox choice went on 2026-11-16).
     fn layout(&self, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        use crate::config::{LayoutName, OpenPlacement};
+        use crate::config::OpenPlacement;
         let cfg = &self.shown.config.layout;
         let says = |text: &'static str| div().pt(px(6.0)).text_color(c.dim).child(text).into_any_element();
-        let mut out = vec![heading("Layout", c).into_any_element()];
-        let mut names = div().flex().gap(px(6.0));
-        for (ix, (label, value, which)) in [("Grid", "grid", LayoutName::Grid), ("Inbox", "inbox", LayoutName::Inbox)].into_iter().enumerate() {
-            let current = cfg.name == which;
-            let mut p = pill(("layout-name", ix), label, current, enabled, c);
-            if enabled && !current {
-                p = p.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&["layout", "name"], value)], cx)));
-            }
-            names = names.child(p);
-        }
-        out.push(names.into_any_element());
-        out.push(says(match cfg.name {
-            LayoutName::Grid => "Panes of tabs that you split and arrange. The sidebar lists the sessions by what they ask of you.",
-            LayoutName::Inbox => "The sessions as a list sorted by what needs you, one shown at full size, and a side pane for the files they open.",
-        }));
-        out.push(heading("A session's files open", c).into_any_element());
+        let mut out = vec![heading("A session's files open", c).into_any_element()];
         let mut places = div().flex().gap(px(6.0));
         for (ix, (label, value, which)) in [("Neighbor", "neighbor", OpenPlacement::Neighbor), ("In place", "inplace", OpenPlacement::Inplace)].into_iter().enumerate() {
             let current = cfg.placement == which;
@@ -1104,10 +1089,9 @@ impl SettingsWindow {
             places = places.child(p);
         }
         out.push(places.into_any_element());
-        out.push(says(match (cfg.name, cfg.placement) {
-            (LayoutName::Inbox, _) => "In the Inbox a session's files always open in the side pane. This applies to the Grid.",
-            (_, OpenPlacement::Inplace) => "A file a Claude Code session opens is a new tab in that session's own pane.",
-            (_, OpenPlacement::Neighbor) => "A file a Claude Code session opens goes to the pane on its right, else the one on its left, else a new pane split off to its right.",
+        out.push(says(match cfg.placement {
+            OpenPlacement::Inplace => "A file a Claude Code session opens is a new tab in that session's own pane.",
+            OpenPlacement::Neighbor => "A file a Claude Code session opens goes to the pane on its right, else the one on its left, else a new pane split off to its right, on the session's own page.",
         }));
         out
     }

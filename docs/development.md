@@ -502,43 +502,58 @@ Things only a person at the screen can check, in order of value:
   makes it Unanswered (a ring), and the next prompt Working; a stop while the tab is focused
   in the window in front arrives as Unanswered; the Dock icon shows the count of Needs you and
   Unread and loses it at zero
-- sessions: in the Inbox the sidebar's Sessions list shows every terminal tab under its group,
-  two lines a row, the second ending in an ellipsis at any sidebar width; the Grid's sidebar
-  has no session list, the Explorer at its top; a right click on a row opens its menu at the pointer; End closes the tab
-  (Shift+Cmd+T brings it back); "Remind me in" opens Slack's five times and Custom beside the menu, level with its row,
-  "Tomorrow" and "Next week" with their times on the right; "In 1 hour" moves it under Later with
-  "in 60 min"; Custom opens a field with the keys in it, Enter on `2h` sets it, Enter on `soon`
-  says how to write a time, Escape goes back to the list; Done
-  folds it under Done; Rename edits the name in the tab bar (in the Inbox, in the header);
-  Shift+Cmd+U goes to a blocked session first
+- sessions: the sidebar's Sessions list shows a row per session under its group, two lines a
+  row, the second ending in an ellipsis at any sidebar width; a right click on a row opens its
+  menu at the pointer; "Remind me in" opens Slack's five times and Custom beside the menu, level
+  with its row, "Tomorrow" and "Next week" with their times on the right; "In 1 hour" moves it
+  under Scheduled with "in 60 min"; Done folds it under Done; Rename edits the first terminal's
+  name in its tab bar; Shift+Cmd+U goes to a blocked session first
 - sessions: End on a row whose `claude` has the hooks moves it under Done (open the group);
-  a click on it within a minute brings the same shell back with its screen; after a minute a
-  click opens a new tab of the same name that types `claude --resume …` and the conversation
-  continues; "Remove from the list" drops the row; the kept rows are there after a relaunch
-- layouts: Settings, Layout, Inbox regroups the window with no tab lost: one pane with a header
-  (mark, name, folder, the buttons) in the tab bar's place and no tab bar, the sidebar with
-  Sessions and Files and "+ New"; a click on a row shows that session at full size with the keys
-  in it; `arkos open` from a session opens the side pane on the right and a second open adds a
-  tab there; closing its last tab closes the side pane; Cmd+D (split) leaves the two panes as
-  they are; back on Grid the panes are as they were; under each effect (overworld, material,
-  notebook, watercolor, runic) the header and the list are legible
-- layouts: in the Inbox, open a file from the Explorer under session A, split it, choose
-  session B: every pane beside the sessions is gone (B has none); open a file under B; back on
-  A its two panes are as they were and B's file is not among them; `arkos open` run in B's
-  shell while A is shown changes nothing on screen and the file is there when B is chosen;
+  a click on it within a minute brings the same shell back with its screen, as a session of its
+  own; after a minute a click opens a new session of the same name that types `claude --resume …`
+  and the conversation continues; "Remove from the list" drops the row; the kept rows are there
+  after a relaunch
+- session pages: a window saved before 2026-11-16 (Grid or Inbox) opens with each terminal a
+  row of its own and the files it had opened beside it, none lost; every pane has its tab bar,
+  the first terminal's included; a click on a row shows that session's page as it was left
+- session pages: in a session, Cmd+T and a split open terminals that stay on its page; the row
+  then says "2 sessions" beside its age, is listed by the one that needs you most, with its
+  line, and a click on it focuses that terminal's pane; the first terminal's pane drags by its
+  number onto another pane's edge or middle like any other; "+ New session" starts a page of
+  its own; Cmd+W on the last terminal closes the page's files with it and the next row shows
+- session pages: open a file from the Explorer under session A, split it, choose session B: B
+  shows only its own panes; open a file under B; back on A its panes are as they were and B's
+  file is not among them; `arkos open` run in B's shell while A is shown changes nothing on
+  screen and the file is on B's page when B is chosen; `arkos panes` from B lists B's page;
   End on A closes its tabs with it; after a relaunch each session still has its own
-- layouts: a click in the Inbox's filter field rings it in the focus colour and shows a caret;
+- layouts: a click in the filter field rings it in the focus colour and shows a caret;
   typing narrows the rows and opens Done; "No session matches." when none does; Enter shows the
   first row's session with the keys in its terminal; Escape clears the field and the list
   returns; a click on a pane takes the keys back and leaves what was typed
 - sessions: a click on an Unread row leaves it under Unread with its dot turned to a ring; a
   click on another row moves it to Unanswered; a right click opens "Move to" with a ▸, and
   hovering it opens the sections beside it, level with the row: every row offers every section
-  but its own (Needs you, Unread, New, Unanswered, Working, Quiet, Done; not Later, which is "Remind me in"), each
-  moves the row at once, and the next thing its agent does takes it back to where that puts it; an idle session's second line is its Claude Code title, not the
+  but its own (Needs you, Unread, New, Unanswered, Working, Quiet, Done; not Scheduled, which is
+  "Remind me in"), each moves the row at once, and the next thing its agent does takes it back
+  to where that puts it; an idle session's second line is its Claude Code title, not the
   folder; under overworld the selected and hovered rows are drawn inside the sidebar's frame
   with the bobbing cursor, as the Explorer's are
-- layouts: switching to Inbox with the sidebar hidden or on Files shows it on Sessions; "+ New
+- reminders: "Remind me in", Custom closes the menu and opens the picker in the middle of the
+  window over a dimmed scrim, fading in as the menus do: a month with tomorrow chosen and
+  today ringed, the days before today dimmed and dead to a click, ‹ and › turning the month,
+  the arrow keys moving the day and Page Up and Page Down the month; Time shows 9:00 AM and a
+  click opens a list every 15 minutes scrolled to it, with the field taking a typed `2pm`
+  (Enter) and saying how to write one it cannot read; Repeat lists Never, Every day, Every
+  weekday, Every week on <the day's weekday>, Every month on the <nth>; the line above the
+  buttons reads what will be set; Save is dimmed for a time past; Escape and a click on the
+  scrim close it; every row legible under each effect (overworld, material, notebook,
+  watercolor, runic)
+- reminders: a reminder a minute away (Custom, today, the next quarter hour) puts the row under
+  Scheduled with "in 1 min" (and ↻ when it repeats); at its time the row moves under Unread with
+  a Reminder label in place of its age, without a click; a click on it keeps it under Unread
+  until another row is chosen, then a one-time one stays where its terminals put it and a
+  repeating one goes back under Scheduled with its next time
+- layouts: with the sidebar hidden or on Files, a new window shows Sessions; "+ New
   session" sits under the filter, above the first group; under overworld the
   sidebar's scene has mountains (by day mesas) above the castle, at the same pixel size as the
   castle, its sky reaching half the sidebar's height in a tall window with the stars thinning
@@ -550,20 +565,12 @@ Things only a person at the screen can check, in order of value:
 - sessions: "+ New session" is a small filled button, as wide as its words, at the left under the filter; the session it starts is
   listed under New, leaves New at its first prompt, and an untouched one is under Quiet ten
   minutes later without a click
-- layouts: under overworld the Inbox header's "Mark unread" and "Done" end left of the gem,
-  which is the right-most thing in the header, with an art pixel of air between
 - layouts: "A session's files open" on Neighbor: with one pane an `arkos open` splits a pane
-  to the right, the next goes into that pane, and from the right pane it goes to the left one
-- Inbox stacking: on a 13 or 14 inch MacBook with the sidebar shown, the first file a session
-  opens in the Inbox goes on top of the session, and the next session's comes back on top too;
-  on an external display it goes to the right. In the Grid, Neighbor's first open splits on top
-  on the MacBook and to the right on the display
-- Inbox stacking: drag a side pane by its number onto the session's left, right, top or bottom
-  edge: the zone tints as for a tab, and the side moves there whole; another session's panes
-  come back on that side; the divider of each way round stays where it was left
-- Pane drag: in the Grid, a pane dragged by its number onto another's edge moves there with
-  its tabs; into its middle or tab bar, its tabs join that pane and it goes; over itself
-  nothing tints
+  to the right, the next goes into that pane, and from the right pane it goes to the left one;
+  on a 13 or 14 inch MacBook with the sidebar shown the first open splits on top, on an
+  external display to the right
+- Pane drag: a pane dragged by its number onto another's edge moves there with its tabs; into
+  its middle or tab bar, its tabs join that pane and it goes; over itself nothing tints
 - Settings, Appearance: two pills, Presets and Custom, the one in force selected. Presets
   shows Mode and the dark and the light preset lists; a click on Custom shows Color on the
   left and Font above Effect on the right instead, every row readable at the window's

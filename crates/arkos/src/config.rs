@@ -105,7 +105,8 @@ impl Default for SidebarConfig {
     }
 }
 
-/// How a window arranges its sessions and files.
+/// How a window arranged its sessions and files, before every session held a grid of its own
+/// (sessions hold grids spec, section 1): read from a config that names it, and ignored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LayoutName {
@@ -117,7 +118,7 @@ pub enum LayoutName {
     Inbox,
 }
 
-/// Where a tab goes that a session opens with a plain `arkos open`, in the Grid.
+/// Where a tab goes on a session's page that the session opens with a plain `arkos open`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OpenPlacement {
@@ -134,6 +135,7 @@ pub enum OpenPlacement {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LayoutConfig {
+    /// Read and ignored: the window is always a list of sessions, each a grid of its own.
     pub name: LayoutName,
     pub placement: OpenPlacement,
 }
@@ -853,11 +855,8 @@ width = 260.0
 collapsed = false
 
 [layout]
-# How a window arranges its sessions and files. "grid": panes of tabs you split and arrange.
-# "inbox": the sessions as a list sorted by what needs you (needs you, unread, unanswered,
-# working, done), one shown at full size, and a side pane for the files they open.
-name = "grid"
-# Where a tab goes that a Claude Code session opens with a plain `arkos open`, in the grid.
+# Where a tab goes on a session's own page that a Claude Code session opens with a plain
+# `arkos open`.
 # "neighbor": a new tab in the pane to its right, else the one to its left, else a new pane
 # split off to its right, so the session stays in view; on a narrow window (under 1500 points
 # of panes) the panes above and below first, and a new pane on top. "inplace": a new tab in the

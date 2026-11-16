@@ -97,11 +97,17 @@ pub fn refuse_unshown(session: Option<SessionId>, anchor: Option<PaneId>, place:
     Ok(())
 }
 
-/// Every tab on `path`, in reading order: an exact match, else one whose path canonicalizes to
+/// Every tab on `path` on the page shown, in reading order: an exact match, else one whose path canonicalizes to
 /// it (a tab opened from the sidebar under a symlinked folder such as `/tmp` keeps the path as
 /// clicked, while the command line sends the canonical one). A web address (an `http(s)`
 /// "path") matches the web tabs on that page (`web::same_url`).
 fn tabs_on_file(tree: &Tree, path: &Path) -> Vec<(PaneId, usize)> {
+    // Only the page shown, the opening session's own: another session's tab is its own.
+    let shown = tree.panes();
+    tabs_on_file_anywhere(tree, path).into_iter().filter(|(pane, _)| shown.contains(pane)).collect()
+}
+
+fn tabs_on_file_anywhere(tree: &Tree, path: &Path) -> Vec<(PaneId, usize)> {
     let text = path.to_string_lossy();
     if text.starts_with("http://") || text.starts_with("https://") {
         return tree.tabs().into_iter().filter(|(_, _, t)| matches!(t, Tab::Browser { url } if crate::web::same_url(url, &text))).map(|(pane, idx, _)| (pane, idx)).collect();
@@ -322,9 +328,17 @@ impl Root {
             }
             PaneAction::Video { path, op } => self.direct_video(path.as_deref(), op, cx),
             PaneAction::Panes => {
-                let tree = &self.tree;
-                let titles = |pane: PaneId, idx: usize| crate::pane_view::tab_title(self, pane, idx);
-                Ok((Answer::Now(PaneOutcome::Panes(panes_report(tree, &self.project, session, &titles))), Vec::new(), Vec::new(), false))
+                // The panes of the asking session's own page, numbered as they are there.
+                let shown = self.tree.page;
+                let page = session.and_then(|s| self.tree.find_session(s)).and_then(|(pane, _)| self.tree.page_of(pane)).unwrap_or(shown);
+                self.tree.show_page_for(page);
+                let report = {
+                    let tree = &self.tree;
+                    let titles = |pane: PaneId, idx: usize| crate::pane_view::tab_title(self, pane, idx);
+                    panes_report(tree, &self.project, session, &titles)
+                };
+                self.tree.show_page_for(shown);
+                Ok((Answer::Now(PaneOutcome::Panes(report)), Vec::new(), Vec::new(), false))
             }
         };
         match answer {
@@ -336,35 +350,27 @@ impl Root {
         }
     }
 
-    /// An agent's open. In the Inbox what a session opens is that session's own: when the
-    /// session is not the one shown, its side is brought into the tree for the open and put
-    /// away again after, so the user's own view is left as it was; with `--focus` the session
-    /// becomes the one shown instead.
+    /// An agent's open. What a session opens goes on its own page (sessions hold grids spec,
+    /// section 1): when that page is not the one shown it is brought up for the open and put
+    /// away again after, so the user's own view is left as it was; with `--focus` the session's
+    /// page is shown instead.
     fn direct_open(&mut self, a: OpenArgs, cx: &mut Context<Self>) -> Result<Prepared, String> {
-        let at = a.session.filter(|_| self.is_inbox()).and_then(|s| self.tree.find_session(s));
-        let owner = at.and_then(|(pane, idx)| self.tree.tab_id(pane, idx));
-        let (shown, focused, focus) = (self.inbox.shown, self.tree.focused, a.focus);
-        let elsewhere = owner.is_some() && owner != shown;
-        if elsewhere {
-            self.inbox.swap(&mut self.tree, owner);
-        }
-        let mut out = self.direct_open_here(a, cx);
-        if elsewhere {
-            match (focus && out.is_ok(), at) {
-                (true, Some((pane, idx))) => self.tree.activate_quiet(pane, idx),
-                _ => {
-                    // Answered now, from the tree that holds the tab: once the side is put
-                    // away again the tab is out of the tree, and nothing loads it until its
-                    // session is chosen.
-                    out = out.and_then(|(answer, _, _, _)| Ok((Answer::Now(self.answer_outcome(&answer, cx)?), Vec::new(), Vec::new(), false)));
-                    self.inbox.swap(&mut self.tree, shown);
-                    if self.tree.pane(focused).is_some() {
-                        self.tree.focused = focused;
-                    }
-                }
-            }
+        let page = a.session.and_then(|s| self.tree.find_session(s)).and_then(|(pane, _)| self.tree.page_of(pane));
+        let shown = self.tree.page;
+        let Some(page) = page.filter(|p| *p != shown) else { return self.direct_open_here(a, cx) };
+        if a.focus {
+            self.tree.show_page(page);
+            self.grids.clear();
+            let out = self.direct_open_here(a, cx);
             self.save(cx);
+            return out;
         }
+        self.tree.show_page_for(page);
+        // Answered now, from the page that holds the tab: once the page is put away again
+        // nothing loads the tab until its session is chosen.
+        let out = self.direct_open_here(a, cx).and_then(|(answer, _, _, _)| Ok((Answer::Now(self.answer_outcome(&answer, cx)?), Vec::new(), Vec::new(), false)));
+        self.tree.show_page_for(shown);
+        self.save(cx);
         out
     }
 
@@ -375,7 +381,6 @@ impl Root {
         if !a.wait_for_file && !a.path.exists() {
             return Err(format!("no such file: {}", a.path.display()));
         }
-        let had_side = self.tree.inbox_panes().is_some_and(|(_, side)| side.is_some());
         let step = plan_open_in(&self.tree, &a.path, &a.place, a.reuse, anchor, self.config.layout.placement, self.content)?;
         let before = self.tree.focused;
         let (pane, idx, reused, new_pane) = match step {
@@ -396,31 +401,6 @@ impl Root {
                 (new, 0, false, true)
             }
         };
-        // In the Inbox a session's files go to the side pane whatever the placement said: the
-        // tree is regrouped at once, and the tab found again where it landed.
-        let (pane, idx, new_pane) = if self.is_inbox() {
-            let opened = self.tree.tab_id(pane, idx);
-            self.inbox.narrow = crate::tree::is_narrow(self.content.w);
-            self.tree.arrange_inbox(self.inbox.side_place());
-            // A new side: a plain open puts it where the Inbox puts sides, a split where it said,
-            // with the divider the Inbox keeps for that way round.
-            if !had_side {
-                if let Some(now) = self.tree.inbox_place() {
-                    let side = if matches!(a.place, Placement::Here) { self.inbox.new_side() } else { now.side };
-                    self.tree.inbox_set_place(self.inbox.place_at(side));
-                }
-            }
-            let at = opened.and_then(|tab| self.tree.panes().into_iter().find_map(|p| self.tree.pane(p)?.ids.iter().position(|t| *t == tab).map(|i| (p, i))));
-            let (pane, idx) = at.unwrap_or((pane, idx));
-            (pane, idx, !reused && !had_side && self.tree.inbox_panes().is_some_and(|(sessions, _)| sessions != pane))
-        } else {
-            (pane, idx, new_pane)
-        };
-        // Whichever layout is on, the tab is its session's: the Inbox hands it to that session.
-        let opener = a.session.and_then(|s| self.tree.find_session(s)).and_then(|(p, i)| self.tree.tab_id(p, i));
-        if let (false, Some(session), Some(tab)) = (reused, opener, self.tree.tab_id(pane, idx)) {
-            self.inbox.owner.insert(tab, session);
-        }
         // Opened on purpose: a preview tab (the sidebar's single click) it was is kept.
         if reused && self.tree.tab_id(pane, idx) == self.preview_tab {
             self.preview_tab = None;

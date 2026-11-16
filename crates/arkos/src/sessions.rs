@@ -230,6 +230,9 @@ pub struct SessionManager {
     /// A mark changed with a session's state since the root last looked (`take_marks_changed`):
     /// the workspace is saved again.
     marks_changed: bool,
+    /// The sessions that began a new turn since the window last took them (`take_turns`): a
+    /// page's reminder reads them (`reminder::Reminder::turned`).
+    turns: Vec<SessionId>,
     /// When `later_came` last looked, in milliseconds since the Unix epoch.
     later_checked: u64,
     /// Sessions whose Claude Code has reported itself: an agent record in the list, or a
@@ -258,7 +261,7 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub fn new(transport: Arc<dyn Transport>, client: Option<Arc<Client>>, project: PathBuf) -> Self {
-        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashMap::new(), states: HashMap::new(), labels: HashMap::new(), attention: HashMap::new(), marks: HashMap::new(), agents: HashMap::new(), lines: HashMap::new(), shown: None, marks_changed: false, later_checked: 0, reporting: HashSet::new(), probed: HashMap::new(), probe_wanted: false, newly_reporting: false, restoring: HashSet::new(), backlog: HashMap::new(), offline: false, kills_to_resend: Vec::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
+        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashMap::new(), states: HashMap::new(), labels: HashMap::new(), attention: HashMap::new(), marks: HashMap::new(), agents: HashMap::new(), lines: HashMap::new(), shown: None, marks_changed: false, turns: Vec::new(), later_checked: 0, reporting: HashSet::new(), probed: HashMap::new(), probe_wanted: false, newly_reporting: false, restoring: HashSet::new(), backlog: HashMap::new(), offline: false, kills_to_resend: Vec::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
     }
 
     /// A new connection: requests go to it from now on.
@@ -462,10 +465,6 @@ impl SessionManager {
             let m = self.marks.entry(session).or_default();
             let before = *m;
             m.seen = true;
-            // A later time that has come brought it back; looking at it ends that.
-            if m.later_until.is_some_and(|t| t <= now) {
-                m.later_until = None;
-            }
             return marked || *m != before;
         }
         self.states.insert(session, ClaudeState::Idle);
@@ -497,7 +496,7 @@ impl SessionManager {
     pub fn later_came(&mut self, now: u64) -> bool {
         let passed = |t: Option<u64>| t.is_some_and(|t| t <= now && t > self.later_checked);
         // A new session left alone moves to Quiet at its time, as a put-off one comes back at its.
-        let came = self.marks.values().any(|m| passed(m.later_until) || passed(m.new_until));
+        let came = self.marks.values().any(|m| passed(m.new_until));
         self.later_checked = now;
         came
     }
@@ -506,6 +505,11 @@ impl SessionManager {
     pub fn mark_started(&mut self, session: SessionId, now: u64) {
         self.marks.entry(session).or_default().started(now);
         self.marks_changed = true;
+    }
+
+    /// The sessions that began a new turn since this was last asked.
+    pub fn take_turns(&mut self) -> Vec<SessionId> {
+        std::mem::take(&mut self.turns)
     }
 
     /// True once after a session's state moved its marks.
@@ -528,21 +532,12 @@ impl SessionManager {
         self.attention.get(&session).map(|a| a.note.as_str()).filter(|n| !n.is_empty()).or_else(|| self.lines.get(&session).map(String::as_str))
     }
 
-    /// Puts `session` away or brings it back. Away, it is seen too.
-    pub fn set_done(&mut self, session: SessionId, done: bool) {
+    /// `session` is put off under its page's reminder: whatever the user had moved it to or
+    /// marked gives way, and it counts as seen.
+    pub fn put_off(&mut self, session: SessionId) {
         let m = self.marks.entry(session).or_default();
-        m.done = done;
-        m.later_until = None;
-        m.seen |= done;
-    }
-
-    /// Puts `session` off until `until` (milliseconds since the Unix epoch), or with None back
-    /// in the list.
-    pub fn set_later(&mut self, session: SessionId, until: Option<u64>) {
-        let m = self.marks.entry(session).or_default();
-        m.later_until = until;
-        m.done = false;
-        m.seen = true;
+        *m = Marks { seen: true, since: m.since, ..Marks::default() };
+        self.marks_changed = true;
     }
 
     /// Where `session` can be moved from its row's menu (`attention::move_targets`).
@@ -557,17 +552,6 @@ impl SessionManager {
     pub fn move_to(&mut self, session: SessionId, to: crate::attention::MoveTo) {
         let m = self.marks.entry(session).or_default();
         *m = m.moved_to(to);
-    }
-
-    /// Marks `session` unread, whatever it is doing, until the user next looks at it; or read.
-    pub fn set_seen(&mut self, session: SessionId, seen: bool) {
-        let m = self.marks.entry(session).or_default();
-        m.seen = seen;
-        m.unread = !seen;
-        if !seen {
-            m.done = false;
-            m.later_until = None;
-        }
     }
 
     /// Whether a terminal tab in the tree shows a working agent. The list carries every
@@ -886,6 +870,7 @@ impl SessionManager {
                         self.marks_changed = true;
                         let shown = self.shown == Some(*session);
                         self.marks.entry(*session).or_default().turned(shown, now);
+                        self.turns.push(*session);
                     }
                     changed |= before.as_ref() != Some(attention);
                 }
@@ -921,6 +906,7 @@ impl SessionManager {
         let m = self.marks.entry(session).or_default();
         if state == ClaudeState::Waiting {
             m.turned(shown, now);
+            self.turns.push(session);
         } else {
             m.moved(now);
         }
@@ -1086,7 +1072,7 @@ mod tests {
         let mut m = SessionManager::new(rec.clone(), None, PathBuf::from("/p"));
         let s = SessionId(1);
         m.note_events_at(&[Event::State { session: s, state: ClaudeState::Working }], 1000);
-        m.set_done(s, true);
+        m.move_to(s, crate::attention::MoveTo::To(Attention::Done));
         assert_eq!(m.attention_of(s, 1000), Attention::Done);
         let ask = protocol::Attention { blocked: true, note: "Allow Bash: ls".into() };
         assert!(m.note_events_at(&[Event::State { session: s, state: ClaudeState::Waiting }, Event::Attention { session: s, attention: ask.clone() }], 2000));
@@ -1101,32 +1087,28 @@ mod tests {
         assert_eq!(m.attention_of(s, 2000), Attention::Working);
         assert_eq!(rec.requests().last(), Some(&Request::SetState { session: s, state: ClaudeState::Working }));
         assert_eq!(m.note_of(s), Some("Allow Bash: ls"), "the line stays until the next one");
-        // Later, mark unread and done are the user's own.
+        // Mark unread and done are the user's own.
         m.note_events_at(&[Event::State { session: s, state: ClaudeState::Waiting }], 3000);
-        m.set_later(s, Some(9000));
-        assert_eq!((m.attention_of(s, 3000), m.attention_of(s, 9000)), (Attention::Later, Attention::Unread));
-        m.set_seen(s, true);
-        m.set_later(s, None);
+        m.acknowledge_at(s, 3000);
         assert_eq!(m.attention_of(s, 3000), Attention::Unanswered);
-        m.set_seen(s, false);
+        m.move_to(s, crate::attention::MoveTo::To(Attention::Unread));
         assert_eq!(m.attention_of(s, 3000), Attention::Unread);
         assert!(m.acknowledge_at(s, 3000), "a look reads it");
         assert_eq!(m.attention_of(s, 3000), Attention::Unanswered);
         // A session doing nothing, or working, may be marked unread too, and a look reads it.
         m.note_events_at(&[Event::State { session: s, state: ClaudeState::Working }], 3100);
-        m.set_seen(s, false);
+        m.move_to(s, crate::attention::MoveTo::To(Attention::Unread));
         assert_eq!(m.attention_of(s, 3100), Attention::Unread);
         assert!(m.acknowledge_at(s, 3200));
         assert_eq!(m.attention_of(s, 3200), Attention::Working);
         assert!(!m.acknowledge_at(s, 3300), "nothing left to read");
         m.note_events_at(&[Event::State { session: s, state: ClaudeState::Waiting }], 3400);
-        m.set_seen(s, false);
-        // A later time that comes is told once, so the window repaints as the session returns.
-        m.set_later(s, Some(9000));
-        assert!(!m.later_came(8000));
-        assert!(m.later_came(9500));
-        assert!(!m.later_came(9600), "once");
-        m.set_seen(s, false);
+        // A new session's time running out is told once, so the window repaints as it goes quiet.
+        m.mark_started(s, 3500);
+        assert!(!m.later_came(3500 + crate::attention::NEW_FOR - 1));
+        assert!(m.later_came(3500 + crate::attention::NEW_FOR + 1));
+        assert!(!m.later_came(3500 + crate::attention::NEW_FOR + 2), "once");
+        m.move_to(s, crate::attention::MoveTo::To(Attention::Unread));
         // A line is kept by the window, so one the daemon has lost still shows.
         m.attention.remove(&s);
         assert_eq!(m.note_of(s), Some("Allow Bash: ls"));
