@@ -35,6 +35,7 @@ mod gitstatus;
 mod grid;
 mod grid_view;
 mod guide;
+mod handoff;
 mod highlight;
 mod hook_cli;
 mod inbox;
@@ -248,6 +249,13 @@ pub struct Root {
     pub daemon_version: Option<String>,
     /// The newest protocol the daemon said it speaks (0 before its `Hello` answer).
     pub daemon_protocol_max: u32,
+    /// An update's successor not shown yet (`handoff`): the pid of the window it takes over from,
+    /// and when it started. Cleared once it shows itself.
+    pub handoff_from: Option<(u32, Instant)>,
+    /// When this window's successor was asked for (`handoff`): the window stays on screen and
+    /// saves nothing more, so the successor's workspace is the last word, until it is told to go
+    /// or the wait ends.
+    pub handing_off: Option<Instant>,
     /// Bumped when a connection starts and when it ends, so tasks bound to an older one (its
     /// heartbeat, a restore parsed from its replay) know to stop.
     pub connection_generation: u64,
@@ -807,6 +815,8 @@ impl Root {
             status: CONNECTING.into(),
             daemon_version: None,
             daemon_protocol_max: 0,
+            handoff_from: None,
+            handing_off: None,
             connection_generation: 0,
             reconnecting_since: None,
             reconcile_with_note,
@@ -2036,6 +2046,10 @@ impl Root {
     }
 
     pub fn save(&mut self, cx: &mut App) {
+        // Handing off to its successor, which read the last save and owns the file from now on.
+        if self.handing_off.is_some() {
+            return;
+        }
         let sidebar = SidebarSaved { width: self.sidebar.width, collapsed: self.sidebar.collapsed, show_ignored: self.explorer.show_ignored, expanded: self.explorer.expanded_dirs(), worktrees_expanded: self.worktrees.expanded.iter().cloned().collect(), explorer_open: self.sidebar.explorer_open, worktrees_open: self.sidebar.worktrees_open, sessions_open: self.sidebar.sessions_open };
         // The marks of the sessions the window still shows, in a steady order.
         let shown: HashSet<SessionId> = self.tree.tabs().into_iter().filter_map(|(_, _, tab)| if let Tab::Terminal { session, .. } = tab { Some(*session) } else { None }).collect();
@@ -4196,6 +4210,8 @@ impl Root {
                 }
                 Event::Customize { id, action } => self.customize(*id, action.clone(), cx),
                 Event::Direct { id, action, session } => self.handle_direct(*id, action.clone(), *session, cx),
+                Event::HandOff { to } => self.hand_off(*to, cx),
+                Event::HandoffFailed { reason } => self.handoff_fell_through(reason, cx),
                 _ => {}
             }
         }
@@ -4232,7 +4248,184 @@ impl Root {
             }
         };
         self.updating = Some(UpdateStage::Relaunching);
-        self.sessions.relaunch(exe);
+        let (full_screen, minimized) = self.ns_window.as_ref().map_or((false, false), |w| (handoff::mac::is_full_screen(w), w.isMiniaturized()));
+        if handoff::can_hand_off(self.daemon_protocol_max, full_screen, minimized) {
+            self.begin_handoff(exe, cx);
+        } else {
+            self.sessions.relaunch(exe);
+        }
+    }
+
+    /// The old window's side of an update's handoff (`handoff`): everything is saved now, then
+    /// the successor is asked for. The window stays on screen and live, its terminals still
+    /// drawing, until the successor is drawn over it (`Event::HandOff`); without that in
+    /// `handoff::OLD_WAIT` it relaunches the old way.
+    fn begin_handoff(&mut self, exe: PathBuf, cx: &mut Context<Self>) {
+        for (_, e) in self.save_dirty_viewers_now(cx) {
+            eprintln!("arkos: handing off with unsaved edits: {e}");
+        }
+        self.note_window_space(cx);
+        self.save(cx);
+        workspace::flush_now(&self.save_queue);
+        self.handing_off = Some(Instant::now());
+        self.sessions.relaunch_handoff(exe);
+        let root = cx.entity();
+        cx.spawn(async move |_, cx| {
+            cx.background_executor().timer(handoff::OLD_WAIT).await;
+            let _ = root.update(cx, |root, cx| {
+                if root.handing_off.is_some() {
+                    root.handoff_fell_through("the new window was not drawn in time", cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The handoff did not happen (the daemon could not start the successor, it ended first, or
+    /// it was never drawn): the window relaunches the old way, quitting first.
+    fn handoff_fell_through(&mut self, why: &str, cx: &mut Context<Self>) {
+        if self.handing_off.take().is_none() {
+            return;
+        }
+        eprintln!("arkos: handoff: {why}; relaunching the old way");
+        match update::launch_path() {
+            Some(exe) if exe.is_file() => self.sessions.relaunch(exe),
+            _ => {
+                self.updating = None;
+                self.show_notice("cannot relaunch: this window's binary is gone; quit and open Arkos IDE again".into(), cx);
+            }
+        }
+    }
+
+    /// `Event::HandOff`: the successor, pid `to`, is drawn over this window. It gets the focus
+    /// when this app has it, and a few frames later this window leaves the screen and quits,
+    /// saving nothing more (the successor owns the workspace).
+    fn hand_off(&mut self, to: u32, cx: &mut Context<Self>) {
+        if self.handing_off.is_none() {
+            return;
+        }
+        let focus = handoff::mac::give_focus_to(to);
+        eprintln!("arkos: handoff: window {to} is drawn{}; this one goes", if focus { " and has the focus" } else { "" });
+        let root = cx.entity();
+        cx.spawn(async move |_, cx| {
+            cx.background_executor().timer(handoff::LEAVE_AFTER).await;
+            let _ = root.update(cx, |root, cx| {
+                if let Some(w) = root.ns_window.clone() {
+                    handoff::mac::leave(&w);
+                }
+                root.flush_for_quit(false, cx);
+                cx.quit();
+            });
+        })
+        .detach();
+    }
+
+    /// `ARKOS_RELAUNCH_AFTER=<secs>`, for the handoff's checks (`docs/development.md`, Status):
+    /// the window relaunches itself through the daemon that many seconds after it opens, as an
+    /// update's last step does, in a sandbox too. A window the daemon started (`ARKOS_RELAUNCH`)
+    /// ignores it, so the relaunch happens once.
+    fn relaunch_after_for_checks(&mut self, cx: &mut Context<Self>) {
+        let Some(secs) = std::env::var("ARKOS_RELAUNCH_AFTER").ok().and_then(|s| s.parse::<f64>().ok()).filter(|s| *s >= 0.0) else { return };
+        if !should_activate(std::env::var("ARKOS_RELAUNCH").ok().as_deref()) {
+            return;
+        }
+        let root = cx.entity();
+        cx.spawn(async move |_, cx| {
+            cx.background_executor().timer(Duration::from_secs_f64(secs)).await;
+            let _ = root.update(cx, |root, cx| {
+                eprintln!("arkos: ARKOS_RELAUNCH_AFTER: relaunching as an update would");
+                root.relaunch_now(cx);
+            });
+        })
+        .detach();
+    }
+
+    /// The visible terminal tabs of the page shown whose terminal is not in place yet: the
+    /// successor of a handoff shows itself once there are none.
+    fn terminals_still_restoring(&self) -> usize {
+        self.tree
+            .panes()
+            .into_iter()
+            .filter_map(|id| self.tree.pane(id).map(|p| (id, p)))
+            .filter(|(id, p)| match p.tabs.get(p.active) {
+                Some(Tab::Terminal { session, .. }) => !self.sessions.terminals.contains_key(session) || self.tree.tab_id(*id, p.active).is_some_and(|t| self.sessions.has_pending_for(t)),
+                _ => false,
+            })
+            .count()
+    }
+
+    /// The successor's side of a handoff: it waits, transparent over the old window, until its
+    /// terminals are restored and drawn (`handoff::ready`), then shows itself and tells the
+    /// daemon, which tells the old window to go.
+    fn watch_handoff(&mut self, cx: &mut Context<Self>) {
+        let root = cx.entity();
+        cx.spawn(async move |_, cx| {
+            let mut settled_since: Option<Instant> = None;
+            loop {
+                cx.background_executor().timer(Duration::from_millis(30)).await;
+                let done = root
+                    .update(cx, |root, cx| {
+                        let Some((from, started)) = root.handoff_from else { return true };
+                        if root.terminals_still_restoring() == 0 {
+                            settled_since.get_or_insert_with(Instant::now);
+                        } else {
+                            settled_since = None;
+                        }
+                        let waiting = root.terminals_still_restoring();
+                        let on_screen = root.ns_window.as_ref().is_none_or(|w| handoff::mac::on_screen(w));
+                        if !handoff::ready(waiting, settled_since.map(|s| s.elapsed()), started.elapsed(), on_screen) {
+                            return false;
+                        }
+                        root.show_after_handoff(from, waiting, cx);
+                        true
+                    })
+                    .unwrap_or(true);
+                if done {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// `ARKOS_HANDOFF_CHECK=<text>`, for the handoff's checks (`docs/development.md`, Status): as
+    /// the successor shows itself it logs, for each visible terminal, how often `text` is on its
+    /// screen (history aside), so a check can tell that a prompt typed and not sent before the
+    /// update is on the new window. Only the count is written, never the screen.
+    fn log_handoff_check(&self, needle: &str, cx: &App) {
+        for id in self.tree.panes() {
+            let Some(pane) = self.tree.pane(id) else { continue };
+            let Some(Tab::Terminal { session, .. }) = pane.tabs.get(pane.active) else { continue };
+            let shown = self.sessions.terminals.get(session).map(|t| t.read(cx).core.search(needle).iter().filter(|m| m.start().line.0 >= 0).count());
+            match shown {
+                Some(n) => eprintln!("arkos: handoff check: session {} shows the text {n} times on screen", session.0),
+                None => eprintln!("arkos: handoff check: session {} has no terminal yet", session.0),
+            }
+        }
+    }
+
+    /// The successor shows itself, opaque and a regular app, and a frame later says it is drawn.
+    fn show_after_handoff(&mut self, from: u32, waiting: usize, cx: &mut Context<Self>) {
+        let Some((_, started)) = self.handoff_from.take() else { return };
+        if let Some(w) = &self.ns_window {
+            handoff::mac::reveal(w);
+        }
+        let waited = started.elapsed();
+        if waiting > 0 {
+            eprintln!("arkos: handoff: shown after {:.1}s with {waiting} terminals still restoring (off screen, or the wait ran out)", waited.as_secs_f32());
+        } else {
+            eprintln!("arkos: handoff: drawn in {:.0}ms; window {from} may go", waited.as_secs_f32() * 1000.0);
+        }
+        if let Ok(needle) = std::env::var("ARKOS_HANDOFF_CHECK") {
+            self.log_handoff_check(&needle, cx);
+        }
+        cx.notify();
+        let root = cx.entity();
+        cx.spawn(async move |_, cx| {
+            cx.background_executor().timer(Duration::from_millis(20)).await;
+            let _ = root.update(cx, |root, _| root.sessions.handoff_ready(from));
+        })
+        .detach();
     }
 
     /// What quitting must finish first: closed tabs' sessions are killed (nothing could reopen
@@ -4351,8 +4544,9 @@ impl Root {
         if self.check_poll.take().is_some() {
             self.show_notice("the update check is still running".into(), cx);
         }
-        // The relaunch request went with the connection, unanswered: keep the window.
-        if self.updating == Some(UpdateStage::Relaunching) {
+        // The relaunch request went with the connection, unanswered: keep the window. A handoff
+        // under way waits on: its successor may still be drawn, and `handoff::OLD_WAIT` ends it.
+        if self.updating == Some(UpdateStage::Relaunching) && self.handing_off.is_none() {
             self.updating = None;
             self.show_notice("update interrupted: arkosd disconnected before relaunching this window; try again".into(), cx);
         }
@@ -4528,6 +4722,8 @@ impl Root {
                 self.flush_for_quit(false, cx);
                 cx.quit();
             }
+            Outcome::HandoffStarted => eprintln!("arkos: handoff: the new window is starting; this one stays until it is drawn"),
+            Outcome::HandoffRefused(e) => self.handoff_fell_through(&e, cx),
             Outcome::RelaunchRefused(e) => {
                 eprintln!("arkos: relaunch refused: {e}");
                 self.updating = None;
@@ -5681,6 +5877,12 @@ fn main() {
     debug_assert!(plan.connects_first());
     let save_queue = SharedSaveQueue::default();
 
+    // An update's successor (`handoff`): it launches with no Dock tile or menu bar, its window
+    // transparent over its predecessor's until it is drawn.
+    let handoff_from = handoff::predecessor(std::env::var("ARKOS_HANDOFF").ok().as_deref());
+    if handoff_from.is_some() {
+        gpui::launch_as_accessory();
+    }
     Application::new().with_assets(icons::Assets).run(move |cx: &mut App| {
         // gpui installs no menu and no quit binding of its own; the Quit action is handled below,
         // and by the project window once it exists.
@@ -6002,6 +6204,8 @@ fn open_project_window(
         let view_project = project.clone();
         let view_saved = saved.clone();
         let (view_config, view_theme) = (config, theme);
+        // An update's successor (`handoff`), from the pid the daemon gave it.
+        let handoff_from = handoff::predecessor(std::env::var("ARKOS_HANDOFF").ok().as_deref());
         let window = cx
             .open_window(
                 WindowOptions {
@@ -6015,6 +6219,8 @@ fn open_project_window(
                     // A window the daemon relaunched (an update, the watchdog) does not take the
                     // keyboard from the app in use.
                     focus: should_activate(std::env::var("ARKOS_RELAUNCH").ok().as_deref()),
+                    // A handoff's successor orders its window in itself, transparent (`handoff`).
+                    show: handoff_from.is_none(),
                     ..Default::default()
                 },
                 move |window, cx| {
@@ -6044,6 +6250,10 @@ fn open_project_window(
                         let space = view_saved.as_ref().and_then(|s| s.window.as_ref()).and_then(|w| w.space.clone());
                         let mut root = Root::new(client_for_view, view_project, view_saved, view_config, view_theme, system_is_dark, installed, cx);
                         root.ns_window = screen::ns_window_of(window);
+                        if let (Some(from), Some(ns)) = (handoff_from, root.ns_window.as_ref()) {
+                            handoff::mac::start_hidden(ns);
+                            root.handoff_from = Some((from, Instant::now()));
+                        }
                         // Relaunched by the daemon (an update, the watchdog), the window goes back
                         // to the desktop it was on; opened by the user, it opens where they are.
                         if let (false, Some(ns), Some(space)) = (should_activate(std::env::var("ARKOS_RELAUNCH").ok().as_deref()), root.ns_window.as_ref(), space) {
@@ -6113,6 +6323,10 @@ fn open_project_window(
                 root.notices.set(notices::Kind::ThemeRetired, config::NAVY_LIGHT_NOTICE, None, SystemTime::now());
             }
             root.follow_theme_in_claude(cx);
+            if root.handoff_from.is_some() {
+                root.watch_handoff(cx);
+            }
+            root.relaunch_after_for_checks(cx);
             root.apply_recovery(true, cx);
             root.load_pending_dirs(cx);
             root.refresh_status(cx);

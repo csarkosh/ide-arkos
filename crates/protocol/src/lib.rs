@@ -23,8 +23,11 @@ use std::time::Duration;
 /// `CustomizeDetailed`, the window's `CustomizeDoneDetailed` with what it draws (its effect and
 /// size), and the `CustomizedDetailed` answer. Version 11 adds a session's attention: whether
 /// its agent is blocked on the user and the line that says what it last said or asks
-/// (`SetAttention`, `ListAttention`, `Event::Attention`).
-pub const PROTOCOL_VERSION: u32 = 11;
+/// (`SetAttention`, `ListAttention`, `Event::Attention`). Version 12 adds the update's handoff:
+/// a window asks for its successor to start at once (`RelaunchHandoff`), the successor says when
+/// it is drawn (`HandoffReady`), and the daemon tells the old window to go (`Event::HandOff`) or
+/// that its successor died first (`Event::HandoffFailed`).
+pub const PROTOCOL_VERSION: u32 = 12;
 /// The oldest window a daemon still serves. Version 1 is milestone 2b's.
 pub const PROTOCOL_MIN: u32 = 1;
 /// The first protocol with `UpdateStatus` and `Event::UpdateStaged`.
@@ -51,6 +54,9 @@ pub const EFFECT_REPORT_FROM: u32 = 10;
 /// The first protocol with a session's attention. An older window is never sent
 /// `Event::Attention`, and an older daemon is never asked `ListAttention`.
 pub const ATTENTION_FROM: u32 = 11;
+/// The first protocol with the update's handoff. A window asks it only of a daemon that speaks it,
+/// and a daemon sends its events only to the window that asked.
+pub const HANDOFF_FROM: u32 = 12;
 /// The longest line a session's attention carries, in bytes; a longer one is cut by the daemon.
 pub const ATTENTION_NOTE_MAX: usize = 400;
 /// How long the daemon waits for the windows' answers to a `Customize` before it replies with
@@ -443,6 +449,15 @@ pub enum Request {
     SetAttention { session: SessionId, state: ClaudeState, blocked: bool, note: Option<String> },
     /// Every session's attention that is not the default. Answered `Attention`.
     ListAttention,
+    /// An update's relaunch that keeps this window on screen: start `exe` in `cwd` now, as this
+    /// window's successor (`ARKOS_HANDOFF` names this window's pid), and tell this window when the
+    /// successor is drawn (`Event::HandOff`) or has died first (`Event::HandoffFailed`). Answered
+    /// `Ok` once it started, or `Error` (the binary is not Arkos's, the start failed), after
+    /// which the window relaunches the old way.
+    RelaunchHandoff { exe: PathBuf, cwd: PathBuf },
+    /// From a successor the daemon started for `RelaunchHandoff`: it is drawn and on screen, so
+    /// the window with pid `from` may go. Answered `Ok`, or `Error` when that window is gone.
+    HandoffReady { from: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -533,6 +548,12 @@ pub enum Event {
     /// A session's agent record was set or cleared (its hooks' SessionStart and SessionEnd).
     /// Sent as `Attention` is, so a window knows how to resume a session it later closes.
     Agent { session: SessionId, agent: Option<AgentRecord> },
+    /// To a window that asked `RelaunchHandoff`: its successor, pid `to`, is drawn over it. The
+    /// window hands the user's focus to it when it has it, leaves the screen and quits.
+    HandOff { to: u32 },
+    /// To a window that asked `RelaunchHandoff`: its successor ended before it was drawn. The
+    /// window stays and relaunches the old way.
+    HandoffFailed { reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -552,7 +573,7 @@ mod tests {
     /// postcard writes an enum's variant index first; appended variants keep every older index.
     #[test]
     fn new_variants_are_appended_after_the_old_ones() {
-        assert_eq!(PROTOCOL_VERSION, 11);
+        assert_eq!(PROTOCOL_VERSION, 12);
         assert_eq!(PROTOCOL_MIN, 1);
         assert_eq!(postcard::to_allocvec(&Request::RelaunchClient { exe: "/x".into(), cwd: "/y".into() }).unwrap()[0], 11);
         assert_eq!(postcard::to_allocvec(&Request::Goodbye).unwrap()[0], 12);
@@ -602,7 +623,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<Event>(&serde_json::to_string(&ev).unwrap()).unwrap(), ev);
         let resp = Response::Customized { outcomes: vec![o.clone()], missing: vec![8], too_old: vec![] };
         assert_eq!(serde_json::from_str::<Response>(&serde_json::to_string(&resp).unwrap()).unwrap(), resp);
-        assert_eq!(PROTOCOL_VERSION, 11);
+        assert_eq!(PROTOCOL_VERSION, 12);
         assert_eq!(CUSTOMIZE_FROM, 6);
         assert_eq!(CUSTOMIZE_WAIT, Duration::from_secs(2));
         assert_eq!(first_byte(&Request::Customize { id: 9, action: a }), 21);
@@ -616,7 +637,7 @@ mod tests {
 
     #[test]
     fn telemetry_messages_round_trip_and_sit_at_the_end_of_their_enums() {
-        assert_eq!(PROTOCOL_VERSION, 11);
+        assert_eq!(PROTOCOL_VERSION, 12);
         assert_eq!(TELEMETRY_FROM, 7);
         let session = Request::Session { sid: "0123456789abcdef0123456789abcdef".into() };
         let status = Response::TelemetryStatus {
@@ -662,8 +683,26 @@ mod tests {
     }
 
     #[test]
+    fn handoff_messages_sit_at_the_end_of_their_enums() {
+        assert_eq!(PROTOCOL_VERSION, 12);
+        assert_eq!(HANDOFF_FROM, 12);
+        let ask = Request::RelaunchHandoff { exe: "/Applications/Arkos IDE.app/Contents/MacOS/arkos".into(), cwd: "/p".into() };
+        assert_eq!(first_byte(&Request::ListAttention), 31);
+        assert_eq!(first_byte(&ask), 32);
+        assert_eq!(first_byte(&Request::HandoffReady { from: 7 }), 33);
+        assert_eq!(first_byte(&Event::HandOff { to: 8 }), 8);
+        assert_eq!(first_byte(&Event::HandoffFailed { reason: "x".into() }), 9);
+        for req in [ask, Request::HandoffReady { from: 7 }] {
+            assert_eq!(postcard::from_bytes::<Request>(&postcard::to_allocvec(&req).unwrap()).unwrap(), req);
+        }
+        for ev in [Event::HandOff { to: 8 }, Event::HandoffFailed { reason: "it crashed".into() }] {
+            assert_eq!(postcard::from_bytes::<Event>(&postcard::to_allocvec(&ev).unwrap()).unwrap(), ev);
+        }
+    }
+
+    #[test]
     fn direct_messages_sit_at_the_end_of_their_enums() {
-        assert_eq!(PROTOCOL_VERSION, 11);
+        assert_eq!(PROTOCOL_VERSION, 12);
         assert_eq!(DIRECT_FROM, 8);
         assert_eq!(WEB_OPEN_FROM, 9);
         assert_eq!(first_byte(&OpenKind::Web), 3, "the web kind sits after the three of protocol 8");
@@ -753,7 +792,7 @@ mod tests {
 
     #[test]
     fn detailed_customize_messages_carry_what_a_window_draws_and_sit_at_the_end_of_their_enums() {
-        assert_eq!(PROTOCOL_VERSION, 11);
+        assert_eq!(PROTOCOL_VERSION, 12);
         assert_eq!(EFFECT_REPORT_FROM, 10);
         let o = CustomizeOutcome { pid: 7, project: "/p".into(), result: Ok(Report::default()) };
         let drawn = WindowDetail { effect: Some(("watercolor".into(), Some(2.5))), size: Some((1200.0, 800.0)) };

@@ -125,6 +125,9 @@ pub struct State {
     /// The watchdog's silent relaunches in a row, by window (its binary and folder), so the
     /// count survives the window's reconnects; a daemon restart starts it again.
     pub relaunches: HashMap<crate::watchdog::WindowId, crate::watchdog::Relaunches>,
+    /// An update's successors not drawn yet, by their pid, and the window each takes over from:
+    /// a successor that goes before its `HandoffReady` is reported to that window.
+    pub handoffs: HashMap<u32, ClientId>,
 }
 
 impl State {
@@ -528,6 +531,9 @@ fn disconnect(state: &Shared, client_id: ClientId, update: &crate::updates::Upda
             }
             None => return,
         };
+        successor_gone(&mut st, ui_pid);
+        // A window that went before its successor was drawn takes no handoff any more.
+        st.handoffs.retain(|_, old| *old != client_id);
         // A tool that hung up wants no answer; a window that left will not answer, and a wait
         // left with nobody to hear from is answered now.
         st.customize.retain(|_, w| w.client != client_id);
@@ -620,6 +626,58 @@ pub fn is_arkos_binary(p: &Path) -> bool {
     let named = p.file_name().map(|n| n == "arkos").unwrap_or(false);
     // SAFETY: getuid takes no arguments and cannot fail.
     named && std::fs::metadata(p).map(|m| m.is_file() && m.uid() == unsafe { libc::getuid() }).unwrap_or(false)
+}
+
+/// `RelaunchHandoff`: starts the window's successor now, with `ARKOS_HANDOFF` naming the window,
+/// and remembers it until it is drawn. The update's grace counts from the start, as it does
+/// from a `RelaunchClient` window's leaving.
+fn relaunch_handoff(state: &Shared, client_id: ClientId, exe: PathBuf, cwd: PathBuf, opts: &Options) -> Response {
+    if !is_arkos_binary(&exe) {
+        return Response::Error(format!("{} is not a arkos binary owned by this user", exe.display()));
+    }
+    let (from, clock) = {
+        let mut st = state.lock().unwrap();
+        let Some(from) = st.clients.get(&client_id).and_then(|r| r.ui_pid) else {
+            return Response::Error("a handoff is for a window that said Hello with its pid".into());
+        };
+        (from, crate::updates::apply::restart_clock(&mut st.update, &opts.update.dir))
+    };
+    if let Some(line) = clock {
+        crate::journal::note(line);
+    }
+    // The lock is released: launching never blocks other threads.
+    let env = [("ARKOS_HANDOFF".to_string(), from.to_string())];
+    match crate::watchdog::launch_ui_with(&exe, Some(&cwd), "the successor of an update's handoff", &env) {
+        Ok(pid) => {
+            state.lock().unwrap().handoffs.insert(pid, client_id);
+            Response::Ok
+        }
+        Err(e) => Response::Error(format!("cannot start {}: {e}", exe.display())),
+    }
+}
+
+/// `HandoffReady` from a successor: the window it takes over from is told to go.
+fn handoff_ready(state: &Shared, client_id: ClientId, from: u32) -> Response {
+    let mut st = state.lock().unwrap();
+    let me = st.clients.get(&client_id).and_then(|r| r.ui_pid).unwrap_or(0);
+    st.handoffs.remove(&me);
+    let told = st.clients.values().filter(|r| r.connected && r.ui_pid == Some(from)).any(|r| r.tx.send(ServerMessage::Event(Event::HandOff { to: me })));
+    if told {
+        crate::journal::note(format_args!("handoff: window {me} is drawn; window {from} goes"));
+        Response::Ok
+    } else {
+        Response::Error(format!("window {from} is gone"))
+    }
+}
+
+/// A successor that went before it was drawn: the window it was to take over from stays, and is
+/// told so. Called with the state locked, from `disconnect`.
+fn successor_gone(st: &mut State, pid: Option<u32>) {
+    let Some(old) = pid.and_then(|p| st.handoffs.remove(&p)) else { return };
+    if let Some(rec) = st.clients.get(&old) {
+        rec.tx.send(ServerMessage::Event(Event::HandoffFailed { reason: "the new window ended before it was drawn".into() }));
+    }
+    crate::journal::note(format_args!("handoff: the new window (pid {}) ended before it was drawn; the old one stays", pid.unwrap_or(0)));
 }
 
 /// Handles one request. Returns the response to queue, or None when it was already queued.
@@ -722,6 +780,8 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
                 Response::Ok
             }
         }
+        Request::RelaunchHandoff { exe, cwd } => relaunch_handoff(state, client_id, exe, cwd, opts),
+        Request::HandoffReady { from } => handoff_ready(state, client_id, from),
         Request::Goodbye => {
             let mut st = state.lock().unwrap();
             if let Some(cwd) = st.clients.get(&client_id).and_then(|r| r.ui_cwd.clone()) {
@@ -1382,6 +1442,68 @@ mod tests {
         assert_eq!(sealed_end(&opts), None, "only noted; the socket closing seals");
         disconnect(&state, 1, &opts.update);
         assert_eq!(sealed_end(&opts).as_deref(), Some("quit"));
+    }
+
+    /// The events queued for a client, as messages.
+    fn events_for(state: &Shared, client: ClientId) -> Vec<Event> {
+        let tx = state.lock().unwrap().clients[&client].tx.clone();
+        tx.take().unwrap_or_default().into_iter().filter_map(|i| match i.into_message() {
+            ServerMessage::Event(e) => Some(e),
+            _ => None,
+        }).collect()
+    }
+
+    #[test]
+    fn a_drawn_successor_tells_the_window_it_takes_over_from_to_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, opts) = (test_state(), test_options(dir.path()));
+        add_window(&state, 1, 500, 12, &[]);
+        add_window(&state, 2, 600, 12, &[]);
+        state.lock().unwrap().handoffs.insert(600, 1);
+        let tx = state.lock().unwrap().clients[&2].tx.clone();
+        assert_eq!(dispatch(&state, 2, &tx, 1, Request::HandoffReady { from: 500 }, &opts), Some(Response::Ok));
+        assert_eq!(events_for(&state, 1), vec![Event::HandOff { to: 600 }]);
+        assert!(state.lock().unwrap().handoffs.is_empty(), "drawn: no longer waited for");
+        // Gone by then: the successor hears so and shows itself anyway.
+        assert!(matches!(dispatch(&state, 2, &tx, 2, Request::HandoffReady { from: 999 }, &opts), Some(Response::Error(_))));
+    }
+
+    #[test]
+    fn a_successor_that_ends_before_it_is_drawn_leaves_the_old_window_told() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, opts) = (test_state(), test_options(dir.path()));
+        add_window(&state, 1, 500, 12, &[]);
+        add_window(&state, 2, 600, 12, &[]);
+        state.lock().unwrap().handoffs.insert(600, 1);
+        disconnect(&state, 2, &opts.update);
+        assert!(matches!(&events_for(&state, 1)[..], [Event::HandoffFailed { .. }]));
+        assert!(state.lock().unwrap().handoffs.is_empty());
+    }
+
+    #[test]
+    fn a_window_gone_before_its_successor_is_drawn_takes_no_handoff() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, opts) = (test_state(), test_options(dir.path()));
+        add_window(&state, 1, 500, 12, &[]);
+        state.lock().unwrap().handoffs.insert(600, 1);
+        disconnect(&state, 1, &opts.update);
+        assert!(state.lock().unwrap().handoffs.is_empty());
+    }
+
+    #[test]
+    fn a_handoff_starts_only_an_arkos_binary_and_only_for_a_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, opts) = (test_state(), test_options(dir.path()));
+        add_window(&state, 1, 500, 12, &[]);
+        let tx = state.lock().unwrap().clients[&1].tx.clone();
+        let not_ours = Request::RelaunchHandoff { exe: dir.path().join("sh"), cwd: dir.path().to_path_buf() };
+        assert!(matches!(dispatch(&state, 1, &tx, 1, not_ours, &opts), Some(Response::Error(e)) if e.contains("not a arkos binary")));
+        let exe = dir.path().join("arkos");
+        std::fs::write(&exe, "").unwrap();
+        let tool = add_client(&state, 2);
+        let ask = Request::RelaunchHandoff { exe, cwd: dir.path().to_path_buf() };
+        assert!(matches!(dispatch(&state, 2, &tool, 1, ask, &opts), Some(Response::Error(e)) if e.contains("said Hello")), "a client with no window has none to hand over");
+        assert!(state.lock().unwrap().handoffs.is_empty());
     }
 
     /// An update's relaunch closes the old window on purpose: its session ended as a quit.

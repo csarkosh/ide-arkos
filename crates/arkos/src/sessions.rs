@@ -55,6 +55,10 @@ pub enum Pending {
     Upgrade,
     /// The daemon starting the installed window once this one disconnects.
     Relaunch,
+    /// The daemon starting this window's successor now, for an update's handoff (protocol 12).
+    Handoff,
+    /// The successor saying it is drawn; an error (the old window gone) changes nothing.
+    HandoffReady,
     /// What the daemon has staged and the last update error (protocol 4).
     Status,
     /// `Status`, asked a moment after a check the user requested: its answer says whether the
@@ -93,6 +97,10 @@ pub enum Outcome {
     RelaunchAccepted,
     /// The daemon will not relaunch the window, which therefore stays.
     RelaunchRefused(String),
+    /// The daemon started this window's successor; the window stays until it is told to go.
+    HandoffStarted,
+    /// The daemon could not start a successor: the window relaunches the old way.
+    HandoffRefused(String),
     /// What the daemon has staged and why its last update attempt failed, when it did.
     UpdateStatus { staged: Option<StagedUpdate>, last_error: Option<String>, unreachable_for_secs: Option<u64> },
     /// The staged bundle is in place: the window runs "Update now" to finish.
@@ -175,7 +183,7 @@ pub fn group_by_session(events: &[Event]) -> Vec<(SessionId, Vec<Event>)> {
             Event::Output { session, .. } | Event::Exited { session, .. } | Event::State { session, .. } => *session,
             // Not a session's terminal's: the root shows it (`Root::route_events`), or
             // `note_events` has recorded it.
-            Event::UpdateStaged { .. } | Event::Customize { .. } | Event::Direct { .. } | Event::Attention { .. } | Event::Agent { .. } => continue,
+            Event::UpdateStaged { .. } | Event::Customize { .. } | Event::Direct { .. } | Event::Attention { .. } | Event::Agent { .. } | Event::HandOff { .. } | Event::HandoffFailed { .. } => continue,
         };
         match out.iter_mut().find(|(s, _)| *s == sid) {
             Some((_, list)) => list.push(ev.clone()),
@@ -338,6 +346,19 @@ impl SessionManager {
     pub fn relaunch(&mut self, exe: PathBuf) {
         let id = self.transport.send(Request::RelaunchClient { exe, cwd: self.project.clone() });
         self.pending.insert(id, Pending::Relaunch);
+    }
+
+    /// Asks the daemon to start `exe` in this project now, as this window's successor in an
+    /// update's handoff (protocol 12); the window stays until `Event::HandOff`.
+    pub fn relaunch_handoff(&mut self, exe: PathBuf) {
+        let id = self.transport.send(Request::RelaunchHandoff { exe, cwd: self.project.clone() });
+        self.pending.insert(id, Pending::Handoff);
+    }
+
+    /// The successor's word that it is drawn, so the window with pid `from` may go.
+    pub fn handoff_ready(&mut self, from: u32) {
+        let id = self.transport.send(Request::HandoffReady { from });
+        self.pending.insert(id, Pending::HandoffReady);
     }
 
     /// Asks what the daemon has staged (protocol 4 daemons only).
@@ -699,6 +720,11 @@ impl SessionManager {
                 }
                 Some(Pending::Upgrade) => return Outcome::UpgradeFailed(e.clone()),
                 Some(Pending::Relaunch) => return Outcome::RelaunchRefused(e.clone()),
+                Some(Pending::Handoff) => return Outcome::HandoffRefused(e.clone()),
+                Some(Pending::HandoffReady) => {
+                    eprintln!("arkos: handoff: {e}; this window stays as it is");
+                    return Outcome::None;
+                }
                 Some(Pending::Apply) => return Outcome::ApplyFailed(e.clone()),
                 Some(Pending::Check) => return Outcome::CheckFailed(e.clone()),
                 Some(Pending::Kill { session }) if e.starts_with("no session") => {
@@ -738,6 +764,8 @@ impl SessionManager {
             (Some(Pending::Kill { session }), Response::Ok) => Outcome::Killed { session },
             (Some(Pending::Grace { session }), Response::Ok) => Outcome::GraceKept { session },
             (Some(Pending::Relaunch), Response::Ok) => Outcome::RelaunchAccepted,
+            (Some(Pending::Handoff), Response::Ok) => Outcome::HandoffStarted,
+            (Some(Pending::Handoff), _) => Outcome::HandoffRefused(format!("unexpected response {response:?} to {pending:?}")),
             (Some(Pending::Apply), Response::Ok) => Outcome::Applied,
             (Some(Pending::Check), Response::Ok) => Outcome::CheckStarted,
             (Some(Pending::Apply), _) => Outcome::ApplyFailed(format!("unexpected response {response:?} to {pending:?}")),
@@ -771,7 +799,7 @@ impl SessionManager {
     pub fn stash_if_restoring(&mut self, ev: &Event) -> bool {
         let sid = match ev {
             Event::Output { session, .. } | Event::Exited { session, .. } | Event::State { session, .. } => *session,
-            Event::UpdateStaged { .. } | Event::Customize { .. } | Event::Direct { .. } | Event::Attention { .. } | Event::Agent { .. } => return false,
+            Event::UpdateStaged { .. } | Event::Customize { .. } | Event::Direct { .. } | Event::Attention { .. } | Event::Agent { .. } | Event::HandOff { .. } | Event::HandoffFailed { .. } => return false,
         };
         if !self.restoring.contains(&sid) {
             return false;
@@ -879,7 +907,7 @@ impl SessionManager {
                     self.probed.remove(session);
                 }
                 // The root reads `UpdateStaged` and `Customize` itself (`Root::route_events`).
-                Event::Output { .. } | Event::UpdateStaged { .. } | Event::Customize { .. } | Event::Direct { .. } => {}
+                Event::Output { .. } | Event::UpdateStaged { .. } | Event::Customize { .. } | Event::Direct { .. } | Event::HandOff { .. } | Event::HandoffFailed { .. } => {}
             }
         }
         changed

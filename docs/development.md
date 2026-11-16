@@ -71,8 +71,8 @@ new one) and ends every session, so do it when nothing important is running.
 ### gpui fork
 
 Arkos builds against gpui from its fork, https://github.com/csarkosh/gpui, pinned in the
-workspace `Cargo.toml`'s `[patch.crates-io]` by tag (now `v0.2.2-arkos.7`). The fork is the
-crates.io tarball of gpui 0.2.2 (tag `v0.2.2`) with seven commits on top, six of them the hooks
+workspace `Cargo.toml`'s `[patch.crates-io]` by tag (now `v0.2.2-arkos.9`). The fork is the
+crates.io tarball of gpui 0.2.2 (tag `v0.2.2`) with nine commits on top, six of them the hooks
 the effects use: the per-window glyph shader (`Window::set_glyph_shader`, `GlyphShader`,
 `GLYPH_SHADER_PRELUDE`, `GLYPH_SHADER_BASE`; tag `v0.2.2-arkos.1`), its clock
 (`Window::set_glyph_shader_time`, one `float` at Metal buffer index 5 in both glyph stages; tag
@@ -85,7 +85,10 @@ again with the glyph clock moved on while ink is wet; tag `v0.2.2-arkos.5`), and
 (`Window::paint_svg` carries the glyph stamp too, so watercolor's washed cell backgrounds reach the
 glyph stages with one; tag `v0.2.2-arkos.6`). The seventh is a fix: every pipeline composites
 alpha "over" rather than adding it up, so a translucent sprite over the terminal's half-clear
-paper keeps its colour instead of reading grey (tag `v0.2.2-arkos.7`). An upgrade goes as the fork's `ARKOS.md` says:
+paper keeps its colour instead of reading grey (tag `v0.2.2-arkos.7`). The last two are for an
+update's handoff: an app that is an accessory when it finishes launching stays one (tag
+`v0.2.2-arkos.8`), and `gpui::launch_as_accessory()`, called before `Application::run`, makes it
+one before it finishes launching (tag `v0.2.2-arkos.9`). An upgrade goes as the fork's `ARKOS.md` says:
 commit the next tarball as `v<version>`, rebase the patch commits onto it, tag
 `v<version>-arkos.1`, push, point `[patch.crates-io]` at the new tag and run
 `cargo update -p gpui`.
@@ -1061,6 +1064,17 @@ Things only a person at the screen can check, in order of value:
   daemon after `arkos update` in a dev sandbox) brings each window back on its own desktop, and
   the desktop in front stays in front; a desktop removed meanwhile leaves its window on the one
   in front
+- update handoff: in a dev sandbox, start the window with `ARKOS_RELAUNCH_AFTER=8` (it relaunches
+  itself through the daemon as an update's last step does) and `ARKOS_HANDOFF_CHECK="<text>"`,
+  with `claude` running in a tab and `<text>` typed in its prompt, not sent. The window stays on
+  screen throughout, with no blank frame and no second Dock icon; `window.log` in the sandbox's
+  state folder says "handoff: drawn in N ms" and "handoff check: session … shows the text 1
+  times on screen", and the prompt is still in the input box of the new window. With the old
+  window in front, the new one has the keyboard ("… is drawn and has the focus; this one goes").
+  With the sandbox window on a desktop not in front, the new one takes over within half a second
+  ("shown after 0.5s … off screen") and the desktop in front does not change. A sampler of the
+  window list (`CGWindowListCopyWindowInfo` every millisecond, alpha and owner) shows an opaque
+  window at every sample; `screencapture` needs Screen Recording, which the sampler does not
 - hooks set up by themselves: with the hooks removed from `~/.claude/settings.json` (a copy
   kept), the installed app's next start writes them back with a `.bak`, the bell says so naming
   the file, and a `claude` started in a tab then shows its marks; a second start writes nothing

@@ -406,8 +406,14 @@ pub fn person_away() -> bool {
 /// Used for the watchdog's relaunch, `RelaunchClient`, a rollback and a recovery. `why` is for
 /// the update journal, which records every launch with its pid.
 pub fn launch_ui(exe: &Path, cwd: Option<&Path>, why: &str) -> std::io::Result<u32> {
+    launch_ui_with(exe, cwd, why, &[])
+}
+
+/// `launch_ui` with more environment for the window: an update's successor gets
+/// `ARKOS_HANDOFF`, the pid of the window it takes over from.
+pub fn launch_ui_with(exe: &Path, cwd: Option<&Path>, why: &str, env: &[(String, String)]) -> std::io::Result<u32> {
     let folder = cwd.unwrap_or(Path::new("/"));
-    let launched = spawn_ui(exe, folder);
+    let launched = spawn_ui(exe, folder, env);
     match &launched {
         Ok(pid) => crate::journal::note(format_args!("relaunch spawned ({why}): {} in {}, pid {pid}", exe.display(), folder.display())),
         Err(e) => crate::journal::note(format_args!("relaunch failed ({why}): {} in {}: {e}", exe.display(), folder.display())),
@@ -417,7 +423,7 @@ pub fn launch_ui(exe: &Path, cwd: Option<&Path>, why: &str) -> std::io::Result<u
 
 /// The window as its own responsible process (`spawn.rs`): macOS then checks its Accessibility
 /// as Arkos IDE's, which a window forked by the daemon never had.
-fn spawn_ui(exe: &Path, cwd: &Path) -> std::io::Result<u32> {
+fn spawn_ui(exe: &Path, cwd: &Path, more: &[(String, String)]) -> std::io::Result<u32> {
     // Both outputs to window.log, so a window that dies at start (or waits in the chooser) says
     // why; with no log, nowhere.
     let log = crate::journal::open_window_log();
@@ -425,7 +431,8 @@ fn spawn_ui(exe: &Path, cwd: &Path) -> std::io::Result<u32> {
     let out = log.as_ref().map_or(null.as_raw_fd(), |f| f.as_raw_fd());
     let program = exe.to_str().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "the window's path is not UTF-8"))?;
     // The window opens without taking focus: the user may be in another app.
-    let env = [("ARKOS_RELAUNCH".to_string(), "1".to_string())];
+    let mut env = vec![("ARKOS_RELAUNCH".to_string(), "1".to_string())];
+    env.extend(more.iter().cloned());
     let pid = {
         let _no_open_pty_inheritable = crate::pty::spawn_lock();
         crate::spawn::spawn(program, &[], cwd, &env, out, out)?
