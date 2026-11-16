@@ -383,9 +383,9 @@ pub struct Pane {
     pub browser: Option<String>,
     pub view: Option<String>,
     /// For the Inbox's list, what the user did with the session before the window opened: put
-    /// off for this many minutes with "Remind me in" (Later), which only a session with no turn
-    /// of its own during the shoot keeps (a `claude` with an empty prompt), since a finished
-    /// answer brings a session back.
+    /// off for this many minutes with "Remind me in" (Scheduled). A session with a prompt would
+    /// show its unread answer outside Scheduled, so only a shell or a `claude` with an empty
+    /// prompt is put off.
     pub later_mins: Option<u64>,
     /// Just started by the user, with nothing in it yet (New): a plain shell.
     #[serde(default)]
@@ -724,8 +724,8 @@ impl Story {
             if !p.is_terminal() && (p.later_mins.is_some() || p.new || p.line.is_some()) {
                 bail!("pane {:?}: only a shell has later_mins, new or a line", p.name);
             }
-            if p.later_mins.is_some() && p.claude.as_deref().is_none_or(|c| !c.is_empty()) {
-                bail!("pane {:?}: later_mins needs claude = \"\" (a finished answer brings a session back from Later)", p.name);
+            if p.later_mins.is_some() && p.claude.as_deref().is_some_and(|c| !c.is_empty()) {
+                bail!("pane {:?}: later_mins needs no claude prompt (an unread answer shows outside Scheduled)", p.name);
             }
             if p.new && (p.claude.is_some() || p.run.is_some() || p.later_mins.is_some()) {
                 bail!("pane {:?}: a new session is a plain shell, with no claude, run or later_mins", p.name);
@@ -1310,7 +1310,7 @@ theme = "light"
     #[test]
     fn a_session_put_off_must_have_no_turn_of_its_own_and_a_new_one_is_a_plain_shell() {
         let later = STORY.replace("claude = \"test the thing\"", "claude = \"test the thing\"\nlater_mins = 60");
-        assert!(Story::parse(&later).unwrap_err().to_string().contains("later_mins needs claude"));
+        assert!(Story::parse(&later).unwrap_err().to_string().contains("later_mins needs no claude prompt"));
         let new = STORY.replace("claude = \"test the thing\"", "claude = \"test the thing\"\nnew = true");
         assert!(Story::parse(&new).unwrap_err().to_string().contains("a new session is a plain shell"));
     }

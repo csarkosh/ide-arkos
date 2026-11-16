@@ -533,7 +533,7 @@ Things only a person at the screen can check, in order of value:
 - sessions: a click on an Unread row leaves it under Unread with its dot turned to a ring; a
   click on another row moves it to Unanswered; a right click opens "Move to" with a ▸, and
   hovering it opens the sections beside it, level with the row: every row offers every section
-  but its own (Needs you, Unread, New, Unanswered, Working, Quiet, Done; not Scheduled, which is
+  but its own (New, Needs you, Unread, Unanswered, Working, Quiet, Done; not Scheduled, which is
   "Remind me in"), each moves the row at once, and the next thing its agent does takes it back
   to where that puts it; an idle session's second line is its Claude Code title, not the
   folder; under overworld the selected and hovered rows are drawn inside the sidebar's frame
@@ -554,7 +554,8 @@ Things only a person at the screen can check, in order of value:
   until another row is chosen, then a one-time one stays where its terminals put it and a
   repeating one goes back under Scheduled with its next time
 - scheduled sessions: a reply typed in a session under Scheduled moves its row to Working at
-  once; Claude's answer, read elsewhere, moves it to Unread; a click on it keeps it there, and
+  once, with a "Scheduled" label and its time beside the name; Claude's answer, read elsewhere,
+  moves it to Unread with the label still there; a click on it keeps it there, and
   choosing another session puts it back under Scheduled with the same "in …" time; a scheduled
   row's menu has "Unschedule" after "Remind me in", which puts the row where its terminals stand
   (and an unscheduled row's menu has none)
@@ -564,6 +565,7 @@ Things only a person at the screen can check, in order of value:
   castle, its sky reaching half the sidebar's height in a tall window with the stars thinning
   to none at its top and the sun where it was, and the names dim only the part of it they lie over, a short list leaving the castle
   at full colour; a selected session row's highlight stops at the sidebar's frame on both sides
+- sessions: New is the first group, above Needs you and Unread
 - sessions: every group's heading has a chevron and folds or opens its rows on a click, Quiet
   and Done folded on a first open; the Unread heading is visibly heavier than the others, in
   Departure Mono too; what is folded is the same after a relaunch

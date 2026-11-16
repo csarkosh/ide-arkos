@@ -24,8 +24,9 @@ Bash: ffmpeg …", or its question), or the first line of what Claude last said,
 window so an update does not lose it; a session that has said nothing yet shows its terminal's
 title (Claude Code titles it with the conversation's topic), else the folder it runs in. The
 sidebar's Sessions list has a row for every session of the window (see [Layouts](#layouts): a
-session is a page of panes, and may hold several Claude Code sessions) under Needs you, Unread,
-New, Unanswered, Working, Quiet, Scheduled and Done, newest change first, each with its mark,
+session is a page of panes, and may hold several Claude Code sessions) under New, Needs you,
+Unread, Unanswered, Working, Quiet, Scheduled and Done (New first, so a session you just started
+is at the top), newest change first, each with its mark,
 name, age and line. A session holding several terminals is listed by the one that most needs
 you (a question beats an answer, an answer beats work), with that one's line and a count
 ("3 sessions") beside its age; its name is its first terminal's. A session you start ("+ New
@@ -38,7 +39,7 @@ session, on the pane that needs you when one does, else as you left it, and Shif
 unread one, then an unanswered one. A row you click stays where it was until you choose
 another session, so an unread one stays under Unread (marked read) rather than moving from
 under the pointer. Right click a row for "Move to", which lists every section but the one the
-session is in: Needs you, Unread, New, Unanswered, Working, Quiet and Done; every terminal of
+session is in: New, Needs you, Unread, Unanswered, Working, Quiet and Done; every terminal of
 the session moves, except that Unread marks only the one that leads it. Beside it, "Remind me
 in" puts the session under Scheduled until a time, as Slack's reminders do: In 20 minutes, In 1
 hour, In 3 hours, Tomorrow (at 9:00), Next week (Monday at 9:00), or Custom, which opens a date
@@ -48,8 +49,8 @@ and Repeat: Never, Every day, Every weekday, Every week on that weekday or Every
 day (the month's last day when it is shorter). Save sets it, Enter too; Escape closes it. A
 scheduled row says how long until its time, with an arrow when it repeats. Reply in a scheduled
 session and it shows under Working while Claude works, then under Unread (or Needs you) with its
-answer; once you have read it and chosen another session it is back under Scheduled, its
-reminder kept. "Unschedule" in its menu ends the reminder (a repeating one too), and the session
+answer, its row keeping a "Scheduled" label beside its time all the while; once you have read
+it and chosen another session it is back under Scheduled, its reminder kept. "Unschedule" in its menu ends the reminder (a repeating one too), and the session
 is listed as any other again. When the time comes
 the session comes up under Unread (or Needs you, or Working, when it is so) with a Reminder
 label in place of its age, until you look at it; a repeating one then goes back under
