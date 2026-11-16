@@ -2271,7 +2271,9 @@ impl Root {
             edit.set(&remind_picker::time_label(p.minutes));
             edit.select_all();
             self.remind_time = Some(edit);
-            self.remind_scroll.scroll_to_item((p.minutes / remind_picker::STEP) as usize);
+            // The time chosen with two before it, at the top of the list.
+            let above = ((p.minutes / remind_picker::STEP) as f32 - 2.0).max(0.0);
+            self.remind_scroll.set_offset(gpui::point(px(0.0), px(-above * remind_picker::ROW_H)));
         } else {
             self.remind_time = None;
         }

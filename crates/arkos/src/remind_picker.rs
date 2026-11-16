@@ -229,6 +229,8 @@ const CELL: f32 = 32.0;
 const PAD: f32 = 14.0;
 /// The label column of the time and repeat rows.
 const LABEL_W: f32 = 56.0;
+/// A dropdown row's height, so the list of times can be scrolled to one by arithmetic.
+pub const ROW_H: f32 = 24.0;
 
 /// The picker over the window while it is open or fading out: a scrim that cancels when clicked,
 /// and the card in the middle.
@@ -326,13 +328,13 @@ pub fn render(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     let repeat = field("remind-repeat", "Repeat", div().child(repeat_name).into_any_element(), Drop::Repeat, cx);
     // The open dropdown's list, under its field.
     let list = |rows: Vec<(String, bool, Box<dyn Fn(&mut Picker, u64)>)>, scroll: Option<gpui::ScrollHandle>, cx: &mut Context<Root>| {
-        let mut l = div().id("remind-list").absolute().left(px(LABEL_W)).right_0().top(px(28.0)).max_h(px(180.0)).overflow_y_scroll().py(px(4.0)).rounded(px(6.0)).map(|d| crate::chrome::menu_frame(d, &theme, &style)).occlude();
+        let mut l = div().id("remind-list").absolute().left(px(LABEL_W)).top(px(28.0)).min_w(px(7.0 * CELL - LABEL_W)).max_h(px(7.5 * ROW_H)).overflow_y_scroll().rounded(px(6.0)).whitespace_nowrap().map(|d| crate::chrome::menu_frame(d, &theme, &style)).occlude();
         if let Some(scroll) = scroll {
             l = l.track_scroll(&scroll);
         }
         for (i, (label, on_it, f)) in rows.into_iter().enumerate() {
             let f = std::rc::Rc::new(f);
-            l = l.child(div().id(("remind-item", i)).px(px(8.0)).py(px(3.0)).cursor_pointer().hover(move |s| s.bg(hover)).when(on_it, |d| d.bg(hover).font_weight(gpui::FontWeight::BOLD)).child(label).on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
+            l = l.child(div().id(("remind-item", i)).h(px(ROW_H)).flex().items_center().px(px(8.0)).cursor_pointer().hover(move |s| s.bg(hover)).when(on_it, |d| d.bg(hover).font_weight(gpui::FontWeight::BOLD)).child(label).on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
                 if let Some(p) = root.remind_picker.value_mut() {
                     f(p, now_ms());
                     p.open = None;
@@ -346,14 +348,15 @@ pub fn render(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     let time = match p.open {
         Some(Drop::Time) => {
             let rows = times().into_iter().map(|m| (time_label(m), m == p.minutes, Box::new(move |p: &mut Picker, _| p.minutes = m) as Box<dyn Fn(&mut Picker, u64)>)).collect();
-            time.relative().child(list(rows, Some(root.remind_scroll.clone()), cx))
+            // Drawn after the rest of the card, so the rows under the field stay under the list.
+            time.relative().child(gpui::deferred(list(rows, Some(root.remind_scroll.clone()), cx)).with_priority(1))
         }
         _ => time,
     };
     let repeat = match p.open {
         Some(Drop::Repeat) => {
             let rows = p.repeats().into_iter().map(|(r, n)| (n, r == p.repeat, Box::new(move |p: &mut Picker, _| p.repeat = r) as Box<dyn Fn(&mut Picker, u64)>)).collect();
-            repeat.relative().child(list(rows, None, cx))
+            repeat.relative().child(gpui::deferred(list(rows, None, cx)).with_priority(1))
         }
         _ => repeat,
     };
