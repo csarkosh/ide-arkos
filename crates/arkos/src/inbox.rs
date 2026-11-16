@@ -173,8 +173,102 @@ impl Sides {
     }
 }
 
+/// Makes a tree from before pages into pages (sessions hold grids spec, section 6): a Grid's
+/// arrangement is gathered as switching to the Inbox did, each session handed the tabs it owned;
+/// then each terminal is a page of its own with its side beside it. A tree in pages is left be.
+pub fn into_pages(tree: &mut Tree, mut sides: Sides) {
+    if tree.paged {
+        return;
+    }
+    if !tree.is_inbox() {
+        sides.enter(tree);
+    }
+    let shown = selected(tree);
+    let focus = tree.focused;
+    let mut by_session: HashMap<TabId, (Node, SidePlace)> = HashMap::new();
+    if let (Some(s), Some((side, place))) = (shown, tree.inbox_take_side()) {
+        sides.remember(place);
+        by_session.insert(s, (side, place));
+    }
+    for (session, side) in std::mem::take(&mut sides.kept) {
+        by_session.entry(session).or_insert((side, sides.side_place()));
+    }
+    tree.into_pages(by_session, shown, focus);
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_old_inbox_becomes_a_page_per_session_each_with_its_own_side() {
+        let mut tree = Tree::new(term(1));
+        let sessions = tree.panes()[0];
+        tree.add_tab(sessions, term(2));
+        tree.activate(sessions, 0);
+        let mut sides = Sides::default();
+        sides.keep_shape(&mut tree);
+        tree.split(sessions, Side::Right, doc("/p/one.md")).unwrap();
+        sides.keep_shape(&mut tree);
+        tree.activate(sessions, 1);
+        sides.keep_shape(&mut tree);
+        tree.split(sessions, Side::Right, doc("/p/two.md")).unwrap();
+        sides.keep_shape(&mut tree);
+        let focus = tree.focused;
+        let two = tree.tab_id(sessions, 1).unwrap();
+        let mut old: Tree = serde_json::from_str(&serde_json::to_string(&tree).unwrap().replace("\"paged\":true", "\"paged\":false")).unwrap();
+        assert!(!old.paged);
+        into_pages(&mut old, sides);
+        assert!(old.paged);
+        assert_eq!(old.page_keys().len(), 2, "a page for each session");
+        assert_eq!(old.page, two, "the session shown is shown, keyed by its terminal");
+        assert_eq!(old.panes().len(), 2, "its terminal and its side");
+        assert_eq!(old.focused, focus, "focused where it was");
+        let tabs = |t: &Tree, key| t.page_tabs(key).into_iter().map(|(_, _, tab)| tab.clone()).collect::<Vec<_>>();
+        assert_eq!(tabs(&old, two), vec![term(2), doc("/p/two.md")]);
+        let one = old.page_keys().into_iter().find(|k| *k != two).unwrap();
+        assert_eq!(tabs(&old, one), vec![term(1), doc("/p/one.md")]);
+        // Ids stay unique: a new tab draws past every page's.
+        let p = old.panes()[0];
+        old.add_tab(p, doc("/p/new.md"));
+        let mut ids: Vec<u64> = old.tabs().iter().map(|(pane, idx, _)| old.tab_id(*pane, *idx).unwrap()).collect();
+        let n = ids.len();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), n);
+    }
+
+    #[test]
+    fn an_old_grid_becomes_a_page_per_terminal_with_the_tabs_it_owned() {
+        let mut tree = Tree::new(term(1));
+        let left = tree.panes()[0];
+        let right = tree.split(left, Side::Right, term(2)).unwrap();
+        tree.add_tab(right, doc("/p/b.md"));
+        tree.add_tab(left, doc("/p/a.md"));
+        let mut sides = Sides::default();
+        let a = tree.tab_id(left, 1).unwrap();
+        let first = tree.tab_id(left, 0).unwrap();
+        sides.owner.insert(a, first);
+        tree.focus(left);
+        tree.activate(left, 0);
+        let mut old: Tree = serde_json::from_str(&serde_json::to_string(&tree).unwrap().replace("\"paged\":true", "\"paged\":false")).unwrap();
+        into_pages(&mut old, sides);
+        assert_eq!(old.page_keys().len(), 2);
+        let all: Vec<Tab> = old.page_keys().into_iter().flat_map(|k| old.page_tabs(k).into_iter().map(|(_, _, t)| t.clone()).collect::<Vec<_>>()).collect();
+        assert_eq!(all.len(), 4, "no tab is lost");
+        let mine = old.page_tabs(first).into_iter().map(|(_, _, t)| t.clone()).collect::<Vec<_>>();
+        assert!(mine.contains(&doc("/p/a.md")), "the file it owned stays with it: {mine:?}");
+    }
+
+    #[test]
+    fn a_tree_in_pages_is_left_as_it_is() {
+        let mut tree = Tree::new(term(1));
+        let p = tree.panes()[0];
+        tree.split(p, Side::Right, term(2));
+        let before = tree.clone();
+        into_pages(&mut tree, Sides::default());
+        assert_eq!(tree, before, "two terminals side by side are one session's grid now");
+    }
+
     use super::*;
     use crate::tree::{Side, ViewMode};
     use protocol::SessionId;

@@ -11,6 +11,9 @@ pub type SplitId = u64;
 /// A tab's identity for its whole life, across moves between panes and index shifts. Drawn from
 /// the same counter as pane and split ids.
 pub type TabId = u64;
+/// An Inbox session's page (sessions hold grids spec, section 1): drawn from the same counter, or
+/// for a page made from an older file, its first terminal's tab id. 0 is a new window's page.
+pub type PageKey = u64;
 
 /// The sessions pane's share of the Inbox's width when it has a side pane.
 pub const INBOX_RATIO: f32 = 0.6;
@@ -183,6 +186,25 @@ pub struct Tree {
     /// tab between panes and dies with it. Absent in files from before 0.2.14.
     #[serde(default)]
     pub names: Vec<(TabId, String)>,
+    /// The page shown (`root`): the session the window shows.
+    #[serde(default)]
+    pub page: PageKey,
+    /// Every other session's page, as the user left it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pages: Vec<Page>,
+    /// Whether the tree is in pages: false for a file from before them, which is made into
+    /// pages on load (`inbox::into_pages`). A new tree is.
+    #[serde(default)]
+    pub paged: bool,
+}
+
+/// A session's page while another is shown: its panes as they were, and where its focus was.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Page {
+    pub key: PageKey,
+    root: Node,
+    focused: PaneId,
+    maximized: Option<PaneId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -397,13 +419,13 @@ fn split_rects(bounds: Rect, orientation: Orientation, ratio: f32, first: &Node,
 impl Tree {
     pub fn new(first: Tab) -> Tree {
         let pane = Pane { id: 1, tabs: vec![first], active: 0, mru: vec![0], ids: vec![2] };
-        Tree { root: Node::Leaf(pane), next_id: 3, focused: 1, maximized: None, names: Vec::new() }
+        Tree { root: Node::Leaf(pane), next_id: 3, focused: 1, maximized: None, names: Vec::new(), page: 0, pages: Vec::new(), paged: true }
     }
 
     /// One pane with no tabs: what a folder with no saved layout opens on, the empty screen.
     pub fn empty() -> Tree {
         let pane = Pane { id: 1, tabs: Vec::new(), active: 0, mru: Vec::new(), ids: Vec::new() };
-        Tree { root: Node::Leaf(pane), next_id: 2, focused: 1, maximized: None, names: Vec::new() }
+        Tree { root: Node::Leaf(pane), next_id: 2, focused: 1, maximized: None, names: Vec::new(), page: 0, pages: Vec::new(), paged: true }
     }
 
     /// Closes `pane` when it has no tabs left, unless it is the last one, which stays and shows
@@ -433,12 +455,16 @@ impl Tree {
         self.equal_ratio_layout(NOMINAL).panes.into_iter().map(|(id, _)| id).collect()
     }
 
+    /// The pane `id`, on whichever page it is.
     pub fn pane(&self, id: PaneId) -> Option<&Pane> {
-        self.root.find(id)
+        self.root.find(id).or_else(|| self.pages.iter().find_map(|p| p.root.find(id)))
     }
 
     pub fn pane_mut(&mut self, id: PaneId) -> Option<&mut Pane> {
-        self.root.find_mut(id)
+        if self.root.find(id).is_some() {
+            return self.root.find_mut(id);
+        }
+        self.pages.iter_mut().find_map(|p| p.root.find_mut(id))
     }
 
     pub fn pane_index(&self, id: PaneId) -> Option<usize> {
@@ -449,8 +475,9 @@ impl Tree {
         self.panes().get(index).copied()
     }
 
+    /// Where the terminal of `session` is, on whichever page.
     pub fn find_session(&self, session: SessionId) -> Option<(PaneId, usize)> {
-        for id in self.panes() {
+        for id in self.all_panes() {
             let pane = self.pane(id)?;
             if let Some(i) = pane.tabs.iter().position(|t| matches!(t, Tab::Terminal { session: s, .. } if *s == session)) {
                 return Some((id, i));
@@ -459,9 +486,10 @@ impl Tree {
         None
     }
 
+    /// Every tab of every page: the shown page's first, in reading order.
     pub fn tabs(&self) -> Vec<(PaneId, usize, &Tab)> {
         let mut out = Vec::new();
-        for id in self.panes() {
+        for id in self.all_panes() {
             if let Some(pane) = self.pane(id) {
                 for (i, t) in pane.tabs.iter().enumerate() {
                     out.push((id, i, t));
@@ -579,10 +607,10 @@ impl Tree {
 
     /// Focuses a pane. Focusing a pane hidden by another's maximize exits the maximize, so the
     /// focused pane is always on screen and typing always lands somewhere visible.
+    /// On a kept page, that page is shown first.
     pub fn focus(&mut self, pane: PaneId) {
-        if self.pane(pane).is_none() {
-            return;
-        }
+        let Some(key) = self.page_of(pane) else { return };
+        self.show_page(key);
         if self.maximized.is_some_and(|m| m != pane) {
             self.maximized = None;
         }
@@ -642,6 +670,183 @@ impl Tree {
             p.active -= 1;
         }
         Some((tab, id))
+    }
+
+    /// Every page's key, the shown one's included, in the order they were made.
+    pub fn page_keys(&self) -> Vec<PageKey> {
+        let mut keys: Vec<PageKey> = self.pages.iter().map(|p| p.key).chain([self.page]).collect();
+        keys.sort_unstable();
+        keys
+    }
+
+    /// The page `pane` is on.
+    pub fn page_of(&self, pane: PaneId) -> Option<PageKey> {
+        if self.root.find(pane).is_some() {
+            return Some(self.page);
+        }
+        self.pages.iter().find(|p| p.root.find(pane).is_some()).map(|p| p.key)
+    }
+
+    /// A page's root, the shown one's or a kept one's.
+    fn page_root(&self, key: PageKey) -> Option<&Node> {
+        if key == self.page {
+            return Some(&self.root);
+        }
+        self.pages.iter().find(|p| p.key == key).map(|p| &p.root)
+    }
+
+    /// A page's panes in reading order.
+    pub fn page_panes(&self, key: PageKey) -> Vec<PaneId> {
+        let Some(root) = self.page_root(key) else { return Vec::new() };
+        let mut out = Layout::default();
+        root.layout_into(NOMINAL, true, &mut out);
+        reading_order(&mut out.panes);
+        out.panes.into_iter().map(|(id, _)| id).collect()
+    }
+
+    /// A page's tabs, pane by pane in reading order.
+    pub fn page_tabs(&self, key: PageKey) -> Vec<(PaneId, usize, &Tab)> {
+        let mut out = Vec::new();
+        for id in self.page_panes(key) {
+            if let Some(pane) = self.pane(id) {
+                out.extend(pane.tabs.iter().enumerate().map(|(i, t)| (id, i, t)));
+            }
+        }
+        out
+    }
+
+    /// The pane focused in a page: where the keys go when it is shown.
+    pub fn page_focused(&self, key: PageKey) -> Option<PaneId> {
+        if key == self.page {
+            return Some(self.focused);
+        }
+        self.pages.iter().find(|p| p.key == key).map(|p| p.focused)
+    }
+
+    /// Shows page `key`, keeping the one shown as it is. False when there is no such page.
+    /// The page shown goes when it has no tabs left, since nothing would list it.
+    pub fn show_page(&mut self, key: PageKey) -> bool {
+        self.swap_page(key, false)
+    }
+
+    fn swap_page(&mut self, key: PageKey, keep_empty: bool) -> bool {
+        if key == self.page {
+            return true;
+        }
+        let Some(at) = self.pages.iter().position(|p| p.key == key) else { return false };
+        let next = self.pages.remove(at);
+        self.hide_shown(keep_empty);
+        self.root = next.root;
+        self.focused = next.focused;
+        self.maximized = next.maximized;
+        self.page = next.key;
+        true
+    }
+
+    /// Puts the page shown among the kept ones, unless it has no tabs and `keep_empty` is not
+    /// asked for. The root is left for the caller to replace.
+    fn hide_shown(&mut self, keep_empty: bool) {
+        let empty = self.root.panes().iter().all(|p| p.tabs.is_empty());
+        if empty && !keep_empty {
+            return;
+        }
+        let root = std::mem::replace(&mut self.root, placeholder());
+        self.pages.push(Page { key: self.page, root, focused: self.focused, maximized: self.maximized });
+    }
+
+    /// Starts a page holding `first` alone and shows it: a new session. Returns its pane.
+    pub fn new_page(&mut self, first: Tab) -> PaneId {
+        self.hide_shown(false);
+        let (key, pane, tab) = (self.fresh_id(), self.fresh_id(), self.fresh_id());
+        self.root = Node::Leaf(Pane { id: pane, tabs: vec![first], active: 0, mru: vec![0], ids: vec![tab] });
+        self.page = key;
+        self.focused = pane;
+        self.maximized = None;
+        pane
+    }
+
+    /// Runs `f` with page `key` shown, then shows again the page that was, focused as it was:
+    /// work on a session's page while the user looks at another, which nothing on screen sees.
+    pub fn within<R>(&mut self, key: PageKey, f: impl FnOnce(&mut Tree) -> R) -> R {
+        let was = self.page;
+        self.swap_page(key, true);
+        let out = f(self);
+        self.swap_page(was, true);
+        out
+    }
+
+    /// Closes page `key` and every tab on it. When it is the page shown, `then` is shown in its
+    /// place, else the empty screen.
+    pub fn close_page(&mut self, key: PageKey, then: Option<PageKey>) {
+        if key != self.page {
+            self.pages.retain(|p| p.key != key);
+            return;
+        }
+        let gone = self.page_tabs(key).iter().filter_map(|(pane, idx, _)| self.tab_id(*pane, *idx)).collect::<Vec<_>>();
+        self.names.retain(|(t, _)| !gone.contains(t));
+        let next = then.filter(|k| *k != key).and_then(|k| self.pages.iter().position(|p| p.key == k)).map(|at| self.pages.remove(at));
+        match next {
+            Some(p) => {
+                self.root = p.root;
+                self.focused = p.focused;
+                self.maximized = p.maximized;
+                self.page = p.key;
+            }
+            None => {
+                let (k, pane) = (self.fresh_id(), self.fresh_id());
+                self.root = Node::Leaf(Pane { id: pane, tabs: Vec::new(), active: 0, mru: Vec::new(), ids: Vec::new() });
+                self.focused = pane;
+                self.maximized = None;
+                self.page = k;
+            }
+        }
+    }
+
+    /// Makes the Inbox's old shape into pages (sessions hold grids spec, section 6), the side
+    /// already taken out (`inbox_take_side`), so the root is the sessions pane alone: each of
+    /// its terminals becomes a page of its own, keyed by its tab, with its side from `sides`
+    /// beside it where that side's place says. `shown`'s page is shown, focused on `focus` when
+    /// that pane is in it, else on its terminal. A tree not in that shape is only marked paged.
+    pub fn into_pages(&mut self, mut sides: std::collections::HashMap<TabId, (Node, SidePlace)>, shown: Option<TabId>, focus: PaneId) {
+        self.paged = true;
+        let Node::Leaf(sessions) = &self.root else { return };
+        if sessions.tabs.is_empty() || !all_terminals(sessions) {
+            return;
+        }
+        let sessions = sessions.clone();
+        let top = sides.values().map(|(n, _)| n.max_id()).fold(self.root.max_id(), u64::max);
+        self.next_id = self.next_id.max(top + 1);
+        let shown = shown.filter(|s| sessions.ids.contains(s)).unwrap_or(sessions.ids[sessions.active.min(sessions.ids.len() - 1)]);
+        let mut made = Vec::new();
+        for (tab, id) in sessions.tabs.into_iter().zip(sessions.ids) {
+            let pane_id = if id == shown { sessions.id } else { self.fresh_id() };
+            let pane = Node::Leaf(Pane { id: pane_id, tabs: vec![tab], active: 0, mru: vec![0], ids: vec![id] });
+            let root = match sides.remove(&id) {
+                Some((side, place)) => {
+                    let split = self.fresh_id();
+                    place.split(split, pane, side)
+                }
+                None => pane,
+            };
+            let focused = if id == shown && root.find(focus).is_some() { focus } else { pane_id };
+            made.push(Page { key: id, root, focused, maximized: None });
+        }
+        let at = made.iter().position(|p| p.key == shown).unwrap_or(0);
+        let first = made.remove(at);
+        self.root = first.root;
+        self.focused = first.focused;
+        self.maximized = None;
+        self.page = first.key;
+        self.pages = made;
+    }
+
+    /// Every pane of every page: the shown page's in reading order, then each kept page's.
+    fn all_panes(&self) -> Vec<PaneId> {
+        let mut out = self.panes();
+        for p in &self.pages {
+            out.extend(self.page_panes(p.key));
+        }
+        out
     }
 
     /// Whether the tree has the Inbox layout's shape (layouts spec, "The Inbox layout"; Inbox
@@ -1022,17 +1227,16 @@ impl Tree {
 
     /// Where a tab is now: its pane and index. `None` once it has closed.
     pub fn locate(&self, tab: TabId) -> Option<(PaneId, usize)> {
-        let mut panes = Vec::new();
-        self.root.leaves(&mut panes);
-        panes.into_iter().find_map(|id| self.pane(id)?.ids.iter().position(|t| *t == tab).map(|i| (id, i)))
+        self.all_panes()
+            .into_iter().find_map(|id| self.pane(id)?.ids.iter().position(|t| *t == tab).map(|i| (id, i)))
     }
 
     /// Gives every tab an id when a file was written without them (or with a damaged list), and
     /// moves the id counter past every id in use.
     pub fn repair_ids(&mut self) {
-        self.next_id = self.next_id.max(self.root.max_id() + 1);
-        let mut panes = Vec::new();
-        self.root.leaves(&mut panes);
+        let top = self.pages.iter().map(|p| p.root.max_id().max(p.key)).fold(self.root.max_id().max(self.page), u64::max);
+        self.next_id = self.next_id.max(top + 1);
+        let panes = self.all_panes();
         let mut seen = std::collections::HashSet::new();
         for pane in panes {
             let (n, ids) = {
@@ -2204,5 +2408,145 @@ mod tests {
                 }
             }
         }
+    }
+
+    // Pages (sessions hold grids spec, section 1).
+
+    fn doc(p: &str) -> Tab {
+        Tab::Viewer { path: p.into(), mode: ViewMode::default(), presenting: false, outline: false }
+    }
+
+    #[test]
+    fn a_new_page_shows_one_fresh_tab_and_keeps_the_page_before_as_it_was() {
+        let mut t = Tree::new(term(1));
+        let first = t.panes()[0];
+        let right = t.split(first, Side::Right, doc("/p/a.md")).unwrap();
+        let before = t.page;
+        let pane = t.new_page(term(2));
+        assert_eq!(t.panes(), vec![pane], "the new page is one pane");
+        assert_eq!(t.pane(pane).unwrap().tabs, vec![term(2)]);
+        assert_eq!(t.focused, pane);
+        assert_ne!(t.page, before);
+        assert_eq!(t.page_keys().len(), 2);
+        assert!(t.show_page(before));
+        assert_eq!(t.panes(), vec![first, right], "the page before comes back split as it was");
+        assert_eq!(t.focused, right, "and focused where it was");
+    }
+
+    #[test]
+    fn every_tab_of_every_page_is_found_while_only_the_shown_page_is_laid_out() {
+        let mut t = Tree::new(term(1));
+        let first = t.panes()[0];
+        t.split(first, Side::Right, doc("/p/a.md")).unwrap();
+        let kept = t.page;
+        let pane = t.new_page(term(2));
+        assert_eq!(t.panes(), vec![pane]);
+        assert_eq!(t.layout(Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 }).panes.len(), 1);
+        assert_eq!(t.find_session(SessionId(1)), Some((first, 0)), "a kept page's terminal is found");
+        assert_eq!(t.page_of(first), Some(kept));
+        assert_eq!(t.page_of(pane), Some(t.page));
+        assert_eq!(t.tabs().len(), 3, "the tabs of every page");
+        assert_eq!(t.tabs_on(Path::new("/p/a.md")).len(), 1);
+        let id = t.tab_id(first, 0).unwrap();
+        assert_eq!(t.locate(id), Some((first, 0)));
+        assert_eq!(t.page_tabs(kept).len(), 2);
+        assert_eq!(t.page_tabs(t.page).len(), 1);
+    }
+
+    #[test]
+    fn a_kept_page_s_tab_changes_in_place_without_showing_it() {
+        let mut t = Tree::new(term(1));
+        let first = t.panes()[0];
+        let shown = t.new_page(term(2));
+        t.replace_tab(first, 0, term(9));
+        t.activate_quiet(first, 0);
+        assert_eq!(t.focused, shown, "nothing moved on screen");
+        assert_eq!(t.find_session(SessionId(9)), Some((first, 0)));
+    }
+
+    #[test]
+    fn focusing_a_pane_of_a_kept_page_shows_that_page() {
+        let mut t = Tree::new(term(1));
+        let first = t.panes()[0];
+        let kept = t.page;
+        t.new_page(term(2));
+        t.focus(first);
+        assert_eq!(t.page, kept);
+        assert_eq!(t.focused, first);
+        assert_eq!(t.panes(), vec![first]);
+    }
+
+    #[test]
+    fn a_page_left_with_no_tabs_is_not_kept_when_another_is_shown() {
+        let mut t = Tree::new(term(1));
+        let kept = t.page;
+        let pane = t.new_page(term(2));
+        t.close_tab(pane, 0);
+        assert!(t.show_page(kept));
+        assert_eq!(t.page_keys(), vec![kept], "the empty page went");
+    }
+
+    #[test]
+    fn work_within_a_kept_page_leaves_the_shown_page_and_its_focus_alone() {
+        let mut t = Tree::new(term(1));
+        let first = t.panes()[0];
+        let kept = t.page;
+        let shown = t.new_page(term(2));
+        let new = t.within(kept, |t| t.split(first, Side::Right, doc("/p/a.md"))).unwrap();
+        assert_eq!(t.panes(), vec![shown]);
+        assert_eq!(t.focused, shown);
+        assert_eq!(t.page_of(new), Some(kept));
+        assert!(t.show_page(kept));
+        assert_eq!(t.panes(), vec![first, new]);
+        // An empty page shown is dropped when another is made, but work within a kept page keeps it.
+        let mut e = Tree::empty();
+        e.new_page(term(4));
+        assert_eq!(e.page_keys().len(), 1, "the empty page went");
+        let mut f = Tree::new(term(5));
+        let one = f.page;
+        let p = f.new_page(term(6));
+        f.close_tab(p, 0);
+        let empty_key = f.page;
+        f.within(one, |_| ());
+        assert_eq!(f.page, empty_key, "within keeps an empty page shown");
+    }
+
+    #[test]
+    fn closing_a_page_shows_the_one_named_and_a_kept_page_just_goes() {
+        let mut t = Tree::new(term(1));
+        let a = t.page;
+        t.new_page(term(2));
+        let b = t.page;
+        t.new_page(term(3));
+        let c = t.page;
+        t.close_page(a, None);
+        assert_eq!(t.page_keys(), vec![b, c]);
+        assert_eq!(t.page, c);
+        t.close_page(c, Some(b));
+        assert_eq!(t.page, b);
+        assert_eq!(t.find_session(SessionId(3)), None);
+        t.close_page(b, None);
+        assert_eq!(t.tabs().len(), 0, "the last page closed leaves the empty screen");
+        assert_eq!(t.panes().len(), 1);
+    }
+
+    #[test]
+    fn ids_stay_unique_across_pages_and_pages_are_saved() {
+        let mut t = Tree::new(term(1));
+        t.new_page(term(2));
+        let p = t.panes()[0];
+        t.add_tab(p, doc("/p/a.md"));
+        let mut ids: Vec<u64> = t.tabs().iter().map(|(pane, idx, _)| t.tab_id(*pane, *idx).unwrap()).collect();
+        ids.extend(t.page_keys().into_iter().filter(|k| *k != 0));
+        let n = ids.len();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), n);
+        let json = serde_json::to_string(&t).unwrap();
+        let back: Tree = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, t);
+        assert!(back.paged);
+        let old: Tree = serde_json::from_str(r#"{ "root": { "Leaf": { "id": 1, "tabs": [], "active": 0 } }, "next_id": 2, "focused": 1, "maximized": null }"#).unwrap();
+        assert!(!old.paged, "a file from before pages is not in pages");
     }
 }
