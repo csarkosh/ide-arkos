@@ -553,6 +553,11 @@ Things only a person at the screen can check, in order of value:
   a Reminder label in place of its age, without a click; a click on it keeps it under Unread
   until another row is chosen, then a one-time one stays where its terminals put it and a
   repeating one goes back under Scheduled with its next time
+- scheduled sessions: a reply typed in a session under Scheduled moves its row to Working at
+  once; Claude's answer, read elsewhere, moves it to Unread; a click on it keeps it there, and
+  choosing another session puts it back under Scheduled with the same "in …" time; a scheduled
+  row's menu has "Unschedule" after "Remind me in", which puts the row where its terminals stand
+  (and an unscheduled row's menu has none)
 - layouts: with the sidebar hidden or on Files, a new window shows Sessions; "+ New
   session" sits under the filter, above the first group; under overworld the
   sidebar's scene has mountains (by day mesas) above the castle, at the same pixel size as the

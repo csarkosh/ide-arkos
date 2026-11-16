@@ -269,6 +269,8 @@ pub enum RowAction {
     Move(crate::attention::MoveTo),
     /// A reminder at this time, with this repeat, from "Remind me in".
     Remind(u64, reminder::Repeat),
+    /// The reminder ended: the session is listed as its terminals put it again.
+    Unschedule,
 }
 
 /// A row of a session's menu: something it does, or "Move to", which opens the sections the
@@ -288,14 +290,18 @@ pub enum Sub {
 }
 
 /// A session row's menu: "Move to" when there is a section to move it to (`can_move`), then
-/// "Remind me in", Rename and End, for a shell that still runs.
-pub fn menu_items(can_move: bool, alive: bool) -> Vec<(&'static str, MenuEntry)> {
+/// "Remind me in", Unschedule while it has a reminder (`scheduled`), Rename and End, for a shell
+/// that still runs.
+pub fn menu_items(can_move: bool, alive: bool, scheduled: bool) -> Vec<(&'static str, MenuEntry)> {
     let mut v = Vec::new();
     if can_move {
         v.push(("Move to", MenuEntry::MoveTo));
     }
     if alive {
         v.push(("Remind me in", MenuEntry::RemindMe));
+        if scheduled {
+            v.push(("Unschedule", MenuEntry::Do(RowAction::Unschedule)));
+        }
         v.push(("Rename", MenuEntry::Do(RowAction::Rename)));
         v.push(("End session", MenuEntry::Do(RowAction::End)));
     }
@@ -641,7 +647,7 @@ pub fn render_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     };
     let targets = row.as_ref().map(|e| attention::row_targets(e.attention, e.alive)).unwrap_or_default();
     let items = match key {
-        RowKey::Live(_) => row.as_ref().map(|e| menu_items(!targets.is_empty(), e.alive)).unwrap_or_default(),
+        RowKey::Live(page) => row.as_ref().map(|e| menu_items(!targets.is_empty(), e.alive, root.reminders.contains_key(&page))).unwrap_or_default(),
         RowKey::Ended(i) if i < root.ended.len() => vec![("Resume", MenuEntry::Do(RowAction::Resume(i))), ("Remove from the list", MenuEntry::Do(RowAction::Forget(i)))],
         _ => Vec::new(),
     };
@@ -913,11 +919,13 @@ mod tests {
 
     #[test]
     fn a_row_s_menu_moves_it_to_another_section_renames_it_or_ends_it() {
-        let labels = |can_move, alive| menu_items(can_move, alive).into_iter().map(|(l, _)| l).collect::<Vec<_>>();
-        assert_eq!(labels(true, true), ["Move to", "Remind me in", "Rename", "End session"]);
-        assert_eq!(labels(false, true), ["Remind me in", "Rename", "End session"]);
-        assert!(labels(false, false).is_empty(), "a shell that ended has nothing left to do here");
-        assert_eq!(menu_items(true, true)[0].1, MenuEntry::MoveTo);
+        let labels = |can_move, alive, scheduled| menu_items(can_move, alive, scheduled).into_iter().map(|(l, _)| l).collect::<Vec<_>>();
+        assert_eq!(labels(true, true, false), ["Move to", "Remind me in", "Rename", "End session"]);
+        assert_eq!(labels(false, true, false), ["Remind me in", "Rename", "End session"]);
+        assert_eq!(labels(true, true, true), ["Move to", "Remind me in", "Unschedule", "Rename", "End session"], "a scheduled session can be unscheduled");
+        assert!(labels(false, false, true).is_empty(), "a shell that ended has nothing left to do here");
+        assert_eq!(menu_items(true, true, false)[0].1, MenuEntry::MoveTo);
+        assert_eq!(menu_items(true, true, true)[2].1, MenuEntry::Do(RowAction::Unschedule));
     }
 
     #[test]

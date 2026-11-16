@@ -2342,29 +2342,6 @@ impl Root {
         }
     }
 
-    /// Hands each new turn to its page's reminder (`reminder::Reminder::turned`). True when a
-    /// reminder changed.
-    fn take_turns(&mut self) -> bool {
-        let now = sessions::now_ms();
-        let mut changed = false;
-        for session in self.sessions.take_turns() {
-            let Some(page) = self.tree.find_session(session).and_then(|(pane, _)| self.tree.page_of(pane)) else { continue };
-            let Some(r) = self.reminders.get(&page).copied() else { continue };
-            match r.turned(now) {
-                Some(n) if n == r => {}
-                Some(n) => {
-                    self.reminders.insert(page, n);
-                    changed = true;
-                }
-                None => {
-                    self.reminders.remove(&page);
-                    changed = true;
-                }
-            }
-        }
-        changed
-    }
-
     /// Whether a reminder's time has come since this was last asked, at `now`: true once for
     /// each, so the window repaints as its session comes up.
     pub fn reminder_came(&mut self, now: u64) -> bool {
@@ -2543,6 +2520,9 @@ impl Root {
                 for s in terms {
                     self.sessions.put_off(s);
                 }
+            }
+            RowAction::Unschedule => {
+                self.reminders.remove(&page);
             }
             RowAction::Resume(i) => self.resume_ended(i, cx),
             RowAction::Forget(i) => {
@@ -4095,8 +4075,7 @@ impl Root {
         if self.sessions.route_events(events, cx) {
             cx.notify();
         }
-        let turned = self.take_turns();
-        if self.sessions.take_marks_changed() || turned {
+        if self.sessions.take_marks_changed() {
             self.save(cx);
         }
         // A Claude Code the probe found silent has reported since: its row clears without one.

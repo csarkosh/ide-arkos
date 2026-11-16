@@ -80,12 +80,18 @@ menu, the guide. The saved name `later` still reads.
 A reminder belongs to the page: a time, and a repeat (never, every day, every weekday, every
 week on that weekday, every month on that day of the month).
 
-- **Pending** (its time to come): the row is under Scheduled, whatever its terminals do, and says
-  how long until its time ("in 3 h"), with a repeat glyph when it repeats.
+- **Pending** (its time to come): the row is under Scheduled and says how long until its time
+  ("in 3 h"), with a repeat glyph when it repeats; but while something is going on in it (at
+  work, an answer or a question not yet read) it is listed as that is, and goes back under
+  Scheduled once it is read (Cyrus, 2026-11-16: "When I respond in a message that is
+  "Scheduled", it should move to the "Working" and "Unread" session groups. After it's read, it
+  should go back to the "Scheduled" session group.").
 - **It comes up** when its time comes: the row is under Unread, or under Needs you or Working when
   a terminal of it is so, and carries a **Reminder** label in place of its age while it is up.
-- **A terminal's new turn** (an agent finishes or asks the user) while it is pending brings the
-  row up as that turn says, without the label; a one-time reminder is then dropped, as today.
+- **A terminal's new turn** no longer drops the reminder (it did until 2026-11-16): it shows
+  through, as above.
+- **Unschedule**, in the row's menu while it has a reminder, ends it, a repeat with it; the
+  session is listed as its terminals put it.
 - **A look**, the user on the page while the window is in front: a one-time reminder is done; a
   repeating one is set to its next time after now, so the row goes back under Scheduled. The
   row the user chose stays where it was listed until they choose another (the held row).

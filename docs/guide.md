@@ -46,7 +46,11 @@ and time picker: a month of days (the arrow keys move the day, Page Up and Page 
 month), a time from a list every 15 minutes or typed (`14:30`, `2pm`, `9:15am`, then Enter),
 and Repeat: Never, Every day, Every weekday, Every week on that weekday or Every month on that
 day (the month's last day when it is shorter). Save sets it, Enter too; Escape closes it. A
-scheduled row says how long until its time, with an arrow when it repeats. When the time comes
+scheduled row says how long until its time, with an arrow when it repeats. Reply in a scheduled
+session and it shows under Working while Claude works, then under Unread (or Needs you) with its
+answer; once you have read it and chosen another session it is back under Scheduled, its
+reminder kept. "Unschedule" in its menu ends the reminder (a repeating one too), and the session
+is listed as any other again. When the time comes
 the session comes up under Unread (or Needs you, or Working, when it is so) with a Reminder
 label in place of its age, until you look at it; a repeating one then goes back under
 Scheduled until its next time, once you choose another session. A moved session stays there
@@ -54,8 +58,7 @@ until its agent next does something (a new answer, a prompt, a question or a per
 then follows it again; Unread lasts until you next look at it. The same menu renames the
 session (the row shows the name as you type it) or ends it (each terminal closes as Cmd+W closes it, with the same minute in which
 Shift+Cmd+T brings it back, and the session's other tabs close with the last). A session put
-off or away comes back by itself when Claude next stops or needs you; a one-time reminder is
-then dropped, and a repeating one waits for you to look. The Dock icon counts the sessions that
+away comes back by itself when Claude next stops or needs you. The Dock icon counts the sessions that
 need you or are unread. A Claude Code session whose tab you close (End, or Cmd+W) is kept under
 Done, the last 50 of them, with its name and line: a click resumes it, as a session of its own,
 in its own shell again within the closed tab's minute and after that in a new tab that runs

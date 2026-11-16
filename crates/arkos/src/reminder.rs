@@ -1,6 +1,7 @@
-//! A session's reminder (sessions hold grids spec, section 4): a time, and a repeat. Pending, the
-//! session is listed under Scheduled; when its time comes it comes up, labelled, until the user
-//! looks, and a repeating one then waits for its next time. Pure, so it is tested; the window
+//! A session's reminder (sessions hold grids spec, section 4; scheduled sessions spec): a time,
+//! and a repeat. Pending, the session is listed under Scheduled while nothing is going on in it;
+//! when its time comes it comes up, labelled, until the user looks, and a repeating one then
+//! waits for its next time. Pure, so it is tested; the window
 //! keeps one per page and saves them with its workspace.
 use crate::attention::Attention;
 use serde::{Deserialize, Serialize};
@@ -27,7 +28,8 @@ pub enum Repeat {
 pub enum Up {
     /// Its time came: the row carries the Reminder label.
     Time,
-    /// A terminal of the session began a new turn first: listed as that turn says.
+    /// Written before 2026-11-16, when a new turn lifted a reminder until a look; read as
+    /// pending now, since a session's own activity shows through a pending one (`listed`).
     Turn,
 }
 
@@ -50,8 +52,6 @@ pub enum State {
     Pending,
     /// Its time came and the user has not looked.
     Came,
-    /// A new turn brought the session up before its time.
-    Turned,
 }
 
 impl Reminder {
@@ -61,21 +61,9 @@ impl Reminder {
 
     pub fn state(&self, now: u64) -> State {
         match self.up {
-            Some(Up::Turn) => State::Turned,
             Some(Up::Time) => State::Came,
-            None if self.at <= now => State::Came,
-            None => State::Pending,
-        }
-    }
-
-    /// A terminal of the session began a new turn (an agent finished or asks the user): a
-    /// pending one-time reminder is dropped, as a put-off session always came back with its
-    /// news; a repeating one stands aside until the user looks. None: drop it.
-    pub fn turned(self, now: u64) -> Option<Reminder> {
-        match (self.state(now), self.repeat) {
-            (State::Pending, Repeat::Never) => None,
-            (State::Pending, _) => Some(Reminder { up: Some(Up::Turn), ..self }),
-            _ => Some(self),
+            _ if self.at <= now => State::Came,
+            _ => State::Pending,
         }
     }
 
@@ -92,11 +80,13 @@ impl Reminder {
     }
 
     /// Where a session with this reminder is listed, from `base`, where its terminals put it,
-    /// and whether its row carries the Reminder label.
+    /// and whether its row carries the Reminder label. Pending, it is under Scheduled unless
+    /// something is going on in it: at work (the user replied), or with an answer or a question
+    /// the user has not read, which show as they are; once read it is back under Scheduled.
     pub fn listed(&self, base: Attention, now: u64) -> (Attention, bool) {
         match self.state(now) {
+            State::Pending if matches!(base, Attention::NeedsYou | Attention::Unread | Attention::Working) => (base, false),
             State::Pending => (Attention::Scheduled, false),
-            State::Turned => (base, false),
             State::Came => match base {
                 Attention::NeedsYou | Attention::Working => (base, true),
                 _ => (Attention::Unread, true),
@@ -231,7 +221,7 @@ mod tests {
         let at = nine_on(2026, 11, 17);
         let r = Reminder::new(at, Repeat::Never);
         assert_eq!(r.listed(Attention::Quiet, at - 1), (Attention::Scheduled, false));
-        assert_eq!(r.listed(Attention::Working, at - 1), (Attention::Scheduled, false), "pending beats what its terminals do");
+        assert_eq!(r.listed(Attention::Unanswered, at - 1), (Attention::Scheduled, false), "pending beats a session at rest");
         assert_eq!(r.listed(Attention::Quiet, at), (Attention::Unread, true));
         assert_eq!(r.listed(Attention::Unanswered, at), (Attention::Unread, true));
         assert_eq!(r.listed(Attention::Working, at), (Attention::Working, true), "a session at work stays at work");
@@ -250,17 +240,27 @@ mod tests {
     }
 
     #[test]
-    fn a_new_turn_drops_a_pending_one_time_reminder_and_lifts_a_repeating_one_unlabelled() {
+    fn a_scheduled_session_at_work_or_with_news_shows_it_and_goes_back_once_read() {
         let at = nine_on(2026, 11, 17);
-        assert_eq!(Reminder::new(at, Repeat::Never).turned(at - HOUR), None);
-        let r = Reminder::new(at, Repeat::Weekdays).turned(at - HOUR).unwrap();
-        assert_eq!(r.listed(Attention::Unread, at - HOUR), (Attention::Unread, false));
-        assert_eq!(r.listed(Attention::Working, at - HOUR), (Attention::Working, false));
-        let back = r.looked(at - HOUR / 2).unwrap();
-        assert_eq!(back.state(at - HOUR / 2), State::Pending, "a look sends it back to wait");
-        assert_eq!(back.at, at, "for the time still to come");
-        let came = Reminder::new(at, Repeat::Never);
-        assert_eq!(came.turned(at + 1), Some(came), "one that came stays up until a look");
+        for repeat in [Repeat::Never, Repeat::Weekdays] {
+            let r = Reminder::new(at, repeat);
+            let before = at - HOUR;
+            assert_eq!(r.listed(Attention::Working, before), (Attention::Working, false), "{repeat:?}: a reply puts it to work");
+            assert_eq!(r.listed(Attention::Unread, before), (Attention::Unread, false), "{repeat:?}: its answer is unread");
+            assert_eq!(r.listed(Attention::NeedsYou, before), (Attention::NeedsYou, false));
+            for read in [Attention::Unanswered, Attention::Quiet, Attention::New] {
+                assert_eq!(r.listed(read, before), (Attention::Scheduled, false), "{repeat:?}: read, back under Scheduled ({read:?})");
+            }
+            assert_eq!(r.looked(before), Some(r), "a look before its time keeps the reminder");
+        }
+    }
+
+    #[test]
+    fn a_reminder_saved_as_lifted_by_a_turn_reads_as_pending() {
+        let at = nine_on(2026, 11, 17);
+        let old: Reminder = serde_json::from_str(&format!(r#"{{"at":{at},"repeat":"daily","anchor":{at},"up":"turn"}}"#)).unwrap();
+        assert_eq!(old.state(at - HOUR), State::Pending);
+        assert_eq!(old.listed(Attention::Unanswered, at - HOUR), (Attention::Scheduled, false));
     }
 
     #[test]
