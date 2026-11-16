@@ -230,9 +230,6 @@ pub struct SessionManager {
     /// A mark changed with a session's state since the root last looked (`take_marks_changed`):
     /// the workspace is saved again.
     marks_changed: bool,
-    /// The sessions that began a new turn since the window last took them (`take_turns`): a
-    /// page's reminder reads them (`reminder::Reminder::turned`).
-    turns: Vec<SessionId>,
     /// When `later_came` last looked, in milliseconds since the Unix epoch.
     later_checked: u64,
     /// Sessions whose Claude Code has reported itself: an agent record in the list, or a
@@ -261,7 +258,7 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub fn new(transport: Arc<dyn Transport>, client: Option<Arc<Client>>, project: PathBuf) -> Self {
-        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashMap::new(), states: HashMap::new(), labels: HashMap::new(), attention: HashMap::new(), marks: HashMap::new(), agents: HashMap::new(), lines: HashMap::new(), shown: None, marks_changed: false, turns: Vec::new(), later_checked: 0, reporting: HashSet::new(), probed: HashMap::new(), probe_wanted: false, newly_reporting: false, restoring: HashSet::new(), backlog: HashMap::new(), offline: false, kills_to_resend: Vec::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
+        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashMap::new(), states: HashMap::new(), labels: HashMap::new(), attention: HashMap::new(), marks: HashMap::new(), agents: HashMap::new(), lines: HashMap::new(), shown: None, marks_changed: false, later_checked: 0, reporting: HashSet::new(), probed: HashMap::new(), probe_wanted: false, newly_reporting: false, restoring: HashSet::new(), backlog: HashMap::new(), offline: false, kills_to_resend: Vec::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
     }
 
     /// A new connection: requests go to it from now on.
@@ -505,11 +502,6 @@ impl SessionManager {
     pub fn mark_started(&mut self, session: SessionId, now: u64) {
         self.marks.entry(session).or_default().started(now);
         self.marks_changed = true;
-    }
-
-    /// The sessions that began a new turn since this was last asked.
-    pub fn take_turns(&mut self) -> Vec<SessionId> {
-        std::mem::take(&mut self.turns)
     }
 
     /// True once after a session's state moved its marks.
@@ -870,7 +862,6 @@ impl SessionManager {
                         self.marks_changed = true;
                         let shown = self.shown == Some(*session);
                         self.marks.entry(*session).or_default().turned(shown, now);
-                        self.turns.push(*session);
                     }
                     changed |= before.as_ref() != Some(attention);
                 }
@@ -906,7 +897,6 @@ impl SessionManager {
         let m = self.marks.entry(session).or_default();
         if state == ClaudeState::Waiting {
             m.turned(shown, now);
-            self.turns.push(session);
         } else {
             m.moved(now);
         }

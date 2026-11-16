@@ -32,8 +32,14 @@ pub enum Attention {
 }
 
 impl Attention {
-    /// Every kind, in the order a list shows its groups.
+    /// Every kind from what most calls for the user to what is put away: the order that decides
+    /// which of a session's terminals leads its row.
     pub const ALL: [Attention; 8] = [Attention::NeedsYou, Attention::Unread, Attention::New, Attention::Unanswered, Attention::Working, Attention::Quiet, Attention::Scheduled, Attention::Done];
+
+    /// The order a list shows its groups: New first, so a session just started is at the top
+    /// where the user started it (Cyrus, 2026-11-16: "always appear on top. Even above
+    /// "Unread""), then the rest as `ALL` has them.
+    pub const LISTED: [Attention; 8] = [Attention::New, Attention::NeedsYou, Attention::Unread, Attention::Unanswered, Attention::Working, Attention::Quiet, Attention::Scheduled, Attention::Done];
 
     /// The groups a list shows folded until the user opens them: what is quiet and what is done
     /// can wait; the rest is open.
@@ -141,7 +147,7 @@ pub fn move_targets(state: Option<ClaudeState>, blocked: bool, alive: bool, mark
         return Vec::new();
     }
     let here = of(state, blocked, alive, marks, now);
-    Attention::ALL.into_iter().filter(|k| *k != here && *k != Attention::Scheduled).map(|k| (k.label(), MoveTo::To(k))).collect()
+    Attention::LISTED.into_iter().filter(|k| *k != here && *k != Attention::Scheduled).map(|k| (k.label(), MoveTo::To(k))).collect()
 }
 
 /// The sections a row listed under `here` can be moved to, by name, in the list's order: every
@@ -151,7 +157,7 @@ pub fn row_targets(here: Attention, alive: bool) -> Vec<(&'static str, MoveTo)> 
     if !alive {
         return Vec::new();
     }
-    Attention::ALL.into_iter().filter(|k| *k != here && *k != Attention::Scheduled).map(|k| (k.label(), MoveTo::To(k))).collect()
+    Attention::LISTED.into_iter().filter(|k| *k != here && *k != Attention::Scheduled).map(|k| (k.label(), MoveTo::To(k))).collect()
 }
 
 /// Where a session stands. `state` is the daemon's (None: never reported), `blocked` its agent's
@@ -264,7 +270,7 @@ mod tests {
         let names = |state, blocked, marks: &Marks| move_targets(state, blocked, true, marks, NOW).into_iter().map(|(n, _)| n).collect::<Vec<_>>();
         let fresh = Marks::default();
         // Scheduled is not among them: "Remind me in" puts a session there with a time.
-        let all = ["Needs you", "Unread", "New", "Unanswered", "Working", "Quiet", "Done"];
+        let all = ["New", "Needs you", "Unread", "Unanswered", "Working", "Quiet", "Done"];
         let but = |here: &str| all.iter().copied().filter(|n| !n.starts_with(here)).collect::<Vec<_>>();
         assert_eq!(names(None, false, &fresh), but("Quiet"), "an idle session can go anywhere but Quiet");
         assert_eq!(names(Some(ClaudeState::Working), false, &fresh), but("Working"));
@@ -295,8 +301,8 @@ mod tests {
     #[test]
     fn a_row_moves_anywhere_but_where_it_is_listed_and_never_to_scheduled() {
         let names = |here| row_targets(here, true).into_iter().map(|(n, _)| n).collect::<Vec<_>>();
-        assert_eq!(names(Attention::Working), ["Needs you", "Unread", "New", "Unanswered", "Quiet", "Done"]);
-        assert_eq!(names(Attention::Scheduled), ["Needs you", "Unread", "New", "Unanswered", "Working", "Quiet", "Done"]);
+        assert_eq!(names(Attention::Working), ["New", "Needs you", "Unread", "Unanswered", "Quiet", "Done"], "in the list's order");
+        assert_eq!(names(Attention::Scheduled), ["New", "Needs you", "Unread", "Unanswered", "Working", "Quiet", "Done"]);
         assert!(row_targets(Attention::Done, false).is_empty());
     }
 
@@ -334,6 +340,10 @@ mod tests {
         sorted.reverse();
         sorted.sort();
         assert_eq!(sorted, Attention::ALL);
+        assert_eq!(Attention::LISTED.map(Attention::label), ["New", "Needs you", "Unread", "Unanswered", "Working", "Quiet", "Scheduled", "Done"], "New is listed first");
+        let mut every = Attention::LISTED;
+        every.sort();
+        assert_eq!(every, Attention::ALL, "the same kinds");
     }
 
     #[test]

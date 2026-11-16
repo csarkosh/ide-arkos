@@ -156,12 +156,36 @@ pub fn page_entry(page: PageKey, mut terms: Vec<Term>, focused: Option<SessionId
     })
 }
 
-/// The entries under their groups, in `Attention::ALL`'s order, a group with nothing in it left
+/// The label a row carries beside its name, for its reminder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Badge {
+    None,
+    /// Its time came and the user has not looked.
+    Reminder,
+    /// It has a reminder still to come but is listed elsewhere for now (at work, or with an
+    /// answer the user has not read): it goes back under Scheduled once read.
+    Scheduled,
+}
+
+/// A row's reminder label: Reminder while one is up; Scheduled while one is pending and the row
+/// is listed under another group, so it reads as scheduled wherever it is; none under Scheduled
+/// itself, whose heading says it.
+pub fn badge(e: &Entry) -> Badge {
+    if e.reminded {
+        Badge::Reminder
+    } else if e.scheduled_until.is_some() && e.group != Attention::Scheduled {
+        Badge::Scheduled
+    } else {
+        Badge::None
+    }
+}
+
+/// The entries under their groups, in `Attention::LISTED`'s order (New first), a group with nothing in it left
 /// out. Within a group the newest change is first, and sessions of the same moment keep the
 /// order they came in (the tabs' own), so the list does not shuffle on its own.
 pub fn grouped(entries: Vec<Entry>) -> Vec<(Attention, Vec<Entry>)> {
     let mut groups: Vec<(Attention, Vec<Entry>)> = Vec::new();
-    for kind in Attention::ALL {
+    for kind in Attention::LISTED {
         let mut rows: Vec<Entry> = entries.iter().filter(|e| e.group == kind).cloned().collect();
         if rows.is_empty() {
             continue;
@@ -269,6 +293,8 @@ pub enum RowAction {
     Move(crate::attention::MoveTo),
     /// A reminder at this time, with this repeat, from "Remind me in".
     Remind(u64, reminder::Repeat),
+    /// The reminder ended: the session is listed as its terminals put it again.
+    Unschedule,
 }
 
 /// A row of a session's menu: something it does, or "Move to", which opens the sections the
@@ -288,14 +314,18 @@ pub enum Sub {
 }
 
 /// A session row's menu: "Move to" when there is a section to move it to (`can_move`), then
-/// "Remind me in", Rename and End, for a shell that still runs.
-pub fn menu_items(can_move: bool, alive: bool) -> Vec<(&'static str, MenuEntry)> {
+/// "Remind me in", Unschedule while it has a reminder (`scheduled`), Rename and End, for a shell
+/// that still runs.
+pub fn menu_items(can_move: bool, alive: bool, scheduled: bool) -> Vec<(&'static str, MenuEntry)> {
     let mut v = Vec::new();
     if can_move {
         v.push(("Move to", MenuEntry::MoveTo));
     }
     if alive {
         v.push(("Remind me in", MenuEntry::RemindMe));
+        if scheduled {
+            v.push(("Unschedule", MenuEntry::Do(RowAction::Unschedule)));
+        }
         v.push(("Rename", MenuEntry::Do(RowAction::Rename)));
         v.push(("End session", MenuEntry::Do(RowAction::End)));
     }
@@ -486,7 +516,8 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
                 None => attention::age(e.since, now),
             };
             let when = if e.count > 1 { format!("{} sessions{}{}", e.count, if when.is_empty() { "" } else { " \u{b7} " }, when) } else { when };
-            let reminded = e.reminded;
+            let badge = badge(&e);
+            let reminded = badge == Badge::Reminder;
             let key = match e.ended {
                 Some(i) => RowKey::Ended(i),
                 None => RowKey::Live(e.page),
@@ -557,6 +588,7 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
                                 .line_height(px(style.ui(18.0)))
                                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(name_color).when(bold, |d| d.font_weight(gpui::FontWeight::BOLD)).child(e.name))
                                 .when(reminded, |d| d.child(div().flex_none().px(px(5.0)).rounded(px(4.0)).border_1().border_color(c.focus_ring.hsla()).text_size(px(style.ui(10.0))).text_color(c.text.hsla()).child("Reminder")))
+                                .when(badge == Badge::Scheduled, |d| d.child(div().flex_none().px(px(5.0)).rounded(px(4.0)).border_1().border_color(c.border.hsla()).text_size(px(style.ui(10.0))).text_color(dim).child("Scheduled")))
                                 .when(!reminded && !when.is_empty(), |d| d.child(div().flex_none().text_size(px(style.ui(11.0))).text_color(dim).child(when))),
                         )
                         // A definite width, as the worktree rows give their second line: gpui
@@ -641,7 +673,7 @@ pub fn render_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     };
     let targets = row.as_ref().map(|e| attention::row_targets(e.attention, e.alive)).unwrap_or_default();
     let items = match key {
-        RowKey::Live(_) => row.as_ref().map(|e| menu_items(!targets.is_empty(), e.alive)).unwrap_or_default(),
+        RowKey::Live(page) => row.as_ref().map(|e| menu_items(!targets.is_empty(), e.alive, root.reminders.contains_key(&page))).unwrap_or_default(),
         RowKey::Ended(i) if i < root.ended.len() => vec![("Resume", MenuEntry::Do(RowAction::Resume(i))), ("Remove from the list", MenuEntry::Do(RowAction::Forget(i)))],
         _ => Vec::new(),
     };
@@ -816,6 +848,24 @@ mod tests {
     }
 
     #[test]
+    fn a_scheduled_session_listed_elsewhere_keeps_a_scheduled_label_wherever_it_goes() {
+        let r = Reminder::new(1000, reminder::Repeat::Never);
+        let at = |a| page_entry(7, vec![term(1, 10, a)], None, Some(&r), 50).unwrap();
+        assert_eq!(badge(&at(Attention::Working)), Badge::Scheduled, "replied to: at work, still scheduled");
+        assert_eq!(badge(&at(Attention::Unread)), Badge::Scheduled, "its answer unread");
+        assert_eq!(badge(&at(Attention::NeedsYou)), Badge::Scheduled);
+        assert_eq!(at(Attention::Unread).scheduled_until, Some(1000), "with its time");
+        assert_eq!(badge(&at(Attention::Unanswered)), Badge::None, "under Scheduled the heading says it");
+        // Held under Unread after the read, the label stays until it is back.
+        let mut held = hold(vec![at(Attention::Unanswered)], Some((7, Attention::Unread)));
+        assert_eq!(badge(&held.remove(0)), Badge::Scheduled);
+        let came = page_entry(7, vec![term(1, 10, Attention::Quiet)], None, Some(&r), 1000).unwrap();
+        assert_eq!(badge(&came), Badge::Reminder);
+        let plain = page_entry(7, vec![term(1, 10, Attention::Working)], None, None, 50).unwrap();
+        assert_eq!(badge(&plain), Badge::None);
+    }
+
+    #[test]
     fn the_filter_finds_a_row_by_any_of_its_terminals_names() {
         let e = page_entry(7, vec![term(1, 10, Attention::Quiet), term(2, 20, Attention::Quiet)], None, None, 0).unwrap();
         assert_eq!(matching(vec![e.clone()], "t2").len(), 1);
@@ -913,11 +963,13 @@ mod tests {
 
     #[test]
     fn a_row_s_menu_moves_it_to_another_section_renames_it_or_ends_it() {
-        let labels = |can_move, alive| menu_items(can_move, alive).into_iter().map(|(l, _)| l).collect::<Vec<_>>();
-        assert_eq!(labels(true, true), ["Move to", "Remind me in", "Rename", "End session"]);
-        assert_eq!(labels(false, true), ["Remind me in", "Rename", "End session"]);
-        assert!(labels(false, false).is_empty(), "a shell that ended has nothing left to do here");
-        assert_eq!(menu_items(true, true)[0].1, MenuEntry::MoveTo);
+        let labels = |can_move, alive, scheduled| menu_items(can_move, alive, scheduled).into_iter().map(|(l, _)| l).collect::<Vec<_>>();
+        assert_eq!(labels(true, true, false), ["Move to", "Remind me in", "Rename", "End session"]);
+        assert_eq!(labels(false, true, false), ["Remind me in", "Rename", "End session"]);
+        assert_eq!(labels(true, true, true), ["Move to", "Remind me in", "Unschedule", "Rename", "End session"], "a scheduled session can be unscheduled");
+        assert!(labels(false, false, true).is_empty(), "a shell that ended has nothing left to do here");
+        assert_eq!(menu_items(true, true, false)[0].1, MenuEntry::MoveTo);
+        assert_eq!(menu_items(true, true, true)[2].1, MenuEntry::Do(RowAction::Unschedule));
     }
 
     #[test]
