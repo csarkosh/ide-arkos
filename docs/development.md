@@ -1042,8 +1042,12 @@ Things only a person at the screen can check, in order of value:
   git the "inline diff" chip sits left of it; under each effect the icons are legible; a CSV's
   grid keeps its own pill in the strip
 - image zoom: a double click on an image, presenting or editing, shows it as large as the pane
-  holds it over a dimmed document, fading in; a double click on it, Escape, or switching tabs
-  puts it back; the wheel does not scroll the document under it
+  holds it over a dimmed document, fading in, with a bar at the bottom (− 160% + Fit); a click
+  zooms in about the pointer after a moment and the bar's percentage rises, Option+click zooms
+  out; a double click never zooms first, it puts the image back; zoomed, two fingers on the
+  trackpad pan it with no gap at its edges, as does a drag (the open hand, closed while
+  dragging); Fit centres it again; Escape or switching tabs puts it back; the document under it
+  never scrolls
 - session rename: Rename in a row's menu, then typing: the row's name follows each key; Escape
   puts the old name back in the row
 - window desktops: with three desktops, a window on each, an update (or `arkos` run by the

@@ -1456,11 +1456,109 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         banners.push(banner_row().items_center().bg(theme.chrome.banner.alpha(style.body_bars_alpha)).child(text).children(strip_pill.map(|p| p.flex_none())));
     }
     let body = if banners.is_empty() { body } else { div().size_full().flex().flex_col().children(banners).child(div().flex_1().min_h_0().child(body)) };
-    // An image zoomed by a double click: the picture as large as the pane holds it, over the
-    // document on its own ground, fading in and out as the menus do; a double click on it, or
-    // Escape, puts it back.
+    // An image zoomed by a double click: fitted to the pane first, over the document on its own
+    // ground, fading in and out as the menus do. A click zooms in about the pointer (Option+click
+    // out) once the double-click time has passed, the bar's − + and Fit at once; two fingers,
+    // the wheel or a drag pan it; a double click or Escape puts it back (`image_zoom`).
     let zoom_el = root.image_zoom.current(root.frame_now).filter(|((t, _), _)| *t == tab).map(|((_, file), o)| (file.clone(), o)).map(|(file, opacity)| {
         let live = root.image_zoom.value().is_some();
+        let placed = root.image_sizes().map(|(fit, pic, bx)| (fit, pic, crate::image_zoom::clamp(root.image_view.pan, bx, pic)));
+        let zoomed = root.image_view.zoom > 1.0 + 1e-3;
+        let dragging = root.image_view.drag.is_some_and(|(_, _, moved)| moved);
+        let label = match (root.image_natural, placed) {
+            (Some(natural), Some((fit, _, _))) => crate::image_zoom::percent(natural, fit, root.image_view.zoom),
+            _ => String::new(),
+        };
+        let picture = match placed {
+            Some((_, pic, pan)) => gpui::img(file).absolute().left(px(pan.0)).top(px(pan.1)).w(px(pic.0)).h(px(pic.1)).into_any_element(),
+            None => gpui::img(file).size_full().into_any_element(),
+        };
+        let weak = cx.weak_entity();
+        let measure = canvas(
+            move |b, _window, cx| {
+                let at = (f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height));
+                let _ = weak.update(cx, |root, cx| {
+                    if root.image_box != Some(at) {
+                        root.image_box = Some(at);
+                        cx.notify();
+                    }
+                });
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
+        let c = &theme.chrome;
+        let (text, dim, hover) = (c.text.hsla(), c.text_dim.hsla(), c.tab_inactive.hsla());
+        let button = |id: usize, label: &'static str, to: Option<bool>, cx: &mut Context<Root>| {
+            div()
+                .id(("image-zoom-button", id))
+                .px(px(8.0))
+                .py(px(2.0))
+                .rounded(px(5.0))
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover).text_color(text))
+                .child(label)
+                .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.image_step(to, None, cx)))
+        };
+        let bar = div()
+            .absolute()
+            .bottom(px(10.0))
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.0))
+                    .px(px(4.0))
+                    .py(px(3.0))
+                    .rounded(px(8.0))
+                    .bg(pill_bg(&theme))
+                    .border_1()
+                    .border_color(pill_border(&theme))
+                    .text_color(dim)
+                    .font_family(root.ui_family())
+                    .text_size(px(style.ui(12.0)))
+                    .occlude()
+                    .child(button(0, "\u{2212}", Some(false), cx))
+                    .child(div().min_w(px(48.0)).flex().justify_center().text_color(text).child(label))
+                    .child(button(1, "+", Some(true), cx))
+                    .child(button(2, "Fit", None, cx)),
+            );
+        let stage = div()
+            .id(("image-zoom-stage", tab))
+            .relative()
+            .size_full()
+            .overflow_hidden()
+            .child(measure)
+            .child(picture)
+            .when(zoomed, |d| if dragging { d.cursor(gpui::CursorStyle::ClosedHand) } else { d.cursor(gpui::CursorStyle::OpenHand) })
+            .when(live, |d| {
+                d.on_scroll_wheel(cx.listener(|root, ev: &ScrollWheelEvent, _window, cx| {
+                    cx.stop_propagation();
+                    root.image_scroll(ev.delta, cx);
+                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |root, ev: &MouseDownEvent, _window, cx| {
+                        cx.stop_propagation();
+                        root.image_press(ev.position, ev.click_count, cx);
+                    }),
+                )
+                .on_mouse_move(cx.listener(|root, ev: &MouseMoveEvent, _window, cx| {
+                    if ev.pressed_button == Some(MouseButton::Left) {
+                        root.image_drag(ev.position, cx);
+                    }
+                }))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|root, ev: &MouseUpEvent, _window, cx| root.image_release(ev.position, ev.modifiers.alt, cx)),
+                )
+            });
         div()
             .id(("image-zoom", tab))
             .absolute()
@@ -1470,21 +1568,9 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             .p(px(24.0))
             .bg(theme.terminal.background.hsla().alpha(0.96))
             .opacity(opacity)
-            .child(gpui::img(file).size_full())
-            .when(live, |d| {
-                d.occlude()
-                    .on_scroll_wheel(|_: &ScrollWheelEvent, _window, cx| cx.stop_propagation())
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |root, ev: &MouseDownEvent, _window, cx| {
-                            cx.stop_propagation();
-                            if ev.click_count == 2 {
-                                root.image_zoom.hide(std::time::Instant::now());
-                                cx.notify();
-                            }
-                        }),
-                    )
-            })
+            .child(stage)
+            .child(bar)
+            .when(live, |d| d.occlude().on_scroll_wheel(|_: &ScrollWheelEvent, _window, cx| cx.stop_propagation()))
     });
     // The view group.
     let view_button_el = view_button.then(|| crate::view_menu::render_view_group(root, pane, tab, crate::view_menu::current(mode, presenting), editable, find_open, pill_bg(&theme), pill_border(&theme), cx));

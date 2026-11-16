@@ -89,6 +89,13 @@ mod mac {
     use objc2_foundation::{NSPoint, NSRect, NSSize};
     use objc2_web_kit::WKWebView;
 
+    /// How long after a click the system still counts a second one as a double click, in
+    /// seconds (System Settings, Mouse or Trackpad): what a single click waits out before acting
+    /// where a double click means something else.
+    pub fn double_click_interval() -> f64 {
+        NSEvent::doubleClickInterval().clamp(0.1, 1.0)
+    }
+
     /// The menu bar's height in points, from the main display (every display carries one of the
     /// same height). Zero off the main thread or without a display.
     pub fn menu_bar_height() -> f64 {

@@ -471,8 +471,12 @@ the text out and leaves the file. To keep images in a folder, set `image_destina
 `arkos settings set viewer.image_destination images`.
 
 A double click on an image, presenting or editing, zooms it: the picture as large as the pane
-holds it, over the document. Another double click on it, or Escape, puts it back; so does
-leaving the tab. A plain click on an image, a video's poster or a badge places the caret in the block. Cmd+click
+holds it, over the document, with a bar at the bottom saying its scale against its own pixels.
+A click on it zooms in a step about the pointer (up to eight times the fitted size) and
+Option+click zooms out, each once your double-click time has passed; the bar's −, + and Fit act
+at once. Zoomed, two fingers on the trackpad, the wheel or a drag pan it. Another double click
+on it, or Escape, puts it back; so does leaving the tab. (gpui has no pinch, so a pinch does
+nothing.) A plain click on an image, a video's poster or a badge places the caret in the block. Cmd+click
 opens it: an image in Preview, or the link for a linked image. A video (`.mp4`, `.mov` and the
 like) shows a poster frame made by Quick Look, with "loading" first. Click its play button and it
 plays right there in the page, at the poster's size, with the video tab's controls under it

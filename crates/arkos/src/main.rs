@@ -46,6 +46,7 @@ mod launch;
 mod launch_link;
 mod link_menu;
 mod icons;
+mod image_zoom;
 mod md_links;
 mod md_math;
 mod md_menu;
@@ -287,6 +288,12 @@ pub struct Root {
     /// An image zoomed over its markdown tab by a double click, while it is and while it fades
     /// out: the tab and the image's file (`view_menu::zoom_after`).
     pub image_zoom: Transient<(TabId, PathBuf)>,
+    /// The zoomed image's zoom, pan and pending click (`image_zoom::View`), its own pixel size
+    /// (read from its header as it opens), and the box it is drawn in, as the last frame laid it
+    /// out: its top left in the window and its size.
+    pub image_view: image_zoom::View,
+    pub image_natural: Option<(f32, f32)>,
+    pub image_box: Option<(f32, f32, f32, f32)>,
     /// Each markdown tab's outline rail opening and closing (`outline_rail`): shown while the
     /// panel is open, its opacity easing the rail's width and the overlay's slide and scrim.
     pub outline_anim: HashMap<TabId, Transient<bool>>,
@@ -818,6 +825,9 @@ impl Root {
             link_menu: Transient::Hidden,
             md_menu: Transient::Hidden,
             image_zoom: Transient::Hidden,
+            image_view: image_zoom::View::new(),
+            image_natural: None,
+            image_box: None,
             outline_anim: HashMap::new(),
             outline_hover: None,
             outline_cursor: None,
@@ -2587,12 +2597,110 @@ impl Root {
     pub fn toggle_image_zoom(&mut self, tab: TabId, path: PathBuf, cx: &mut Context<Self>) {
         let now = Instant::now();
         match view_menu::zoom_after(self.image_zoom.value(), tab, path) {
-            Some(z) => self.image_zoom.show(z, now),
+            Some(z) => {
+                self.image_natural = imagesize::size(&z.1).ok().map(|s| (s.width as f32, s.height as f32));
+                self.image_view = image_zoom::View::new();
+                self.image_zoom.show(z, now);
+            }
             None => {
                 self.image_zoom.hide(now);
             }
         }
         cx.notify();
+    }
+
+    /// The zoomed image's fitted size and the size it is drawn at, in its box as last laid out.
+    pub fn image_sizes(&self) -> Option<((f32, f32), (f32, f32), (f32, f32))> {
+        let (_, _, w, h) = self.image_box?;
+        let fit = image_zoom::fitted(self.image_natural?, (w, h));
+        Some((fit, (fit.0 * self.image_view.zoom, fit.1 * self.image_view.zoom), (w, h)))
+    }
+
+    /// Zooms the image one step in or out, or back to fitted (`to` None), about `at` (a point in
+    /// the window) or the box's centre.
+    pub fn image_step(&mut self, to: Option<bool>, at: Option<gpui::Point<gpui::Pixels>>, cx: &mut Context<Self>) {
+        let (Some((fit, _, bx)), Some((x, y, _, _))) = (self.image_sizes(), self.image_box) else { return };
+        let v = &mut self.image_view;
+        let next = match to {
+            Some(in_) => image_zoom::step(v.zoom, in_),
+            None => 1.0,
+        };
+        let at = at.map_or((bx.0 / 2.0, bx.1 / 2.0), |p| (f32::from(p.x) - x, f32::from(p.y) - y));
+        v.pan = image_zoom::zoom_about(v.pan, at, fit, bx, v.zoom, next);
+        v.zoom = next;
+        cx.notify();
+    }
+
+    /// A press on the zoomed image: a double click puts it back; a single one may become a drag
+    /// or, once released, a click.
+    pub fn image_press(&mut self, at: gpui::Point<gpui::Pixels>, clicks: usize, cx: &mut Context<Self>) {
+        let v = &mut self.image_view;
+        // Whatever was waiting is superseded.
+        v.pending += 1;
+        if clicks >= 2 {
+            v.drag = None;
+            self.image_zoom.hide(Instant::now());
+            cx.notify();
+            return;
+        }
+        let sizes = self.image_sizes();
+        let v = &mut self.image_view;
+        let pan = sizes.map_or(v.pan, |(_, pic, bx)| image_zoom::clamp(v.pan, bx, pic));
+        v.drag = Some(((f32::from(at.x), f32::from(at.y)), pan, false));
+    }
+
+    /// The pointer moved with the press held: past a few points it is a drag, which pans.
+    pub fn image_drag(&mut self, at: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+        let sizes = self.image_sizes();
+        let v = &mut self.image_view;
+        let Some((start, pan0, moved)) = v.drag else { return };
+        let d = (f32::from(at.x) - start.0, f32::from(at.y) - start.1);
+        if !moved && d.0.hypot(d.1) < 4.0 {
+            return;
+        }
+        if let Some((_, pic, bx)) = sizes {
+            v.pan = image_zoom::clamp((pan0.0 + d.0, pan0.1 + d.1), bx, pic);
+        }
+        v.drag = Some((start, pan0, true));
+        cx.notify();
+    }
+
+    /// The press ended: a drag is over; a click zooms, in or with Option out, once the
+    /// double-click time has passed without a second press (which closes instead).
+    pub fn image_release(&mut self, at: gpui::Point<gpui::Pixels>, out: bool, cx: &mut Context<Self>) {
+        let Some((_, _, moved)) = self.image_view.drag.take() else { return };
+        if moved {
+            return;
+        }
+        self.image_view.pending += 1;
+        let pending = self.image_view.pending;
+        let wait = Duration::from_secs_f64(screen::double_click_interval());
+        let root = cx.entity();
+        cx.spawn(async move |_, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = root.update(cx, |root, cx| {
+                if root.image_view.pending == pending && root.image_zoom.value().is_some() {
+                    root.image_step(Some(!out), Some(at), cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Two fingers on the trackpad, or the wheel: the zoomed picture pans, within its box.
+    pub fn image_scroll(&mut self, delta: gpui::ScrollDelta, cx: &mut Context<Self>) {
+        let Some((_, pic, bx)) = self.image_sizes() else { return };
+        let (dx, dy) = match delta {
+            gpui::ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y)),
+            gpui::ScrollDelta::Lines(p) => (p.x * image_zoom::LINE, p.y * image_zoom::LINE),
+        };
+        let v = &mut self.image_view;
+        let pan = image_zoom::clamp(v.pan, bx, pic);
+        let next = image_zoom::clamp((pan.0 + dx, pan.1 + dy), bx, pic);
+        if next != v.pan {
+            v.pan = next;
+            cx.notify();
+        }
     }
 
     /// Closes a tab; the pane stays (spec 4). A terminal's session is detached at once and ended

@@ -25,6 +25,15 @@ holds it, contained, over the document on its ground at 96%, fading as the menus
 (`Root::image_zoom`, a `Transient`). A double click on it, Escape or the tab leaving the front
 puts it back; the same double click on another image swaps it in (`view_menu::zoom_after`).
 
+Then (Cyrus, after 0.8.36: "there should be an option to click to zoom in/out further on the
+image. I should also be able to do the 2-finger camera panning"): the zoomed picture starts
+fitted and steps through 1, 1.5, 2, 3, 4, 6 and 8 times that (`image_zoom`): a click zooms in a
+step about the pointer and Option+click out, once the system's double-click time has passed
+with no second press (so a double click only closes); a bar at the bottom has −, the scale
+against the picture's own pixels, + and Fit. Two fingers on the trackpad and the wheel pan it,
+and so does a drag, always within its box (a smaller axis centred). gpui 0.2 delivers no pinch,
+so there is none.
+
 ## 3. The rename preview
 
 A session's row is named for its original terminal; while that tab is being renamed, the row
