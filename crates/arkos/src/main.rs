@@ -283,9 +283,9 @@ pub struct Root {
     pub link_menu: Transient<link_menu::LinkMenu>,
     /// A markdown document's right-click menu while it is open, and while it fades out.
     pub md_menu: Transient<md_menu::MdMenu>,
-    /// A markdown tab's `⋯` view menu while it is open, and while it fades out: the tab it
-    /// belongs to (`view_menu`); one menu is open at a time.
-    pub view_menu: Transient<TabId>,
+    /// An image zoomed over its markdown tab by a double click, while it is and while it fades
+    /// out: the tab and the image's file (`view_menu::zoom_after`).
+    pub image_zoom: Transient<(TabId, PathBuf)>,
     /// Each markdown tab's outline rail opening and closing (`outline_rail`): shown while the
     /// panel is open, its opacity easing the rail's width and the overlay's slide and scrim.
     pub outline_anim: HashMap<TabId, Transient<bool>>,
@@ -816,7 +816,7 @@ impl Root {
             new_file_focus: cx.focus_handle(),
             link_menu: Transient::Hidden,
             md_menu: Transient::Hidden,
-            view_menu: Transient::Hidden,
+            image_zoom: Transient::Hidden,
             outline_anim: HashMap::new(),
             outline_hover: None,
             outline_cursor: None,
@@ -981,7 +981,6 @@ impl Root {
         self.session_menu.hide(now);
         self.link_menu.hide(now);
         self.md_menu.hide(now);
-        self.view_menu.hide(now);
         let next = self.popover.value().copied().unwrap_or_default().toggled(which);
         if next == chrome::Popover::Closed {
             self.close_popovers(now);
@@ -1554,7 +1553,7 @@ impl Root {
             || self.new_file.animating(now)
             || self.link_menu.animating(now)
             || self.md_menu.animating(now)
-            || self.view_menu.animating(now)
+            || self.image_zoom.animating(now)
             || self.outline_anim.values().any(|t| t.animating(now))
             || self.outline_hover.as_ref().is_some_and(|h| h.animating(now))
             || self.popover.animating(now)
@@ -1591,9 +1590,11 @@ impl Root {
         self.new_file.settle(now);
         self.link_menu.settle(now);
         self.md_menu.settle(now);
-        self.view_menu.settle(now);
-        // Every other way the active tab or the focus moves (an agent's open, the tree, a jump).
-        self.drop_unseen_view_menu();
+        self.image_zoom.settle(now);
+        // A zoom is drawn only over its tab in front; anywhere else it ends at once.
+        if self.image_zoom.value().is_some_and(|(t, _)| !view_menu::in_front(*t, &self.tree)) {
+            self.image_zoom.clear();
+        }
         self.outline_anim.retain(|_, t| {
             t.settle(now);
             !t.is_hidden()
@@ -2130,7 +2131,6 @@ impl Root {
         }
         let maximized = self.tree.maximized;
         self.tree.focus(pane);
-        self.drop_unseen_view_menu();
         self.acknowledge_focused(cx);
         if self.tree.maximized != maximized {
             self.save(cx);
@@ -2572,7 +2572,6 @@ impl Root {
         self.wt_focused = false;
         self.session_filter_focused = false;
         self.tree.activate(pane, idx);
-        self.drop_unseen_view_menu();
         self.acknowledge_focused(cx);
         if let Some(h) = self.bar_scroll.get(&pane) {
             h.scroll_to_item(idx);
@@ -2581,12 +2580,17 @@ impl Root {
         cx.notify();
     }
 
-    /// Closes an open view menu at once when its tab is no longer the focused pane's active one:
-    /// it is drawn only there, so unseen it would hold Escape and a staged update back.
-    fn drop_unseen_view_menu(&mut self) {
-        if self.view_menu.value().is_some_and(|&t| !view_menu::stays_open(t, &self.tree)) {
-            self.view_menu.clear();
+    /// A double click on an image in a markdown tab's rendered view: zoomed over the document, or
+    /// back in place when it is the one zoomed (`view_menu::zoom_after`).
+    pub fn toggle_image_zoom(&mut self, tab: TabId, path: PathBuf, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        match view_menu::zoom_after(self.image_zoom.value(), tab, path) {
+            Some(z) => self.image_zoom.show(z, now),
+            None => {
+                self.image_zoom.hide(now);
+            }
         }
+        cx.notify();
     }
 
     /// Closes a tab; the pane stays (spec 4). A terminal's session is detached at once and ended
@@ -2641,10 +2645,6 @@ impl Root {
         self.preview_tab = after_close(self.preview_tab, id);
         self.viewers.remove(&id);
         self.forget_outline(id);
-        // The tab's view menu cannot be drawn without it: gone at once, with no fade.
-        if self.view_menu.current(self.frame_now).is_some_and(|(t, _)| *t == id) {
-            self.view_menu.clear();
-        }
         // The only strong hold on the view: dropping it releases the player (`AvPlayer::drop`).
         self.videos.remove(&id);
         // The only strong hold on the web view: dropping it removes the WKWebView from the window.
@@ -3962,7 +3962,7 @@ impl Root {
     fn chrome_state(&self, cx: &App) -> idle::Chrome {
         idle::Chrome {
             palette: self.palette.value().is_some(),
-            menu: self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.session_menu.value().is_some() || self.remind_picker.value().is_some() || self.link_menu.value().is_some() || self.md_menu.value().is_some() || self.view_menu.value().is_some() || self.popover.value().is_some(),
+            menu: self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.session_menu.value().is_some() || self.remind_picker.value().is_some() || self.link_menu.value().is_some() || self.md_menu.value().is_some() || self.popover.value().is_some(),
             prompt: self.url_prompt.value().is_some(),
             find: self.active_terminal(cx).is_some_and(|t| t.read(cx).find.is_some()) || self.active_viewer().is_some_and(|v| v.read(cx).find.is_some()),
             drag: self.drop_target.is_some() || self.resizing.is_some() || self.sidebar_resizing,
@@ -5265,7 +5265,7 @@ impl Render for Root {
             .on_any_mouse_down(cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
                 let now = Instant::now();
                 root.last_input = now;
-                if root.context_menu.hide(now) | root.new_file.hide(now) | root.wt_menu.hide(now) | root.session_menu.hide(now) | root.link_menu.hide(now) | root.md_menu.hide(now) | root.view_menu.hide(now) | root.close_popovers(now) {
+                if root.context_menu.hide(now) | root.new_file.hide(now) | root.wt_menu.hide(now) | root.session_menu.hide(now) | root.link_menu.hide(now) | root.md_menu.hide(now) | root.close_popovers(now) {
                     cx.notify();
                 }
             }))

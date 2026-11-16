@@ -861,7 +861,6 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
                             cx.listener(|root, _: &MouseDownEvent, _window, cx| {
                                 let now = std::time::Instant::now();
                                 root.md_menu.hide(now);
-                                root.view_menu.hide(now);
                                 cx.stop_propagation();
                             }),
                         )
@@ -933,7 +932,6 @@ fn open_link_menu(root: &mut Root, terminal: &Entity<Terminal>, ev: &MouseDownEv
     root.context_menu.hide(now);
     root.wt_menu.hide(now);
     root.session_menu.hide(now);
-    root.view_menu.hide(now);
     root.close_popovers(now);
     root.url_prompt.hide(now);
     root.commit_tab_rename(cx);
@@ -1113,7 +1111,6 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
 fn pill_press(root: &mut Root, pane: PaneId, cx: &mut Context<Root>) {
     let now = std::time::Instant::now();
     root.md_menu.hide(now);
-    root.view_menu.hide(now);
     root.focus_pane(pane, cx);
     cx.stop_propagation();
 }
@@ -1188,7 +1185,7 @@ pub fn grid_strip(delimited: bool, banner: Option<String>) -> Option<Strip> {
 /// (`pill`) and another file's inline-diff chip (`chip`), the chip left of the pill.
 pub fn banner_right_pad(button: bool, pill: bool, chip: bool) -> f32 {
     if button {
-        return crate::view_menu::RIGHT + crate::view_menu::BUTTON + 8.0;
+        return crate::view_menu::RIGHT + crate::view_menu::GROUP_W + 8.0 + if chip { CHIP_W + 8.0 } else { 0.0 };
     }
     match (pill, chip) {
         (true, true) => 14.0 + PILL_W + 8.0 + CHIP_W + 8.0,
@@ -1228,8 +1225,8 @@ enum Kind {
 /// A document (markdown, or any text file the user may write) takes the editing keys
 /// (`Viewer::key`) and nothing else scrolls on a key; in a read-only file the arrows, Page Up and
 /// Down, Space, Home and End scroll. The wheel scrolls smoothly. A markdown document shows
-/// rendered (`md_view`, a list that scrolls itself) or raw, with a `⋯` button at the top right
-/// whose menu (`view_menu`) switches between the two and holds its other view toggles; a code
+/// rendered (`md_view`, a list that scrolls itself) or raw, with a group of three buttons at the
+/// top right (`view_menu`: Present, Edit, Raw) that switches between them; a code
 /// document shows raw with its syntax colours. A delimited file shows its grid in Rendered mode,
 /// with a pill in the strip above it that switches to its text, and a workbook its grid always,
 /// with no pill; while a grid shows, the keys scroll it.
@@ -1242,7 +1239,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     let family = root.family();
     let presenting = viewer.read(cx).presenting;
     let markdown = viewer::is_markdown(path);
-    let (focus, kind, font_size, has_changes, inline, find_open, mode, editable, has_doc, conflict, save_error, read_only, pill_shown, delimited, sheet_count, outline_on, has_heads) = {
+    let (focus, kind, font_size, has_changes, inline, find_open, mode, editable, has_doc, conflict, save_error, read_only, pill_shown, delimited, sheet_count) = {
         let v = viewer.read(cx);
         let kind = match &v.content {
             _ if !v.loaded => Kind::Loading,
@@ -1257,7 +1254,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         let editable = v.doc.is_some() && v.read_only.is_none();
         let pill_shown = viewer::pill_shown(path, editable, v.book.as_ref());
         let delimited = v.book.as_ref().is_some_and(|b| matches!(b.source, crate::grid::Source::Delimited(_)));
-        (v.focus.clone(), kind, v.font_size, v.diff.as_ref().is_some_and(|d| d.has_changes()), v.inline_diff, v.find.is_some(), v.mode, editable, v.doc.is_some(), v.conflict, v.save_error.clone(), v.read_only, pill_shown, delimited, v.sheet_count(), v.outline, !v.heads.is_empty())
+        (v.focus.clone(), kind, v.font_size, v.diff.as_ref().is_some_and(|d| d.has_changes()), v.inline_diff, v.find.is_some(), v.mode, editable, v.doc.is_some(), v.conflict, v.save_error.clone(), v.read_only, pill_shown, delimited, v.sheet_count())
     };
     // The rendered page and presentation are markdown's; a delimited file's pill switches to its
     // grid instead.
@@ -1352,11 +1349,12 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             .child(label)
             .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| v.update(cx, |v, cx| on_click(v, cx))))
     };
-    // A markdown document's view toggles sit behind one button at the top right, in both views
-    // and presenting (it is the way out); another file with changes has its inline-diff chip
-    // there. While the grid shows, nothing floats over it: its pill sits in the strip above it.
+    // A markdown document's view group (Present, Edit, Raw) sits at the top right in every view
+    // (it is the way out of presenting), its inline-diff chip left of it; another file with
+    // changes has the chip there alone. While the grid shows, nothing floats over it: its pill
+    // sits in the strip above it.
     let view_button = markdown && has_doc && kind_is_text;
-    let chip_shown = has_changes && !kind_is_grid && !view_button;
+    let chip_shown = has_changes && !kind_is_grid;
     // A delimited file's pill: in the strip over its grid, floating at the top right over its text.
     let csv_pill = pill_shown && !view_button;
     let right_pad = banner_right_pad(view_button, csv_pill && !kind_is_grid, chip_shown);
@@ -1388,11 +1386,17 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     }
     // The pill's top: where the find bar opens, below it when open.
     let pill_top = crate::view_menu::button_top(find_open);
-    // A non-markdown file's inline diff switch, at the top right where the find bar opens, below
-    // it when open; on a raw CSV, left of its pill at its top.
+    // The inline diff switch, at the top right where the find bar opens, below it when open; on
+    // a raw CSV left of its pill, on a markdown document left of its view group, level with it.
     let chip = chip_shown.then(|| {
         let v_chip = viewer.clone();
-        let (top, right) = if csv_pill { (pill_top, 14.0 + PILL_W + 8.0) } else { (if find_open { 44.0 } else { 6.0 }, 14.0) };
+        let (top, right) = if view_button {
+            (pill_top, crate::view_menu::RIGHT + crate::view_menu::GROUP_W + 8.0)
+        } else if csv_pill {
+            (pill_top, 14.0 + PILL_W + 8.0)
+        } else {
+            (if find_open { 44.0 } else { 6.0 }, 14.0)
+        };
         div()
             .id(("viewer-inline-diff", viewer.entity_id()))
             .absolute()
@@ -1452,14 +1456,38 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         banners.push(banner_row().items_center().bg(theme.chrome.banner.alpha(style.body_bars_alpha)).child(text).children(strip_pill.map(|p| p.flex_none())));
     }
     let body = if banners.is_empty() { body } else { div().size_full().flex().flex_col().children(banners).child(div().flex_1().min_h_0().child(body)) };
-    // The `⋯` button and its menu.
-    let view_button_el = view_button.then(|| crate::view_menu::render_view_button(root, pane, tab, find_open, pill_bg(&theme), pill_border(&theme), cx));
-    let view_menu_el = if view_button {
-        let rows = crate::view_menu::items(mode, delimited, editable, has_changes, inline, presenting, outline_on, has_heads);
-        crate::view_menu::render_view_menu(root, tab, &rows, find_open, cx)
-    } else {
-        None
-    };
+    // An image zoomed by a double click: the picture as large as the pane holds it, over the
+    // document on its own ground, fading in and out as the menus do; a double click on it, or
+    // Escape, puts it back.
+    let zoom_el = root.image_zoom.current(root.frame_now).filter(|((t, _), _)| *t == tab).map(|((_, file), o)| (file.clone(), o)).map(|(file, opacity)| {
+        let live = root.image_zoom.value().is_some();
+        div()
+            .id(("image-zoom", tab))
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .p(px(24.0))
+            .bg(theme.terminal.background.hsla().alpha(0.96))
+            .opacity(opacity)
+            .child(gpui::img(file).size_full())
+            .when(live, |d| {
+                d.occlude()
+                    .on_scroll_wheel(|_: &ScrollWheelEvent, _window, cx| cx.stop_propagation())
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |root, ev: &MouseDownEvent, _window, cx| {
+                            cx.stop_propagation();
+                            if ev.click_count == 2 {
+                                root.image_zoom.hide(std::time::Instant::now());
+                                cx.notify();
+                            }
+                        }),
+                    )
+            })
+    });
+    // The view group.
+    let view_button_el = view_button.then(|| crate::view_menu::render_view_group(root, pane, tab, crate::view_menu::current(mode, presenting), editable, find_open, pill_bg(&theme), pill_border(&theme), cx));
     let (v_keys, v_wheel, v_menu) = (viewer.clone(), viewer.clone(), viewer.downgrade());
     div()
         .size_full()
@@ -1559,7 +1587,6 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 root.wt_menu.hide(now);
                 root.session_menu.hide(now);
                 root.link_menu.hide(now);
-                root.view_menu.hide(now);
                 root.close_popovers(now);
                 let grid = v.read(cx).grid_shown();
                 let selection = if grid { v.read(cx).grid_sel.is_some() } else { v.read(cx).has_selection() };
@@ -1572,8 +1599,8 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         .children(chip)
         .children(pill)
         .children(view_button_el)
+        .children(zoom_el)
         .children(viewer::find_bar(&viewer, pane, &theme, family, &mut root.find_bars, root.frame_now, cx))
-        .children(view_menu_el)
 }
 
 /// A video tab: the picture, the control strip and the video keys (`video_element`), its view
@@ -1762,7 +1789,8 @@ mod tests {
 
     #[test]
     fn a_markdown_tab_s_banners_keep_clear_of_the_view_button() {
-        assert_eq!(banner_right_pad(true, false, false), crate::view_menu::RIGHT + crate::view_menu::BUTTON + 8.0);
+        assert_eq!(banner_right_pad(true, false, false), crate::view_menu::RIGHT + crate::view_menu::GROUP_W + 8.0);
+        assert_eq!(banner_right_pad(true, false, true), crate::view_menu::RIGHT + crate::view_menu::GROUP_W + 8.0 + CHIP_W + 8.0, "a markdown document's diff chip sits left of the group");
         assert_eq!(banner_right_pad(false, false, true), CHIP_W + 8.0 + 14.0, "a code file with changes keeps its chip");
         assert_eq!(banner_right_pad(false, true, false), PILL_W + 8.0 + 14.0, "a raw csv keeps its pill");
         assert_eq!(banner_right_pad(false, true, true), PILL_W + 8.0 + 14.0 + CHIP_W + 8.0, "the chip sits left of a raw csv's pill");

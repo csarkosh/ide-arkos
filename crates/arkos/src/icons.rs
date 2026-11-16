@@ -32,6 +32,20 @@ const ICONS: &[(&str, &str)] = &[
         "icons/alert-caution.svg",
         r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M5.1 1.75h5.8l3.35 3.35v5.8l-3.35 3.35H5.1L1.75 10.9V5.1z" fill="none" stroke="#000" stroke-width="1.5" stroke-linejoin="round"/><rect x="7.25" y="4.25" width="1.5" height="4.5" rx="0.75"/><circle cx="8" cy="11" r="0.9"/></svg>"##,
     ),
+    // The markdown tab's view group (view_menu): Present a screen with a play mark, Edit a pencil,
+    // Raw code brackets.
+    (
+        "icons/view-present.svg",
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect x="1.75" y="2.25" width="12.5" height="8.75" rx="1.25" fill="none" stroke="#000" stroke-width="1.5"/><path d="M6.75 4.6 10 6.6 6.75 8.6z"/><rect x="7.25" y="11" width="1.5" height="2.5"/><rect x="4.75" y="13" width="6.5" height="1.5" rx="0.75"/></svg>"##,
+    ),
+    (
+        "icons/view-edit.svg",
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M10.6 2.4a1.3 1.3 0 0 1 1.85 0l1.15 1.15a1.3 1.3 0 0 1 0 1.85L6 13l-3.6.85L3.25 10.2z" fill="none" stroke="#000" stroke-width="1.5" stroke-linejoin="round"/><path d="M9.4 3.6l3 3" fill="none" stroke="#000" stroke-width="1.5"/></svg>"##,
+    ),
+    (
+        "icons/view-raw.svg",
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M5.25 4.25 1.75 8l3.5 3.75M10.75 4.25 14.25 8l-3.5 3.75M9.25 2.75l-2.5 10.5" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>"##,
+    ),
 ];
 
 impl AssetSource for Assets {
@@ -93,6 +107,10 @@ mod tests {
             assert!(text.starts_with("<svg") && text.ends_with("</svg>"), "{kind:?}");
         }
         assert!(Assets.load("icons/nope.svg").unwrap().is_none());
-        assert_eq!(Assets.list("icons/").unwrap().len(), 5);
+        assert_eq!(Assets.list("icons/alert-").unwrap().len(), 5);
+        for path in ["icons/view-present.svg", "icons/view-edit.svg", "icons/view-raw.svg"] {
+            let bytes = Assets.load(path).unwrap().expect("served");
+            assert!(std::str::from_utf8(&bytes).unwrap().ends_with("</svg>"), "{path}");
+        }
     }
 }

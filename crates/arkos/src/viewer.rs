@@ -389,6 +389,9 @@ pub enum ViewerEvent {
     OpenVideo(PathBuf),
     /// A link to a local HTML page was Cmd+clicked: it opens in a web tab beside the document.
     OpenPage(PathBuf),
+    /// An image was double-clicked in the rendered view: it is shown zoomed over the document,
+    /// or, when it already is, the zoom ends (markdown view group spec, section 2).
+    ZoomImage(PathBuf),
     /// A `<details>` section was opened or closed: the file's section states now, for the
     /// workspace file.
     DetailsToggled(Vec<DetailsOpen>),
@@ -5422,6 +5425,7 @@ impl Root {
                 }
                 ViewerEvent::OpenVideo(path) => root.open_poster_video(tab, path, cx),
                 ViewerEvent::OpenPage(path) => root.open_beside_document(tab, path, crate::telemetry::Opened::Link, cx),
+                ViewerEvent::ZoomImage(path) => root.toggle_image_zoom(tab, path.clone(), cx),
                 // The state is the file's: every other tab on it shows the same sections open.
                 ViewerEvent::DetailsToggled(open) => {
                     let path = v.read(cx).path.clone();

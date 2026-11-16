@@ -2776,7 +2776,8 @@ fn mono_box(text: &SharedString, color: Hsla, bg: Option<Hsla>, ctx: &BlockCtx) 
 /// failed (with the url), and when the file cannot be drawn. A plain press is the row's, which puts
 /// the caret in the block. Cmd+click follows the link around the image when there is one, as a
 /// link's text does, and otherwise shows the file in Preview; the row stands aside through
-/// `press`. The pointer is the hand over anything Cmd+click opens, as over a link. An `<img>`
+/// `press`. A double click zooms the picture over the document (`ViewerEvent::ZoomImage`). The
+/// pointer is the hand over anything Cmd+click opens, as over a link. An `<img>`
 /// tag's `width` is the image's width (still at most the view's), and its wrapper's centring
 /// centres it.
 fn image_element(image: &ImagePiece, v: &Viewer, ctx: &BlockCtx, press: &Rc<Cell<bool>>) -> AnyElement {
@@ -2796,6 +2797,16 @@ fn image_element(image: &ImagePiece, v: &Viewer, ctx: &BlockCtx, press: &Rc<Cell
     let on_press = {
         let (press, link, file, base_dir, viewer) = (press.clone(), image.link.clone(), file.clone(), ctx.base_dir.clone(), ctx.viewer.clone());
         move |ev: &MouseDownEvent, _window: &mut Window, cx: &mut App| {
+            // A double click zooms the picture over the document (or ends the zoom), presenting
+            // or editing; the row leaves the second press alone.
+            if !ev.modifiers.platform && ev.click_count == 2 {
+                if let Some(file) = &file {
+                    let file = file.clone();
+                    viewer.update(cx, |_, cx| cx.emit(ViewerEvent::ZoomImage(file)));
+                    press.set(true);
+                }
+                return;
+            }
             if !ev.modifiers.platform {
                 return;
             }

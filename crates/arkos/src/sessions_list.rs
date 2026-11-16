@@ -191,6 +191,17 @@ pub fn is_held(now: Attention) -> bool {
     matches!(now, Attention::Unread | Attention::Unanswered | Attention::New | Attention::Quiet | Attention::Scheduled)
 }
 
+/// The name a session's row shows: while the user renames it, what they have typed so far (a
+/// blank name gives the automatic one back, as it will when it is set); else the name they gave
+/// it, else its program's title, else the shell's.
+pub fn shown_name(saved: Option<&str>, typing: Option<&str>, title: Option<&str>, shell: &str) -> String {
+    let given = match typing {
+        Some(t) => Some(t.trim()).filter(|t| !t.is_empty()),
+        None => saved,
+    };
+    given.or(title.filter(|t| !t.is_empty())).unwrap_or(shell).to_string()
+}
+
 /// What a terminal's title says that its name does not, for a row's second line: Claude Code
 /// titles its terminal with the conversation's topic, behind a glyph that moves while it works.
 /// None for no title, the name itself or the shell's.
@@ -371,8 +382,8 @@ pub fn entries(root: &Root, now: u64) -> Vec<Entry> {
                 let Tab::Terminal { session, cwd } = tab else { return None };
                 let id = tree.tab_id(pane, idx)?;
                 let label = root.sessions.labels.get(session);
-                let named = tree.tab_name(id).map(str::to_string);
-                let name = named.or_else(|| label.map(|l| l.title.clone()).filter(|t| !t.is_empty())).unwrap_or_else(|| root.shell_name.clone());
+                let typing = root.tab_rename.as_ref().filter(|r| r.tab == id).map(|r| r.edit.text.as_str());
+                let name = shown_name(tree.tab_name(id), typing, label.map(|l| l.title.as_str()), &root.shell_name);
                 let folder = || {
                     let dir = cwd.as_deref().unwrap_or(&root.project);
                     dir.file_name().map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().into_owned())
@@ -566,7 +577,6 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
                         root.context_menu.hide(now);
                         root.wt_menu.hide(now);
                         root.link_menu.hide(now);
-                        root.view_menu.hide(now);
                         root.session_submenu = None;
                         root.session_menu.show((key, ev.position), now);
                         cx.notify();
@@ -842,6 +852,15 @@ mod tests {
         assert_eq!(hold(back.clone(), Some((1, Attention::Unread)))[0].group, Attention::Unread);
         assert_eq!(hold(back, Some((2, Attention::Unread)))[1].group, Attention::Working);
         assert_eq!(groups(None), vec![(Attention::Unread, vec![2]), (Attention::Unanswered, vec![1, 3])]);
+    }
+
+    #[test]
+    fn a_row_shows_the_name_being_typed_while_its_session_is_renamed() {
+        assert_eq!(shown_name(Some("IDE"), None, Some("✳ Topic"), "zsh"), "IDE");
+        assert_eq!(shown_name(Some("IDE"), Some("Game 2"), Some("✳ Topic"), "zsh"), "Game 2", "the typing, live");
+        assert_eq!(shown_name(Some("IDE"), Some("  "), Some("claude"), "zsh"), "claude", "blank gives the automatic name back");
+        assert_eq!(shown_name(None, None, None, "zsh"), "zsh");
+        assert_eq!(shown_name(None, None, Some(""), "zsh"), "zsh");
     }
 
     #[test]

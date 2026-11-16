@@ -526,7 +526,6 @@ pub fn render_outline_overlay(root: &mut Root, viewer: &Entity<Viewer>, pane: Pa
             cx.listener(move |root, _ev: &gpui::MouseDownEvent, _window, cx| {
                 cx.stop_propagation();
                 let now = std::time::Instant::now();
-                root.view_menu.hide(now);
                 root.md_menu.hide(now);
                 root.toggle_outline_for(tab, cx);
                 root.focus_pane(pane, cx);
