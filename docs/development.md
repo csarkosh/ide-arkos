@@ -1061,6 +1061,10 @@ Things only a person at the screen can check, in order of value:
   daemon after `arkos update` in a dev sandbox) brings each window back on its own desktop, and
   the desktop in front stays in front; a desktop removed meanwhile leaves its window on the one
   in front
+- hooks set up by themselves: with the hooks removed from `~/.claude/settings.json` (a copy
+  kept), the installed app's next start writes them back with a `.bak`, the bell says so naming
+  the file, and a `claude` started in a tab then shows its marks; a second start writes nothing
+  and adds no notice; a `cargo run` build never touches the file
 - Shift+Cmd+M shows the raw file and back; the choice survives a
   relaunch; another markdown tab keeps its own mode
 - edit the file in another editor while a line is half typed: the banner offers Reload and

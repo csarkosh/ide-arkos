@@ -5,10 +5,14 @@ install; [development.md](development.md) is for building, testing and releasing
 
 ## Session awareness
 
-Claude Code tells the IDE what it is doing through its hooks. Run "Install Claude Code hooks"
-from the command palette (or `arkos hooks install`), or the doctor's "Claude Code title hook"
-row, which merges eight entries into `~/.claude/settings.json` after writing a `.bak`, then start
-or restart `claude` in a tab:
+Claude Code tells the IDE what it is doing through its hooks. Arkos sets them up by itself:
+each time it starts, it merges eight entries into `~/.claude/settings.json` (and into each other
+Claude config folder it knows, below) wherever they are missing or name an older copy of the app,
+writing a `.bak` first, and the bell says which files it wrote. A file whose hooks are current is
+not touched, and one that does not parse is left for the doctor's row. A `claude` that was
+already running reads them only when it starts again. Only the installed app does this, never a
+sandbox or a build from source; "Install Claude Code hooks" in the command palette,
+`arkos hooks install` and the doctor's "Claude Code title hook" row write them on demand:
 
 | Claude Code event | The session | Its mark |
 |---|---|---|
@@ -74,7 +78,7 @@ A terminal bell marks a tab waiting too, so a `claude` set to ring the bell work
 `arkos notify` is the hook side: it reads `ARKOS_SESSION_ID`, which every shell the daemon
 starts carries, and exits 0 whatever happens, so a `claude` run outside Arkos IDE is unaffected.
 `arkos hooks print` prints the entries for a hand paste. The entries name this binary by its
-launch path; after moving it, install again. A Claude Code killed by a shutdown (its SessionEnd
+launch path; after moving the app, its next start writes them again. A Claude Code killed by a shutdown (its SessionEnd
 hook says `other`) keeps its record, so the recovery after the restart resumes it.
 
 A Claude Code started with a config folder of its own (`CLAUDE_CONFIG_DIR`, as an alias such as
@@ -1158,7 +1162,7 @@ default answers `no such key`.
 
 An agent finds `arkos guide` in three ways, from no setup to one command:
 
-1. The SessionStart hook ("Install Claude Code hooks" in the palette, or the doctor). In an Arkos
+1. The SessionStart hook, which Arkos sets up at its start (above). In an Arkos
    shell it prints two lines telling the session it runs inside Arkos IDE and, to show you a video
    or a document or to change the theme or settings, to run `arkos guide` first (by the binary's
    full path when `arkos` is not on the hook's PATH). It also installs the
@@ -1290,7 +1294,7 @@ daemon's sessions):
 2. `pkill -x sarkosd`
 3. `mv ~/.config/sarkos ~/.config/arkos`
 4. `mv "$HOME/Library/Application Support/sarkos/workspaces" "$HOME/Library/Application Support/arkos/"`
-5. Open Arkos IDE and run "Install Claude Code hooks" and "Start at login" from the palette
+5. Open Arkos IDE (it sets up the Claude Code hooks) and run "Start at login" from the palette
    (Cmd+Shift+P).
 
 ## If you get headaches

@@ -1072,7 +1072,9 @@ impl Root {
     /// At startup: Claude Code's Arkos theme file is brought up to date, and a stock or `auto`
     /// Claude Code theme becomes `custom:arkos`, whose colours are the terminal palette's, so
     /// Claude Code takes each Arkos theme, lines already drawn included; any other choice is
-    /// left for the doctor's row to offer (`claude_theme::follow_at`). A sandbox writes neither.
+    /// left for the doctor's row to offer (`claude_theme::follow_at`). The installed app also
+    /// sets up its hooks in each folder that lacks them (`hook_cli::install_missing`), so the
+    /// tabs follow Claude Code with nothing to run first. A sandbox writes none of it.
     fn follow_theme_in_claude(&mut self, cx: &mut Context<Self>) {
         if self.sandbox {
             return;
@@ -1084,10 +1086,22 @@ impl Root {
     /// one first seen in use later (`probe_agents`).
     fn follow_theme_in(&mut self, folders: Vec<PathBuf>, cx: &mut Context<Self>) {
         let root = cx.entity();
+        let exe = update::launch_path().unwrap_or_else(|| PathBuf::from("arkos"));
+        let hooks = hook_cli::installs_by_itself(&exe, self.sandbox);
+        let home = claude_folders::home();
         cx.spawn(async move |_, cx| {
-            let switched = cx
+            let (switched, hooked) = cx
                 .background_executor()
                 .spawn(async move {
+                    let mut hooked = Vec::new();
+                    if hooks {
+                        let settings: Vec<PathBuf> = folders.iter().map(|f| claude_folders::settings_of(f)).collect();
+                        let (wrote, errors) = hook_cli::install_missing(&settings, &exe);
+                        for e in errors {
+                            eprintln!("arkos: cannot set up Claude Code's hooks: {e}");
+                        }
+                        hooked = wrote.iter().map(|p| claude_folders::tilde(p, home.as_deref())).collect();
+                    }
                     let mut switched = false;
                     for folder in &folders {
                         match claude_theme::follow_at(&claude_folders::settings_of(folder), &folder.join("themes")) {
@@ -1100,12 +1114,17 @@ impl Root {
                             Err(e) => eprintln!("arkos: Claude Code's Arkos theme in {}: {e}", folder.display()),
                         }
                     }
-                    switched
+                    (switched, hooked)
                 })
                 .await;
-            if switched {
+            if switched || !hooked.is_empty() {
                 let _ = root.update(cx, |root, cx| {
-                    root.notices.set(notices::Kind::ClaudeColours, claude_theme::SWITCH_NOTICE, None, SystemTime::now());
+                    if switched {
+                        root.notices.set(notices::Kind::ClaudeColours, claude_theme::SWITCH_NOTICE, None, SystemTime::now());
+                    }
+                    if !hooked.is_empty() {
+                        root.notices.set(notices::Kind::ClaudeHooks, hook_cli::set_up_notice(&hooked), None, SystemTime::now());
+                    }
                     root.probe_doctor();
                     cx.notify();
                 });

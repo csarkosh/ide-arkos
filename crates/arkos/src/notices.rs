@@ -15,6 +15,8 @@ pub enum Kind {
     ThemeRetired,
     /// Arkos switched Claude Code to its Arkos theme; running sessions need a restart.
     ClaudeColours,
+    /// Arkos set up Claude Code's hooks; a Claude Code already running needs a restart.
+    ClaudeHooks,
 }
 
 /// What clicking a notice does.

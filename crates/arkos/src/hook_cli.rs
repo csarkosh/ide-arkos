@@ -511,6 +511,33 @@ pub fn install_hooks_at(path: &Path, exe: &Path, sandbox: bool) -> Result<(PathB
     Ok((path.to_path_buf(), counts.0, counts.1))
 }
 
+/// Whether the window sets up Claude Code's hooks by itself at startup: only the app run from its
+/// bundle. Never a sandbox, and never a build from source, whose hooks would aim every Claude
+/// Code at a binary that moves on the next build (and take them from the installed app).
+pub fn installs_by_itself(exe: &Path, sandbox: bool) -> bool {
+    !sandbox && exe.to_string_lossy().contains(".app/Contents/MacOS/")
+}
+
+/// Installs the hooks into each settings file that lacks them or has an older binary's: the
+/// files written, and an error for each that could not be read, parsed or written (left as it
+/// was). A file whose hooks are current is not touched.
+pub fn install_missing(settings: &[PathBuf], exe: &Path) -> (Vec<PathBuf>, Vec<String>) {
+    let (mut wrote, mut errors) = (Vec::new(), Vec::new());
+    for path in settings {
+        match hooks_installed_at(path, exe).and_then(|done| if done { Ok(None) } else { install_hooks_at(path, exe, false).map(Some) }) {
+            Ok(Some((path, _, _))) => wrote.push(path),
+            Ok(None) => {}
+            Err(e) => errors.push(e),
+        }
+    }
+    (wrote, errors)
+}
+
+/// The bell's line after the window set up the hooks by itself, naming the files it wrote.
+pub fn set_up_notice(wrote: &[String]) -> String {
+    format!("Arkos set up Claude Code's hooks in {}, so each tab shows what its session is doing; restart claude in a tab already running it", wrote.join(", "))
+}
+
 pub fn install_hooks(exe: &Path) -> Result<(PathBuf, usize, usize), String> {
     install_hooks_at(&claude_settings_path(), exe, ::telemetry::is_sandbox())
 }
@@ -561,6 +588,47 @@ pub fn run(args: &[String]) -> i32 {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_notice_names_each_settings_file_it_wrote() {
+        assert_eq!(
+            set_up_notice(&["~/.claude/settings.json".into(), "~/.claude2/settings.json".into()]),
+            "Arkos set up Claude Code's hooks in ~/.claude/settings.json, ~/.claude2/settings.json, so each tab shows what its session is doing; restart claude in a tab already running it"
+        );
+    }
+
+    #[test]
+    fn only_the_installed_app_sets_up_the_hooks_by_itself() {
+        let app = Path::new("/Applications/Arkos IDE.app/Contents/MacOS/arkos");
+        assert!(installs_by_itself(app, false));
+        assert!(!installs_by_itself(app, true), "a sandbox writes nothing");
+        assert!(!installs_by_itself(Path::new("/Users/me/ide-arkos/target/debug/arkos"), false), "a build from source");
+    }
+
+    #[test]
+    fn the_hooks_are_set_up_in_each_folder_that_lacks_them_and_left_where_they_are_current() {
+        let exe = Path::new("/Applications/Arkos IDE.app/Contents/MacOS/arkos");
+        let dir = tempfile::tempdir().unwrap();
+        let fresh = dir.path().join("fresh/settings.json");
+        let current = dir.path().join("current/settings.json");
+        install_hooks_at(&current, exe, false).unwrap();
+        let before = std::fs::read_to_string(&current).unwrap();
+        let moved = dir.path().join("moved/settings.json");
+        install_hooks_at(&moved, Path::new("/old/place/arkos"), false).unwrap();
+        let broken = dir.path().join("broken/settings.json");
+        std::fs::create_dir_all(broken.parent().unwrap()).unwrap();
+        std::fs::write(&broken, "{ not json").unwrap();
+
+        let (wrote, errors) = install_missing(&[fresh.clone(), current.clone(), moved.clone(), broken.clone()], exe);
+        assert_eq!(wrote, vec![fresh.clone(), moved.clone()], "a folder with none, and one from an app that moved");
+        assert_eq!(errors.len(), 1, "the file that does not parse is named, not written");
+        assert_eq!(std::fs::read_to_string(&broken).unwrap(), "{ not json");
+        assert_eq!(std::fs::read_to_string(&current).unwrap(), before, "current hooks are not rewritten");
+        for path in [&fresh, &moved] {
+            assert_eq!(hooks_installed_at(path, exe), Ok(true));
+        }
+        assert_eq!(install_missing(&[fresh, current, moved], exe), (Vec::new(), Vec::new()), "a second launch writes nothing");
+    }
     use super::*;
     use std::os::unix::net::UnixListener;
     use std::sync::mpsc;

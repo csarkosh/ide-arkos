@@ -25,9 +25,8 @@ brew trust --cask csarkosh/tap/arkos-ide
 brew install --cask csarkosh/tap/arkos-ide
 ```
 
-Releases are signed with a Developer ID and notarized, so the download opens as any app does,
-and from then on the app updates itself (see [Updating](docs/guide.md#updating)). Run "Install Claude Code hooks" from
-the command palette once, and the tabs follow what each session is doing.
+Open it and start `claude` in a tab: the tabs follow what each session is doing from the first
+launch, and from then on the app updates itself (see [Updating](docs/guide.md#updating)).
 
 ## Who it's for
 

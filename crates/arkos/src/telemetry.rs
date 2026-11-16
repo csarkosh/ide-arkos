@@ -95,7 +95,7 @@ values! {
 }
 values! {
     /// What the bell got a notice about.
-    Notice { UpdateReady => "update_ready", Updated => "updated", Daemon => "daemon", ConfigError => "config_error", ThemeError => "theme_error", ThemeRetired => "theme_retired", ClaudeColours => "claude_colours" }
+    Notice { UpdateReady => "update_ready", Updated => "updated", Daemon => "daemon", ConfigError => "config_error", ThemeError => "theme_error", ThemeRetired => "theme_retired", ClaudeColours => "claude_colours", ClaudeHooks => "claude_hooks" }
 }
 values! {
     /// Something that went wrong where the person would have seen it.
@@ -812,6 +812,7 @@ impl Notice {
             Kind::ThemeError => Notice::ThemeError,
             Kind::ThemeRetired => Notice::ThemeRetired,
             Kind::ClaudeColours => Notice::ClaudeColours,
+            Kind::ClaudeHooks => Notice::ClaudeHooks,
         }
     }
 }
