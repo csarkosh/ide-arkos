@@ -378,7 +378,7 @@ impl Root {
         let anchor = a.session.and_then(|s| self.tree.find_session(s)).map(|(pane, _)| pane);
         refuse_unshown(a.session, anchor, &a.place)?;
         // The command line checked; the file may have gone since.
-        if !a.wait_for_file && !a.path.exists() {
+        if file_gone(&a.path, a.wait_for_file) {
             return Err(format!("no such file: {}", a.path.display()));
         }
         let step = plan_open_in(&self.tree, &a.path, &a.place, a.reuse, anchor, self.config.layout.placement, self.content)?;
@@ -622,6 +622,12 @@ struct OpenArgs {
     session: Option<SessionId>,
 }
 
+/// True when an open's file has gone since the command line checked it: never for a web address,
+/// which is no file, nor for a video the open waits for.
+fn file_gone(path: &Path, wait_for_file: bool) -> bool {
+    !wait_for_file && !crate::remote_image::is_remote(&path.to_string_lossy()) && !path.exists()
+}
+
 /// The answer to a video op from the state of each tab it touched (None: closed since). With
 /// none left there is nothing to report, which is an error as for an open, not an empty success.
 fn videos_answer(states: Vec<Option<VideoState>>) -> Result<PaneOutcome, String> {
@@ -638,6 +644,15 @@ type Prepared = (Answer, Vec<TabId>, Vec<Settle>, bool);
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_web_address_is_never_refused_as_a_missing_file() {
+        assert!(!file_gone(Path::new("http://127.0.0.1:8765/ide-arkos/"), false));
+        assert!(!file_gone(Path::new("https://example.com/x"), false));
+        assert!(file_gone(Path::new("/no/such/file.md"), false), "a file that has gone is still refused");
+        assert!(!file_gone(Path::new("/no/such/clip.mp4"), true), "a video the open waits for");
+        assert!(!file_gone(Path::new("/"), false));
+    }
     use super::*;
     use crate::tree::ViewMode;
     use std::path::PathBuf;
