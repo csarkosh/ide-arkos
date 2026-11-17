@@ -36,22 +36,23 @@ and the sky glowing toward it rather than flashing white. `code` was first tower
 black cat crossing twice; Cyrus, 2026-11-17: "not impressed by the graphic in Pane 0 for The
 Matrix", and he picked a digital horizon over a code waterfall, a corridor of doors and a rabbit
 with two pills. Now: a faint code rain in the sky; a line of light on the horizon (40% down the
-scene); a floor of grid lines in perspective, its rows coming toward the viewer; three streams of
-code falling in turn (a 3.4 s cycle) to the floor, each spreading a ripple across the grid where
-it lands. First four towers rose and folded back in turn; Cyrus, 2026-11-17: "the buildings to
+scene); a floor of grid lines in perspective, its rows coming toward the viewer; First four towers rose and folded back in turn; Cyrus, 2026-11-17: "the buildings to
 look like they are moving towards and past the user at the same speed as the floor", "so many
 buildings that it feels dense". Now a tower stands on four in five of the grid's cells, six lanes
 either side of a road one cell wide each side of the middle, rows out to 30 camera heights; they
 stand still on the floor, so they come on with it (the camera has run `t * GRID_SPEED * GRID_Z`
 into the city) and pass, fading up out of the horizon far off; drawn farthest row first, each
-face hiding what is behind it, its back edges drawn so it reads as a box. The code lands on the
-road, and its ripple rides the floor. City life ("some city life added between the buildings"):
+face hiding what is behind it, its back edges drawn so it reads as a box. City life ("some city life added between the buildings"):
 every fourth row is a cross street with no towers, two cars crossing it each way between the
 blocks (headlight leading, tail light following); five cars a lane on the road, one lane coming
 on at the car's speed and the floor's (headlights), one going away at the car's less the floor's
 (tail lights); lit windows, about one in five, on the faces of towers near enough for a window to
 be three points wide, some switching on and off every few seconds; three drones blinking as they
-drift over the roofs. The sky's rain runs from half the sidebar's height (or the
+drift over the roofs. The streams of code that fell to the floor and spread a ripple went (Cyrus:
+"remove the animation ... that drops and creates a disk"), and people walk the sidewalks instead:
+seven a side just off the road's edge, a third of the camera's height tall, each walking either
+way at its own pace over the floor's, a head, a body, arms and legs swinging twice a second, a
+dot of light where too far off for a figure. The sky's rain runs from half the sidebar's height (or the
 scene's top) down to the horizon ("the runic rain in the background of the graphic to have its
 height increased to half the pane size"), softened under the names.
 

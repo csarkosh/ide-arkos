@@ -538,16 +538,11 @@ constant float BOLT_RISE = 0.15;
 constant float BOLT_PEAK = 0.7;
 // The digital horizon (the code scene; Cyrus, 2026-11-17, picked over the city of code): the
 // horizon's height as a share of the scene, the grid's spacing across and into it (in camera
-// heights) and how many of its rows come toward the viewer a second, the falling code's streams
-// and their cycle, and the towers, their number and cycle.
+// heights) and how many of its rows come toward the viewer a second.
 constant float HZ_AT = 0.4;
 constant float GRID_X = 0.9;
 constant float GRID_Z = 1.6;
 constant float GRID_SPEED = 0.45;
-constant int HZ_DROPS = 3;
-constant float DROP_CYCLE = 3.4;
-constant float DROP_FALL = 0.32;
-constant float RIPPLE_MAX = 3.2;
 // The city on the grid: a tower on most cells either side of an open road (ROAD_CELLS wide),
 // LANES cells a side, rows from just in front of the viewer to Z_FAR, standing still on the floor
 // so they come toward and past the viewer at the floor's speed (Cyrus, 2026-11-17: "moving
@@ -569,6 +564,14 @@ constant int CROSS_EVERY = 4;
 constant int ROAD_CARS = 5;
 constant int CROSS_CARS = 2;
 constant int DRONES = 3;
+// People on the sidewalks either side of the road (Cyrus, 2026-11-17, in place of the code that
+// fell to the floor and rippled): PEOPLE a side, PERSON_H camera heights tall, walking either way
+// at WALK_MIN to WALK_MAX over the floor, their legs swinging STEPS times a second.
+constant int PEOPLE = 7;
+constant float PERSON_H = 0.34;
+constant float WALK_MIN = 0.15;
+constant float WALK_MAX = 0.4;
+constant float STEPS = 2.2;
 
 float hash2(float2 c) {
     uint ux = uint(int(c.x) + 1048576);
@@ -971,11 +974,11 @@ float grid_line(float phase) {
     return 1.0 - smoothstep(0.0, 1.2, d);
 }
 
-// The code scene: a digital horizon. Above it a faint rain of code; on the horizon a line of
-// light; below it a floor of grid lines in perspective, its rows coming toward the viewer. Now
-// and then a stream of code falls to the floor and lands, and a ripple spreads across the grid
-// from it; wireframe towers rise out of the grid, stand, and fold back into it, each in its turn.
-// The clock's zero (Reduce Motion) has every tower standing and nothing falling.
+// The code scene: a digital horizon. On the horizon a line of light; below it a floor of grid
+// lines in perspective, its rows coming toward the viewer, and on it a dense city of wireframe
+// towers either side of a road, coming on with it: traffic on the road and the cross streets,
+// lit windows, drones over the roofs and people walking the sidewalks. (The sky's code rain is
+// drawn by the caller.) The clock's zero (Reduce Motion) holds it all still.
 float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 green, float3 white_c, float3 sb) {
     float3 bg = u.colors[ARKOS_WINDOW_BG].rgb;
     float3 col = sb;
@@ -993,22 +996,6 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
         float near = saturate(dy / (sz.y - yh));
         float lines = max(grid_line(z / GRID_Z + t * GRID_SPEED), grid_line(xw / GRID_X + 0.5));
         col = light_on(col, green, lines * (0.18 + 0.5 * near), u.dark);
-        // The ripples where the code lands, rings across the floor.
-        for (int i = 0; i < HZ_DROPS; i++) {
-            float ph = (t + float(i) * DROP_CYCLE / float(HZ_DROPS)) / DROP_CYCLE;
-            float slot = floor(ph);
-            float pp = fract(ph);
-            if (still || pp < DROP_FALL) {
-                continue;
-            }
-            float2 at = float2((hash2(float2(slot, float(i) * 7.0 + 1.0)) - 0.5) * GRID_X * float(2 * ROAD_CELLS), 4.0 + 10.0 * hash2(float2(slot, float(i) * 7.0 + 2.0)));
-            float age = (pp - DROP_FALL) / (1.0 - DROP_FALL);
-            // It rides the floor, coming on with it since the code landed.
-            at.y -= (pp - DROP_FALL) * DROP_CYCLE * GRID_SPEED * GRID_Z;
-            float d = length(float2(xw - at.x, (z - at.y) * 0.6));
-            float ring = abs(d - age * RIPPLE_MAX) / max(fwidth(d), 1e-4);
-            col = light_on(col, mix(green, white_c, 0.25), (1.0 - smoothstep(0.0, 1.5, ring)) * (1.0 - age) * 0.8, u.dark);
-        }
     }
     // The horizon's line, and its glow either side.
     float hd = abs(q.y - yh);
@@ -1149,25 +1136,47 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
         float blink = fract(t * 0.9 + fi * 0.37) < 0.5 ? 1.0 : 0.35;
         col = light_on(col, i == 1 ? tail_c : head_c, car_light(q, sp, 1.2) * blink * 0.9, u.dark);
     }
-    // The code falling to the floor: a stream of bits from the sky to where it lands.
-    for (int i = 0; i < HZ_DROPS; i++) {
-        if (still) {
-            break;
-        }
-        float ph = (t + float(i) * DROP_CYCLE / float(HZ_DROPS)) / DROP_CYCLE;
-        float slot = floor(ph);
-        float pp = fract(ph);
-        if (pp >= DROP_FALL) {
-            continue;
-        }
-        float2 at = float2((hash2(float2(slot, float(i) * 7.0 + 1.0)) - 0.5) * GRID_X * float(2 * ROAD_CELLS), 4.0 + 10.0 * hash2(float2(slot, float(i) * 7.0 + 2.0)));
-        float lx = cx + at.x * f / at.y;
-        float ly = yh + f / at.y;
-        float head = mix(-14.0, ly, pp / DROP_FALL);
-        float behind = head - q.y;
-        if (abs(q.x - lx) < 2.0 && behind >= 0.0 && behind < 18.0) {
-            float on = hash2(floor(float2(q.x, q.y) / 2.0) + float2(slot, floor(t * 8.0))) < 0.6 ? 1.0 : 0.3;
-            col = light_on(col, behind < 2.0 ? mix(green, white_c, 0.5) : green, on * (1.0 - behind / 18.0) * 0.9, u.dark);
+    // People on the sidewalks, walking either way as the city comes on: a head, a body, two arms
+    // and two legs that swing, lit as the towers' lines are; far off, a dot.
+    // A person stands below the horizon (shorter than the camera's height) with its feet on its
+    // sidewalk's line, so only a pixel in the band beside that line can be on one.
+    float walk_dy = q.y - yh;
+    float edge_x = float(ROAD_CELLS) * GRID_X + 0.06;
+    float off = abs(q.x - cx);
+    // The band's slack: a person's place along the kerb (0.04 either way) and half its width (0.4
+    // of its height).
+    float slack = 0.04 + 0.4 * PERSON_H;
+    bool by_walk = walk_dy > 0.0 && off > (edge_x - slack) * walk_dy - 3.0 && off < (edge_x + slack) * walk_dy / (1.0 - PERSON_H) + 3.0;
+    for (int side = 0; side < (by_walk ? 2 : 0); side++) {
+        float sx = (side == 0 ? -1.0 : 1.0) * edge_x;
+        for (int j = 0; j < PEOPLE; j++) {
+            float2 key = float2(float(j), float(side) * 17.0 + 61.0);
+            float h = hash2(key);
+            float dir = hash2(key + 1.0) < 0.5 ? 1.0 : -1.0;
+            float walk = mix(WALK_MIN, WALK_MAX, hash2(key + 2.0));
+            float span = Z_FAR * 0.6 - Z_NEAR;
+            float z = Z_NEAR + span - fract(h + t * (floor_v - dir * walk) / span) * span;
+            float px_h = PERSON_H * f / z;
+            float2 foot = float2(cx + (sx + (hash2(key + 3.0) - 0.5) * 0.08) * f / z, yh + f / z);
+            if (q.y > foot.y + 1.0 || q.y < foot.y - px_h - 2.0 || abs(q.x - foot.x) > px_h * 0.4 + 2.0) {
+                continue;
+            }
+            float seen = smoothstep(Z_NEAR, Z_NEAR + 0.6, z);
+            float d;
+            if (px_h < 4.0) {
+                // Too far for a figure: a dot of light at its height.
+                d = length(q - float2(foot.x, foot.y - px_h * 0.6)) - 0.4;
+            } else {
+                float2 uv = float2(q.x - foot.x, foot.y - q.y) / px_h;
+                // A stride and an arm swing wide enough to read at a few points tall.
+                float swing = sin(t * STEPS * 6.2832 + h * 6.2832) * 0.17;
+                float head = length(uv - float2(0.0, 0.88)) - 0.12;
+                float body = seg_dist(uv, float2(0.0, 0.45), float2(0.0, 0.7)) - 0.085;
+                float legs = min(seg_dist(uv, float2(0.0, 0.42), float2(swing, 0.0)), seg_dist(uv, float2(0.0, 0.42), float2(-swing, 0.0))) - 0.045;
+                float arms = min(seg_dist(uv, float2(0.0, 0.68), float2(-swing * 0.9, 0.4)), seg_dist(uv, float2(0.0, 0.68), float2(swing * 0.9, 0.4))) - 0.035;
+                d = min(min(head, body), min(legs, arms)) * px_h;
+            }
+            col = light_on(col, mix(green, white_c, 0.3), (1.0 - smoothstep(0.0, 1.0, d)) * 0.85 * seen, u.dark);
         }
     }
     return col;
