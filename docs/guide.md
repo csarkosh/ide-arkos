@@ -662,7 +662,8 @@ the clouds and fades over a second);
 The Matrix's is a digital horizon: a floor of grid lines running toward a line of light, a dense
 city of wireframe towers on both sides of an open road coming toward you with the floor and past
 you, alive with traffic (headlights coming on down the road and tail lights going away, cars
-crossing on the cross streets between the blocks), people walking the sidewalks either way, lit
+crossing on the cross streets between the blocks), people walking the sidewalks, along the road toward you or away and across the cross streets,
+each at their own pace, lit
 windows in the near towers and drones blinking over the roofs, and code raining behind it from
 half the sidebar's height. Material
 and Lavender Material come with `material`: the

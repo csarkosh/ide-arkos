@@ -50,9 +50,12 @@ on at the car's speed and the floor's (headlights), one going away at the car's 
 be three points wide, some switching on and off every few seconds; three drones blinking as they
 drift over the roofs. The streams of code that fell to the floor and spread a ripple went (Cyrus:
 "remove the animation ... that drops and creates a disk"), and people walk the sidewalks instead:
-seven a side just off the road's edge, a third of the camera's height tall, each walking either
-way at its own pace over the floor's, a head, a body, arms and legs swinging twice a second, a
-dot of light where too far off for a figure. The sky's rain runs from half the sidebar's height (or the
+seven a side just off the road's edge, each walking toward or away at its own pace over the
+floor's, and three on each of a cross street's two sidewalks, crossing left or right at their
+own pace, as the cars move ("the same horizontal and vertical movements as cars, but at
+different rates and in non uniform directions"); 0.16 of the camera's height tall, in scale with
+the towers ("more proportional with the buildings"); a head, a body, arms and legs swinging
+twice a second, a dot of light where too far off for a figure. The sky's rain runs from half the sidebar's height (or the
 scene's top) down to the horizon ("the runic rain in the background of the graphic to have its
 height increased to half the pane size"), softened under the names.
 

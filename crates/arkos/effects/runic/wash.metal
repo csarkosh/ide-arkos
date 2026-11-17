@@ -564,11 +564,15 @@ constant int CROSS_EVERY = 4;
 constant int ROAD_CARS = 5;
 constant int CROSS_CARS = 2;
 constant int DRONES = 3;
-// People on the sidewalks either side of the road (Cyrus, 2026-11-17, in place of the code that
-// fell to the floor and rippled): PEOPLE a side, PERSON_H camera heights tall, walking either way
-// at WALK_MIN to WALK_MAX over the floor, their legs swinging STEPS times a second.
+// People (Cyrus, 2026-11-17, in place of the code that fell to the floor and rippled; then "more
+// proportional with the buildings", moving "the same horizontal and vertical movements as cars,
+// but at different rates and in non uniform directions"): PEOPLE on each of the road's sidewalks
+// walking toward or away, CROSS_PEOPLE on each of a cross street's two sidewalks walking left or
+// right, PERSON_H camera heights tall, each at its own pace from WALK_MIN to WALK_MAX, their legs
+// swinging STEPS times a second.
 constant int PEOPLE = 7;
-constant float PERSON_H = 0.34;
+constant int CROSS_PEOPLE = 3;
+constant float PERSON_H = 0.16;
 constant float WALK_MIN = 0.15;
 constant float WALK_MAX = 0.4;
 constant float STEPS = 2.2;
@@ -962,6 +966,29 @@ float3 code_rain(float2 p, float top, float bottom, float t, float3 green, float
     return mix(col, green, on * trail * 0.3 * fade);
 }
 
+// A person's light at p, standing at screen point foot, px_h points tall, its walk's phase from
+// its key h at t: a head, a body, two arms and two legs that swing; far off (under 4 points), a
+// dot of light at its height.
+float person_light(float2 p, float2 foot, float px_h, float t, float h) {
+    if (p.y > foot.y + 1.0 || p.y < foot.y - px_h - 2.0 || abs(p.x - foot.x) > px_h * 0.4 + 2.0) {
+        return 0.0;
+    }
+    float d;
+    if (px_h < 4.0) {
+        d = length(p - float2(foot.x, foot.y - px_h * 0.6)) - 0.4;
+    } else {
+        float2 uv = float2(p.x - foot.x, foot.y - p.y) / px_h;
+        // A stride and an arm swing wide enough to read at a few points tall.
+        float swing = sin(t * STEPS * 6.2832 + h * 6.2832) * 0.17;
+        float head = length(uv - float2(0.0, 0.88)) - 0.12;
+        float body = seg_dist(uv, float2(0.0, 0.45), float2(0.0, 0.7)) - 0.085;
+        float legs = min(seg_dist(uv, float2(0.0, 0.42), float2(swing, 0.0)), seg_dist(uv, float2(0.0, 0.42), float2(-swing, 0.0))) - 0.045;
+        float arms = min(seg_dist(uv, float2(0.0, 0.68), float2(-swing * 0.9, 0.4)), seg_dist(uv, float2(0.0, 0.68), float2(swing * 0.9, 0.4))) - 0.035;
+        d = min(min(head, body), min(legs, arms)) * px_h;
+    }
+    return 1.0 - smoothstep(0.0, 1.0, d);
+}
+
 // A car's light at screen point s, r points across, at p: a soft round glow.
 float car_light(float2 p, float2 s, float r) {
     return 1.0 - smoothstep(r * 0.5, r * 1.6, length(p - s));
@@ -1059,6 +1086,24 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
                 float2 back = float2(cx + (wx - dir * 0.14) * f / zs, y);
                 col = light_on(col, head_c, car_light(q, front, r2) * seen * 0.9, u.dark);
                 col = light_on(col, tail_c, car_light(q, back, r2) * seen * 0.9, u.dark);
+            }
+            // Its people, on its near and far sidewalks, crossing left or right at their own pace.
+            for (int w = 0; w < 2; w++) {
+                float zw = zs + (w == 0 ? -0.36 : 0.36) * GRID_Z;
+                float fy = yh + f / zw;
+                float ph = PERSON_H * f / zw;
+                if (zw < Z_NEAR || q.y > fy + 1.0 || q.y < fy - ph - 2.0) {
+                    continue;
+                }
+                for (int j = 0; j < CROSS_PEOPLE; j++) {
+                    float2 key = float2(float(m) * 3.0 + float(w), float(j) + 71.0);
+                    float h = hash2(key);
+                    float dir = hash2(key + 1.0) < 0.5 ? 1.0 : -1.0;
+                    float walk = mix(WALK_MIN, WALK_MAX, hash2(key + 2.0));
+                    float wx = (fract(h + dir * t * walk / (2.0 * half_w)) - 0.5) * 2.0 * half_w;
+                    float2 foot = float2(cx + wx * f / zw, fy);
+                    col = light_on(col, mix(green, white_c, 0.3), person_light(q, foot, ph, t, h) * 0.85 * seen, u.dark);
+                }
             }
             continue;
         }
@@ -1158,25 +1203,8 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
             float z = Z_NEAR + span - fract(h + t * (floor_v - dir * walk) / span) * span;
             float px_h = PERSON_H * f / z;
             float2 foot = float2(cx + (sx + (hash2(key + 3.0) - 0.5) * 0.08) * f / z, yh + f / z);
-            if (q.y > foot.y + 1.0 || q.y < foot.y - px_h - 2.0 || abs(q.x - foot.x) > px_h * 0.4 + 2.0) {
-                continue;
-            }
             float seen = smoothstep(Z_NEAR, Z_NEAR + 0.6, z);
-            float d;
-            if (px_h < 4.0) {
-                // Too far for a figure: a dot of light at its height.
-                d = length(q - float2(foot.x, foot.y - px_h * 0.6)) - 0.4;
-            } else {
-                float2 uv = float2(q.x - foot.x, foot.y - q.y) / px_h;
-                // A stride and an arm swing wide enough to read at a few points tall.
-                float swing = sin(t * STEPS * 6.2832 + h * 6.2832) * 0.17;
-                float head = length(uv - float2(0.0, 0.88)) - 0.12;
-                float body = seg_dist(uv, float2(0.0, 0.45), float2(0.0, 0.7)) - 0.085;
-                float legs = min(seg_dist(uv, float2(0.0, 0.42), float2(swing, 0.0)), seg_dist(uv, float2(0.0, 0.42), float2(-swing, 0.0))) - 0.045;
-                float arms = min(seg_dist(uv, float2(0.0, 0.68), float2(-swing * 0.9, 0.4)), seg_dist(uv, float2(0.0, 0.68), float2(swing * 0.9, 0.4))) - 0.035;
-                d = min(min(head, body), min(legs, arms)) * px_h;
-            }
-            col = light_on(col, mix(green, white_c, 0.3), (1.0 - smoothstep(0.0, 1.0, d)) * 0.85 * seen, u.dark);
+            col = light_on(col, mix(green, white_c, 0.3), person_light(q, foot, px_h, t, h) * 0.85 * seen, u.dark);
         }
     }
     return col;
