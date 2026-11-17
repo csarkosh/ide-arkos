@@ -123,13 +123,13 @@ pub fn render_new_tab_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Di
         let row = row.when(marked && !effect_rows, |r| r.bg(hover));
         m = m.child(row.when(live, |row| {
             let key = crate::effects::blocks::menu_row_key(0x17, i);
-            crate::chrome::menu_row_hover(row.cursor_pointer(), key, marked || hovered == Some(key), effect_rows, hover, cx)
-                .on_hover(cx.listener(move |root, over: &bool, _window, cx| {
-                    if let (true, Some(m)) = (*over, root.new_tab_menu.value_mut()) {
-                        m.mark = i;
-                        cx.notify();
-                    }
-                }))
+            let mark = cx.listener(move |root, over: &bool, _window, cx| {
+                if let (true, Some(m)) = (*over, root.new_tab_menu.value_mut()) {
+                    m.mark = i;
+                    cx.notify();
+                }
+            });
+            crate::chrome::menu_row_hover_then(row.cursor_pointer(), key, marked || hovered == Some(key), effect_rows, hover, cx, mark)
                 .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
                     root.new_tab_menu.hide(Instant::now());
                     root.new_tab_of(pane, kind, cx);

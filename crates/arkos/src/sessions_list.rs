@@ -787,14 +787,14 @@ pub fn render_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
             });
         m = m.child(row.when(live, |row| {
             let key = blocks::menu_row_key(0x14, i);
-            crate::chrome::menu_row_hover(row.cursor_pointer(), key, hovered == Some(key), effect_rows, hover, cx)
-                .on_hover(cx.listener(move |root, over: &bool, _window, cx| {
-                    // Over a row with a card it opens; over another row it closes.
-                    if *over && root.session_submenu != sub {
-                        root.session_submenu = sub;
-                        cx.notify();
-                    }
-                }))
+            // Over a row with a card it opens; over another row it closes.
+            let card = cx.listener(move |root, over: &bool, _window, cx| {
+                if *over && root.session_submenu != sub {
+                    root.session_submenu = sub;
+                    cx.notify();
+                }
+            });
+            crate::chrome::menu_row_hover_then(row.cursor_pointer(), key, hovered == Some(key), effect_rows, hover, cx, card)
                 .on_click(cx.listener(move |root, _ev: &ClickEvent, window, cx| {
                     match entry {
                         MenuEntry::MoveTo | MenuEntry::RemindMe => root.session_submenu = sub,

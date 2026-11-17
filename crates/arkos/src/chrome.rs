@@ -486,16 +486,24 @@ pub fn menu_frame<E: Styled + gpui::prelude::FluentBuilder>(d: E, theme: &Theme,
 /// while it is (`hovered`), which the effect fades into the menu's backdrop as it does an
 /// Explorer row's.
 pub fn menu_row_hover(row: gpui::Stateful<Div>, key: u64, hovered: bool, effect: bool, hover: gpui::Hsla, cx: &mut gpui::Context<crate::Root>) -> gpui::Stateful<Div> {
+    menu_row_hover_then(row, key, hovered, effect, hover, cx, |_, _, _| {})
+}
+
+/// `menu_row_hover` for a row that also acts on the pointer coming and going itself (`then`, run
+/// after the effect is told): gpui takes one hover listener an element, so the row's own goes
+/// here, never in a second `on_hover`.
+pub fn menu_row_hover_then(row: gpui::Stateful<Div>, key: u64, hovered: bool, effect: bool, hover: gpui::Hsla, cx: &mut gpui::Context<crate::Root>, then: impl Fn(&bool, &mut gpui::Window, &mut gpui::App) + 'static) -> gpui::Stateful<Div> {
     use crate::effects::blocks::{hover_after, HighlightState, Kind, Mark};
     if !effect {
-        return row.hover(move |s| s.bg(hover));
+        return row.hover(move |s| s.bg(hover)).on_hover(then);
     }
     let (w_hover, w_mark) = (cx.weak_entity(), cx.weak_entity());
-    row.on_hover(move |over: &bool, _window, cx| {
+    row.on_hover(move |over: &bool, window, cx| {
         let _ = w_hover.update(cx, |root, cx| {
             root.effect_hover = hover_after(root.effect_hover, key, *over);
             cx.notify();
         });
+        then(over, window, cx);
     })
     .when(hovered, |d| {
         d.relative().child(
