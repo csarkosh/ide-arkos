@@ -8,7 +8,7 @@
 
 Arkos keeps track of where each of your Claude Code sessions stands, so with many running at
 once you always know which one to look at next. They sit in one list, grouped by what they need
-from you: Needing your input → Still at work → Quiet or done.
+from you: needing your input → still at work → quiet or done.
 
 - **Durable:** sessions keep running through a frozen window or an update, and come back with
   their conversations after a restart, a shutdown or a macOS update.
