@@ -2411,6 +2411,18 @@ impl Root {
         }
     }
 
+    /// Whether the sidebar (the Cmd+0 pane) has the keys: its filter, switcher, a heading, the
+    /// file tree or the worktrees.
+    pub fn sidebar_has_keys(&self) -> bool {
+        self.session_filter_focused || self.switcher_focused || self.header_ring.is_some() || self.sidebar_focused || self.wt_focused
+    }
+
+    /// Whether the keys are somewhere no pane is: the sidebar, or the title bar's icons. No pane
+    /// glows then.
+    pub fn keys_outside_panes(&self) -> bool {
+        self.sidebar_has_keys() || self.bar_ring.is_some()
+    }
+
     /// The Sessions/Files switcher takes the keys (Chrome keys spec, section 2).
     pub fn focus_switcher(&mut self, cx: &mut Context<Self>) {
         self.session_filter_focused = false;

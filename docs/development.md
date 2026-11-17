@@ -1091,6 +1091,9 @@ Things only a person at the screen can check, in order of value:
 - Files headings: on Files, Down from the switcher rings EXPLORER; Left folds it, Down rings
   WORKTREES, Left folds it, Right opens it, Up goes back; Down from EXPLORER (open) goes into the
   tree; the ring never shifts the headings
+- Cmd+0's glow: press Cmd+0: the focused pane's glow fades out as the sidebar's fades in; a
+  click on a pane (or Enter on a session) brings it back to the pane; under an effect the
+  pane's own focus drawing fades with it
 - Cmd+0 on Files: leave the keys on a file, click a pane, press Cmd+0: the sidebar stays on
   Files with the same file selected and the keys there; on Sessions it comes back to the ringed row
 - Sessions/Files switcher: Cmd+0, then Up from the first session rings "Sessions"; Right shows

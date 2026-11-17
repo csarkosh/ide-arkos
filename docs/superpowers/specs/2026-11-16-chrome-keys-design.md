@@ -54,6 +54,11 @@ Cmd+0 only moves the keys (Cyrus, 2026-11-17: "Cmd+0 is just meant to change foc
 the pane's state"): the tab shown stays, and the keys go back to where they last were in it (a
 session row, the switcher, a heading, the files, the worktrees), else the tab's first stop.
 
+The focus glow goes with the keys (Cyrus, 2026-11-17: "When the Cmd+0 pane is in focus, the
+pane highlight should move to the Cmd+0 pane too"): while the sidebar has them it wears the glow
+a focused pane wears, and no pane glows; on the title bar's icons no pane glows either. The
+fade between is the panes' own.
+
 ## 3. In the "+" menu
 
 Opened by Cmd+T or a click, the menu takes Up, Down, Enter and Escape: the first row is marked,

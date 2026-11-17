@@ -570,31 +570,10 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     // A window not in front rests: it repaints once on deactivation, and a breath caught
     // mid-way would freeze there.
     let breath = if root.window_active { root.breath.glow(now, crate::motion::reduce_motion()) } else { 0.0 };
-    let glow = root.glow.sync(pane, focused.then_some(()), now).map(|(_, opacity)| {
-        let g = glow_width(rect.w, rect.h, breath);
-        let mut from = theme.chrome.focus_ring.alpha(GLOW_ALPHA * (GLOW_BREATH_FLOOR + (1.0 - GLOW_BREATH_FLOOR) * breath));
-        // Light at the peak: away from the window's background, so a light theme breathes too.
-        let lift = GLOW_BREATH_LIGHT * breath;
-        from.l = if theme.chrome.window_bg.hsla().l > 0.5 { (from.l - lift).max(0.0) } else { (from.l + lift).min(1.0) };
-        let mut to = from;
-        to.a = 0.0;
-        // The angle is CSS's: the direction the colour fades towards (180 is downwards).
-        let strip = |angle: f32| div().absolute().opacity(opacity).bg(linear_gradient(angle, linear_color_stop(from, 0.0), linear_color_stop(to, 1.0)));
-        let z = px(0.0);
-        // A pane the effect draws as a rounded card wears a ring of the same rounding instead,
-        // as its focus: straight strips would run past the card's corners onto the ground.
-        if style.pane_radius > 0.0 {
-            let mut ring = from;
-            ring.a = (ring.a * 2.0).min(1.0);
-            return vec![div().absolute().inset_0().opacity(opacity).rounded(px(style.pane_radius)).border(px(FOCUS_RING_W)).border_color(ring)];
-        }
-        vec![
-            strip(180.0).top(z).left(z).right(z).h(px(g)),
-            strip(0.0).bottom(z).left(z).right(z).h(px(g)),
-            strip(90.0).left(z).top(z).bottom(z).w(px(g)),
-            strip(270.0).right(z).top(z).bottom(z).w(px(g)),
-        ]
-    });
+    // While the sidebar or the title bar has the keys, no pane is lit: the glow moves with them
+    // (Cyrus, 2026-11-17: "the pane highlight should move to the Cmd+0 pane too").
+    let lit = focused && !root.keys_outside_panes();
+    let glow = root.glow.sync(pane, lit.then_some(()), now).map(|(_, opacity)| focus_glow(&theme, style.pane_radius, rect.w, rect.h, breath, opacity));
     div()
         .size_full()
         .relative()
@@ -615,6 +594,35 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         .child(content)
         .children(render_url_prompt(root, pane, bar_h, cx))
         .children(glow.into_iter().flatten())
+}
+
+/// The focus glow over a box `w` by `h` (a pane, or the sidebar while it has the keys): four
+/// strips fading from the focus colour to nothing, or, where the effect draws rounded cards, a
+/// ring of their rounding. `opacity` is the glow's fade, `breath` its slow pulse.
+pub fn focus_glow(theme: &crate::theme::Theme, radius: f32, w: f32, h: f32, breath: f32, opacity: f32) -> Vec<Div> {
+    let g = glow_width(w, h, breath);
+    let mut from = theme.chrome.focus_ring.alpha(GLOW_ALPHA * (GLOW_BREATH_FLOOR + (1.0 - GLOW_BREATH_FLOOR) * breath));
+    // Light at the peak: away from the window's background, so a light theme breathes too.
+    let lift = GLOW_BREATH_LIGHT * breath;
+    from.l = if theme.chrome.window_bg.hsla().l > 0.5 { (from.l - lift).max(0.0) } else { (from.l + lift).min(1.0) };
+    let mut to = from;
+    to.a = 0.0;
+    // The angle is CSS's: the direction the colour fades towards (180 is downwards).
+    let strip = |angle: f32| div().absolute().opacity(opacity).bg(linear_gradient(angle, linear_color_stop(from, 0.0), linear_color_stop(to, 1.0)));
+    let z = px(0.0);
+    // A pane the effect draws as a rounded card wears a ring of the same rounding instead, as its
+    // focus: straight strips would run past the card's corners onto the ground.
+    if radius > 0.0 {
+        let mut ring = from;
+        ring.a = (ring.a * 2.0).min(1.0);
+        return vec![div().absolute().inset_0().opacity(opacity).rounded(px(radius)).border(px(FOCUS_RING_W)).border_color(ring)];
+    }
+    vec![
+        strip(180.0).top(z).left(z).right(z).h(px(g)),
+        strip(0.0).bottom(z).left(z).right(z).h(px(g)),
+        strip(90.0).left(z).top(z).bottom(z).w(px(g)),
+        strip(270.0).right(z).top(z).bottom(z).w(px(g)),
+    ]
 }
 
 /// The invitation strip's height: one line, whatever the pane's width. A narrow pane cuts the

@@ -420,6 +420,16 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .when(worktrees_open, |d| {
             d.child(render_worktree_rows(root, window, &theme, cx).opacity(worktrees_o))
         });
+    // The focus glow, as a pane wears it, while the sidebar has the keys (the panes' fade, under
+    // a key no pane has).
+    let breath = if root.window_active { root.breath.glow(now, crate::motion::reduce_motion()) } else { 0.0 };
+    let has_keys = root.sidebar_has_keys();
+    let sidebar_glow = root
+        .glow
+        .sync(SIDEBAR_GLOW_KEY, has_keys.then_some(()), now)
+        .map(|(_, opacity)| crate::pane_view::focus_glow(&theme, 0.0, width, total_h, breath, opacity))
+        .into_iter()
+        .flatten();
     let column = div()
         .relative()
         .w(px(width))
@@ -446,6 +456,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .children(switch)
         .when(sessions_h > 0.0 || !inbox, |d| d.child(sessions))
         .when(files_view, |d| d.child(explorer).child(worktrees))
+        .children(sidebar_glow)
         .child(handle);
     if !sliding {
         return Some(column);
@@ -2262,6 +2273,9 @@ impl Root {
         self.update_video_activity(cx);
     }
 }
+
+/// The sidebar's key among the focus glows, which are keyed by pane: one no pane has.
+pub const SIDEBAR_GLOW_KEY: crate::tree::PaneId = u64::MAX;
 
 /// A place in the sidebar the keys can be, for Cmd+0 to return to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
