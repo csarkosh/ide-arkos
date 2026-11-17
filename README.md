@@ -8,8 +8,7 @@
 
 Arkos keeps track of where each of your Claude Code sessions stands, so with many running at
 once you always know which one to look at next. They sit in one list, grouped by what they need
-from you: a question first, then the answers you have not read, then the ones still at work.
-Open one and it fills the window; mark it unread, schedule it for later or end it.
+from you: Needing your input → Still at work → Quiet or done.
 
 - **Durable:** sessions keep running through a frozen window or an update, and come back with
   their conversations after a restart, a shutdown or a macOS update.
@@ -17,8 +16,8 @@ Open one and it fills the window; mark it unread, schedule it for later or end i
   and drop: split a session, move any pane or tab, and start more Claude Code sessions in it.
 - **All in one place:** a file browser, web pages and an editor for the documents Claude writes
   sit beside your sessions.
-- **Self-updating:** new versions install in the background, with the window on screen
-  throughout and your unsent prompt kept.
+- **Reminders:** schedule any session for later, once or on repeat (every day, every weekday,
+  every week or every month); it waits under Scheduled and comes back as unread when it is due.
 
 Built for Apple silicon, macOS 14 or later.
 
