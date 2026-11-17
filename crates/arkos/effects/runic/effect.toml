@@ -3,8 +3,9 @@ description = "Digital rain: faint green runes falling under a black ground, glo
 wash = "wash.metal"
 glyphs = "glyphs.metal"       # optional; absent, gpui draws text as always
 frame_rate = 30               # 1 to 60; the wash's frames per second while anything moves
-scale = 1.0                   # 0.1 to 1.0; the wash's pixels per window pixel, each side: full,
-                              # so the frames, the scene and its windows stay crisp
+scale = 0.5                   # 0.1 to 1.0; the wash's pixels per window pixel, each side: a pixel
+                              # a point on a Retina display, crisp enough for the frames and the
+                              # scene, at a quarter of the cost of full (11 to 14 ms a frame there)
 ui_text_bump = 0              # 0 to 4 points added to the project window's UI text
 gap = 16                      # 0 to 16 points round each pane: room for its frame, 5 points out,
                               # and 6 points of ground between two neighbours' frames

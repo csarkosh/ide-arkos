@@ -39,10 +39,10 @@ The clock's zero (Reduce Motion) has no bolt and no cat, and every light on.
 
 ## Cost
 
-Full resolution (`scale = 1.0`), as Overworld, so the lines and the windows stay crisp; one walk
-of the blocks a pixel, blocks read by reference, far blocks skipped. Benched on a loaded Mac at
-4.4 ms a frame at 1200 by 800 against the old shader's 3.1 to 3.5 ms under the same load (1.8 ms
-on a quieter moment); the budget's 4 ms is for an idle machine.
+Half scale (`scale = 0.5`), as runic always drew: a pixel a point on a Retina display, which is
+what the stills show. At full scale the window measured 11 to 14 ms a frame on a Retina display
+(four times the pixels), far over the budget; half scale is a quarter of that. One walk of the
+blocks a pixel, blocks read by reference, far blocks skipped.
 
 ## Tested
 

@@ -1014,7 +1014,12 @@ impl SettingsWindow {
                             .child(div().text_size(px(9.0)).child("\u{25be}"));
                         let mut row = list_row((list_id, 20_000 + pick), group.clone(), is_current, enabled, c).relative().child(choice);
                         if enabled {
-                            row = row.cursor_pointer().hover(move |s| s.bg(c.pill)).on_mouse_down(
+                            // `list_row` gives a row not in force its hover already; gpui takes
+                            // one hover style an element, so only the row in force adds one here.
+                            if is_current {
+                                row = row.cursor_pointer().hover(move |s| s.bg(c.pill));
+                            }
+                            row = row.on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(move |w, _, _, cx| {
                                     cx.stop_propagation();
