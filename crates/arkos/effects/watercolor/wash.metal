@@ -304,6 +304,16 @@ constant float STEAM_RISE_S = 5.0;
 constant float BEAM_BREATH_S = 13.0;
 constant float CLOUD_PASS_S = 150.0;
 constant int MOTES = 9;
+// Birds out of the window (Cyrus, 2026-11-17: "birds flying in the window further away", "at
+// various distances and speeds. Moving independent of each other"): BIRDS of them, each at its own
+// depth (0 far to 1 near): a near one larger, darker and faster across the glass, a far one a
+// faint speck drifting slowly. Each keeps its own direction, height, pace, wingbeat and timing,
+// crossing now and then and gone between, gliding between bursts of flapping.
+constant int BIRDS = 5;
+constant float BIRD_FAR_SPEED = 0.025;
+constant float BIRD_NEAR_SPEED = 0.09;
+constant float BIRD_FAR_SPAN = 2.0;
+constant float BIRD_NEAR_SPAN = 6.0;
 // The canvas on the easel: its centre across, how wide and tall it may be, and where its foot
 // rests on the easel's ledge, as shares of the scene.
 constant float CANVAS_X = 0.58;
@@ -532,6 +542,37 @@ float cat_cover(float2 q, float state, float stride, float t) {
     return c;
 }
 
+// Bird i at t, in shares of the window's glass: across (x, outside 0 to 1 while it is away), up
+// (y), its depth (z, 0 far to 1 near) and its wings (w, -1 down to 1 up).
+float4 bird_at(int i, float t) {
+    float fi = float(i);
+    // Spread from far to near, each a little off its even step.
+    float depth = saturate((fi + 0.5 + (hash1(fi * 7.3 + 0.4) - 0.5) * 0.6) / float(BIRDS));
+    float speed = mix(BIRD_FAR_SPEED, BIRD_NEAR_SPEED, depth);
+    float cross = 1.3 / speed;
+    float period = cross + mix(25.0, 70.0, hash1(fi * 3.9 + 2.0));
+    float dir = hash1(fi * 5.1 + 1.0) < 0.5 ? 1.0 : -1.0;
+    float u = fmod(max(t, 0.0) + hash1(fi * 9.7) * period, period);
+    float x = u < cross ? -0.15 + u * speed : 2.0;
+    if (dir < 0.0 && x < 1.5) {
+        x = 1.0 - x;
+    }
+    float y = mix(0.55, 0.93, hash1(fi * 2.3 + 5.0)) + 0.025 * sin(t * 0.6 + fi * 1.7);
+    float beat = sin(t * mix(2.0, 3.2, hash1(fi * 4.4)) * 6.2831853 + fi);
+    float glide = smoothstep(-0.3, 0.3, sin(t * 0.35 + fi * 2.1));
+    return float4(x, y, depth, beat * glide);
+}
+
+// How much of a bird's ink lies at p: its two wings as a soft "m", `span` points to each side of
+// `c`, raised by `wings`.
+float bird_ink(float2 p, float2 c, float span, float wings, float w) {
+    // Held in a gentle V while it glides, beating up and down from there.
+    float lift = span * (0.4 + 0.3 * wings);
+    float d = min(min(wc_seg(p, c, c + float2(-span * 0.5, -lift * 1.2)), wc_seg(p, c + float2(-span * 0.5, -lift * 1.2), c + float2(-span, -lift * 0.4))),
+                  min(wc_seg(p, c, c + float2(span * 0.5, -lift * 1.2)), wc_seg(p, c + float2(span * 0.5, -lift * 1.2), c + float2(span, -lift * 0.4))));
+    return 1.0 - smoothstep(w * 0.5 - 0.3, w * 0.5 + 0.35, d);
+}
+
 // The studio at p (see `Studio`): the room, then the painting on the easel, then what stands
 // before it, and the pen's lines over all of it.
 float3 studio(constant ArkosInputs& u, texture2d_array<float> images, float2 p, float4 foot, float t, float gran, float bleed, Pen pen, float3 col, float k) {
@@ -595,6 +636,21 @@ float3 studio(constant ArkosInputs& u, texture2d_array<float> images, float2 p, 
         }
         if (tank + cone + legs > 0.0) {
             col = wash_onto(u, col, wood, 0.45 * melt);
+        }
+        // The birds, each in the sky at its own distance, nearer ones darker.
+        for (int b = 0; b < BIRDS; b++) {
+            float4 bird = bird_at(b, t);
+            if (bird.x < -0.1 || bird.x > 1.1) {
+                continue;
+            }
+            float2 c = sp(st, w0 + bird.xy * (w1 - w0));
+            float span = mix(BIRD_FAR_SPAN, BIRD_NEAR_SPAN, bird.z);
+            if (abs(p.x - c.x) > span + 2.0 || abs(p.y - c.y) > span + 2.0) {
+                continue;
+            }
+            float fly = bird_ink(p, c, span, bird.w, mix(0.45, 0.85, bird.z));
+            float3 bird_c = mix(mix(u.colors[ARKOS_TERMINAL_FG].rgb, pig2, 0.55), u.colors[ARKOS_TERMINAL_FG].rgb, bird.z);
+            col = mix(col, bird_c, fly * mix(0.3, 0.7, bird.z) * melt);
         }
         // The fire escape's rail outside, low across the window.
         float rail = 1.0 - smoothstep(0.0, 0.012, abs(wn.y - 0.14));

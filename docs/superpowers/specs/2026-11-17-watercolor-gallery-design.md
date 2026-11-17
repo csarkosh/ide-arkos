@@ -104,3 +104,14 @@ soft grey silhouette taken toward the theme's third pigment, with a faint shadow
 Reduce Motion the clock holds at zero, when it has not yet come in. `effects::watercolor` mirrors its
 schedule: never a jump, two different spots a visit, away at least a quarter of the cycle, gone
 off the scene at its end.
+
+## Birds
+
+Cyrus, 2026-11-17: "birds flying in the window further away", "at various distances and speeds.
+Moving independent of each other". Five birds cross the sky beyond the window, each at its own depth,
+spread from far to near: the nearest about 6 points wingtip to body, darkest and crossing at 0.09
+window widths a second, the farthest a faint 2 point speck drifting at 0.025, its ink taken toward
+the theme's pigment like distance haze. Each keeps its own direction, height (over the rooftops),
+wingbeat (2 to 3.2 a second), gliding spells with its wings in a gentle V, and timing: it crosses,
+then is away 25 to 70 seconds before it comes again, so never the whole flock at once. They pass
+behind the window's steel frame. `effects::watercolor` mirrors their flight.

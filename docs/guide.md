@@ -638,8 +638,8 @@ Village, washed in the theme's own colours and melting into the sidebar's paper:
 window onto brownstone rooftops and a water tower, exposed brick, wide floorboards, a pendant lamp,
 a side table with a palette, brushes and a steaming mug, a potted plant, and on the easel in the
 middle a backboard with a famous painting taped to it as a watercolour, toned to the theme. The lamp sways a little, the drape
-stirs, the leaves sway, the steam rises, clouds pass the window and dust drifts in its light, all
-slowly; and every two and a half minutes a cat strolls in, sits a while by two of the side table,
+stirs, the leaves sway, the steam rises, clouds pass the window, birds cross the sky beyond it at
+their own distances and paces, and dust drifts in its light, all slowly; and every two and a half minutes a cat strolls in, sits a while by two of the side table,
 the easel and the plant, and strolls off again. The paintings come one at a time: each is held fifty seconds, then the next blooms in from a
 few places over twelve seconds, a soft blend with the paint a little thinner at its middle, while
 the last fades back to the board. The eight are Hokusai's Great Wave,

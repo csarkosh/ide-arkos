@@ -215,4 +215,69 @@ mod tests {
         }
     }
 
+
+    /// Bird i as the wash's `bird_at` places it: across the glass, up, its depth.
+    fn bird_at(i: usize, t: f32) -> (f32, f32, f32) {
+        let w = wash();
+        let hash1 = |n: f32| ((n.sin() * 43758.547).fract() + 1.0).fract();
+        let fi = i as f32;
+        let n = constant_int(w, "BIRDS") as f32;
+        let depth = ((fi + 0.5 + (hash1(fi * 7.3 + 0.4) - 0.5) * 0.6) / n).clamp(0.0, 1.0);
+        let speed = constant(w, "BIRD_FAR_SPEED") + (constant(w, "BIRD_NEAR_SPEED") - constant(w, "BIRD_FAR_SPEED")) * depth;
+        let cross = 1.3 / speed;
+        let period = cross + 25.0 + 45.0 * hash1(fi * 3.9 + 2.0);
+        let dir = if hash1(fi * 5.1 + 1.0) < 0.5 { 1.0 } else { -1.0 };
+        let u = (t.max(0.0) + hash1(fi * 9.7) * period) % period;
+        let mut x = if u < cross { -0.15 + u * speed } else { 2.0 };
+        if dir < 0.0 && x < 1.5 {
+            x = 1.0 - x;
+        }
+        let y = 0.55 + 0.38 * hash1(fi * 2.3 + 5.0) + 0.025 * (t * 0.6 + fi * 1.7).sin();
+        (x, y, depth)
+    }
+
+    #[test]
+    fn the_birds_fly_at_their_own_distances_and_paces_each_on_its_own() {
+        let w = wash();
+        let n = constant_int(w, "BIRDS");
+        assert!(n >= 4, "a few birds");
+        assert!(constant(w, "BIRD_FAR_SPEED") < constant(w, "BIRD_NEAR_SPEED") && constant(w, "BIRD_FAR_SPAN") < constant(w, "BIRD_NEAR_SPAN"), "nearer is faster and larger");
+        // Each its own depth, so its own pace.
+        let depths: Vec<f32> = (0..n).map(|i| bird_at(i, 0.0).2).collect();
+        for (a, da) in depths.iter().enumerate() {
+            for db in &depths[a + 1..] {
+                assert!((da - db).abs() > 0.02, "two birds share a depth: {depths:?}");
+            }
+        }
+        assert!(depths.iter().cloned().fold(f32::MAX, f32::min) < 0.45 && depths.iter().cloned().fold(0.0, f32::max) > 0.6, "far ones and near ones: {depths:?}");
+        // Over ten minutes every bird crosses the glass and is away between, in the sky above the
+        // rooftops, and they are not all over the window together.
+        let (mut seen, mut away) = (vec![false; n], vec![false; n]);
+        let mut t = 0.0f32;
+        let mut most_at_once = 0;
+        while t < 600.0 {
+            let mut now = 0;
+            for i in 0..n {
+                let (x, y, _) = bird_at(i, t);
+                if (0.0..=1.0).contains(&x) {
+                    seen[i] = true;
+                    now += 1;
+                    assert!((0.5..=0.96).contains(&y), "bird {i} out of the sky at {y}");
+                } else {
+                    away[i] = true;
+                }
+            }
+            most_at_once = most_at_once.max(now);
+            t += 0.25;
+        }
+        assert!(seen.iter().all(|s| *s) && away.iter().all(|a| *a), "every bird crosses and leaves: {seen:?} {away:?}");
+        assert!(most_at_once < n, "never the whole flock at once");
+        assert!(w.contains("bird_at(b, t)"), "the window draws them");
+    }
+
+    fn constant_int(wash: &str, name: &str) -> usize {
+        let line = wash.lines().find(|l| l.starts_with(&format!("constant int {name} = "))).unwrap();
+        line.rsplit("= ").next().unwrap().trim_end_matches(';').parse().unwrap()
+    }
+
 }
