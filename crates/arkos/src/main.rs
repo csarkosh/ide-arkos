@@ -726,6 +726,18 @@ enum PopoverButton {
     Notice(notices::Action),
     Doctor(doctor_panel::CheckId),
     CopyReport,
+    /// A row of the Help popover, by its place in `chrome::HELP_ITEMS`.
+    Help(usize),
+}
+
+/// Runs the Help popover's row `i` as the menu bar's Help menu runs it.
+fn run_help(i: usize, cx: &mut App) {
+    match i {
+        0 => aux::open_keyboard_guide(cx),
+        1 => aux::open_keybindings(cx),
+        2 => aux::open_documentation(cx),
+        _ => aux::open_disclosure(cx),
+    }
 }
 
 /// `ARKOS_UPDATE_PREVIEW=<secs>`, for trying the update's look in a sandbox (update heads-up
@@ -1544,6 +1556,21 @@ impl Root {
         let mark = self.popover_mark;
         let ringed = move |d: gpui::Stateful<gpui::Div>, i: usize| d.px(px(4.0)).rounded(px(4.0)).border_1().border_color(if keyed && i == mark { ring } else { gpui::transparent_black() });
         let mut button_i = 0usize;
+        // The Help popover: the menu bar's Help menu, a row each.
+        if which == chrome::Popover::Help {
+            let hover_bg = chrome::menu_colors(&self.theme, self.effect_style().menus).hover;
+            let mut card = card;
+            for (i, label) in chrome::HELP_ITEMS.iter().enumerate() {
+                let row = div().id(("help-row", i)).py(px(5.0)).cursor_pointer().hover(move |s| s.bg(hover_bg)).child(*label);
+                let row = ringed(row, i).mx(px(4.0)).on_click(cx.listener(move |root, _: &gpui::ClickEvent, _window, cx| {
+                    root.close_popovers(Instant::now());
+                    run_help(i, cx);
+                    cx.notify();
+                }));
+                card = card.child(row);
+            }
+            return Some(card);
+        }
         if which != chrome::Popover::Bell {
             let red = self.theme.terminal.red.hsla();
             let mut card = card;
@@ -2570,6 +2597,7 @@ impl Root {
     fn popover_buttons(&self) -> Vec<PopoverButton> {
         match self.popover.value() {
             Some(chrome::Popover::Bell) => self.notices.items().iter().filter_map(|n| n.action).map(PopoverButton::Notice).collect(),
+            Some(chrome::Popover::Help) => (0..chrome::HELP_ITEMS.len()).map(PopoverButton::Help).collect(),
             Some(chrome::Popover::Doctor) => self
                 .doctor_states
                 .iter()
@@ -2589,8 +2617,10 @@ impl Root {
             return;
         }
         let open = self.popover.value().is_some();
-        match chrome::bar_key(&ks.key, open) {
+        match chrome::bar_key(&ks.key, open, ring) {
             chrome::BarKey::Ring(which) => self.bar_ring = Some(which),
+            // The cog opens the Settings window; the others their popovers.
+            chrome::BarKey::Open if ring == chrome::Popover::Settings => aux::open_settings(cx),
             chrome::BarKey::Open => {
                 self.toggle_popover(ring, cx);
                 self.popover_mark = 0;
@@ -2610,6 +2640,10 @@ impl Root {
                     }
                     PopoverButton::Doctor(id) => self.doctor_action(id, cx),
                     PopoverButton::CopyReport => self.copy_doctor_report(cx),
+                    PopoverButton::Help(i) => {
+                        self.close_popovers(Instant::now());
+                        run_help(i, cx);
+                    }
                 }
             }
             chrome::BarKey::Down => self.focus_switcher(cx),
@@ -6284,6 +6318,14 @@ impl Render for Root {
             self.fonts.ui.clone().map_or(gpui::SharedString::from(chrome::UI_FONT), Into::into),
             (Box::new(cx.listener(|root, _, _, cx| root.toggle_bell(cx))), hover(chrome::Popover::Bell)),
             (Box::new(cx.listener(|root, _, _, cx| root.toggle_doctor(cx))), hover(chrome::Popover::Doctor)),
+            (Box::new(cx.listener(|root, _, _, cx| root.toggle_popover(chrome::Popover::Help, cx))), hover(chrome::Popover::Help)),
+            (
+                Box::new(cx.listener(|root, _, _, cx| {
+                    root.close_popovers(Instant::now());
+                    aux::open_settings(cx);
+                })),
+                hover(chrome::Popover::Settings),
+            ),
             self.effect.is_some().then(|| cx.weak_entity()),
         )
         // The icons take the keys when the keyboard's ring is on them (Chrome keys spec).

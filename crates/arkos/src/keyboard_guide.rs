@@ -49,9 +49,9 @@ the list shown. In the files, the Explorer and Worktrees headings are stops: Lef
 group, Right opens it, Enter flips it. In the file tree, Up and Down move, Right and Left open
 and close a folder, Enter opens a file and Space previews it.
 
-Up from the switcher reaches the bell and the wrench in the title bar: Left and Right move
-between them, Enter opens the menu (Up, Down and Enter press its buttons, Escape closes it), and
-Down comes back.
+Up from the switcher reaches the title bar's icons, the bell, the doctor (a hospital), Help and
+Settings (a cog): Left and Right move between them, Enter opens the menu (Up, Down and Enter
+press its buttons, Escape closes it; the cog opens Settings), and Down comes back.
 
 {sessions} only moves the keys to the sidebar: whichever tab and row you left it on, it comes
 back to.

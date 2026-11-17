@@ -722,7 +722,7 @@ session list, and the command palette (Shift+Cmd+P) for everything else.
 
 | Keys | Action |
 | --- | --- |
-| Cmd+0 | the session list: the sidebar opens on Sessions and the keys go to its filter; type to narrow it, Up and Down move the ring through the rows, Enter shows the ringed session (a closed one is resumed) and keeps the keys in the list; the groups' headings are stops too, and fold as the Files tab's folders do: Left folds an open group (and steps from a session up to its heading), Right opens a folded one (and steps into an open one), Enter folds or opens it, so you can look through sessions one after another; Escape clears what you typed and then hands the keys to the session shown, as a click in its pane does. A click on a session shows it the same way and keeps the keys in the list, and a click anywhere in the sidebar gives it the keys. Up from the first row rings the Sessions/Files switcher: Left and Right switch the sidebar between the two, Down or Enter goes into the list shown. On Files, the Explorer and Worktrees headings are stops too: Left folds a group, Right opens it, Enter or Space flips it, and Up and Down go on through the switcher, the files and the worktrees. Up from the switcher rings the title bar's bell: Left and Right move between the bell and the doctor, Enter opens its menu (Up, Down and Enter press its buttons, Escape closes it), Down comes back. Cmd+0 only moves the keys: the tab and the ring stay where you left them, so it comes back to the same session, heading or file |
+| Cmd+0 | the session list: the sidebar opens on Sessions and the keys go to its filter; type to narrow it, Up and Down move the ring through the rows, Enter shows the ringed session (a closed one is resumed) and keeps the keys in the list; the groups' headings are stops too, and fold as the Files tab's folders do: Left folds an open group (and steps from a session up to its heading), Right opens a folded one (and steps into an open one), Enter folds or opens it, so you can look through sessions one after another; Escape clears what you typed and then hands the keys to the session shown, as a click in its pane does. A click on a session shows it the same way and keeps the keys in the list, and a click anywhere in the sidebar gives it the keys. Up from the first row rings the Sessions/Files switcher: Left and Right switch the sidebar between the two, Down or Enter goes into the list shown. On Files, the Explorer and Worktrees headings are stops too: Left folds a group, Right opens it, Enter or Space flips it, and Up and Down go on through the switcher, the files and the worktrees. Up from the switcher rings the title bar's bell: Left and Right move along its icons (the bell, the doctor, Help and Settings), Enter opens its menu (Up, Down and Enter press its buttons, Escape closes it; on the cog it opens Settings), Down comes back. Cmd+0 only moves the keys: the tab and the ring stay where you left them, so it comes back to the same session, heading or file |
 | Cmd+1 to Cmd+8 | focus pane 1 to 8 of the session shown |
 | Cmd+9 | focus the last pane |
 | Ctrl+Tab, Ctrl+Shift+Tab | next and previous tab in the focused pane |
@@ -996,7 +996,7 @@ the interval it started with. `auto` and `idle_after_secs` apply at once.
 
 Claude Code tips: fast trackpad scrolling in a fullscreen `claude` jumps unless
 `wheelScrollAccelerationEnabled` is `false` in `~/.claude/settings.json`; the doctor (the
-wrench at the right of the title bar) sets it for you, there and in every other Claude config
+hospital at the right of the title bar) sets it for you, there and in every other Claude config
 folder it has seen in use ([Session awareness](#session-awareness)).
 
 Claude Code takes the Arkos colours through a Claude Code theme Arkos writes,
@@ -1210,7 +1210,7 @@ An agent finds `arkos guide` in three ways, from no setup to one command:
 3. `arkos --help` lists `guide` first and `open`, `video` and `panes` after it, and `arkos theme`,
    `arkos open` and `arkos video` with no arguments say `see: arkos guide`.
 
-The doctor ("Agent guide for Claude Code" in the wrench's list) offers to install or refresh the
+The doctor ("Agent guide for Claude Code" in the hospital's list) offers to install or refresh the
 skill, and `arkos doctor` has a `themes:` section: `{n} themes, all valid` or one line per theme
 file that does not load (ending with the `arkos theme validate` command to run on it), a
 `theme.dark` or `theme.light` that names no theme, and the skill's state (installed, not

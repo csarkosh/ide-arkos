@@ -39,14 +39,24 @@ const DOT_HALO: f32 = 14.0;
 const DOT_HALO_ALPHA: f32 = 0.45;
 const DOT_BREATH_LIGHT: f32 = 0.08;
 
-/// Which popover hangs under the bar. Only one is open at a time.
+/// Which popover hangs under the bar. Only one is open at a time. Each of the bar's icons is
+/// named by one too, for the pointer and the keyboard's ring: `Settings` opens the Settings window
+/// and never hangs a popover.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Popover {
     #[default]
     Closed,
     Bell,
     Doctor,
+    Help,
+    Settings,
 }
+
+/// The bar's icons, left to right (Cyrus, 2026-11-17: "Notification, Doctor, Help, Settings").
+pub const BAR_ICONS: [Popover; 4] = [Popover::Bell, Popover::Doctor, Popover::Help, Popover::Settings];
+
+/// The rows of the Help popover: the menu bar's Help menu, in its order.
+pub const HELP_ITEMS: [&str; 4] = ["Keyboard Navigation", "Keybindings", "Documentation", "What Arkos Sends"];
 
 impl Popover {
     /// What a click on `which`'s icon leaves open: the same one closes, another one opens.
@@ -63,6 +73,8 @@ impl Popover {
 pub enum Icon {
     Bell,
     Doctor,
+    Help,
+    Settings,
 }
 
 type P = (f32, f32);
@@ -91,24 +103,78 @@ fn icon_segs(icon: Icon) -> Vec<Seg> {
             Move((6.87, 14.0)),
             Cubic((9.13, 14.0), (7.2, 14.8), (8.8, 14.8)),
         ],
-        // A wrench on the diagonal: an open jaw at the top right, a rounded handle end at the
-        // bottom left. The head's arcs are two cubics each (centre 10.3, 5.3; radius 3.36).
+        // A hospital (Cyrus, 2026-11-17: "something resembling a hospital"): a building on the
+        // ground, its roof stepped up in the middle, a cross on its front and a door at its foot.
         Icon::Doctor => vec![
-            Move((13.4, 4.1)),
-            Cubic((12.63, 7.72), (13.88, 5.36), (13.6, 6.78)),
-            Cubic((9.0, 8.4), (11.66, 8.66), (10.24, 8.93)),
-            Line((4.2, 13.2)),
-            Cubic((2.38, 13.22), (3.69, 13.71), (2.89, 13.73)),
-            Cubic((2.4, 11.4), (1.87, 12.71), (1.89, 11.91)),
-            Line((7.2, 6.6)),
-            Cubic((7.92, 2.92), (6.67, 5.36), (6.97, 3.87)),
-            Cubic((11.6, 2.2), (8.87, 1.97), (10.36, 1.67)),
-            Line((9.8, 4.0)),
-            Line((10.6, 5.4)),
-            Line((12.0, 6.2)),
-            Close,
+            Move((1.5, 14.5)),
+            Line((14.5, 14.5)),
+            Move((2.5, 14.5)),
+            Line((2.5, 6.0)),
+            Line((5.0, 6.0)),
+            Line((5.0, 2.5)),
+            Line((11.0, 2.5)),
+            Line((11.0, 6.0)),
+            Line((13.5, 6.0)),
+            Line((13.5, 14.5)),
+            // The cross.
+            Move((8.0, 4.3)),
+            Line((8.0, 9.1)),
+            Move((5.6, 6.7)),
+            Line((10.4, 6.7)),
+            // The door.
+            Move((6.6, 14.5)),
+            Line((6.6, 11.3)),
+            Line((9.4, 11.3)),
+            Line((9.4, 14.5)),
         ],
+        // A question mark in a ring.
+        Icon::Help => {
+            let mut v = ring_segs((8.0, 8.0), 6.5);
+            v.extend([
+                Move((5.9, 6.2)),
+                Cubic((8.0, 4.2), (5.9, 5.0), (6.9, 4.2)),
+                Cubic((10.1, 6.1), (9.2, 4.2), (10.1, 5.0)),
+                Cubic((8.0, 8.4), (10.1, 7.3), (8.0, 7.4)),
+                Line((8.0, 9.4)),
+                Move((8.0, 11.3)),
+                Line((8.0, 11.6)),
+            ]);
+            v
+        }
+        // A cog: eight teeth round a ring, a hole in its middle.
+        Icon::Settings => {
+            let (c, outer, inner) = ((8.0f32, 8.0f32), 6.6f32, 4.9f32);
+            let at = |r: f32, deg: f32| {
+                let a = deg.to_radians();
+                (c.0 + r * a.cos(), c.1 + r * a.sin())
+            };
+            let mut v = Vec::new();
+            for i in 0..8 {
+                let a = i as f32 * 45.0;
+                let pts = [at(inner, a - 14.0), at(outer, a - 9.0), at(outer, a + 9.0), at(inner, a + 14.0)];
+                v.push(if i == 0 { Move(pts[0]) } else { Line(pts[0]) });
+                v.extend(pts[1..].iter().map(|p| Line(*p)));
+            }
+            v.push(Close);
+            v.extend(ring_segs(c, 2.2));
+            v
+        }
     }
+}
+
+/// A circle of radius `r` round `c` as four cubics.
+fn ring_segs(c: P, r: f32) -> Vec<Seg> {
+    use Seg::*;
+    let k = 0.5523 * r;
+    let (x, y) = c;
+    vec![
+        Move((x + r, y)),
+        Cubic((x, y + r), (x + r, y + k), (x + k, y + r)),
+        Cubic((x - r, y), (x - k, y + r), (x - r, y + k)),
+        Cubic((x, y - r), (x - r, y - k), (x - k, y - r)),
+        Cubic((x + r, y), (x + k, y - r), (x + r, y - k)),
+        Close,
+    ]
 }
 
 /// Every anchor and control point of the icon, in the 16 px box.
@@ -154,8 +220,8 @@ pub struct Right {
 }
 
 /// What a key does while the title bar's icons have the keyboard: with no menu open, Left and
-/// Right move the ring between the bell and the doctor, Enter or Space opens the ringed one's
-/// menu, Down goes back to the Sessions/Files switcher, Escape back to the pane; with its menu
+/// Right move the ring along the icons (`BAR_ICONS`), Enter or Space opens the ringed one's menu
+/// (the cog, the Settings window), Down goes back to the Sessions/Files switcher, Escape back to the pane; with its menu
 /// open, Up and Down move between the menu's buttons and Enter or Space presses one (Escape
 /// closes the menu, as for every menu).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,13 +235,14 @@ pub enum BarKey {
     Pass,
 }
 
-pub fn bar_key(key: &str, menu_open: bool) -> BarKey {
+pub fn bar_key(key: &str, menu_open: bool, ring: Popover) -> BarKey {
+    let at = BAR_ICONS.iter().position(|p| *p == ring).unwrap_or(0);
     match (key, menu_open) {
         ("up", true) => BarKey::Mark(-1),
         ("down", true) => BarKey::Mark(1),
         ("enter" | "space", true) => BarKey::Press,
-        ("left", false) => BarKey::Ring(Popover::Bell),
-        ("right", false) => BarKey::Ring(Popover::Doctor),
+        ("left", false) => BarKey::Ring(BAR_ICONS[at.saturating_sub(1)]),
+        ("right", false) => BarKey::Ring(BAR_ICONS[(at + 1).min(BAR_ICONS.len() - 1)]),
         ("enter" | "space", false) => BarKey::Open,
         ("down", false) => BarKey::Down,
         ("escape", false) => BarKey::Leave,
@@ -187,6 +254,8 @@ pub fn bar_key(key: &str, menu_open: bool) -> BarKey {
 pub fn icon_tip(which: Popover) -> (&'static str, &'static str) {
     match which {
         Popover::Doctor => ("Doctor", "Checks what Arkos needs from Claude Code and macOS (smooth scrolling, its theme, the title hook, start at login), with a fix for each."),
+        Popover::Help => ("Help", "Keyboard navigation, the keybindings, the documentation and what Arkos sends: the Help menu, here."),
+        Popover::Settings => ("Settings", "Opens Settings: the theme and its effect, fonts, layouts, keybindings and updates."),
         _ => ("Notifications", "Updates, settings errors and what Arkos set up for you. A dot means something new, or an update waiting."),
     }
 }
@@ -227,17 +296,20 @@ impl gpui::Render for Tip {
 pub type IconClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 pub type IconHover = Box<dyn Fn(&bool, &mut Window, &mut App) + 'static>;
 
-/// How far a popover's right edge sits from the window's: under its own icon.
+/// How far a popover's right edge sits from the window's: under its own icon, counted from the
+/// bar's right end (`BAR_ICONS`, the last at the end).
 pub fn popover_right_inset(which: Popover) -> f32 {
-    match which {
-        Popover::Bell => BAR_RIGHT_PAD + ICON_TARGET + ICON_GAP,
-        _ => BAR_RIGHT_PAD,
-    }
+    let at = BAR_ICONS.iter().position(|p| *p == which).unwrap_or(BAR_ICONS.len() - 1);
+    BAR_RIGHT_PAD + (BAR_ICONS.len() - 1 - at) as f32 * (ICON_TARGET + ICON_GAP)
 }
 
 /// A popover's width, never more than the window less its right inset and a 12 px margin on the left.
 pub fn popover_width(which: Popover, window_w: f32) -> f32 {
-    let wanted: f32 = if which == Popover::Bell { 320.0 } else { 360.0 };
+    let wanted: f32 = match which {
+        Popover::Bell => 320.0,
+        Popover::Help => 240.0,
+        _ => 360.0,
+    };
     wanted.min(window_w - popover_right_inset(which) - 12.0)
 }
 
@@ -250,9 +322,11 @@ pub fn dot_halo(breath: f32) -> (f32, f32) {
 
 /// One icon: a square target holding the 16 px drawing, lit while hovered or open, with a dot
 /// at its top right when there is news. The dot breathes as the focused pane's glow does: a
-/// halo swells around it and it lightens towards the peak, away from the bar's colour.
+/// halo swells around it and it lightens towards the peak, away from the bar's colour. Its
+/// tooltip shows only while its own menu is not open (Cyrus, 2026-11-17: no menu laid over
+/// another).
 #[allow(clippy::too_many_arguments)]
-fn icon_button(id: &'static str, icon: Icon, dot: bool, breath: f32, lit: bool, ringed: bool, tip: (&'static str, &'static str), c: &crate::theme::Chrome, family: SharedString, (on_click, on_hover): (IconClick, IconHover)) -> gpui::Stateful<Div> {
+fn icon_button(id: &'static str, icon: Icon, dot: bool, breath: f32, lit: bool, open: bool, ringed: bool, tip: (&'static str, &'static str), c: &crate::theme::Chrome, family: SharedString, (on_click, on_hover): (IconClick, IconHover)) -> gpui::Stateful<Div> {
     let color = if lit || ringed { c.text.hsla() } else { c.text_dim.hsla() };
     let (fg, dim, bg, border) = (c.text.hsla(), c.text_dim.hsla(), c.banner.hsla(), c.border.hsla());
     div()
@@ -267,9 +341,11 @@ fn icon_button(id: &'static str, icon: Icon, dot: bool, breath: f32, lit: bool, 
         .rounded(px(6.0))
         .border_1()
         .border_color(if ringed { c.focus_ring.hsla() } else { gpui::transparent_black() })
-        .tooltip(move |_window, cx| {
-            let tip = Tip { title: tip.0.into(), text: tip.1.into(), fg, dim, bg, border, family: family.clone(), size: 12.0 };
-            gpui::AnyView::from(cx.new(|_| tip))
+        .when(!open, |d| {
+            d.tooltip(move |_window, cx| {
+                let tip = Tip { title: tip.0.into(), text: tip.1.into(), fg, dim, bg, border, family: family.clone(), size: 12.0 };
+                gpui::AnyView::from(cx.new(|_| tip))
+            })
         })
         // The bar's window drag must not start from a press on an icon.
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -343,7 +419,7 @@ pub fn title_words(sandbox: bool) -> Vec<&'static str> {
 /// `report`, while an effect is on, is the window to report the bar's two groups to (its words
 /// and its icons, `Kind::TitleGroup`), so the wash can set a label behind each.
 #[allow(clippy::too_many_arguments)]
-pub fn title_bar(project: &Path, sandbox: bool, right: Right, fullscreen: bool, theme: &Theme, style: Style, bar_font: SharedString, on_bell: (IconClick, IconHover), on_doctor: (IconClick, IconHover), report: Option<gpui::WeakEntity<crate::Root>>) -> Div {
+pub fn title_bar(project: &Path, sandbox: bool, right: Right, fullscreen: bool, theme: &Theme, style: Style, bar_font: SharedString, on_bell: (IconClick, IconHover), on_doctor: (IconClick, IconHover), on_help: (IconClick, IconHover), on_settings: (IconClick, IconHover), report: Option<gpui::WeakEntity<crate::Root>>) -> Div {
     let c = &theme.chrome;
     let words = title_words(sandbox);
     let (left, right_pad) = bar_padding(fullscreen, style.title_pad);
@@ -401,8 +477,10 @@ pub fn title_bar(project: &Path, sandbox: bool, right: Right, fullscreen: bool, 
                 .flex()
                 .items_center()
                 .gap(px(ICON_GAP))
-                .child(icon_button("bell", Icon::Bell, right.bell_dot, right.breath, right.open == Popover::Bell || right.hover == Popover::Bell, right.ring == Popover::Bell, icon_tip(Popover::Bell), c, bar_font.clone(), on_bell))
-                .child(icon_button("doctor", Icon::Doctor, right.doctor_dot, right.breath, right.open == Popover::Doctor || right.hover == Popover::Doctor, right.ring == Popover::Doctor, icon_tip(Popover::Doctor), c, bar_font.clone(), on_doctor)),
+                .child(icon_button("bell", Icon::Bell, right.bell_dot, right.breath, right.open == Popover::Bell || right.hover == Popover::Bell, right.open == Popover::Bell, right.ring == Popover::Bell, icon_tip(Popover::Bell), c, bar_font.clone(), on_bell))
+                .child(icon_button("doctor", Icon::Doctor, right.doctor_dot, right.breath, right.open == Popover::Doctor || right.hover == Popover::Doctor, right.open == Popover::Doctor, right.ring == Popover::Doctor, icon_tip(Popover::Doctor), c, bar_font.clone(), on_doctor))
+                .child(icon_button("help", Icon::Help, false, right.breath, right.open == Popover::Help || right.hover == Popover::Help, right.open == Popover::Help, right.ring == Popover::Help, icon_tip(Popover::Help), c, bar_font.clone(), on_help))
+                .child(icon_button("settings", Icon::Settings, false, right.breath, right.hover == Popover::Settings, false, right.ring == Popover::Settings, icon_tip(Popover::Settings), c, bar_font.clone(), on_settings)),
             crate::effects::blocks::TITLE_ICONS_KEY,
         ))
 }
@@ -689,18 +767,28 @@ mod tests {
 
     #[test]
     fn opening_one_popover_closes_the_other() {
-        assert_eq!(bar_key("left", false), BarKey::Ring(Popover::Bell));
-        assert_eq!(bar_key("right", false), BarKey::Ring(Popover::Doctor));
-        assert_eq!(bar_key("enter", false), BarKey::Open);
-        assert_eq!(bar_key("space", false), BarKey::Open);
-        assert_eq!(bar_key("down", false), BarKey::Down, "back to the switcher");
-        assert_eq!(bar_key("escape", false), BarKey::Leave);
-        assert_eq!(bar_key("down", true), BarKey::Mark(1), "a menu open: its buttons");
-        assert_eq!(bar_key("up", true), BarKey::Mark(-1));
-        assert_eq!(bar_key("enter", true), BarKey::Press);
-        assert_eq!(bar_key("left", true), BarKey::Pass);
+        // Left and Right walk the icons in order, and stop at either end.
+        assert_eq!(BAR_ICONS, [Popover::Bell, Popover::Doctor, Popover::Help, Popover::Settings]);
+        assert_eq!(bar_key("right", false, Popover::Bell), BarKey::Ring(Popover::Doctor));
+        assert_eq!(bar_key("right", false, Popover::Doctor), BarKey::Ring(Popover::Help));
+        assert_eq!(bar_key("right", false, Popover::Help), BarKey::Ring(Popover::Settings));
+        assert_eq!(bar_key("right", false, Popover::Settings), BarKey::Ring(Popover::Settings));
+        assert_eq!(bar_key("left", false, Popover::Help), BarKey::Ring(Popover::Doctor));
+        assert_eq!(bar_key("left", false, Popover::Bell), BarKey::Ring(Popover::Bell));
+        let k = |key| bar_key(key, false, Popover::Bell);
+        assert_eq!(k("enter"), BarKey::Open);
+        assert_eq!(k("space"), BarKey::Open);
+        assert_eq!(k("down"), BarKey::Down, "back to the switcher");
+        assert_eq!(k("escape"), BarKey::Leave);
+        let open = |key| bar_key(key, true, Popover::Bell);
+        assert_eq!(open("down"), BarKey::Mark(1), "a menu open: its buttons");
+        assert_eq!(open("up"), BarKey::Mark(-1));
+        assert_eq!(open("enter"), BarKey::Press);
+        assert_eq!(open("left"), BarKey::Pass);
         assert!(icon_tip(Popover::Bell).1.contains("update"), "the bell's tooltip says what it holds");
         assert!(icon_tip(Popover::Doctor).1.contains("fix"));
+        assert!(icon_tip(Popover::Help).1.contains("Help menu") && icon_tip(Popover::Settings).1.contains("Settings"));
+        assert_eq!(HELP_ITEMS, ["Keyboard Navigation", "Keybindings", "Documentation", "What Arkos Sends"]);
         assert_eq!(Popover::Closed.toggled(Popover::Bell), Popover::Bell);
         assert_eq!(Popover::Bell.toggled(Popover::Doctor), Popover::Doctor);
         assert_eq!(Popover::Doctor.toggled(Popover::Doctor), Popover::Closed);
@@ -718,17 +806,21 @@ mod tests {
 
     #[test]
     fn the_popovers_hang_under_their_icons_and_fit_the_window() {
-        assert_eq!(popover_right_inset(Popover::Doctor), BAR_RIGHT_PAD, "the doctor is the last icon");
-        assert_eq!(popover_right_inset(Popover::Bell), BAR_RIGHT_PAD + ICON_TARGET + ICON_GAP);
+        assert_eq!(popover_right_inset(Popover::Settings), BAR_RIGHT_PAD, "the cog is the last icon");
+        assert_eq!(popover_right_inset(Popover::Bell), BAR_RIGHT_PAD + 3.0 * (ICON_TARGET + ICON_GAP));
         assert_eq!(popover_width(Popover::Bell, 1200.0), 320.0);
         assert_eq!(popover_width(Popover::Doctor, 1200.0), 360.0);
-        assert_eq!(popover_width(Popover::Doctor, 300.0), 276.0, "a narrow window");
-        assert_eq!(popover_width(Popover::Bell, 300.0), 244.0, "the bell sits further left, so it has less room");
+        let step = ICON_TARGET + ICON_GAP;
+        assert_eq!(popover_right_inset(Popover::Bell), BAR_RIGHT_PAD + 3.0 * step, "the bell is the first of four icons");
+        assert_eq!(popover_right_inset(Popover::Doctor), BAR_RIGHT_PAD + 2.0 * step);
+        assert_eq!(popover_right_inset(Popover::Help), BAR_RIGHT_PAD + step);
+        assert_eq!(popover_width(Popover::Doctor, 300.0), 300.0 - BAR_RIGHT_PAD - 2.0 * step - 12.0, "a narrow window");
+        assert_eq!(popover_width(Popover::Help, 1200.0), 240.0);
     }
 
     #[test]
     fn the_bell_and_the_doctor_icons_stay_in_a_16_px_box() {
-        for icon in [Icon::Bell, Icon::Doctor] {
+        for icon in [Icon::Bell, Icon::Doctor, Icon::Help, Icon::Settings] {
             let pts = icon_points(icon);
             assert!(pts.len() >= 6, "{icon:?} has a shape");
             for (x, y) in pts {
