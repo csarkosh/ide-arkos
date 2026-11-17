@@ -522,9 +522,10 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
         list = list.child(div().px(px(pad)).py(px(8.0)).text_size(px(style.ui(12.0))).text_color(dim).child("No session matches."));
     }
     for (kind, rows) in groups {
-        // While the list has the keys (Cmd+0) every group is open, as a typed filter opens them,
-        // so the ring reaches a Quiet or Done session too.
-        let folded = is_folded(&root.sessions_folded, kind, filtering || root.session_filter_focused);
+        // A typed filter opens every group; the list having the keys does not (Cyrus,
+        // 2026-11-17: "when Pane 0 is in focus, it should not uncollapse all the session
+        // states"), so the ring passes over a folded group's sessions.
+        let folded = is_folded(&root.sessions_folded, kind, filtering);
         let heading = div()
             .id(("session-group", kind as usize))
             .h(px(GROUP_H))

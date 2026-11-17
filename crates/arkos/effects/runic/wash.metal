@@ -558,6 +558,8 @@ constant int ROAD_CELLS = 1;
 constant float TOWER_ON = 0.8;
 constant float Z_NEAR = 0.7;
 constant float Z_FAR = 30.0;
+// The tallest tower, in camera heights.
+constant float TOWER_MAX = 4.8;
 
 float hash2(float2 c) {
     uint ux = uint(int(c.x) + 1048576);
@@ -1003,19 +1005,32 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
     float run = t * GRID_SPEED * GRID_Z;
     int far_row = int(floor((run + Z_FAR) / GRID_Z));
     int rows = int(ceil((Z_FAR - Z_NEAR) / GRID_Z)) + 1;
+    // The farthest a tower can stand and still reach p: below the horizon its foot must be at or
+    // below p, above it its top (at most TOWER_MAX tall) must reach up to p.
+    float reach = q.y > yh ? f / (q.y - yh) : (q.y < yh ? f * (TOWER_MAX - 1.0) / (yh - q.y) : Z_FAR);
     for (int r = 0; r < rows; r++) {
         int m = far_row - r;
         float zc = float(m) * GRID_Z - run;
-        for (int side = 0; side < 2; side++) {
-            for (int l = 0; l < LANES; l++) {
-                int kx = side == 0 ? -(ROAD_CELLS + 1 + l) : ROAD_CELLS + l;
+        if (zc - GRID_Z > reach || zc + GRID_Z < Z_NEAR) {
+            continue;
+        }
+        // Only the lane p lies in at this row's depth and its two neighbours can cover it (a
+        // tower's back face leans toward the road, never past the next lane).
+        int lane = int(floor((q.x - cx) * max(zc, Z_NEAR) / f / GRID_X));
+        for (int dk = -1; dk <= 1; dk++) {
+            {
+                int kx = lane + dk;
+                bool road = kx >= -ROAD_CELLS && kx < ROAD_CELLS;
+                if (road || kx < -(ROAD_CELLS + LANES) || kx >= ROAD_CELLS + LANES) {
+                    continue;
+                }
                 float2 cell = float2(float(kx), float(m));
                 if (hash2(cell + float2(17.0, 3.0)) > TOWER_ON) {
                     continue;
                 }
                 float tw = GRID_X * (0.5 + 0.35 * hash2(cell + float2(5.0, 11.0)));
                 float td = GRID_Z * (0.35 + 0.35 * hash2(cell + float2(9.0, 2.0)));
-                float th = 0.6 + 4.2 * pow(hash2(cell + float2(4.0, 7.0)), 1.6);
+                float th = 0.6 + (TOWER_MAX - 0.6) * pow(hash2(cell + float2(4.0, 7.0)), 1.6);
                 float tx = (float(kx) + 0.5) * GRID_X;
                 float zf = zc + 0.5 * GRID_Z - 0.5 * td;
                 if (zf < Z_NEAR || zf > Z_FAR) {

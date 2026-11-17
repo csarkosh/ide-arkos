@@ -2626,8 +2626,8 @@ impl Root {
     fn shown_session_rows(&self) -> Vec<sessions_list::RowKey> {
         let query = &self.session_filter.text;
         let groups = sessions_list::grouped(sessions_list::matching(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held), query));
-        // Every group is open while the list has the keys (Chrome keys spec, section 2).
-        sessions_list::shown_rows(&groups, &self.sessions_folded, true)
+        // As the list shows them: a folded group's rows only while a filter is typed.
+        sessions_list::shown_rows(&groups, &self.sessions_folded, !query.trim().is_empty())
     }
 
     /// Cmd+0 (Chrome keys spec, section 2): the sidebar open on its session list, the keys in
