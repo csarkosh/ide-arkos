@@ -116,6 +116,21 @@ float3 keep_readable(constant ArkosInputs& u, float3 col) {
 // colour.
 constant int PANE_PIGMENTS[4] = {0, 1, 3, 2};
 
+// The focused pane (Cyrus, 2026-11-17: "it's not obvious which pane is currently selected"):
+// its tab bar and body washed deeper and the others paler, its ink a little heavier and the
+// others' lighter, and a ragged brush band of its own pigment painted FOCUS_BAND points wide just
+// inside its edges, at FOCUS_HALO, as a watercolour border (the panes meet edge to edge, so a
+// bleed outward would land on a neighbour). All follow the app's focus glow as it fades between
+// panes; the sidebar takes the band too when it has the keys.
+constant float BAR_IDLE = 0.24;
+constant float BAR_FOCUS = 0.62;
+constant float BODY_IDLE = 0.05;
+constant float BODY_FOCUS = 0.17;
+constant float INK_IDLE = 0.55;
+constant float FOCUS_WEIGHT = 0.7;
+constant float FOCUS_BAND = 7.0;
+constant float FOCUS_HALO = 0.42;
+
 // A highlight's strength at full fade, by its ordinal: hovered, selected, both.
 constant float HIGHLIGHT_STRENGTH[3] = {0.2, 0.3, 0.36};
 
@@ -128,8 +143,8 @@ float strength_of(ArkosBlock b, thread int& tint) {
     if (kind == ARKOS_TITLE_BAR_BLOCK) { return 0.46; }
     // The sidebar a light wash, so the Explorer's names read on near-white paper.
     if (kind == ARKOS_SIDEBAR_BLOCK) { tint = 2; return 0.12; }
-    if (kind == ARKOS_TAB_BAR_BLOCK) { tint = PANE_PIGMENTS[ordinal % 4]; return 0.56; }
-    if (kind == ARKOS_PANE_BODY_BLOCK) { tint = PANE_PIGMENTS[ordinal % 4]; return 0.14; }
+    if (kind == ARKOS_TAB_BAR_BLOCK) { tint = PANE_PIGMENTS[ordinal % 4]; return mix(BAR_IDLE, BAR_FOCUS, saturate(b.focus)); }
+    if (kind == ARKOS_PANE_BODY_BLOCK) { tint = PANE_PIGMENTS[ordinal % 4]; return mix(BODY_IDLE, BODY_FOCUS, saturate(b.focus)); }
     // A menu's backdrop: a pane body's light wash, in the first pigment.
     if (kind == ARKOS_MENU_BLOCK) { return 0.14; }
     // A table: a light wash over its body and an apricot band over its header, as a ruled
@@ -213,9 +228,14 @@ float ink_for_block(float2 p, ArkosBlock blk, Pen pen) {
     if (edges & ARKOS_EDGE_RIGHT) { dmin = min(dmin, ink_v(p, x1, y0, y1, pen.wob, over)); }
     if (edges & ARKOS_EDGE_BOTTOM) { dmin = min(dmin, ink_h(p, y1, x0, x1, pen.wob, over)); }
     if (edges & ARKOS_EDGE_LEFT) { dmin = min(dmin, ink_v(p, x0, y0, y1, pen.wob, over)); }
-    float core = 1.0 - smoothstep(pen.weight - 0.3, pen.weight + 0.3, dmin);
-    float halo = (1.0 - smoothstep(pen.weight, pen.weight + 2.2, dmin)) * 0.22;
-    return max(core, halo) * pen.gap;
+    // A pane's ink: heavier round the focused one, lighter round the others.
+    int kind = int(blk.kind);
+    bool pane = kind == ARKOS_TAB_BAR_BLOCK || kind == ARKOS_PANE_BODY_BLOCK;
+    float focus = pane ? saturate(blk.focus) : 1.0;
+    float weight = pen.weight + (pane ? FOCUS_WEIGHT * focus : 0.0);
+    float core = 1.0 - smoothstep(weight - 0.3, weight + 0.3, dmin);
+    float halo = (1.0 - smoothstep(weight, weight + 2.2, dmin)) * 0.22;
+    return max(core, halo) * pen.gap * (pane ? mix(INK_IDLE, 1.0, focus) : 1.0);
 }
 
 // Dry-brush: the pen skips a little on the paper's tooth, more on lighter strokes.
@@ -888,6 +908,26 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
                 float blotch = 0.72 + 0.5 * fract(gran + seed * 0.37);
                 float a = strength * (cover * blotch + 0.5 * pool);
                 col = wash_onto(u, col, pigment(u, tint), clamp(a, 0.0, 0.85));
+            }
+        }
+        // The focused pane's brush band just inside its edges: round its tab bar and body
+        // together (the body follows its bar among the blocks), and round the sidebar when it
+        // has the keys.
+        int bk = int(blk.kind);
+        if (blk.focus > 0.0 && (bk == ARKOS_TAB_BAR_BLOCK || bk == ARKOS_SIDEBAR_BLOCK)) {
+            float4 cr = r;
+            if (bk == ARKOS_TAB_BAR_BLOCK && i + 1 < nb && int(u.blocks[i + 1].kind) == ARKOS_PANE_BODY_BLOCK) {
+                cr.w = u.blocks[i + 1].rect.y + u.blocks[i + 1].rect.w - r.y;
+            }
+            float2 chb = cr.zw * 0.5;
+            float in_d = -sd_box(p - (cr.xy + chb), chb);
+            if (in_d > 0.0 && in_d < FOCUS_BAND + 6.0) {
+                float reach = in_d + (bleed - 0.5) * 6.0 + (fray - 0.5) * 2.5;
+                // Darkest at the edge, its inner side ragged as a brush stroke's, pooling a little.
+                float bloom = (1.0 - smoothstep(FOCUS_BAND * 0.45, FOCUS_BAND, reach)) * (0.85 + 0.3 * smoothstep(FOCUS_BAND * 0.6, FOCUS_BAND * 0.9, reach)) * saturate(blk.focus) * k;
+                int ftint;
+                strength_of(blk, ftint);
+                col = wash_onto(u, col, pigment(u, ftint), FOCUS_HALO * bloom * (0.75 + 0.5 * gran));
             }
         }
         // Strokes add up where they cross, so the corners pool darker.

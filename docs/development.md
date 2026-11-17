@@ -1106,6 +1106,10 @@ Things only a person at the screen can check, in order of value:
   peach; within a minute the next painting fades in softly over about twelve seconds, no hard edge or dark front, while the last fades back to
   paper, and every painting in turn comes round; open enough folders to fill the sidebar and it fades
   out; Reduce Motion on, it holds the first painting
+- watercolor focus: under Lavender Watercolor with two panes, click one: its tab bar deepens, a
+  ragged band of its pigment runs just inside its edges and its ink thickens, while the other pane
+  pales; click the other and the look moves across with the focus glow's fade; Cmd+0 gives Pane 0
+  the band
 - watercolor cat: under Lavender Watercolor with Pane 0's studio in view, within two and a half
   minutes a grey cat strolls in along the front of the floor, sits a while by two of the table,
   the easel and the plant, strolls off the other side, and is gone for a minute or more; it never

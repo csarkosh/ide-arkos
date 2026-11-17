@@ -371,6 +371,47 @@ mod tests {
     }
 
     #[test]
+    fn under_watercolor_the_focused_pane_is_washed_deeper_with_a_brush_band_inside_its_edges() {
+        // Cyrus, 2026-11-17: "it's not obvious which pane is currently selected", as Overworld's
+        // and Runic's are. Two panes side by side, a tab bar over a body each, one focused in turn.
+        if Device::system_default().is_none() {
+            return;
+        }
+        let wc = super::super::manifest::load("watercolor", std::path::Path::new("/nonexistent")).unwrap();
+        let theme = crate::theme::builtin("lavender-watercolor").unwrap();
+        let all = blocks::EDGE_TOP | blocks::EDGE_RIGHT | blocks::EDGE_BOTTOM | blocks::EDGE_LEFT;
+        let pane = |x: f32, ordinal: f32, focus: f32| {
+            let bar = Block { rect: Rect { x, y: 20.0, w: 80.0, h: 24.0 }, kind: Kind::TabBar, edges: all, seed: 3.0 + ordinal, value: 1.0, ordinal, busy: 0.0, pitch: 0.0, focus, waiting: 0.0 };
+            let body = Block { rect: Rect { x, y: 44.0, w: 80.0, h: 96.0 }, kind: Kind::PaneBody, edges: all, seed: 7.0 + ordinal, value: 1.0, ordinal, busy: 0.0, pitch: 0.0, focus, waiting: 0.0 };
+            [bar, body]
+        };
+        // How much darker than the bare paper a region is, summed: more pigment, more darkness.
+        let ink = |f: &[Rgb], x0: u32, x1: u32, y0: u32, y1: u32| -> f32 {
+            let mut sum = 0.0;
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let c = f[(y * W + x) as usize];
+                    sum += 765.0 - (c.r as f32 + c.g as f32 + c.b as f32);
+                }
+            }
+            sum
+        };
+        for left_focused in [true, false] {
+            let (fl, fr) = if left_focused { (1.0, 0.0) } else { (0.0, 1.0) };
+            let blocks: Vec<Block> = pane(24.0, 0.0, fl).into_iter().chain(pane(136.0, 1.0, fr)).collect();
+            let f = render_frame(&wc.wash, &theme, (W, H), 2.0, &blocks);
+            // The tab bars, inside their ink.
+            let (bar_l, bar_r) = (ink(&f, 30, 98, 24, 40), ink(&f, 142, 210, 24, 40));
+            // A band just inside each pane's sides, below its tab bar.
+            let (out_l, out_r) = (ink(&f, 26, 30, 50, 130) + ink(&f, 98, 102, 50, 130), ink(&f, 138, 142, 50, 130) + ink(&f, 210, 214, 50, 130));
+            let ((bar_on, bar_off), (out_on, out_off)) = if left_focused { ((bar_l, bar_r), (out_l, out_r)) } else { ((bar_r, bar_l), (out_r, out_l)) };
+            // The paper is kept readable under the bars' text, which holds how deep a bar can go.
+            assert!(bar_on > bar_off * 1.2, "the focused tab bar {bar_on:.0} is not deeper than the other {bar_off:.0} (left focused: {left_focused})");
+            assert!(out_on > out_off * 1.3, "the focused pane's band inside its edges {out_on:.0} is no deeper than the other's {out_off:.0} (left focused: {left_focused})");
+        }
+    }
+
+    #[test]
     fn the_runic_wash_draws_no_edge_on_the_window_s_own_border() {
         if Device::system_default().is_none() {
             return;
