@@ -1234,7 +1234,7 @@ mod tests {
     fn the_built_ins_read_as_cyrus_named_them_and_the_two_groups_each_have_one_default() {
         let title = |n: &str| builtin(n).unwrap().title.unwrap_or_else(|| title_case(n));
         assert_eq!(title("navy"), "Plain Navy");
-        assert_eq!(title("matrix"), "Enter The Matrix");
+        assert_eq!(title("matrix"), "The Matrix");
         assert_eq!(title("lavender-watercolor"), "Watercolor Lavender");
         assert_eq!(title("peach-watercolor"), "Watercolor Peach");
         assert_eq!(title("material"), "Material Bright");

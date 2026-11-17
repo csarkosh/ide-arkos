@@ -640,7 +640,18 @@ with `runic`: faint columns of runes falling at different speeds behind everythi
 thin lines of the theme's accent (green under Matrix, blue under Tokyo Rain), and the text as glowing type; now and then a letter flickers, mirrored
 and brighter for a tenth of a second. In a terminal, a cell whose text changes scrambles through
 random characters for a moment before it settles (longer while Claude is working), and fresh
-text starts brighter and cools over a second and a half. Material and Lavender Material come with `material`: the
+text starts brighter and cools over a second and a half. Each pane wears a neon frame in the
+gap round it, its corners cut, lit in the focus colour on the focused pane (and round the
+sidebar while it has the keys); a packet of light runs round the frame of a pane whose Claude
+session works, a block cursor blinks on the frame's foot of one that waits for you, the active
+tab is underlined in light and a lamp at the bar's right end is lit on the focused pane. The
+title bar is a strip of storm clouds, its words and icons on plates, and a chevron marks the
+sidebar's selected row. At the sidebar's foot, below the names, stands the theme's scene:
+Tokyo Rain's is Tokyo at night in the rain (Tokyo Tower in orange lattice, the Skytree, lit
+windows, storm clouds, and now and then a bolt of lightning made of runes that lights the sky);
+The Matrix's is a city of falling code, a phone booth whose light rings, and now and then
+a black cat that crosses the street, and a moment later crosses it again the same way. Material
+and Lavender Material come with `material`: the
 title bar, sidebar and status bar are one pale frame with a search bar round the title, each pane
 is a card in the theme's page colour with rounded corners floating on it (white under Material), the pane's number sits on a coloured round
 chip (blue, green, yellow, red in turn), each active tab is underlined in the theme's accent, the selected
@@ -862,10 +873,11 @@ window, as Keybindings (Cmd+/) does.
   a click on the other puts it in force, and neither forgets its choices.
   - Presets: a preset is a finished look, a theme with its own effect and fonts. Mode (System,
     Dark, Light), the dark and the light preset lists side by side, "Add preset…" and "Show
-    presets folder". Each preset reads by its title (Plain Navy, Enter The Matrix, Tokyo Rain…),
+    presets folder". Each preset reads by its title (Plain Navy, The Matrix, Tokyo Rain…),
     and a group is one row with its choice on the right: Watercolor (Lavender, the default, or
     Peach) and Material (Solar, the default, Bright or Lavender). A click on the row picks the
-    choice shown; a click on the choice opens the group's members under it. "Add preset…" takes a theme's `.toml` file (anything else is refused), names
+    choice shown; a click on the choice opens a small menu of the members, the one in force
+    checked, and a click outside it closes it. "Add preset…" takes a theme's `.toml` file (anything else is refused), names
     the copy after the file's own `name`, shows the error under the button for a bad file, and
     asks "Replace the existing {name}?" before overwriting a theme file or shadowing a built-in
     of that name. A new preset is set as the dark or light one by the mode in force. A

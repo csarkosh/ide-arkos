@@ -226,6 +226,12 @@ pub enum PresetRow {
     Group { name: String, members: Vec<(usize, String)>, pick: usize },
 }
 
+/// A group member's name in its group's dropdown: its title without the group's word in front
+/// ("Watercolor Lavender" is "Lavender" under Watercolor), else its whole title.
+pub fn member_name(title: &str, group: &str) -> String {
+    title.strip_prefix(group).map(str::trim_start).filter(|rest| !rest.is_empty()).unwrap_or(title).to_string()
+}
+
 /// `slot_rows` as a person reads them: each theme by its title, and the members of a group folded
 /// into one row where its first member stood (Watercolor: Watercolor Lavender and Watercolor
 /// Peach; Material: Material Bright, Material Solar and Material Lavender). A theme of the other
@@ -799,13 +805,15 @@ pub struct Colors {
     pub border: Hsla,
     pub accent: Hsla,
     pub pill: Hsla,
+    /// A floating card's ground (a dropdown's menu): the window's own.
+    pub card: Hsla,
 }
 
 impl Colors {
     /// The controls' colours in `theme`.
     pub fn of(theme: &Theme) -> Colors {
         let t = &theme.chrome;
-        Colors { text: t.text.hsla(), dim: t.text_dim.hsla(), border: t.border.hsla(), accent: t.focus_ring.hsla(), pill: t.banner.hsla() }
+        Colors { text: t.text.hsla(), dim: t.text_dim.hsla(), border: t.border.hsla(), accent: t.focus_ring.hsla(), pill: t.banner.hsla(), card: t.window_bg.hsla() }
     }
 }
 
@@ -984,23 +992,26 @@ impl SettingsWindow {
                         list = list.child(row);
                     }
                     PresetRow::Group { name: group, members, pick } => {
-                        // One row for the group: a click picks its chosen member; the choice on
-                        // its right opens the members under it.
+                        // One row for the group, as any preset's: a click picks the member its
+                        // choice shows. The choice on its right, quiet text with a caret, opens a
+                        // small menu of the members floating over the list.
                         let is_current = members.iter().any(|(ix, _)| &self.themes[*ix].0 == current);
-                        let pick_title = members.iter().find(|(ix, _)| *ix == pick).map(|(_, t)| t.clone()).unwrap_or_default();
+                        let pick_name = members.iter().find(|(ix, _)| *ix == pick).map(|(_, t)| member_name(t, &group)).unwrap_or_default();
                         let open = self.open_group.as_ref().is_some_and(|(s, g)| *s == slot && *g == group);
                         let toggle_group = group.clone();
-                        let select = div()
+                        let choice = div()
                             .id((list_id, 10_000 + pick))
                             .ml_auto()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
                             .px(px(6.0))
                             .rounded(px(4.0))
-                            .border_1()
-                            .border_color(c.dim)
-                            .text_color(if enabled { c.text } else { c.dim })
-                            .child(format!("{pick_title} \u{25be}"))
+                            .text_color(c.dim)
+                            .child(pick_name)
+                            .child(div().text_size(px(9.0)).child("\u{25be}"))
                             .when(enabled, |d| {
-                                d.cursor_pointer().on_mouse_down(
+                                d.cursor_pointer().hover(move |s| s.text_color(c.text)).on_mouse_down(
                                     gpui::MouseButton::Left,
                                     cx.listener(move |w, _, _, cx| {
                                         cx.stop_propagation();
@@ -1010,26 +1021,59 @@ impl SettingsWindow {
                                     }),
                                 )
                             });
-                        let mut row = list_row((list_id, 20_000 + pick), group.clone(), is_current, enabled, c).child(select);
+                        let mut row = list_row((list_id, 20_000 + pick), group.clone(), is_current, enabled, c).relative().child(choice);
                         if enabled && !is_current {
                             let name = self.themes[pick].0.clone();
                             row = row.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&["theme", key], name.as_str())], cx)));
                         }
-                        list = list.child(row);
                         if open {
+                            // The menu: a card under the choice, drawn above the rows after it,
+                            // its members by their short names with a check on the one in force.
+                            let mut card = div()
+                                .id((list_id, 40_000 + pick))
+                                .absolute()
+                                .top(px(22.0))
+                                .right(px(0.0))
+                                .min_w(px(140.0))
+                                .py(px(4.0))
+                                .rounded(px(6.0))
+                                .border_1()
+                                .border_color(c.border)
+                                .bg(c.card)
+                                .shadow_md()
+                                .flex()
+                                .flex_col()
+                                .on_mouse_down_out(cx.listener(|w, _, _, cx| {
+                                    w.open_group = None;
+                                    cx.notify();
+                                }));
                             for (ix, title) in members {
                                 let name = self.themes[ix].0.clone();
                                 let member_current = &name == current;
-                                let mut sub = list_row((list_id, 30_000 + ix), title, member_current, enabled, c).pl(px(26.0));
-                                if enabled && !member_current {
-                                    sub = sub.on_click(cx.listener(move |w, _, _, cx| {
-                                        w.open_group = None;
-                                        w.change(vec![edit(&["theme", key], name.as_str())], cx);
-                                    }));
+                                let mut item = div()
+                                    .id((list_id, 30_000 + ix))
+                                    .flex()
+                                    .gap(px(6.0))
+                                    .px(px(8.0))
+                                    .py(px(3.0))
+                                    .text_color(c.text)
+                                    .child(div().w(px(12.0)).flex_none().child(if member_current { "\u{2713}" } else { "" }))
+                                    .child(member_name(&title, &group));
+                                if !member_current {
+                                    item = item.cursor_pointer().hover(move |s| s.bg(c.pill)).on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(move |w, _, _, cx| {
+                                            cx.stop_propagation();
+                                            w.open_group = None;
+                                            w.change(vec![edit(&["theme", key], name.as_str())], cx);
+                                        }),
+                                    );
                                 }
-                                list = list.child(sub);
+                                card = card.child(item);
                             }
+                            row = row.child(gpui::deferred(card).with_priority(1));
                         }
+                        list = list.child(row);
                     }
                 }
             }
@@ -1432,6 +1476,14 @@ mod tests {
         assert_eq!(preset_list(&themes, &shown, Dark, "navy"), vec![PresetRow::One { ix: 0, label: "Plain Navy".into() }]);
         assert_eq!(preset_list(&themes, &shown, Light, "navy")[0], PresetRow::One { ix: 0, label: "Plain Navy (a dark theme)".into() });
         assert_eq!(theme::title_case("my-dark-theme"), "My Dark Theme", "a user's theme without a title reads in capitalised words");
+    }
+
+    #[test]
+    fn a_group_s_menu_names_its_members_without_the_group_s_word() {
+        assert_eq!(member_name("Watercolor Lavender", "Watercolor"), "Lavender");
+        assert_eq!(member_name("Material Solar", "Material"), "Solar");
+        assert_eq!(member_name("Night Ink", "Watercolor"), "Night Ink", "a member named otherwise keeps its title");
+        assert_eq!(member_name("Watercolor", "Watercolor"), "Watercolor");
     }
 
     #[test]

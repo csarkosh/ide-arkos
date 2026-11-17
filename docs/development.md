@@ -1104,9 +1104,19 @@ Things only a person at the screen can check, in order of value:
 - Settings, Appearance, Presets: every preset reads by its title (Plain Navy, Enter The
   Matrix); the light list has one Watercolor row showing "Watercolor Lavender ▾" and one
   Material row showing "Material Solar ▾" when neither is in force; a click on the row puts that
-  member in force with its check on the row; a click on the choice opens the members indented
-  under it and a click on one puts it in force and folds them; the palette's "Theme: Enter The
+  member in force with its check on the row; a click on the choice ("Lavender ▾") opens a small card of
+  the members floating over the rows below, the one in force checked; a click on one puts it in
+  force and closes the card, a click elsewhere closes it; the palette's "Theme: Enter The
   Matrix" is found by typing "matrix"
+- runic world (Tokyo Rain, The Matrix): each pane in a cut-corner neon frame in a 16 point
+  gap, the focused one in the focus colour; a light runs round a working pane's frame; a waiting
+  pane's frame has a blinking block on its foot; the active tab underlined, a lamp at each bar's
+  right end lit on the focused pane; storm clouds along the title bar, its words and icons on
+  plates; the sidebar framed, lit while it has the keys, a chevron on its selected row; at its
+  foot Tokyo at night in the rain (Tokyo Tower, the Skytree, windows; a rune-chain bolt every
+  few cycles) or, in Matrix, a city of falling code with a ringing phone booth and a black cat
+  crossing twice; the names over the scene as readable as over the rain; stills off the screen:
+  `ARKOS_STILLS=<dir> cargo test -p arkos effects::stills -- --ignored`
 - Help, Keyboard Navigation: a rendered page opens in a tab of the focused pane, its keys the
   defaults (Cmd+0, Cmd+1 to Cmd+8, Cmd+9, Shift+Cmd+P, Cmd+T, Ctrl+Tab, Option+Cmd+Down); with
   `"focus sessions" = "cmd-shift-s"` in the config it says Shift+Cmd+S; from the chooser it opens

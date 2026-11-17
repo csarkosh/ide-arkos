@@ -8,7 +8,7 @@
 # with a halo (it treats anything under 0.45 as dark text), and every colour clears the
 # contrast rules of docs/themes.md.
 name = "matrix"
-title = "Enter The Matrix"
+title = "The Matrix"
 appearance = "dark"
 
 [effect]
