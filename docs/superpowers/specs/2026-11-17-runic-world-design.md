@@ -123,6 +123,15 @@ side. Spread across the sidewalk's width, not single file. Every motion is locke
 so it is worked out from the clock alone; the city wraps every four blocks, so whatever wraps is
 still at a stop line or a corner.
 
+## Parks on open ground
+
+Cyrus, 2026-11-17: "there's also blank space that is not occupied by streets or buildings. If the
+blank space is large enough, I'd like something like a park". A lot with no tower (one in five)
+that touches another such lot, across or along, is open ground big enough for a park: its grass
+is the ground tinted and hatched, three trees stand on it (a trunk and a canopy of light, its
+dark fill hiding what is behind it, leaves in it) and a lamp post lit warm, at places of its own,
+drawn farthest first. A lone empty lot is left for a proposal of its own.
+
 ## Menus read over the rain
 
 The panes' paper went to 0.6 so their top and foot show, and the menus, whose paper was the
