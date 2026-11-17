@@ -474,6 +474,10 @@ constant float UNDER_NAMES = 0.08;
 // The clouds over the city: they reach up the sidebar to half its height (or the scene's top, if
 // that is higher), thinning out over this many points at each end.
 constant float CLOUD_FADE = 40.0;
+// How many clouds, and the slowest and fastest of their speeds across, in points a second.
+constant int CLOUD_COUNT = 9;
+constant float CLOUD_SPEED_MIN = 2.0;
+constant float CLOUD_SPEED_MAX = 11.0;
 // How far down the scene the clouds reach, as a share of its height.
 constant float CLOUD_FOOT = 0.42;
 // Lightning: one bolt a cycle at most, lasting this long; none in the first cycle.
@@ -603,16 +607,34 @@ float bolt_env(float t, thread uint& key) {
 }
 
 // The storm clouds over the city at p (window points), between top and bottom (where they thin
-// out to nothing over CLOUD_FADE at each end), drifting, lit by a bolt's envelope env, over col.
-float3 storm_clouds(float2 p, float top, float bottom, float t, float env, constant ArkosInputs& u, float3 col) {
+// out to nothing over CLOUD_FADE at each end), across the sidebar from x0, w wide: CLOUD_COUNT
+// clouds, each a soft ragged blob of its own size and height drifting at its own speed (Cyrus,
+// 2026-11-17: "make the individual clouds move at variable and independent rates"), wrapping
+// round the sidebar; lit by a bolt's envelope env, over col.
+float3 storm_clouds(float2 p, float top, float bottom, float x0, float w, float t, float env, constant ArkosInputs& u, float3 col) {
     if (p.y < top || p.y > bottom) {
         return col;
     }
-    float c = fbm(float2((p.x + t * 6.0) / 46.0, p.y / 18.0));
+    float cloud = 0.0;
+    for (int i = 0; i < CLOUD_COUNT; i++) {
+        uint id = uint(i) * 7919u + 31u;
+        float2 half_size = float2(mix(22.0, 52.0, hash01(id)), mix(7.0, 15.0, hash01(id + 1u)));
+        float y = mix(top + half_size.y, bottom - half_size.y, hash01(id + 2u));
+        float speed = mix(CLOUD_SPEED_MIN, CLOUD_SPEED_MAX, hash01(id + 3u));
+        // Its place across, wrapping: it leaves on the right and comes back on the left.
+        float span = w + 2.0 * half_size.x;
+        float x = x0 - half_size.x + fract(hash01(id + 4u) + t * speed / span) * span;
+        float2 q = (p - float2(x, y)) / half_size;
+        // A ragged edge: the blob's outline pushed in and out by noise of its own.
+        float rag = (vnoise((p - float2(x, y)) / 9.0 + float2(float(i) * 13.0, 5.0)) - 0.5) * 0.55;
+        float d = length(q) + rag;
+        // Flatter below than above, as a storm cloud's base is.
+        d += q.y > 0.0 ? q.y * 0.35 : 0.0;
+        cloud = max(cloud, smoothstep(1.0, 0.55, d));
+    }
     float ends = saturate((p.y - top) / CLOUD_FADE) * saturate((bottom - p.y) / CLOUD_FADE);
-    float cloud = smoothstep(0.42, 0.7, c) * ends;
     float3 cloud_c = mix(col, u.colors[ARKOS_TEXT_DIM].rgb, 0.22 + 0.25 * env);
-    return mix(col, cloud_c, cloud * 0.85);
+    return mix(col, cloud_c, cloud * ends * 0.85);
 }
 
 // The city's scene at q (points into the band, band sz), over the sky colour sky: clouds, a bolt
@@ -875,7 +897,7 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             float top = min(side.y + side.w * 0.5, band.y);
             float bottom = band.y + band.w * CLOUD_FOOT;
             uint bkey = 0u;
-            float3 clouded = storm_clouds(p, top, bottom, u.time, bolt_env(u.time, bkey), u, col);
+            float3 clouded = storm_clouds(p, top, bottom, side.x, side.z, u.time, bolt_env(u.time, bkey), u, col);
             float under = p.y < names_end ? 1.0 - UNDER_NAMES : saturate(1.0 - (p.y - names_end) / SOFT_BUFFER) * (1.0 - UNDER_NAMES);
             col = mix(col, mix(clouded, col, under), k);
         }
