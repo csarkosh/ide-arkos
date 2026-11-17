@@ -564,17 +564,33 @@ constant int CROSS_EVERY = 4;
 constant int ROAD_CARS = 5;
 constant int CROSS_CARS = 2;
 constant int DRONES = 3;
-// People (Cyrus, 2026-11-17, in place of the code that fell to the floor and rippled; then "more
-// proportional with the buildings", moving "the same horizontal and vertical movements as cars,
-// but at different rates and in non uniform directions"): PEOPLE on each of the road's sidewalks
-// walking toward or away, CROSS_PEOPLE on each of a cross street's two sidewalks walking left or
-// right, PERSON_H camera heights tall, each at its own pace from WALK_MIN to WALK_MAX, their legs
-// swinging STEPS times a second.
-constant int PEOPLE = 7;
-constant int CROSS_PEOPLE = 3;
+// The city's laws (Cyrus, 2026-11-17: traffic and people "should follow traffic and pedestrian
+// laws"; "make the pedestrian traffic denser. It should feel like NYC"). Every intersection runs
+// one signal cycle, SIG_CYCLE seconds from the clock's zero: the road green for ROAD_GREEN (its
+// last AMBER amber), ALL_RED both ways, the cross streets green for CROSS_GREEN (its last AMBER
+// amber), ALL_RED again. Cars keep to the right, stop at the stop lines behind the crosswalks
+// and move only on their green; a road car goes one or two blocks a green and is clear of every
+// intersection before it turns. People keep to the sidewalks and cross only on the crosswalks
+// with their green: along the road with the road's, across it with the cross streets'. Every
+// motion is locked to the cycle, so it is worked out from the clock alone. The city wraps every
+// WRAP_BLOCKS blocks, so a wrapped car or person is still at a stop line or a corner.
+constant float SIG_CYCLE = 12.0;
+constant float ROAD_GREEN = 6.5;
+constant float ALL_RED = 0.5;
+constant float CROSS_GREEN = 4.5;
+constant float AMBER = 1.0;
+constant float WRAP_BLOCKS = 4.0;
+// A stop line's distance before a cross street's edge (behind the crosswalk), and a cross car's
+// before the road's edge; the crosswalks' place and width, out from a street's edge.
+constant float STOP_BACK = 0.4;
+constant float CROSS_STOP = 0.42;
+constant float WALK_AT = 0.18;
+constant float WALK_W = 0.24;
+// People: PEOPLE on each of the road's sidewalks, CROSS_PEOPLE on each of a cross street's two,
+// PERSON_H camera heights tall, their legs swinging STEPS times a second while they walk.
+constant int PEOPLE = 40;
+constant int CROSS_PEOPLE = 12;
 constant float PERSON_H = 0.16;
-constant float WALK_MIN = 0.15;
-constant float WALK_MAX = 0.4;
 constant float STEPS = 2.2;
 
 float hash2(float2 c) {
@@ -967,9 +983,9 @@ float3 code_rain(float2 p, float top, float bottom, float t, float3 green, float
 }
 
 // A person's light at p, standing at screen point foot, px_h points tall, its walk's phase from
-// its key h at t: a head, a body, two arms and two legs that swing; far off (under 4 points), a
+// its key h at t (still while not `walking`): a head, a body, two arms and two legs that swing; far off (under 4 points), a
 // dot of light at its height.
-float person_light(float2 p, float2 foot, float px_h, float t, float h) {
+float person_light(float2 p, float2 foot, float px_h, float t, float h, bool walking) {
     if (p.y > foot.y + 1.0 || p.y < foot.y - px_h - 2.0 || abs(p.x - foot.x) > px_h * 0.4 + 2.0) {
         return 0.0;
     }
@@ -979,7 +995,8 @@ float person_light(float2 p, float2 foot, float px_h, float t, float h) {
     } else {
         float2 uv = float2(p.x - foot.x, foot.y - p.y) / px_h;
         // A stride and an arm swing wide enough to read at a few points tall.
-        float swing = sin(t * STEPS * 6.2832 + h * 6.2832) * 0.17;
+        // Standing (waiting at a corner), the legs together and the arms down.
+        float swing = walking ? sin(t * STEPS * 6.2832 + h * 6.2832) * 0.17 : 0.03;
         float head = length(uv - float2(0.0, 0.88)) - 0.12;
         float body = seg_dist(uv, float2(0.0, 0.45), float2(0.0, 0.7)) - 0.085;
         float legs = min(seg_dist(uv, float2(0.0, 0.42), float2(swing, 0.0)), seg_dist(uv, float2(0.0, 0.42), float2(-swing, 0.0))) - 0.045;
@@ -987,6 +1004,30 @@ float person_light(float2 p, float2 foot, float px_h, float t, float h) {
         d = min(min(head, body), min(legs, arms)) * px_h;
     }
     return 1.0 - smoothstep(0.0, 1.0, d);
+}
+
+// A depth in view brought into the city's wrapped span, Z_NEAR on: whole blocks at a time, so a
+// stop line or a corner stays one.
+float wrap_view(float z) {
+    float span = WRAP_BLOCKS * float(CROSS_EVERY) * GRID_Z;
+    return Z_NEAR + (z - Z_NEAR) - floor((z - Z_NEAR) / span) * span;
+}
+
+// Where a road car is along the road, in the world (camera heights from the city's origin), at
+// t: it waits at a stop line, goes on the road's green, one or two blocks at its own pace with a
+// gentle start and stop, and comes to the stop line there after the light has turned, clear of
+// every intersection it crossed while it was green. `dir` is +1 going away, -1 coming on.
+float road_car_at(float dir, float2 key, float t) {
+    float block = float(CROSS_EVERY) * GRID_Z;
+    float n = hash2(key) < 0.5 ? 1.0 : 2.0;
+    float dur = n == 1.0 ? mix(7.0, 11.0, hash2(key + 1.0)) : mix(7.0, 10.0, hash2(key + 1.0));
+    float delta = 0.4 * hash2(key + 2.0);
+    float j0 = floor(hash2(key + 3.0) * 8.0);
+    float k = floor(t / SIG_CYCLE);
+    float x = saturate((t - k * SIG_CYCLE - delta) / dur);
+    float j = j0 + dir * k * n;
+    float stop_line = dir > 0.0 ? j * block - STOP_BACK : j * block + GRID_Z + STOP_BACK;
+    return stop_line + dir * n * block * x * x * (3.0 - 2.0 * x);
 }
 
 // A car's light at screen point s, r points across, at p: a soft round glow.
@@ -1023,26 +1064,37 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
         float near = saturate(dy / (sz.y - yh));
         float lines = max(grid_line(z / GRID_Z + t * GRID_SPEED), grid_line(xw / GRID_X + 0.5));
         col = light_on(col, green, lines * (0.18 + 0.5 * near), u.dark);
+        // The crosswalks: zebra stripes over the road beside each cross street, and over each
+        // cross street beside the road.
+        float blk = float(CROSS_EVERY) * GRID_Z;
+        float zw = z + t * GRID_SPEED * GRID_Z;
+        float local = zw - floor(zw / blk) * blk;
+        float road_e = float(ROAD_CELLS) * GRID_X;
+        bool over_road = abs(xw) < road_e && ((local > blk - WALK_AT - WALK_W * 0.5 && local < blk - WALK_AT + WALK_W * 0.5) || (local > GRID_Z + WALK_AT - WALK_W * 0.5 && local < GRID_Z + WALK_AT + WALK_W * 0.5));
+        bool over_cross = local < GRID_Z && abs(abs(xw) - road_e - 0.08) < WALK_W * 0.5;
+        float stripe = over_road ? grid_line(xw / 0.16) : (over_cross ? grid_line(local / 0.16) : 0.0);
+        col = light_on(col, green, stripe * 0.25 * near, u.dark);
     }
     // The horizon's line, and its glow either side.
     float hd = abs(q.y - yh);
     col = light_on(col, green, (1.0 - smoothstep(0.0, 1.2, hd)) * 0.6 + exp(-hd / 4.0) * 0.18, u.dark);
-    // The road's traffic: one lane coming on (headlights), one going away (tail lights), each car
-    // its own speed over the floor's, two lights a car on the road's surface.
+    // The road's traffic, keeping to the right: coming on in the left lane (headlights), going
+    // away in the right (tail lights), each car stopping and going with the road's signal.
     float3 head_c = mix(green, white_c, 0.6);
     float3 tail_c = mix(u.colors[ARKOS_ANSI + 1].rgb, green, 0.15);
     float floor_v = GRID_SPEED * GRID_Z;
+    float run = t * floor_v;
+    float block = float(CROSS_EVERY) * GRID_Z;
+    float sig = t - floor(t / SIG_CYCLE) * SIG_CYCLE;
+    float cross_on = ROAD_GREEN + ALL_RED;
     // Only near the road at p's depth (its lights sit just above the floor) can a car light p.
     float road_z = q.y > yh ? f * 0.92 / (q.y - yh) : Z_FAR;
     bool by_road = q.y > yh && abs(q.x - cx) < 0.6 * f / road_z + 4.0;
     for (int lane = 0; lane < (by_road ? 2 : 0); lane++) {
+        float dir = lane == 0 ? -1.0 : 1.0;
         for (int j = 0; j < ROAD_CARS; j++) {
-            float h = hash2(float2(float(j), float(lane) * 13.0 + 31.0));
-            float v = 1.4 + 1.6 * hash2(float2(float(j), float(lane) * 13.0 + 32.0));
-            float span = Z_FAR - Z_NEAR;
-            // Coming on: the car's speed and the floor's; going away: the car's less the floor's.
-            float z = lane == 0 ? Z_FAR - fract(h + t * (v + floor_v) / span) * span : Z_NEAR + fract(h + t * max(v - floor_v, 0.3) / span) * span;
-            float lx = (lane == 0 ? 0.32 : -0.32) * GRID_X;
+            float z = wrap_view(road_car_at(dir, float2(float(j), float(lane) * 13.0 + 31.0), t) - run);
+            float lx = dir * 0.5 * float(ROAD_CELLS) * GRID_X;
             float r = clamp(0.05 * f / z, 0.6, 3.0);
             float seen = (1.0 - smoothstep(Z_FAR * 0.55, Z_FAR, z)) * smoothstep(Z_NEAR, Z_NEAR + 0.6, z);
             float y = yh + f * (1.0 - 0.08) / z;
@@ -1055,7 +1107,6 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
     // The city, farthest row first so nearer towers hide farther ones: each cell's tower stands
     // on the floor, which comes on at GRID_SPEED rows a second, so the camera has come `run` into
     // it; a row m stands at depth m * GRID_Z - run.
-    float run = t * GRID_SPEED * GRID_Z;
     int far_row = int(floor((run + Z_FAR) / GRID_Z));
     int rows = int(ceil((Z_FAR - Z_NEAR) / GRID_Z)) + 1;
     // The farthest a tower can stand and still reach p: below the horizon its foot must be at or
@@ -1067,42 +1118,110 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
         if (zc - GRID_Z > reach || zc + GRID_Z < Z_NEAR) {
             continue;
         }
-        // A cross street: no towers on this row, and its cars crossing between the blocks.
+        // A cross street: no towers on this row; its signals at the corners, its cars keeping to
+        // the right and waiting at their stop lines for their green, and its people crossing the
+        // road on the crosswalks with that green.
         if (((m % CROSS_EVERY) + CROSS_EVERY) % CROSS_EVERY == 0) {
             float zs = zc + 0.5 * GRID_Z;
-            if (zs < Z_NEAR || zs > Z_FAR) {
+            if (zc + GRID_Z + WALK_AT < Z_NEAR || zc > Z_FAR) {
                 continue;
             }
             float seen = (1.0 - smoothstep(Z_FAR * 0.55, Z_FAR, zs)) * smoothstep(Z_NEAR, Z_NEAR + 0.6, zs);
             float half_w = float(ROAD_CELLS + LANES) * GRID_X;
-            float r2 = clamp(0.05 * f / zs, 0.6, 3.0);
-            float y = yh + f * (1.0 - 0.08) / zs;
-            for (int j = 0; j < (abs(q.y - y) < r2 * 2.0 ? CROSS_CARS : 0); j++) {
-                float h = hash2(float2(float(m), float(j) + 41.0));
-                float dir = j % 2 == 0 ? 1.0 : -1.0;
-                float wx = (fract(h + dir * t * (0.25 + 0.2 * hash2(float2(float(m), float(j) + 43.0)))) - 0.5) * 2.0 * half_w;
-                // Its headlight leads, its tail light follows.
-                float2 front = float2(cx + (wx + dir * 0.14) * f / zs, y);
-                float2 back = float2(cx + (wx - dir * 0.14) * f / zs, y);
-                col = light_on(col, head_c, car_light(q, front, r2) * seen * 0.9, u.dark);
-                col = light_on(col, tail_c, car_light(q, back, r2) * seen * 0.9, u.dark);
+            float edge = float(ROAD_CELLS) * GRID_X;
+            // The signals: on the near corners, the road's; on the far ones, the cross street's.
+            float3 red_c = u.colors[ARKOS_ANSI + 1].rgb;
+            float3 amber_c = u.colors[ARKOS_ANSI + 3].rgb;
+            float3 road_sig = sig < ROAD_GREEN - AMBER ? green : (sig < ROAD_GREEN ? amber_c : red_c);
+            float3 cross_sig = (sig >= cross_on && sig < cross_on + CROSS_GREEN - AMBER) ? green : ((sig >= cross_on && sig < cross_on + CROSS_GREEN) ? amber_c : red_c);
+            for (int c = 0; c < 4; c++) {
+                float pz = c < 2 ? zc - 0.3 : zc + GRID_Z + 0.3;
+                if (pz < Z_NEAR) {
+                    continue;
+                }
+                float px = cx + ((c % 2 == 0) ? -1.0 : 1.0) * (edge + 0.15) * f / pz;
+                float2 foot = float2(px, yh + f / pz);
+                float2 lamp = float2(px, yh + f * (1.0 - 0.45) / pz);
+                float pole = seg_dist(q, foot, lamp);
+                col = light_on(col, green, (1.0 - smoothstep(0.0, 0.8, pole)) * 0.3 * seen, u.dark);
+                col = light_on(col, c < 2 ? road_sig : cross_sig, car_light(q, lamp, clamp(0.045 * f / pz, 0.7, 2.6)) * seen, u.dark);
             }
-            // Its people, on its near and far sidewalks, crossing left or right at their own pace.
+            float r2 = clamp(0.05 * f / zs, 0.6, 3.0);
+            for (int dl = 0; dl < 2; dl++) {
+                // Going right (+x) keeps to the near lane, going left to the far one.
+                float dir = dl == 0 ? 1.0 : -1.0;
+                float zl = zc + (dl == 0 ? 0.3 : 0.7) * GRID_Z;
+                if (zl < Z_NEAR) {
+                    continue;
+                }
+                float y = yh + f * (1.0 - 0.08) / zl;
+                if (abs(q.y - y) > r2 * 2.0) {
+                    continue;
+                }
+                for (int qn = 0; qn < CROSS_CARS; qn++) {
+                    float2 key = float2(float(m) * 2.0 + float(dl), float(qn) + 91.0);
+                    float v = mix(2.2, 3.2, hash2(key));
+                    float arrive = mix(3.0, 6.0, hash2(key + 1.0));
+                    // Queued at the stop line, the first car nearest it; they go in turn.
+                    float stop_x = -dir * (edge + CROSS_STOP + float(qn) * 0.5);
+                    float go = cross_on + float(qn) * 0.6;
+                    float wx = sig < go ? stop_x - dir * v * max(arrive - sig, 0.0) : stop_x + dir * v * (sig - go);
+                    if (abs(wx) > half_w) {
+                        continue;
+                    }
+                    float2 front = float2(cx + (wx + dir * 0.14) * f / zl, y);
+                    float2 back = float2(cx + (wx - dir * 0.14) * f / zl, y);
+                    col = light_on(col, head_c, car_light(q, front, r2) * seen * 0.9, u.dark);
+                    col = light_on(col, tail_c, car_light(q, back, r2) * seen * 0.9, u.dark);
+                }
+            }
+            // People on its near and far sidewalks (beside the crosswalks over the road): out of a
+            // doorway, to the corner, waiting for the cross streets' green, over the road on the
+            // crosswalk, and into a doorway on the far side; a crowd, each at its own pace.
             for (int w = 0; w < 2; w++) {
-                float zw = zs + (w == 0 ? -0.36 : 0.36) * GRID_Z;
+                float zw = w == 0 ? zc - WALK_AT : zc + GRID_Z + WALK_AT;
                 float fy = yh + f / zw;
                 float ph = PERSON_H * f / zw;
-                if (zw < Z_NEAR || q.y > fy + 1.0 || q.y < fy - ph - 2.0) {
+                if (zw < Z_NEAR || q.y > fy + 2.0 + WALK_W * f / zw || q.y < fy - ph - 3.0 - WALK_W * f / zw) {
                     continue;
                 }
                 for (int j = 0; j < CROSS_PEOPLE; j++) {
                     float2 key = float2(float(m) * 3.0 + float(w), float(j) + 71.0);
                     float h = hash2(key);
                     float dir = hash2(key + 1.0) < 0.5 ? 1.0 : -1.0;
-                    float walk = mix(WALK_MIN, WALK_MAX, hash2(key + 2.0));
-                    float wx = (fract(h + dir * t * walk / (2.0 * half_w)) - 0.5) * 2.0 * half_w;
-                    float2 foot = float2(cx + wx * f / zw, fy);
-                    col = light_on(col, mix(green, white_c, 0.3), person_light(q, foot, ph, t, h) * 0.85 * seen, u.dark);
+                    float v = mix(0.46, 0.6, hash2(key + 2.0));
+                    // A period of two cycles, starting on one or the other.
+                    float tt = t + floor(hash2(key + 3.0) * 2.0) * SIG_CYCLE;
+                    float tau = tt - floor(tt / (2.0 * SIG_CYCLE)) * 2.0 * SIG_CYCLE;
+                    float wait = 2.0 * hash2(key + 4.0);
+                    float la = min(mix(0.5, 3.0, hash2(key + 5.0)), v * (cross_on - wait));
+                    float t0 = cross_on - wait - la / v;
+                    float lb = mix(0.5, 3.0, hash2(key + 6.0));
+                    float tc = cross_on + 0.1 * hash2(key + 7.0);
+                    float corner = -dir * (edge + 0.08);
+                    float wx;
+                    bool walking;
+                    float fade;
+                    if (tau < t0) {
+                        continue;
+                    } else if (tau < tc) {
+                        wx = corner - dir * la + dir * v * min(tau - t0, la / v);
+                        walking = tau - t0 < la / v;
+                        fade = smoothstep(t0, t0 + 0.4, tau);
+                    } else {
+                        float d = v * (tau - tc);
+                        float reach = 2.0 * (edge + 0.08) + lb;
+                        if (d > reach) {
+                            continue;
+                        }
+                        wx = corner + dir * d;
+                        walking = true;
+                        fade = 1.0 - smoothstep(reach - 0.2, reach, d);
+                    }
+                    // Not single file: spread across the sidewalk's width.
+                    float zj = zw + (hash2(key + 8.0) - 0.5) * WALK_W * 0.6;
+                    float2 foot = float2(cx + wx * f / zj, yh + f / zj);
+                    col = light_on(col, mix(green, white_c, 0.3), person_light(q, foot, PERSON_H * f / zj, t, h, walking) * 0.85 * seen * fade, u.dark);
                 }
             }
             continue;
@@ -1181,16 +1300,14 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
         float blink = fract(t * 0.9 + fi * 0.37) < 0.5 ? 1.0 : 0.35;
         col = light_on(col, i == 1 ? tail_c : head_c, car_light(q, sp, 1.2) * blink * 0.9, u.dark);
     }
-    // People on the sidewalks, walking either way as the city comes on: a head, a body, two arms
-    // and two legs that swing, lit as the towers' lines are; far off, a dot.
-    // A person stands below the horizon (shorter than the camera's height) with its feet on its
-    // sidewalk's line, so only a pixel in the band beside that line can be on one.
+    // People on the road's sidewalks: a crowd walking either way, each at its own pace, crossing
+    // the cross streets on their crosswalks with the road's green and waiting at the corner for
+    // it, so a crowd gathers there on the red. A person stands below the horizon with its feet on
+    // its sidewalk's line, so only a pixel in the band beside that line can be on one.
     float walk_dy = q.y - yh;
     float edge_x = float(ROAD_CELLS) * GRID_X + 0.06;
     float off = abs(q.x - cx);
-    // The band's slack: a person's place along the kerb (0.04 either way) and half its width (0.4
-    // of its height).
-    float slack = 0.04 + 0.4 * PERSON_H;
+    float slack = WALK_W + 0.4 * PERSON_H;
     bool by_walk = walk_dy > 0.0 && off > (edge_x - slack) * walk_dy - 3.0 && off < (edge_x + slack) * walk_dy / (1.0 - PERSON_H) + 3.0;
     for (int side = 0; side < (by_walk ? 2 : 0); side++) {
         float sx = (side == 0 ? -1.0 : 1.0) * edge_x;
@@ -1198,13 +1315,19 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
             float2 key = float2(float(j), float(side) * 17.0 + 61.0);
             float h = hash2(key);
             float dir = hash2(key + 1.0) < 0.5 ? 1.0 : -1.0;
-            float walk = mix(WALK_MIN, WALK_MAX, hash2(key + 2.0));
-            float span = Z_FAR * 0.6 - Z_NEAR;
-            float z = Z_NEAR + span - fract(h + t * (floor_v - dir * walk) / span) * span;
-            float px_h = PERSON_H * f / z;
-            float2 foot = float2(cx + (sx + (hash2(key + 3.0) - 0.5) * 0.08) * f / z, yh + f / z);
-            float seen = smoothstep(Z_NEAR, Z_NEAR + 0.6, z);
-            col = light_on(col, mix(green, white_c, 0.3), person_light(q, foot, px_h, t, h) * 0.85 * seen, u.dark);
+            float v = mix(0.36, 0.55, hash2(key + 2.0));
+            float tt = t + floor(hash2(key + 3.0) * 2.0) * SIG_CYCLE;
+            float k = floor(tt / (2.0 * SIG_CYCLE));
+            float tau = tt - k * 2.0 * SIG_CYCLE;
+            float delta = 0.3 * hash2(key + 4.0);
+            float walked = clamp(tau - delta, 0.0, block / v);
+            float j0 = floor(hash2(key + 5.0) * 8.0) + dir * k;
+            float corner = dir > 0.0 ? j0 * block - WALK_AT : j0 * block + GRID_Z + WALK_AT;
+            float z = wrap_view(corner + dir * v * walked - run);
+            float seen = (1.0 - smoothstep(Z_FAR * 0.55, Z_FAR, z)) * smoothstep(Z_NEAR, Z_NEAR + 0.6, z);
+            float2 foot = float2(cx + (sx + (side == 0 ? -1.0 : 1.0) * (hash2(key + 6.0) - 0.3) * WALK_W) * f / z, yh + f / z);
+            bool walking = tau > delta && tau < delta + block / v;
+            col = light_on(col, mix(green, white_c, 0.3), person_light(q, foot, PERSON_H * f / z, t, h, walking) * 0.85 * seen, u.dark);
         }
     }
     return col;

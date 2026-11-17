@@ -95,6 +95,29 @@ frame, to the window's edge, under the title bar and between any two frames. Its
 in the sidebar gives it the keys, and a click on a session shows it and keeps the keys in the list
 (Cyrus: "clicking on Pane 0 or one of its sessions should cause it to go in focus").
 
+## The city keeps the law
+
+Cyrus, 2026-11-17: "the pedestrians and car traffic ... should follow traffic and pedestrian
+laws", and "make the pedestrian traffic denser. It should feel like NYC". Every intersection runs
+one signal cycle from the clock's zero, 12 s: the road green 6.5 s (its last second amber), red
+both ways 0.5 s, the cross streets green 4.5 s (its last second amber), red both ways 0.5 s; a
+lamp on a pole at each corner shows it, the road's on the near corners and the cross street's
+on the far ones. Cars keep to the right: coming on in the road's left lane, going away in its
+right; going right on a cross street in its near lane. A road car waits at its stop line (0.4
+behind the cross street's edge, behind the crosswalk), goes on the green one or two blocks at its
+own pace with a gentle start and stop, and comes to the next stop line after the light has
+turned; its trips are timed so every intersection it crosses is crossed on the green (a test
+mirrors its arithmetic and checks it over ten minutes). A cross car comes in from the side,
+queues at its stop line, and goes in turn on the cross streets' green. Crosswalks are zebra
+stripes, over the road beside each cross street and over each cross street beside the road.
+People keep to the sidewalks: forty on each of the road's, walking either way at their own pace,
+crossing the cross streets with the road's green and waiting at the corner otherwise (standing,
+their legs together); twelve on each of a cross street's two sidewalks, out of a doorway, to the
+corner, over the road on the crosswalk with the cross streets' green, into a doorway on the far
+side. Spread across the sidewalk's width, not single file. Every motion is locked to the cycle,
+so it is worked out from the clock alone; the city wraps every four blocks, so whatever wraps is
+still at a stop line or a corner.
+
 ## Menus read over the rain
 
 The panes' paper went to 0.6 so their top and foot show, and the menus, whose paper was the

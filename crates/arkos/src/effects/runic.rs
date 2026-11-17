@@ -415,4 +415,91 @@ mod tests {
         let emoji = &g[g.find("arkos_emoji_vertex(").unwrap()..];
         assert!(!emoji.contains("calm_text("));
     }
+
+    // The Matrix's city keeps the traffic laws (runic world spec, The Matrix's city): the road
+    // cars' arithmetic, as wash.metal's `road_car_at` works it out from the clock, mirrored here.
+    const GRID_Z: f32 = 1.6;
+    const CROSS_EVERY: f32 = 4.0;
+    const SIG_CYCLE: f32 = 12.0;
+    const ROAD_GREEN: f32 = 6.5;
+    const STOP_BACK: f32 = 0.4;
+    const WALK_AT: f32 = 0.18;
+    const WALK_W: f32 = 0.24;
+
+    fn hash2(x: f32, y: f32) -> f32 {
+        let ux = (x as i32 + 1_048_576) as u32;
+        let uy = (y as i32 + 1_048_576) as u32;
+        crate::effects::hash::hash01(ux.wrapping_mul(73_856_093) ^ uy.wrapping_mul(19_349_663))
+    }
+
+    fn road_car_at(dir: f32, key: (f32, f32), t: f32) -> f32 {
+        let block = CROSS_EVERY * GRID_Z;
+        let h = |d: f32| hash2(key.0 + d, key.1 + d);
+        let n = if h(0.0) < 0.5 { 1.0 } else { 2.0 };
+        let dur = if n == 1.0 { 7.0 + 4.0 * h(1.0) } else { 7.0 + 3.0 * h(1.0) };
+        let delta = 0.4 * h(2.0);
+        let j0 = (h(3.0) * 8.0).floor();
+        let k = (t / SIG_CYCLE).floor();
+        let x = ((t - k * SIG_CYCLE - delta) / dur).clamp(0.0, 1.0);
+        let j = j0 + dir * k * n;
+        let stop_line = if dir > 0.0 { j * block - STOP_BACK } else { j * block + GRID_Z + STOP_BACK };
+        stop_line + dir * n * block * x * x * (3.0 - 2.0 * x)
+    }
+
+    #[test]
+    fn the_wash_s_traffic_is_the_one_these_laws_are_checked_on() {
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        for line in [
+            "constant float GRID_Z = 1.6;",
+            "constant int CROSS_EVERY = 4;",
+            "constant float SIG_CYCLE = 12.0;",
+            "constant float ROAD_GREEN = 6.5;",
+            "constant float STOP_BACK = 0.4;",
+            "constant float WALK_AT = 0.18;",
+            "constant float WALK_W = 0.24;",
+            "    float dur = n == 1.0 ? mix(7.0, 11.0, hash2(key + 1.0)) : mix(7.0, 10.0, hash2(key + 1.0));",
+            "    float delta = 0.4 * hash2(key + 2.0);",
+            "    float j0 = floor(hash2(key + 3.0) * 8.0);",
+            "    float stop_line = dir > 0.0 ? j * block - STOP_BACK : j * block + GRID_Z + STOP_BACK;",
+            "    return stop_line + dir * n * block * x * x * (3.0 - 2.0 * x);",
+            "            float z = wrap_view(road_car_at(dir, float2(float(j), float(lane) * 13.0 + 31.0), t) - run);",
+        ] {
+            assert!(wash.contains(line), "wash.metal lacks {line}");
+        }
+    }
+
+    #[test]
+    fn a_road_car_is_in_an_intersection_only_on_the_road_s_green_and_stands_still_on_its_red() {
+        let block = CROSS_EVERY * GRID_Z;
+        // An intersection, with its crosswalks either side: from the near crosswalk's outer edge
+        // to the far one's.
+        let reach = WALK_AT + WALK_W * 0.5;
+        let inside = |w: f32| {
+            let local = w - (w / block).floor() * block;
+            local < GRID_Z + reach || local > block - reach
+        };
+        for (lane, dir) in [(0.0, -1.0), (1.0, 1.0)] {
+            for j in 0..5 {
+                let key = (j as f32, lane * 13.0 + 31.0);
+                let mut t = 0.0f32;
+                while t < 600.0 {
+                    let (w, next) = (road_car_at(dir, key, t), road_car_at(dir, key, t + 0.05));
+                    let sig = t - (t / SIG_CYCLE).floor() * SIG_CYCLE;
+                    let moving = (next - w).abs() > 1e-4;
+                    if inside(w) && moving {
+                        assert!(sig < ROAD_GREEN, "car {j} of lane {lane} in an intersection at {t} ({sig} into the cycle, not the road's green)");
+                    }
+                    if sig >= ROAD_GREEN && sig + 0.05 < SIG_CYCLE {
+                        assert!(!moving || !inside(next), "car {j} of lane {lane} moves into an intersection on its red at {t}");
+                    }
+                    // A car waiting, or come to rest, is behind its stop line: never in an
+                    // intersection.
+                    if !moving {
+                        assert!(!inside(w), "car {j} of lane {lane} stands in an intersection at {t}");
+                    }
+                    t += 0.05;
+                }
+            }
+        }
+    }
 }

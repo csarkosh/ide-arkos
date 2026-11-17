@@ -1117,7 +1117,8 @@ Things only a person at the screen can check, in order of value:
   foot Tokyo at night in the rain (Tokyo Tower, the Skytree, windows; a rune-chain bolt every
   few cycles) or, in The Matrix, a digital horizon (a grid floor coming on, a dense city of
   wireframe towers either side of a road coming on with it and passing, traffic on the road and
-  the cross streets, lit windows, drones over the roofs, code raining from half
+  the cross streets keeping to the right and stopping on red behind the crosswalks, signals at
+  the corners, crowds crossing only on their green, lit windows, drones over the roofs, code raining from half
   the sidebar's height, people walking the sidewalks along the road and across the cross streets); the focused pane's frame wider and brighter, runes running just inside its
   frame, flush against it and round its cut corners, in the focus colour (flipping along its top and foot, falling down its sides) and in no
   other pane; the tab bar and the body reaching the frame, cut at its corners; the sidebar

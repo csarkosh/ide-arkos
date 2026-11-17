@@ -661,9 +661,10 @@ windows, storm clouds, and now and then a soft bolt of lightning made of runes t
 the clouds and fades over a second);
 The Matrix's is a digital horizon: a floor of grid lines running toward a line of light, a dense
 city of wireframe towers on both sides of an open road coming toward you with the floor and past
-you, alive with traffic (headlights coming on down the road and tail lights going away, cars
-crossing on the cross streets between the blocks), people walking the sidewalks, along the road toward you or away and across the cross streets,
-each at their own pace, lit
+you, alive with a city's traffic, all of it keeping the law: signals at every corner, cars keeping to
+the right and waiting at their stop lines for green (headlights coming on down the road, tail
+lights going away, cars crossing on the cross streets between the blocks), and crowds on the
+sidewalks crossing only on the crosswalks with their light and gathering at the corners on red, lit
 windows in the near towers and drones blinking over the roofs, and code raining behind it from
 half the sidebar's height. Material
 and Lavender Material come with `material`: the
