@@ -324,9 +324,9 @@ mod tests {
         let theme = crate::theme::builtin("matrix").unwrap();
         let all = blocks::EDGE_TOP | blocks::EDGE_RIGHT | blocks::EDGE_BOTTOM | blocks::EDGE_LEFT;
         // Two panes apart, each inked on all four sides: their outlines' bands never meet.
-        // A pane's own edges are its frame and its strip now; the runes still run along the
-        // chrome's reported edges, a title bar's here, and the busy flag works on any block's.
-        let pane = |x: f32, seed: f32, busy: f32, edges: u32| Block { rect: Rect { x, y: 16.0, w: 88.0, h: 128.0 }, kind: Kind::TitleBar, edges, seed, value: 1.0, ordinal: 0.0, busy, pitch: 0.0, focus: 0.0, waiting: 0.0 };
+        // A pane's and the title bar's own edges are frames and strips now; the runes still run
+        // along the other reported edges, a divider's here, and the busy flag works on any block's.
+        let pane = |x: f32, seed: f32, busy: f32, edges: u32| Block { rect: Rect { x, y: 16.0, w: 88.0, h: 128.0 }, kind: Kind::Divider, edges, seed, value: 1.0, ordinal: 0.0, busy, pitch: 0.0, focus: 0.0, waiting: 0.0 };
         // The light an outline adds, in green summed over the band within 8 points of it: the
         // frame with the edges less the same frame without, so the rain under them cancels.
         let band = |with: &[Rgb], without: &[Rgb], x: u32| -> f32 {
@@ -370,9 +370,9 @@ mod tests {
         let matrix = super::super::manifest::load("runic", std::path::Path::new("/nonexistent")).unwrap();
         let theme = crate::theme::builtin("matrix").unwrap();
         let all = blocks::EDGE_TOP | blocks::EDGE_RIGHT | blocks::EDGE_BOTTOM | blocks::EDGE_LEFT;
-        // A block whose right and bottom edges are the window's right and bottom (a title bar's:
-        // a pane's own edges are its frame and its strip, not runes).
-        let pane = |edges: u32| [Block { rect: Rect { x: 16.0, y: 16.0, w: W as f32 - 16.0, h: H as f32 - 16.0 }, kind: Kind::TitleBar, edges, seed: 20.0, value: 1.0, ordinal: 0.0, busy: 1.0, pitch: 0.0, focus: 0.0, waiting: 0.0 }];
+        // A block whose right and bottom edges are the window's right and bottom (a divider's: a
+        // pane's and the title bar's own edges are frames and strips, not runes).
+        let pane = |edges: u32| [Block { rect: Rect { x: 16.0, y: 16.0, w: W as f32 - 16.0, h: H as f32 - 16.0 }, kind: Kind::Divider, edges, seed: 20.0, value: 1.0, ordinal: 0.0, busy: 1.0, pitch: 0.0, focus: 0.0, waiting: 0.0 }];
         let added = |with: &[Rgb], without: &[Rgb], x0: u32, x1: u32, y0: u32, y1: u32| -> i32 {
             pixels(with, x0, y0, x1, y1).iter().zip(pixels(without, x0, y0, x1, y1)).map(|(a, b)| (a.g as i32 - b.g as i32).abs()).sum()
         };

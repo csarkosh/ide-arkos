@@ -1024,8 +1024,11 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
                 lift = max(lift, s * saturate(fill));
             }
         }
-        // A pane's own edges are its frame and its strip (the world below), not runes.
-        if (kind != ARKOS_TAB_BAR_BLOCK && kind != ARKOS_PANE_BODY_BLOCK && kind != ARKOS_ACTIVE_TAB_BLOCK) {
+        // A pane's and the sidebar's own edges are their frames (the world below), not runes,
+        // and the title bar's storm clouds meet the frames with no line of runes between them
+        // (Cyrus, 2026-11-17: "I don't like the effect that divides the app bar and the panes",
+        // and the one between the sidebar and the first pane).
+        if (kind != ARKOS_TAB_BAR_BLOCK && kind != ARKOS_PANE_BODY_BLOCK && kind != ARKOS_ACTIVE_TAB_BLOCK && kind != ARKOS_TITLE_BAR_BLOCK && kind != ARKOS_SIDEBAR_BLOCK) {
             nearest_edge(p, blk, d, hit, u.size);
         }
     }

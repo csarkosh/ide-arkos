@@ -37,6 +37,13 @@ again the same way while a glitch line sweeps the scene.
 
 The clock's zero (Reduce Motion) has no bolt and no cat, and every light on.
 
+## No lines of runes in the window
+
+The panes', the sidebar's and the title bar's own edges are their frames, strips and clouds, not
+runes (Cyrus, 2026-11-17: "I don't like the effect that divides the app bar and the panes", and
+the one between the sidebar and the first pane). Runes still run along a menu's outline and the
+line between Explorer and Worktrees.
+
 ## Quiet rain
 
 Behind a pane the rain is as faint as behind a source file (first by a paper covering 92% of it;
