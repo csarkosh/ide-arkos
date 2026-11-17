@@ -1,8 +1,9 @@
 # The multi tasker: one window, three Claude Code sessions on three unrelated workstreams,
 # each orchestrating its own subagents, and behind two of them a shorter session on yet
-# another workstream that has finished and waits on you, so the tabs show both marks. No
-# sidebar: just the sessions. Shot in the built-in tokyo-rain theme: Navy with the runic effect.
-# This is the hero.
+# another workstream that has finished and waits on you, so the tabs show both marks. The
+# sidebar is open on the session list (Cyrus, 2026-11-16: the opening clip shows the sessions
+# pane in the window front and centre). Shot in the built-in tokyo-rain theme: Navy with the
+# runic effect. This is the hero.
 
 [scene]
 name = "multitasker"
@@ -20,7 +21,6 @@ repos = ["lantern", "mail", "trip", "blog", "budget"]
 width = 1320
 height = 860
 preset = "compact"
-sidebar = "collapsed"
 theme = { dark = "tokyo-rain", light = "navy" }
 
 [[pane]]
@@ -144,7 +144,7 @@ themes = ["tokyo-rain", "lavender-watercolor", "peach-watercolor", "matrix", "co
 hold_secs = 5
 
 # The page's opening clip (cinema.py): the window held in Navy for eight seconds while the
-# camera pulls back from its tab bar into the key art, every other persona's still fanned behind
+# camera pulls back from its session list into the key art, every other persona's still fanned behind
 # it. Those stills must exist in docs/images (shoot their scenes first).
 [[recording]]
 name = "hero"

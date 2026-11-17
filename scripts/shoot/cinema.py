@@ -5,7 +5,7 @@ video moves (store.google.com's Pixel pages, apple.com's), ending on the key art
 The scene is the hero's windows on a dark ground: the front one alive (a recording of it, frame
 by frame), the others behind it stills (one to six), fanned a little higher like postcards, in
 turn left and right, each pair after the first tucked further in, higher and smaller. The camera
-starts tight on the front window's tab bar, seen a little from the side, the backs soft and out
+starts tight on the front window's session list (the sidebar), seen a little from the side, the backs soft and out
 of focus, and pulls back and straightens over the move, the backs sharpening as it goes and
 drifting less than the front (they are further away), until the whole key art is in frame; then
 it holds. Cubic ease-out: fast to leave, slow to land.
@@ -57,7 +57,8 @@ GROUND = (9, 11, 16)
 GLOW = (46, 62, 108)
 HAZE = (22, 28, 44)
 START_ZOOM = 3.2        # how tight the first frame is
-START_AT = (0.27, 0.06)  # the point of the front window the first frame centres on (fractions of it)
+START_AT = (0.30, 0.24)  # the point of the front window the first frame centres on (fractions of it):
+                         # the session list down the left of the frame, the shown session beside it
 START_KEYSTONE = 0.13   # how much the first frame is seen from the side
 BACK_DEPTH = 0.72       # how much of the camera's move the backs follow (less: they are further)
 BACK_BLUR = 0.014       # the backs' blur at the start, as a fraction of the frame's width
