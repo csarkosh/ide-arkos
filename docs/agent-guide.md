@@ -651,7 +651,7 @@ that lights on the focused pane; a sky with stars and a cloud for a title bar; a
 the foot of the sidebar, softened where names lie over it, and a bobbing cursor on its selected
 row; a dusk, faint stars and hills behind a terminal's and a document's text; terminal text
 typed in like dialogue, each character resolving from chunky pixels in three steps; and a bobbing
-"continue" arrow in the corner of a pane whose session waits). Navy, the default, alone draws plain. The user may pick any
+"continue" arrow in the corner of a pane whose session waits). Material Navy, the default, draws `material` as Material Ocean and Material Palenight do. The user may pick any
 effect for any theme, or none, in
 Settings or through `arkos effect use`. An effect reads the theme's colours on every frame, so
 write it to suit any theme rather than one.

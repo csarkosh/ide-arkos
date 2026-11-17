@@ -1124,8 +1124,10 @@ mod tests {
         let n = crate::claude_theme::contrast_pairs(&theme::builtin("navy").unwrap()).len();
         assert!(out.lines().any(|l| l == format!("claude code: {n} pairs ok")), "{out}");
         let terminal: Vec<&str> = out.lines().filter(|l| l.starts_with("terminal: ") || l.starts_with("terminal under ")).collect();
-        assert_eq!(terminal.len(), 1, "navy draws plain: {out}");
+        // Material Navy is drawn plain and under its material effect.
+        assert_eq!(terminal.len(), 2, "navy draws plain and under material: {out}");
         assert!(terminal[0].starts_with("terminal: ") && terminal[0].ends_with(" pairs drawn, all clear"), "{out}");
+        assert!(terminal[1].starts_with("terminal under material: ") && terminal[1].ends_with(" pairs drawn, all clear"), "{out}");
         let (code, out, _) = contrast_run(&["peach-watercolor"], dir.path());
         assert_eq!(code, 0);
         assert!(out.lines().any(|l| l.starts_with("terminal under watercolor: ")), "the theme's own effect: {out}");

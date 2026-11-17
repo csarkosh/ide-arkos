@@ -699,7 +699,7 @@ carry any effect, since an effect reads the theme's colours. A theme with its ow
 preset, and the presets are one of the two looks Settings, Appearance offers; the other, Custom,
 puts any theme's colours in any theme's fonts under any effect or none (see [Config](#config)). `arkos effect use
 <name>` does the same from a shell. Each preset's own effect: `watercolor`
-for Peach Watercolor and Lavender Watercolor, `runic` for Matrix and Tokyo Rain, `material` for Material and Lavender Material, `notebook` for Composition Notebook, `overworld` for Timo Purple and Solar Arabia, and none for Navy (the default).
+for Peach Watercolor and Lavender Watercolor, `runic` for Matrix and Tokyo Rain, `material` for the Material themes (Material Navy, the default dark theme, Material Ocean and Material Palenight; Material Solar, Material Bright and Material Lavender), `notebook` for Composition Notebook, `overworld` for Timo Purple and Solar Arabia.
 Effects stay out of About, Settings, Keybindings and the chooser, which keep their plain look.
 Under Reduce Motion the wash holds still and draws only when something changes, no letter
 glitches, a changed cell settles at once, and a hidden,
@@ -893,10 +893,11 @@ window, as Keybindings (Cmd+/) does.
   a click on the other puts it in force, and neither forgets its choices.
   - Presets: a preset is a finished look, a theme with its own effect and fonts. Mode (System,
     Dark, Light), the dark and the light preset lists side by side, "Add preset…" and "Show
-    presets folder". Each preset reads by its title (Plain Navy, The Matrix, Tokyo Rain…),
-    and a group is one row that reads as its group and its choice, "Watercolor Lavender ▾":
-    Watercolor (Lavender, the default, or Peach) and Material (Solar, the default, Bright or
-    Lavender). Both lists are in alphabetical order, a group by its name. A group's row keeps its last pick: choosing Material Solar leaves the Watercolor
+    presets folder". Each preset reads by its title, in lower case (material navy, the matrix,
+    tokyo rain…), and a group is one row that reads as its group and its choice, "watercolor
+    lavender ▾": in the dark list Material (Navy, the default, Ocean or Palenight), in the light
+    list Watercolor (Lavender, the default, or Peach) and Material (Solar, the default, Bright or
+    Lavender); the dark and the light Material rows keep their own picks. Both lists are in alphabetical order, a group by its name. A group's row keeps its last pick: choosing Material Solar leaves the Watercolor
     row on Watercolor Peach if that is what you chose there, and the row shows the group's default
     only until you pick one of it. The whole row is a select: a click
     on it opens a small menu of the members, the one in force checked; a click on one puts it in

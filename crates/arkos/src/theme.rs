@@ -232,7 +232,7 @@ pub struct ViewerColors {
 }
 
 /// The embedded themes: (name, file text). Extracted verbatim by `extract`.
-pub const BUILTIN: [(&str, &str); 11] = [
+pub const BUILTIN: [(&str, &str); 13] = [
     ("navy", include_str!("../themes/navy.toml")),
     ("timo-purple", include_str!("../themes/timo-purple.toml")),
     ("peach-watercolor", include_str!("../themes/peach-watercolor.toml")),
@@ -244,6 +244,8 @@ pub const BUILTIN: [(&str, &str); 11] = [
     ("material", include_str!("../themes/material.toml")),
     ("arabia-solar", include_str!("../themes/arabia-solar.toml")),
     ("material-solar", include_str!("../themes/material-solar.toml")),
+    ("material-ocean", include_str!("../themes/material-ocean.toml")),
+    ("material-palenight", include_str!("../themes/material-palenight.toml")),
 ];
 
 /// The luminance a glyph shader sees: the sRGB dot product `0.2126 r + 0.7152 g + 0.0722 b` of
@@ -889,8 +891,8 @@ mod tests {
     fn a_theme_may_name_a_prose_font() {
         let t = builtin("peach-watercolor").unwrap();
         assert_eq!(t.font.prose.as_deref(), Some("Baskerville"));
-        assert_eq!(builtin("navy").unwrap().font, ThemeFont::default(), "the others leave it to the system font");
-        let text = BUILTIN[0].1.to_string() + "\n[font]\nprose = \"Georgia\"\n";
+        assert_eq!(builtin("matrix").unwrap().font, ThemeFont::default(), "the others leave it to the system font");
+        let text = BUILTIN.iter().find(|(n, _)| *n == "matrix").unwrap().1.to_string() + "\n[font]\nprose = \"Georgia\"\n";
         assert_eq!(parse(&text).unwrap().font.prose.as_deref(), Some("Georgia"));
         assert_eq!(t.font.ui.as_deref(), Some("Optima"));
         assert_eq!(t.font.terminal.as_deref(), Some("PT Mono"));
@@ -906,14 +908,17 @@ mod tests {
     }
 
     #[test]
-    fn navy_the_default_recommends_no_effect_and_lavender_watercolor_watercolor() {
-        assert_eq!(builtin("navy").unwrap().recommended_effect(), None);
+    fn navy_the_default_recommends_material_and_lavender_watercolor_watercolor() {
+        // Material Navy since 2026-11-17 (it drew plain as Plain Navy).
+        assert_eq!(builtin("navy").unwrap().recommended_effect(), Some("material"));
         assert_eq!(builtin("lavender-watercolor").unwrap().recommended_effect(), Some("watercolor"));
-        // Any theme may recommend one: Navy, which recommends none, given a table.
-        let navy = BUILTIN.iter().find(|(n, _)| *n == "navy").unwrap().1;
-        let text = navy.to_string() + "\n[effect]\nname = \"ink\"\n";
+        // A theme with no [effect] table recommends none, and any theme may recommend one: the
+        // Matrix's file without its own table, given one.
+        let bare = BUILTIN.iter().find(|(n, _)| *n == "matrix").unwrap().1.replace("[effect]\nname = \"runic\"\nscene = \"code\"\n", "");
+        assert_eq!(parse(&bare).unwrap().recommended_effect(), None);
+        let text = bare.clone() + "\n[effect]\nname = \"ink\"\n";
         assert_eq!(parse(&text).unwrap().recommended_effect(), Some("ink"));
-        assert!(parse(&(navy.to_string() + "\n[effect]\nname = \"a\"\nspeed = 2\n")).is_err(), "name is the only key");
+        assert!(parse(&(bare + "\n[effect]\nname = \"a\"\nspeed = 2\n")).is_err(), "name is the only key");
     }
 
     #[test]
@@ -928,9 +933,9 @@ mod tests {
         for (name, _) in BUILTIN {
             assert_eq!(builtin(name).unwrap().font.grid, matches!(name, "timo-purple" | "arabia-solar").then_some(5.5), "{name}");
         }
-        let navy = BUILTIN.iter().find(|(n, _)| *n == "navy").unwrap().1;
-        assert_eq!(parse(&(navy.to_string() + "\n[font]\ngrid = 0.5\n")).unwrap_err(), "font.grid must be 1.0 to 24.0 (was 0.5)");
-        assert_eq!(parse(&(navy.to_string() + "\n[font]\ngrid = 11\n")).unwrap().font.grid, Some(11.0));
+        let plain = BUILTIN.iter().find(|(n, _)| *n == "matrix").unwrap().1;
+        assert_eq!(parse(&(plain.to_string() + "\n[font]\ngrid = 0.5\n")).unwrap_err(), "font.grid must be 1.0 to 24.0 (was 0.5)");
+        assert_eq!(parse(&(plain.to_string() + "\n[font]\ngrid = 11\n")).unwrap().font.grid, Some(11.0));
     }
 
     #[test]
@@ -955,7 +960,8 @@ mod tests {
         let all = fonts(dir.path());
         assert_eq!(all.len(), BUILTIN.len(), "a file that does not load names no fonts");
         let of = |name: &str| all.iter().find(|(n, _)| n == name).map(|(_, f)| f.clone()).unwrap();
-        assert_eq!(of("navy"), ThemeFont::default());
+        assert_eq!(of("matrix"), ThemeFont::default());
+        assert_eq!(of("navy"), of("material"), "Material Navy has Material's fonts");
         assert_eq!(of("timo-purple"), of("arabia-solar"));
         assert_eq!(of("peach-watercolor").prose.as_deref(), Some("Baskerville"));
     }
@@ -995,17 +1001,21 @@ mod tests {
         assert_eq!(m.terminal.background, m.chrome.window_bg);
         assert_eq!(m.terminal.foreground, Rgb { r: 0xa9, g: 0xd1, b: 0xa6 });
         assert_eq!(m.recommended_effect(), Some("runic"));
-        assert_eq!(BUILTIN.len(), 11);
+        assert_eq!(BUILTIN.len(), 13);
     }
 
     #[test]
-    fn tokyo_rain_is_navy_s_colours_and_fonts_with_the_runic_effect() {
+    fn tokyo_rain_keeps_plain_navy_s_colours_with_the_runic_effect() {
         let (navy, runic) = (builtin("navy").unwrap(), builtin("tokyo-rain").expect("tokyo-rain is built in"));
         assert_eq!(runic.name, "tokyo-rain");
-        assert_eq!((&runic.chrome, &runic.terminal, &runic.semantic, &runic.tree, &runic.viewer), (&navy.chrome, &navy.terminal, &navy.semantic, &navy.tree, &navy.viewer));
-        assert_eq!((&runic.font, runic.appearance), (&navy.font, navy.appearance));
+        // Plain Navy's colours (Navy became Material Navy on 2026-11-17, its surfaces set as
+        // Material's; Tokyo Rain keeps the colours it was made in), in the system's fonts.
+        assert_eq!((runic.chrome.window_bg, runic.terminal.background), (rgb(0x0e1723), rgb(0x0e1723)));
+        assert_eq!((runic.chrome.sidebar, runic.chrome.focus_ring), (rgb(0x131c2b), rgb(0x3a7bd5)));
+        assert_eq!(runic.palette().ansi, crate::palette::NAVY.ansi);
+        assert_eq!((&runic.font, runic.appearance), (&ThemeFont::default(), navy.appearance));
         assert_eq!(runic.recommended_effect(), Some("runic"));
-        assert_eq!(navy.recommended_effect(), None, "navy, the default, still draws plain");
+        assert_eq!(navy.recommended_effect(), Some("material"), "navy, the default, is Material Navy");
         // It was `navy-runic`: the old name still loads it, and a config naming it is moved.
         assert_eq!(current_name("navy-runic"), "tokyo-rain");
         assert_eq!(builtin("navy-runic").unwrap().name, "tokyo-rain");
@@ -1023,7 +1033,7 @@ mod tests {
             assert_eq!(t.kind(), declared, "{name}");
         }
         let dark: Vec<&str> = BUILTIN.iter().filter(|(n, _)| builtin(n).unwrap().kind() == Appearance::Dark).map(|(n, _)| *n).collect();
-        assert_eq!(dark, ["navy", "timo-purple", "matrix", "tokyo-rain"]);
+        assert_eq!(dark, ["navy", "timo-purple", "matrix", "tokyo-rain", "material-ocean", "material-palenight"]);
     }
 
     #[test]
@@ -1031,7 +1041,7 @@ mod tests {
         let navy = BUILTIN[0].1;
         assert!(navy.contains("appearance = \"dark\"\n"));
         let e = parse(&navy.replace("appearance = \"dark\"", "appearance = \"light\"")).unwrap_err();
-        assert_eq!(e, "appearance = \"light\" but window_bg #0e1723 is dark; make one of them match the other");
+        assert_eq!(e, "appearance = \"light\" but window_bg #16202f is dark; make one of them match the other");
         assert!(parse(&navy.replace("appearance = \"dark\"", "appearance = \"dim\"")).is_err());
         let none = parse(&navy.replace("appearance = \"dark\"\n", "")).unwrap();
         assert_eq!(none.appearance, None);
@@ -1148,9 +1158,11 @@ mod tests {
             t.terminal.bright_magenta, t.terminal.bright_cyan, t.terminal.bright_white,
         ];
         assert_eq!(p.ansi, want);
-        // The built-in Navy keeps milestone 1's ANSI colours; only the chrome and the terminal
-        // background are sampled from the reference screenshot.
-        assert_eq!(p.ansi, crate::palette::NAVY.ansi);
+        // The built-in Navy keeps milestone 1's ANSI colours, but for the bright black and white,
+        // lifted to read on Material Navy's lighter cards.
+        let mut kept = crate::palette::NAVY.ansi;
+        (kept[8], kept[15]) = (rgb(0x8590a2), rgb(0xeef0f4));
+        assert_eq!(p.ansi, kept);
     }
 
     #[test]
@@ -1176,7 +1188,7 @@ mod tests {
         assert_eq!(load("navy", dir.path()).unwrap().chrome.window_bg, rgb(0x000000));
         std::fs::write(dir.path().join("mine.toml"), BUILTIN[1].1.replace("name = \"timo-purple\"", "name = \"mine\"")).unwrap();
         assert_eq!(load("mine", dir.path()).unwrap().name, "mine");
-        assert_eq!(names(dir.path()), vec!["arabia-solar".to_string(), "composition-notebook".to_string(), "lavender-material".to_string(), "lavender-watercolor".to_string(), "material".to_string(), "material-solar".to_string(), "matrix".to_string(), "mine".to_string(), "navy".to_string(), "peach-watercolor".to_string(), "timo-purple".to_string(), "tokyo-rain".to_string()]);
+        assert_eq!(names(dir.path()), vec!["arabia-solar".to_string(), "composition-notebook".to_string(), "lavender-material".to_string(), "lavender-watercolor".to_string(), "material".to_string(), "material-ocean".to_string(), "material-palenight".to_string(), "material-solar".to_string(), "matrix".to_string(), "mine".to_string(), "navy".to_string(), "peach-watercolor".to_string(), "timo-purple".to_string(), "tokyo-rain".to_string()]);
         let e = load("nope", dir.path()).unwrap_err();
         assert!(e.contains("nope") && e.contains(&dir.path().display().to_string()), "{e}");
         assert!(load("../navy", dir.path()).is_err());
@@ -1191,7 +1203,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("themes");
         let wrote = extract(&sub).unwrap();
-        assert_eq!(wrote.len(), 11);
+        assert_eq!(wrote.len(), 13);
         assert_eq!(std::fs::read_to_string(sub.join("navy.toml")).unwrap(), BUILTIN[0].1);
         std::fs::write(sub.join("navy.toml"), "edited").unwrap();
         assert!(extract(&sub).unwrap().is_empty(), "nothing to write the second time");
@@ -1235,17 +1247,26 @@ mod tests {
     #[test]
     fn the_built_ins_read_as_cyrus_named_them_and_the_two_groups_each_have_one_default() {
         let title = |n: &str| builtin(n).unwrap().title.unwrap_or_else(|| title_case(n));
-        assert_eq!(title("navy"), "Plain Navy");
+        assert_eq!(title("navy"), "Material Navy");
+        assert_eq!((title("material-ocean"), title("material-palenight")), ("Material Ocean".into(), "Material Palenight".into()));
         assert_eq!(title("matrix"), "The Matrix");
         assert_eq!(title("lavender-watercolor"), "Watercolor Lavender");
         assert_eq!(title("peach-watercolor"), "Watercolor Peach");
         assert_eq!(title("material"), "Material Bright");
         assert_eq!(title("lavender-material"), "Material Lavender");
         assert_eq!(title("tokyo-rain"), "Tokyo Rain", "the rest in capitalised words");
-        for (group, default) in [("Watercolor", "lavender-watercolor"), ("Material", "material-solar")] {
-            let defaults: Vec<&str> = BUILTIN.iter().map(|(n, _)| *n).filter(|n| builtin(n).unwrap().group.as_deref() == Some(group) && builtin(n).unwrap().group_default).collect();
-            assert_eq!(defaults, [default], "{group}");
+        // A group is one row in each list it has members in, so it has one default a list: the
+        // dark Material row's is Material Navy, the light one's Material Solar.
+        for (group, kind, default) in [("Watercolor", Appearance::Light, "lavender-watercolor"), ("Material", Appearance::Light, "material-solar"), ("Material", Appearance::Dark, "navy")] {
+            let defaults: Vec<&str> = BUILTIN
+                .iter()
+                .map(|(n, _)| *n)
+                .filter(|n| builtin(n).unwrap().group.as_deref() == Some(group) && builtin(n).unwrap().group_default && builtin(n).unwrap().kind() == kind)
+                .collect();
+            assert_eq!(defaults, [default], "{group} {kind:?}");
         }
+        let dark_material: Vec<&str> = BUILTIN.iter().map(|(n, _)| *n).filter(|n| builtin(n).unwrap().group.as_deref() == Some("Material") && !builtin(n).unwrap().is_light()).collect();
+        assert_eq!(dark_material, ["navy", "material-ocean", "material-palenight"]);
     }
 
     #[test]
@@ -1269,7 +1290,7 @@ mod tests {
         // every built-in through `contrast_pairs`.
         let t = builtin("timo-purple").expect("ships");
         assert_eq!(t.name, "timo-purple");
-        assert_eq!(BUILTIN.len(), 11);
+        assert_eq!(BUILTIN.len(), 13);
         assert_eq!(t.chrome.focus_ring, t.terminal.cyan, "the accent is the cyan");
         assert_eq!(t.terminal.cursor, t.terminal.cyan);
     }
@@ -1292,8 +1313,10 @@ mod tests {
         assert_eq!(l[8], ("material".into(), Source::BuiltIn));
         assert_eq!(l[9], ("arabia-solar".into(), Source::BuiltIn));
         assert_eq!(l[10], ("material-solar".into(), Source::BuiltIn));
-        assert!(matches!(&l[11], (n, Source::Invalid(e)) if n == "broken" && !e.is_empty()));
-        assert_eq!(l[12], ("mine".into(), Source::File));
+        assert_eq!(l[11], ("material-ocean".into(), Source::BuiltIn));
+        assert_eq!(l[12], ("material-palenight".into(), Source::BuiltIn));
+        assert!(matches!(&l[13], (n, Source::Invalid(e)) if n == "broken" && !e.is_empty()));
+        assert_eq!(l[14], ("mine".into(), Source::File));
         assert_eq!(validate_file(&dir.path().join("mine.toml")), Ok("mine".into()));
         assert!(validate_file(&dir.path().join("broken.toml")).is_err());
         assert!(validate_file(&dir.path().join("none.toml")).is_err());
@@ -1311,8 +1334,10 @@ mod tests {
         assert_eq!(lines[8], "material (built in, light)");
         assert_eq!(lines[9], "arabia-solar (built in, light)");
         assert_eq!(lines[10], "material-solar (built in, light)");
-        assert!(lines[11].starts_with("broken (file, invalid: "));
-        assert_eq!(lines[12], "mine (file, dark)");
+        assert_eq!(lines[11], "material-ocean (built in, dark)");
+        assert_eq!(lines[12], "material-palenight (built in, dark)");
+        assert!(lines[13].starts_with("broken (file, invalid: "));
+        assert_eq!(lines[14], "mine (file, dark)");
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["validate".into(), dir.path().join("mine.toml").display().to_string()], dir.path(), &mut out, &mut err), 0);
         assert_eq!(std::str::from_utf8(&out).unwrap(), "ok: mine\n");
@@ -1329,7 +1354,8 @@ mod tests {
         assert_eq!((v[7]["name"].as_str(), v[8]["name"].as_str(), v[8]["appearance"].as_str()), (Some("composition-notebook"), Some("material"), Some("light")));
         assert_eq!((v[9]["name"].as_str(), v[9]["appearance"].as_str()), (Some("arabia-solar"), Some("light")));
         assert_eq!((v[10]["name"].as_str(), v[10]["appearance"].as_str()), (Some("material-solar"), Some("light")));
-        assert_eq!((v[11]["source"].as_str(), v[11]["error"].is_string(), v[11].get("appearance")), (Some("invalid"), true, None));
+        assert_eq!((v[11]["name"].as_str(), v[12]["name"].as_str()), (Some("material-ocean"), Some("material-palenight")));
+        assert_eq!((v[13]["source"].as_str(), v[13]["error"].is_string(), v[13].get("appearance")), (Some("invalid"), true, None));
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["validate".into(), dir.path().join("broken.toml").display().to_string(), "--json".into()], dir.path(), &mut out, &mut err), 1);
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();

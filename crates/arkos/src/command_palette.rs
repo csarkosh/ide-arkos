@@ -273,7 +273,7 @@ mod tests {
         let theme = items.iter().find(|i| i.label == "Theme: Watercolor Peach").unwrap();
         assert_eq!(theme.detail, "light theme, until the config reloads; set [theme] in config.toml to keep");
         assert_eq!(theme.command, Command::SetTheme("peach-watercolor".into()));
-        assert_eq!(items.iter().find(|i| i.label == "Theme: Plain Navy").unwrap().detail, "dark theme, current");
+        assert_eq!(items.iter().find(|i| i.label == "Theme: Material Navy").unwrap().detail, "dark theme, current");
         assert!(items.iter().any(|i| i.command == Command::ReloadConfig));
         let extract = items.iter().find(|i| i.command == Command::ExtractThemes).unwrap();
         assert_eq!(extract.detail, "to /u/.config/arkos/themes");

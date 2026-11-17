@@ -105,16 +105,16 @@ mod tests {
 
     #[test]
     fn a_ring_as_saturated_as_home_keeps_every_green_s_colour() {
-        let navy = crate::theme::builtin("navy").unwrap().chrome.focus_ring;
+        let navy = crate::theme::builtin("tokyo-rain").unwrap().chrome.focus_ring;
         let f = |c: Rgb| rgb_to_hsv([c.r, c.g, c.b].map(|v| f32::from(v) / 255.0));
         for c in greens() {
-            assert!((f(toward_accent(c, navy))[1] - f(c)[1]).abs() < 0.02, "{c:?} lost colour under navy");
+            assert!((f(toward_accent(c, navy))[1] - f(c)[1]).abs() < 0.02, "{c:?} lost colour under Tokyo Rain's ring");
         }
     }
 
     #[test]
-    fn under_navy_the_greens_turn_blue_and_keep_their_light() {
-        let navy = crate::theme::builtin("navy").expect("navy is built in").chrome.focus_ring;
+    fn under_tokyo_rain_s_blue_ring_the_greens_turn_blue_and_keep_their_light() {
+        let navy = crate::theme::builtin("tokyo-rain").expect("tokyo-rain is built in").chrome.focus_ring;
         for c in greens() {
             let t = toward_accent(c, navy);
             assert!(t.b >= t.g && t.b >= t.r, "{c:?} turned to {t:?}, not blue");

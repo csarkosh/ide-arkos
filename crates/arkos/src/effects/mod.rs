@@ -128,7 +128,10 @@ mod tests {
         let navy = crate::theme::builtin("navy").unwrap();
         let purple = crate::theme::builtin("timo-purple").unwrap();
         assert_eq!(resolve(&EffectChoice::Theme, &peach), Some("watercolor".to_string()));
-        assert_eq!(resolve(&EffectChoice::Theme, &navy), None, "Navy, the default, draws plain");
+        assert_eq!(resolve(&EffectChoice::Theme, &navy), Some("material".to_string()), "Material Navy, the default, draws Material");
+        let mut bare = navy.clone();
+        bare.effect = None;
+        assert_eq!(resolve(&EffectChoice::Theme, &bare), None, "a theme that names none draws plain");
         assert_eq!(resolve(&EffectChoice::Theme, &purple), Some("overworld".to_string()));
         assert_eq!(resolve(&EffectChoice::None, &peach), None);
         assert_eq!(resolve(&EffectChoice::Named("ink".into()), &navy), Some("ink".to_string()));

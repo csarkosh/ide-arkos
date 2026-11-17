@@ -665,7 +665,8 @@ Things only a person at the screen can check, in order of value:
   its line, grainy, no bleed) and new terminal output is written in by the pen, a shade darker
   while wet; under Navy with `effect.name = "notebook"` the cover's label and the rules read in
   Navy's colours
-- effects: Navy (`effect.name = "theme"`, the default) draws plain, with no effect
+- effects: Material Navy (`effect.name = "theme"`, the default) draws the material effect as
+  Material's dark surfaces: cards lighter than the frame round them
 - effects: under Timo Purple, overworld draws a night scene at the foot of the sidebar
   (stars, a crescent moon, a castle with cyan windows, pines, grass and a path) with crisp 3 point
   pixels on Retina and on a 1x screen, and a lantern on each pane's active tab; the lantern ends
@@ -1101,9 +1102,11 @@ Things only a person at the screen can check, in order of value:
   the files with the ring on "Files", Left goes back; Down on Files puts the keys in the tree on
   its first row, and Up from there rings the switcher again; Escape on the switcher gives the
   keys back to the pane; the ring never shifts the pills
-- Settings, Appearance, Presets: every preset reads by its title (Plain Navy, Enter The
-  Matrix); the light list has one row reading "Watercolor Lavender ▾" and one reading
-  "Material Solar ▾" when neither is in force, in the list's own text, aligned with the rows
+- Settings, Appearance, Presets: every preset reads by its title in lower case (material
+  navy, the matrix); the dark list has one row reading "material navy ▾" (Navy, Ocean,
+  Palenight) and the light list one reading "watercolor lavender ▾" and one reading
+  "material solar ▾" when neither is in force; picking in the dark Material row leaves the
+  light one's pick alone; in the list's own text, aligned with the rows
   around them; a click anywhere on the row
   opens a small card of the members floating over the rows below, the one in force checked; a
   click on one puts it in force (the row's check and choice follow) and closes the card, a click

@@ -63,7 +63,12 @@ mod tests {
         let dir = std::path::PathBuf::from(dir);
         std::fs::create_dir_all(&dir).unwrap();
         let t: f32 = std::env::var("ARKOS_STILLS_T").ok().and_then(|s| s.parse().ok()).unwrap_or(2.5);
-        for (effect, theme) in [("runic", "tokyo-rain"), ("runic", "matrix"), ("overworld", "timo-purple")] {
+        // `ARKOS_STILLS_PAIRS=effect:theme,...` draws those instead of the runic and overworld ones.
+        let pairs: Vec<(String, String)> = std::env::var("ARKOS_STILLS_PAIRS")
+            .ok()
+            .map(|v| v.split(',').filter_map(|p| p.split_once(':')).map(|(e, t)| (e.to_string(), t.to_string())).collect())
+            .unwrap_or_else(|| [("runic", "tokyo-rain"), ("runic", "matrix"), ("overworld", "timo-purple")].map(|(e, t)| (e.to_string(), t.to_string())).to_vec());
+        for (effect, theme) in pairs.iter().map(|(e, t)| (e.as_str(), t.as_str())) {
             let b = crate::effects::BUILTIN.iter().find(|b| b.name == effect).unwrap();
             let m = crate::effects::manifest::parse(b.manifest).unwrap();
             let theme_v = crate::theme::builtin(theme).unwrap();

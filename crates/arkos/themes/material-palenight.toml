@@ -1,0 +1,82 @@
+# The schema of every key is in docs/themes.md.
+# Material Palenight: the soft violet-grey of the Material Theme's Palenight palette, with the
+# material effect (Cyrus, 2026-11-17: "a couple more popular dark theme options for Material").
+# Its frame is the palette's contrast shade and its cards the palette's background; its text and
+# comments are lifted from the palette's so every colour clears the contrast rules of
+# docs/themes.md.
+name = "material-palenight"
+title = "Material Palenight"
+group = "Material"
+appearance = "dark"
+
+[effect]
+name = "material"
+
+[font]
+prose = "DM Sans"
+ui = "DM Sans"
+terminal = "Roboto Mono"
+
+[chrome]
+window_bg = "#292d3e"
+title_bar = "#1b1e2b"
+status_bar = "#1b1e2b"
+sidebar = "#1b1e2b"
+tab_bar = "#292d3e"
+tab_active = "#292d3e"
+tab_inactive = "#292d3e"
+border = "#3a3f58"
+split_handle = "#3a3f58"
+split_handle_hover = "#5a6080"
+focus_ring = "#c792ea"
+text = "#e4e7f7"
+text_dim = "#b0b6d4"
+banner = "#32374d"
+
+[terminal]
+background = "#292d3e"
+foreground = "#e4e7f7"
+cursor = "#e4e7f7"
+selection = "#3f4560"
+black = "#32374d"
+red = "#ff8a92"
+green = "#c3e88d"
+yellow = "#ffcb6b"
+blue = "#91b4ff"
+magenta = "#d4a6f0"
+cyan = "#89ddff"
+white = "#d8dbee"
+bright_black = "#9aa1c6"
+bright_red = "#ffa3a9"
+bright_green = "#d6f5a7"
+bright_yellow = "#ffdb8f"
+bright_blue = "#adc8ff"
+bright_magenta = "#e3c0f7"
+bright_cyan = "#a8e8ff"
+bright_white = "#f4f5fc"
+
+[semantic]
+working = "#91b4ff"
+waiting = "#f78c6c"
+bell = "#ffcb6b"
+error_banner = "#4a2430"
+find_match = "#3f4a6e"
+find_current = "#6b5420"
+
+[tree]
+added = "#c3e88d"
+modified = "#ffcb6b"
+deleted = "#ff8a92"
+untracked = "#89ddff"
+ignored = "#9aa1c6"
+
+[viewer]
+keyword = "#d4a6f0"
+string = "#c3e88d"
+comment = "#9aa1c6"
+number = "#f9a07e"
+function = "#91b4ff"
+type_name = "#ffcb6b"
+constant = "#f9a07e"
+operator = "#89ddff"
+punctuation = "#a6c8ff"

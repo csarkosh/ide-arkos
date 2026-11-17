@@ -226,6 +226,13 @@ pub enum PresetRow {
     Group { name: String, members: Vec<(usize, String)>, pick: usize },
 }
 
+/// A theme's name as Settings' theme lists show it: in lower case (Cyrus, 2026-11-17: "the
+/// theme selection to lower case all the theme names"), "Material Navy" as "material navy". The
+/// palette and the docs keep the titles as they are.
+pub fn in_theme_list(name: &str) -> String {
+    name.to_lowercase()
+}
+
 /// A group's row as one line of the list's text: the group, the member it shows, a caret.
 pub fn group_line(group: &str, member: &str) -> String {
     format!("{group} {member} \u{25be}")
@@ -241,18 +248,31 @@ pub fn member_name(title: &str, group: &str) -> String {
 /// into one row where its first member stood (Watercolor: Watercolor Lavender and Watercolor
 /// Peach; Material: Material Bright, Material Solar and Material Lavender). A theme of the other
 /// kind listed because it is current stays a row of its own, and so does a broken file.
-/// Each group's last member in force, by group name, so picking a theme of another group (or
-/// none) leaves a group's row on what was chosen there before.
+/// Each group's last member in force, by group and slot (`pick_key`), so picking a theme of
+/// another group (or none) leaves a group's row on what was chosen there before, and the dark
+/// list's Material row and the light list's keep their own.
 pub type GroupPicks = std::collections::BTreeMap<String, String>;
 
-/// Remembers `current` as its group's pick when it is a member of one; true when that changed
-/// the picks (so they are worth writing).
-pub fn remember_pick(picks: &mut GroupPicks, shown: &std::collections::BTreeMap<String, theme::Shown>, current: &str) -> bool {
+/// A group's key in the picks for the slot its row is in: "Material dark", "Watercolor light".
+pub fn pick_key(group: &str, slot: theme::Appearance) -> String {
+    format!("{group} {}", slot.word())
+}
+
+/// The group's remembered pick for the slot; a file written before the picks were kept by slot
+/// has the group's name alone, which still counts.
+fn picked<'a>(picks: &'a GroupPicks, group: &str, slot: theme::Appearance) -> Option<&'a String> {
+    picks.get(&pick_key(group, slot)).or_else(|| picks.get(group))
+}
+
+/// Remembers `current`, in force in `slot`, as its group's pick there when it is a member of
+/// one; true when that changed the picks (so they are worth writing).
+pub fn remember_pick(picks: &mut GroupPicks, shown: &std::collections::BTreeMap<String, theme::Shown>, current: &str, slot: theme::Appearance) -> bool {
     let Some(group) = shown.get(current).and_then(|s| s.group.clone()) else { return false };
-    if picks.get(&group).map(String::as_str) == Some(current) {
+    let key = pick_key(&group, slot);
+    if picks.get(&key).map(String::as_str) == Some(current) {
         return false;
     }
-    picks.insert(group, current.to_string());
+    picks.insert(key, current.to_string());
     true
 }
 
@@ -306,7 +326,7 @@ pub fn preset_list_with(themes: &[(String, theme::Source, Option<theme::Appearan
         let claim = |n: &str| {
             if n == current {
                 3
-            } else if picks.get(&group).is_some_and(|p| p == n) {
+            } else if picked(picks, &group, slot).is_some_and(|p| p == n) {
                 2
             } else if shown.get(n).is_some_and(|s| s.group_default) {
                 1
@@ -1060,7 +1080,7 @@ impl SettingsWindow {
             let mut list = div().flex_1().min_w_0().flex().flex_col().child(heading(title, c));
             let names: Vec<String> = self.themes.iter().map(|(n, _, _)| n.clone()).collect();
             if let Some(missing) = not_installed(current, &names) {
-                list = list.child(list_row((list_id, usize::MAX), missing, true, enabled, c));
+                list = list.child(list_row((list_id, usize::MAX), in_theme_list(&missing), true, enabled, c));
             }
             for entry in preset_list_with(&self.themes, &self.theme_shown, slot, current, &self.group_picks) {
                 match entry {
@@ -1068,10 +1088,10 @@ impl SettingsWindow {
                         let id = (list_id, ix);
                         let (name, source, kind) = &self.themes[ix];
                         let row = match (source, kind) {
-                            (theme::Source::Invalid(_), _) | (_, None) => list_row(id, label, false, false, c),
+                            (theme::Source::Invalid(_), _) | (_, None) => list_row(id, in_theme_list(&label), false, false, c),
                             _ => {
                                 let is_current = name == current;
-                                let mut row = list_row(id, label, is_current, enabled, c);
+                                let mut row = list_row(id, in_theme_list(&label), is_current, enabled, c);
                                 if enabled && !is_current {
                                     let name = name.clone();
                                     row = row.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&["theme", key], name.as_str())], cx)));
@@ -1090,7 +1110,7 @@ impl SettingsWindow {
                         let pick_name = members.iter().find(|(ix, _)| *ix == pick).map(|(_, t)| member_name(t, &group)).unwrap_or_default();
                         let open = self.open_group.as_ref().is_some_and(|(s, g)| *s == slot && *g == group);
                         let toggle_group = group.clone();
-                        let mut row = list_row((list_id, 20_000 + pick), group_line(&group, &pick_name), is_current, enabled, c).relative();
+                        let mut row = list_row((list_id, 20_000 + pick), in_theme_list(&group_line(&group, &pick_name)), is_current, enabled, c).relative();
                         if enabled {
                             // `list_row` gives a row not in force its hover already; gpui takes
                             // one hover style an element, so only the row in force adds one here.
@@ -1141,7 +1161,7 @@ impl SettingsWindow {
                                     .py(px(3.0))
                                     .text_color(c.text)
                                     .child(div().w(px(12.0)).flex_none().child(if member_current { "\u{2713}" } else { "" }))
-                                    .child(member_name(&title, &group));
+                                    .child(in_theme_list(&member_name(&title, &group)));
                                 if !member_current {
                                     item = item.cursor_pointer().hover(move |s| s.bg(c.pill)).on_mouse_down(
                                         gpui::MouseButton::Left,
@@ -1193,7 +1213,8 @@ impl SettingsWindow {
         // own, the preset the mode picks. A new colour pins the fonts on screen the first time.
         let (shown, plain_font) = (self.theme.name.clone(), self.theme.font.is_default());
         let pinned = cfg.clone();
-        let color = self.rows_list("Color", "custom-color", color_rows(&self.themes, &self.theme_shown, cfg.custom.color.as_deref().unwrap_or(&self.theme.name)), enabled, c, cx, move |value| {
+        let colors = color_rows(&self.themes, &self.theme_shown, cfg.custom.color.as_deref().unwrap_or(&self.theme.name)).into_iter().map(|r| Row { label: in_theme_list(&r.label), ..r }).collect();
+        let color = self.rows_list("Color", "custom-color", colors, enabled, c, cx, move |value| {
             color_edits(&pinned, value, &shown, plain_font).into_iter().map(|(keys, value)| edit(&keys, value.as_str())).collect()
         });
         let font_rows = font_rows(&self.theme_fonts, cfg.custom.font.as_deref(), &self.theme.font, &cfg.font.family, &|f| self.families.contains(f));
@@ -1447,8 +1468,8 @@ impl Render for SettingsWindow {
         // group's remembered pick.
         let (dark, light) = (self.shown.config.theme.dark.clone(), self.shown.config.theme.light.clone());
         let mut changed = false;
-        for current in [dark, light] {
-            changed |= remember_pick(&mut self.group_picks, &self.theme_shown, &current);
+        for (current, slot) in [(dark, theme::Appearance::Dark), (light, theme::Appearance::Light)] {
+            changed |= remember_pick(&mut self.group_picks, &self.theme_shown, &current, slot);
         }
         if changed {
             write_group_picks(&paths::group_picks_file(), &self.group_picks);
@@ -1597,22 +1618,36 @@ mod tests {
         let shown: std::collections::BTreeMap<String, Shown> = [
             ("peach-watercolor", Shown { title: "Watercolor Peach".into(), group: Some("Watercolor".into()), group_default: false }),
             ("material", Shown { title: "Material Bright".into(), group: Some("Material".into()), group_default: false }),
-            ("navy", Shown { title: "Plain Navy".into(), group: None, group_default: false }),
+            ("material-ocean", Shown { title: "Material Ocean".into(), group: Some("Material".into()), group_default: false }),
+            ("tokyo-rain", Shown { title: "Tokyo Rain".into(), group: None, group_default: false }),
         ]
         .into_iter()
         .map(|(n, s)| (n.to_string(), s))
         .collect();
+        use theme::Appearance::{Dark, Light};
         let mut picks = GroupPicks::new();
-        assert!(remember_pick(&mut picks, &shown, "peach-watercolor"), "a member in force is remembered");
-        assert!(!remember_pick(&mut picks, &shown, "peach-watercolor"), "nothing new to write");
-        assert!(remember_pick(&mut picks, &shown, "material"));
-        assert!(!remember_pick(&mut picks, &shown, "navy"), "a theme in no group changes nothing");
-        assert_eq!(picks.get("Watercolor").map(String::as_str), Some("peach-watercolor"), "picking Material left Watercolor alone");
+        assert!(remember_pick(&mut picks, &shown, "peach-watercolor", Light), "a member in force is remembered");
+        assert!(!remember_pick(&mut picks, &shown, "peach-watercolor", Light), "nothing new to write");
+        assert!(remember_pick(&mut picks, &shown, "material", Light));
+        assert!(remember_pick(&mut picks, &shown, "material-ocean", Dark));
+        assert!(!remember_pick(&mut picks, &shown, "tokyo-rain", Dark), "a theme in no group changes nothing");
+        assert_eq!(picks.get(&pick_key("Watercolor", Light)).map(String::as_str), Some("peach-watercolor"), "picking Material left Watercolor alone");
+        assert_eq!(picks.get(&pick_key("Material", Light)).map(String::as_str), Some("material"), "the dark Material pick left the light one alone");
+        assert_eq!(picks.get(&pick_key("Material", Dark)).map(String::as_str), Some("material-ocean"));
+        let old: GroupPicks = [("Material".to_string(), "material".to_string())].into_iter().collect();
+        assert_eq!(picked(&old, "Material", Light).map(String::as_str), Some("material"), "a file from before the slots still counts");
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("group-picks");
         write_group_picks(&file, &picks);
         assert_eq!(read_group_picks(&file), picks);
         assert_eq!(read_group_picks(&dir.path().join("missing")), GroupPicks::new());
+    }
+
+    #[test]
+    fn the_theme_lists_show_every_name_in_lower_case() {
+        assert_eq!(in_theme_list("Material Navy"), "material navy");
+        assert_eq!(in_theme_list(&group_line("Watercolor", "Lavender")), "watercolor lavender \u{25be}");
+        assert_eq!(in_theme_list("Tokyo Rain (dark)"), "tokyo rain (dark)");
     }
 
     #[test]
@@ -1679,7 +1714,7 @@ mod tests {
         let row = |label: &str, value: Option<&str>, current: bool| Row { label: label.to_string(), value: value.map(str::to_string), current };
         assert_eq!(
             color_rows(&themes, &theme::shown(std::path::Path::new("/nonexistent")), "tokyo-rain"),
-            vec![row("Plain Navy (dark)", Some("navy"), false), row("Tokyo Rain (dark)", Some("tokyo-rain"), true), row("Solar Arabia (light)", Some("arabia-solar"), false), row("Broken (invalid)", None, false)]
+            vec![row("Material Navy (dark)", Some("navy"), false), row("Tokyo Rain (dark)", Some("tokyo-rain"), true), row("Solar Arabia (light)", Some("arabia-solar"), false), row("Broken (invalid)", None, false)]
         );
         // A colour that is not installed is still shown as the one in force.
         assert_eq!(color_rows(&themes, &theme::shown(std::path::Path::new("/nonexistent")), "gone")[0], row("gone (not installed)", None, true));
