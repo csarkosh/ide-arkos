@@ -815,7 +815,7 @@ mod tests {
         assert_eq!(style_at(&m, 0.0), Style::plain());
         assert_eq!(
             style_at(&m, 1.0),
-            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, menu_paper_alpha: 0.5, chrome_alpha: 0.0, body_bars_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, title_pad: 0.0, title_grow: 0.0, sidebar_pad: 0.0, sidebar_margin: 0.0, bar_end_clear: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, edge_gap: 0.0, pane_radius: 0.0, menus: MenuLook::Ink, keys_ring: crate::effects::manifest::KeysRing::Outline, menu_edges: false, terminal_decode: false, terminal_paint: true }
+            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, menu_paper_alpha: 0.5, chrome_alpha: 0.0, body_bars_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, title_pad: 0.0, title_grow: 0.0, sidebar_pad: 0.0, sidebar_margin: 0.0, bar_end_clear: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, edge_gap: 0.0, pane_radius: 0.0, menus: MenuLook::Ink, keys_ring: crate::effects::manifest::KeysRing::Wash, menu_edges: false, terminal_decode: false, terminal_paint: true }
         );
         let half = style_at(&m, 0.5);
         assert_eq!((half.paper_alpha, half.chrome_alpha, half.ground_alpha), (0.75, 0.5, 0.5));

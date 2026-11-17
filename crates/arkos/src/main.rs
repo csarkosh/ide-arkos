@@ -1584,7 +1584,12 @@ impl Root {
         let ring = c.focus_ring.hsla();
         let keyed = self.bar_ring.is_some();
         let mark = self.popover_mark;
-        let ringed = move |d: gpui::Stateful<gpui::Div>, i: usize| d.px(px(4.0)).rounded(px(4.0)).border_1().border_color(if keyed && i == mark { ring } else { gpui::transparent_black() });
+        // Under watercolor the ring is its soft wash instead of the line.
+        let wash = chrome::keys_wash(&self.theme, &self.effect_style());
+        let ringed = move |d: gpui::Stateful<gpui::Div>, i: usize| {
+            let on = keyed && i == mark;
+            d.px(px(4.0)).rounded(px(4.0)).border_1().border_color(if on && wash.is_none() { ring } else { gpui::transparent_black() }).when_some(wash.filter(|_| on), |d, p| d.relative().child(chrome::wash_mark(p, 4.0)))
+        };
         let mut button_i = 0usize;
         // The Help popover: the menu bar's Help menu, a row each.
         if which == chrome::Popover::Help {

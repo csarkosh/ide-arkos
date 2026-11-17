@@ -1098,6 +1098,10 @@ Things only a person at the screen can check, in order of value:
   own menu is open; a click on the question mark opens Help with nothing marked and no ring on the
   icon, Down marks Keyboard Navigation, Enter opens it, and Escape instead closes the menu with
   the keys back in the pane
+- watercolor keys: under Lavender Watercolor, Cmd+0 then Up rings Sessions in the switcher with a
+  soft lavender wash, no line; Down washes the filter field and the session list's mark; Up
+  past the switcher to the bell and Right to the question mark washes that icon; Enter and Down
+  wash Keybindings in the Help menu; under Material, Runic and Overworld the marks are as before
 - Settings keys: Cmd+, then Down rings Appearance in the left column; Down shows Layout; Up
   back; Right puts a ring a little outside the first control that does something (Custom), Down
   walks the pills and then the preset rows (in force ones skipped), Enter on a group's row opens

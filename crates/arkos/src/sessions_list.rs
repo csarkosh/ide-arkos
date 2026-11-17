@@ -746,7 +746,11 @@ pub fn render_filter(root: &mut Root, cx: &mut Context<Root>) -> Div {
             .items_center()
             .rounded(px(6.0))
             .border_1()
-            .border_color(if focused { c.focus_ring.hsla() } else { c.border.hsla() })
+            .border_color(if focused && crate::chrome::keys_wash(&theme, &style).is_none() { c.focus_ring.hsla() } else { c.border.hsla() })
+            // Under watercolor the field with the keys is washed softly instead of outlined.
+            .when_some(crate::chrome::keys_wash(&theme, &style).filter(|_| focused), |d, p| {
+                d.bg(p.alpha(crate::chrome::KEYS_WASH_FILL)).shadow(vec![gpui::BoxShadow { color: p.alpha(crate::chrome::KEYS_WASH_RIM), offset: gpui::point(px(0.0), px(0.0)), blur_radius: px(4.0), spread_radius: px(0.0) }])
+            })
             .overflow_hidden()
             .cursor_text()
             .on_mouse_down(

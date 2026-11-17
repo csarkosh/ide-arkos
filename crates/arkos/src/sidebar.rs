@@ -270,6 +270,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         // The keyboard's ring on the view shown while the switcher has the keys.
         let ringed = root.switcher_focused;
         let ring = c.focus_ring.hsla();
+        let wash = crate::chrome::keys_wash(&theme, &style);
         let (on, off, hover) = (c.tab_active.hsla(), c.tab_inactive.alpha(0.0), c.tab_inactive.hsla());
         let pill = |id: &'static str, label: &'static str, current: bool| {
             div()
@@ -283,7 +284,9 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
                 .bg(if current { on } else { off })
                 // Always a border, clear unless ringed, so the ring never moves the pill.
                 .border_1()
-                .border_color(if current && ringed { ring } else { gpui::transparent_black() })
+                .border_color(if current && ringed && wash.is_none() { ring } else { gpui::transparent_black() })
+                // Under watercolor the ring is its soft wash, behind the label.
+                .when_some(wash.filter(|_| current && ringed), |d, p| d.relative().child(crate::chrome::wash_mark(p, 999.0)))
                 .when(!current, |d| d.cursor_pointer().hover(move |s| s.bg(hover)))
                 .child(label)
         };

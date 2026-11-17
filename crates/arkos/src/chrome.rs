@@ -327,7 +327,7 @@ pub fn dot_halo(breath: f32) -> (f32, f32) {
 /// tooltip shows only while its own menu is not open (Cyrus, 2026-11-17: no menu laid over
 /// another).
 #[allow(clippy::too_many_arguments)]
-fn icon_button(id: &'static str, icon: Icon, dot: bool, breath: f32, lit: bool, open: bool, ringed: bool, tip: (&'static str, &'static str), c: &crate::theme::Chrome, family: SharedString, (on_click, on_hover): (IconClick, IconHover)) -> gpui::Stateful<Div> {
+fn icon_button(id: &'static str, icon: Icon, dot: bool, breath: f32, lit: bool, open: bool, ringed: bool, wash: Option<Rgb>, tip: (&'static str, &'static str), c: &crate::theme::Chrome, family: SharedString, (on_click, on_hover): (IconClick, IconHover)) -> gpui::Stateful<Div> {
     let color = if lit || ringed { c.text.hsla() } else { c.text_dim.hsla() };
     let (fg, dim, bg, border) = (c.text.hsla(), c.text_dim.hsla(), c.banner.hsla(), c.border.hsla());
     div()
@@ -341,7 +341,9 @@ fn icon_button(id: &'static str, icon: Icon, dot: bool, breath: f32, lit: bool, 
         // The keyboard's ring: always a border, clear unless ringed, so it never moves the icon.
         .rounded(px(6.0))
         .border_1()
-        .border_color(if ringed { c.focus_ring.hsla() } else { gpui::transparent_black() })
+        .border_color(if ringed && wash.is_none() { c.focus_ring.hsla() } else { gpui::transparent_black() })
+        // Under watercolor the ring is its soft wash instead of the line.
+        .when_some(wash.filter(|_| ringed), |d, p| d.child(wash_mark(p, 6.0)))
         .when(!open, |d| {
             d.tooltip(move |_window, cx| {
                 let tip = Tip { title: tip.0.into(), text: tip.1.into(), fg, dim, bg, border, family: family.clone(), size: 12.0 };
@@ -422,6 +424,7 @@ pub fn title_words(sandbox: bool) -> Vec<&'static str> {
 #[allow(clippy::too_many_arguments)]
 pub fn title_bar(project: &Path, sandbox: bool, right: Right, fullscreen: bool, theme: &Theme, style: Style, bar_font: SharedString, on_bell: (IconClick, IconHover), on_doctor: (IconClick, IconHover), on_help: (IconClick, IconHover), on_settings: (IconClick, IconHover), report: Option<gpui::WeakEntity<crate::Root>>) -> Div {
     let c = &theme.chrome;
+    let wash = keys_wash(theme, &style);
     let words = title_words(sandbox);
     let (left, right_pad) = bar_padding(fullscreen, style.title_pad);
     // A group reports where it is laid out from a canvas behind it.
@@ -478,10 +481,10 @@ pub fn title_bar(project: &Path, sandbox: bool, right: Right, fullscreen: bool, 
                 .flex()
                 .items_center()
                 .gap(px(ICON_GAP))
-                .child(icon_button("bell", Icon::Bell, right.bell_dot, right.breath, right.open == Popover::Bell || right.hover == Popover::Bell, right.open == Popover::Bell, right.ring == Popover::Bell, icon_tip(Popover::Bell), c, bar_font.clone(), on_bell))
-                .child(icon_button("doctor", Icon::Doctor, right.doctor_dot, right.breath, right.open == Popover::Doctor || right.hover == Popover::Doctor, right.open == Popover::Doctor, right.ring == Popover::Doctor, icon_tip(Popover::Doctor), c, bar_font.clone(), on_doctor))
-                .child(icon_button("help", Icon::Help, false, right.breath, right.open == Popover::Help || right.hover == Popover::Help, right.open == Popover::Help, right.ring == Popover::Help, icon_tip(Popover::Help), c, bar_font.clone(), on_help))
-                .child(icon_button("settings", Icon::Settings, false, right.breath, right.hover == Popover::Settings, false, right.ring == Popover::Settings, icon_tip(Popover::Settings), c, bar_font.clone(), on_settings)),
+                .child(icon_button("bell", Icon::Bell, right.bell_dot, right.breath, right.open == Popover::Bell || right.hover == Popover::Bell, right.open == Popover::Bell, right.ring == Popover::Bell, wash, icon_tip(Popover::Bell), c, bar_font.clone(), on_bell))
+                .child(icon_button("doctor", Icon::Doctor, right.doctor_dot, right.breath, right.open == Popover::Doctor || right.hover == Popover::Doctor, right.open == Popover::Doctor, right.ring == Popover::Doctor, wash, icon_tip(Popover::Doctor), c, bar_font.clone(), on_doctor))
+                .child(icon_button("help", Icon::Help, false, right.breath, right.open == Popover::Help || right.hover == Popover::Help, right.open == Popover::Help, right.ring == Popover::Help, wash, icon_tip(Popover::Help), c, bar_font.clone(), on_help))
+                .child(icon_button("settings", Icon::Settings, false, right.breath, right.hover == Popover::Settings, false, right.ring == Popover::Settings, wash, icon_tip(Popover::Settings), c, bar_font.clone(), on_settings)),
             crate::effects::blocks::TITLE_ICONS_KEY,
         ))
 }
@@ -558,6 +561,29 @@ pub const KEYS_GLOW_LINE: f32 = 0.4;
 pub const KEYS_GLOW_HALO: f32 = 0.18;
 pub const KEYS_PIXEL_FILL: f32 = 0.4;
 pub const KEYS_PIXEL_LINE: f32 = 0.45;
+/// Watercolor's wash: the first pigment laid at about half a selected row's strength, its edge
+/// feathered by a soft rim of the same pigment rather than drawn as a line.
+pub const KEYS_WASH_FILL: f32 = 0.16;
+pub const KEYS_WASH_RIM: f32 = 0.22;
+
+/// The pigment of watercolor's soft in-focus wash, when the effect in force draws one (`wash`):
+/// every in-focus mark then takes it, the switcher, the title bar's icons, a popover's rows and
+/// the filter field as well as the rows (Cyrus, 2026-11-17: watercolor's indicator was "too sharp
+/// for the theme and missing a soft background color"). `None` under every other look.
+pub fn keys_wash(theme: &Theme, style: &Style) -> Option<Rgb> {
+    (style.keys_ring == KeysRing::Wash).then(|| crate::effects::inputs::pigments(theme).0[0])
+}
+
+/// Watercolor's in-focus wash laid over an element (`relative`) with corners `round`: the pigment
+/// at a fainter strength than a selected row's, its edge feathered by a soft rim, no line.
+pub fn wash_mark(pigment: Rgb, round: f32) -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .rounded(px(round))
+        .bg(pigment.alpha(KEYS_WASH_FILL))
+        .shadow(vec![gpui::BoxShadow { color: pigment.alpha(KEYS_WASH_RIM), offset: point(px(0.0), px(0.0)), blur_radius: px(4.0), spread_radius: px(0.0) }])
+}
 
 /// Whether the keyboard's ring in the sidebar is drawn as a shape of its own behind the row's
 /// text (a pill, a glow, a pixel frame), not the thin outline round the row.
@@ -571,7 +597,8 @@ pub fn keys_ring_is_shaped(style: &Style) -> bool {
 /// currently-selected element", for every effect, and subdued): material's pill inset as its
 /// selected rows, filled with a fainter selection colour; runic's soft glowing line round the row
 /// with a faint wash of the focus colour; overworld's square frame filled with a fainter active
-/// tab's colour, as its selected rows are filled; else the thin outline round the row.
+/// tab's colour, as its selected rows are filled; watercolor's soft wash of its first pigment, a
+/// feathered edge and no line; else the thin outline round the row.
 pub fn keys_ring(theme: &Theme, style: &Style) -> Div {
     keys_ring_inset(theme, style, PILL_INSET)
 }
@@ -599,6 +626,7 @@ pub fn keys_ring_inset(theme: &Theme, style: &Style, pill_inset: f32) -> Div {
             .bg(ring.alpha(KEYS_GLOW_FILL))
             .shadow(vec![gpui::BoxShadow { color: ring.alpha(KEYS_GLOW_HALO), offset: point(px(0.0), px(0.0)), blur_radius: px(5.0), spread_radius: px(0.0) }]),
         KeysRing::Pixel => base.inset_0().border_1().border_color(ring.alpha(KEYS_PIXEL_LINE)).bg(theme.chrome.tab_active.alpha(KEYS_PIXEL_FILL)),
+        KeysRing::Wash => wash_mark(crate::effects::inputs::pigments(theme).0[0], 6.0),
         KeysRing::Outline => base.inset_0().rounded(px(4.0)).border_1().border_color(ring.hsla()),
     }
 }
@@ -837,6 +865,40 @@ mod tests {
     }
 
     #[test]
+    fn every_in_focus_mark_takes_watercolor_s_wash_and_only_watercolor_s() {
+        let style = |name: &str| {
+            let m = crate::effects::manifest::load(name, std::path::Path::new("/nonexistent")).unwrap().manifest;
+            crate::effects::active::style_at(&m, 1.0)
+        };
+        let theme = crate::theme::builtin("lavender-watercolor").unwrap();
+        assert_eq!(keys_wash(&theme, &style("watercolor")), Some(crate::effects::inputs::pigments(&theme).0[0]));
+        for other in ["material", "runic", "overworld", "notebook"] {
+            assert_eq!(keys_wash(&theme, &style(other)), None, "{other}");
+        }
+        assert_eq!(keys_wash(&theme, &Style::plain()), None);
+    }
+
+    #[test]
+    fn watercolor_s_keyboard_ring_is_a_soft_wash_of_its_first_pigment_with_no_line() {
+        // Cyrus, 2026-11-17: the ring was "too sharp for the theme and missing a soft background
+        // color".
+        let theme = crate::theme::builtin("lavender-watercolor").unwrap();
+        let m = crate::effects::manifest::load("watercolor", std::path::Path::new("/nonexistent")).unwrap().manifest;
+        let style = crate::effects::active::style_at(&m, 1.0);
+        let mut ring = keys_ring(&theme, &style);
+        let s = ring.style();
+        let line = [s.border_widths.top, s.border_widths.right, s.border_widths.bottom, s.border_widths.left];
+        assert!(line.iter().all(Option::is_none), "no line: {line:?}");
+        let pigment = crate::effects::inputs::pigments(&theme).0[0];
+        assert_eq!(s.background.clone(), Some(pigment.alpha(KEYS_WASH_FILL).into()), "a wash of the first pigment");
+        let rim = s.box_shadow.clone().expect("a soft rim");
+        assert!(rim.iter().all(|r| r.blur_radius > px(0.0) && r.color == pigment.alpha(KEYS_WASH_RIM)), "{rim:?}");
+        assert!(KEYS_WASH_FILL < 0.3, "fainter than a selected row's wash (HIGHLIGHT_STRENGTH 0.3)");
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "watercolor").unwrap().wash;
+        assert!(wash.contains("constant float HIGHLIGHT_STRENGTH[3] = {0.2, 0.3, 0.36};"));
+    }
+
+    #[test]
     fn the_keyboard_s_ring_takes_each_effect_s_own_shape() {
         let style = |name: &str| {
             let m = crate::effects::manifest::load(name, std::path::Path::new("/nonexistent")).unwrap().manifest;
@@ -845,7 +907,7 @@ mod tests {
         assert_eq!(style("material").keys_ring, KeysRing::Pill, "material's rows are pills on rounded cards");
         assert_eq!(style("runic").keys_ring, KeysRing::Glow, "runic's rows are lit");
         assert_eq!(style("overworld").keys_ring, KeysRing::Pixel, "overworld's rows are pixel fills");
-        assert_eq!(style("watercolor").keys_ring, KeysRing::Outline);
+        assert_eq!(style("watercolor").keys_ring, KeysRing::Wash, "watercolor's rows are washes");
         assert!(keys_ring_is_shaped(&style("runic")) && !keys_ring_is_shaped(&Style::plain()), "no effect: the outline");
         // Faded out, the app's own outline.
         let m = crate::effects::manifest::load("material", std::path::Path::new("/nonexistent")).unwrap().manifest;

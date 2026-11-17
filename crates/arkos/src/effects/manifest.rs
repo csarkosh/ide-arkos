@@ -190,7 +190,8 @@ pub enum MenuLook {
 /// (the app's own, the default); `pill`, a pill inset as material's selected rows are, filled with
 /// a fainter selection colour; `glow`, a glowing line round the row with a faint wash of the
 /// focus colour (runic's lit rows); `pixel`, a square two point frame with a fainter fill of the
-/// active tab's colour (overworld's selected rows).
+/// active tab's colour (overworld's selected rows); `wash`, a soft wash of the first pigment with
+/// a feathered edge and no line (watercolor's washed rows).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum KeysRing {
@@ -199,6 +200,7 @@ pub enum KeysRing {
     Pill,
     Glow,
     Pixel,
+    Wash,
 }
 
 /// Refuses `value` outside `lo..=hi`, naming the key and the range.
@@ -474,6 +476,7 @@ mod tests {
         assert!(!parse(MINIMAL).unwrap().sidebar_margin, "a sidebar keeps no margin unless asked");
         assert_eq!(parse(MINIMAL).unwrap().keys_ring, KeysRing::Outline);
         assert_eq!(parse(&with("keys_ring = \"pixel\"")).unwrap().keys_ring, KeysRing::Pixel);
+        assert_eq!(parse(&with("keys_ring = \"wash\"")).unwrap().keys_ring, KeysRing::Wash);
         assert!(parse(&with("keys_ring = \"round\"")).is_err());
         assert_eq!(parse(&with("paper_alpha = 0.6")).unwrap().menu_paper_alpha(), 0.6, "a menu's paper is the terminal's unless told");
         assert_eq!(parse(&with("menu_paper_alpha = 0.9")).unwrap().menu_paper_alpha(), 0.9);
