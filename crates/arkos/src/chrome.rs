@@ -468,15 +468,17 @@ pub fn menu_fill(m: MenuColors, effect_menus: bool) -> gpui::Hsla {
 /// How far a selected row's pill is inset from the sidebar's edges under an effect that draws
 /// the rows as pills (the material wash's PILL_INSET).
 pub const PILL_INSET: f32 = 8.0;
-/// How strongly the keyboard's pill is filled with the selection colour: a fainter version of a
-/// selected row's pill.
-pub const KEYS_PILL_FILL: f32 = 0.45;
-/// How strongly runic's glowing ring washes the row with the focus colour: fainter than a lit
-/// selected row.
-pub const KEYS_GLOW_FILL: f32 = 0.12;
-/// How strongly overworld's pixel frame fills the row with the active tab's colour: fainter than a
-/// selected row's fill.
-pub const KEYS_PIXEL_FILL: f32 = 0.55;
+/// How strongly the keyboard's ring shows, as a quieter version of a selected row (Cyrus,
+/// 2026-11-17: "too strong. It should look like the selected element's effect, but more
+/// subdued"): the pill's fill of the selection colour and its line; runic's wash of the focus
+/// colour, its line and its glow; overworld's fill of the active tab's colour and its line.
+pub const KEYS_PILL_FILL: f32 = 0.28;
+pub const KEYS_PILL_LINE: f32 = 0.35;
+pub const KEYS_GLOW_FILL: f32 = 0.06;
+pub const KEYS_GLOW_LINE: f32 = 0.4;
+pub const KEYS_GLOW_HALO: f32 = 0.18;
+pub const KEYS_PIXEL_FILL: f32 = 0.4;
+pub const KEYS_PIXEL_LINE: f32 = 0.45;
 
 /// Whether the keyboard's ring in the sidebar is drawn as a shape of its own behind the row's
 /// text (a pill, a glow, a pixel frame), not the thin outline round the row.
@@ -487,10 +489,10 @@ pub fn keys_ring_is_shaped(style: &Style) -> bool {
 /// The keyboard's ring on a sidebar row or heading, laid behind its text (the row's first child,
 /// the row `relative`), matching how the effect draws a selected row (Cyrus, 2026-11-17: "the
 /// outline to match the background shape and the background should be a fainter version of the
-/// currently-selected element", for every effect): material's pill inset as its selected rows,
-/// filled with a fainter selection colour; runic's glowing line round the row with a faint wash
-/// of the focus colour; overworld's square two point frame filled with a fainter active tab's
-/// colour, as its selected rows are filled; else the thin outline round the row.
+/// currently-selected element", for every effect, and subdued): material's pill inset as its
+/// selected rows, filled with a fainter selection colour; runic's soft glowing line round the row
+/// with a faint wash of the focus colour; overworld's square frame filled with a fainter active
+/// tab's colour, as its selected rows are filled; else the thin outline round the row.
 pub fn keys_ring(theme: &Theme, style: &Style) -> Div {
     let ring = theme.chrome.focus_ring;
     let base = div().absolute();
@@ -502,16 +504,16 @@ pub fn keys_ring(theme: &Theme, style: &Style) -> Div {
             .right(px(PILL_INSET))
             .rounded(px(999.0))
             .border_1()
-            .border_color(ring.hsla())
+            .border_color(ring.alpha(KEYS_PILL_LINE))
             .bg(theme.terminal.selection.alpha(KEYS_PILL_FILL)),
         KeysRing::Glow => base
             .inset_0()
             .rounded(px(2.0))
             .border_1()
-            .border_color(ring.hsla())
+            .border_color(ring.alpha(KEYS_GLOW_LINE))
             .bg(ring.alpha(KEYS_GLOW_FILL))
-            .shadow(vec![gpui::BoxShadow { color: ring.alpha(0.55), offset: point(px(0.0), px(0.0)), blur_radius: px(8.0), spread_radius: px(0.0) }]),
-        KeysRing::Pixel => base.inset_0().border_2().border_color(ring.hsla()).bg(theme.chrome.tab_active.alpha(KEYS_PIXEL_FILL)),
+            .shadow(vec![gpui::BoxShadow { color: ring.alpha(KEYS_GLOW_HALO), offset: point(px(0.0), px(0.0)), blur_radius: px(5.0), spread_radius: px(0.0) }]),
+        KeysRing::Pixel => base.inset_0().border_1().border_color(ring.alpha(KEYS_PIXEL_LINE)).bg(theme.chrome.tab_active.alpha(KEYS_PIXEL_FILL)),
         KeysRing::Outline => base.inset_0().rounded(px(4.0)).border_1().border_color(ring.hsla()),
     }
 }

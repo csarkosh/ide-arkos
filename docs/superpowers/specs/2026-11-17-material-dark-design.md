@@ -52,7 +52,7 @@ the row's text. Then ("the same ... in-focus element changes ... applied to the 
 like Runic and Overworld"): a manifest key, `keys_ring`, names the ring's shape for each effect:
 material's `pill`; runic's `glow`, a glowing line round the row with a faint wash of the focus
 colour, as its lit rows; overworld's `pixel`, a square two point frame filled with a fainter
-active tab's colour, as its selected rows are filled; `outline`, the app's own, for the rest.
+active tab's colour, as its selected rows are filled; `outline`, the app's own, for the rest. Each is subdued ("too strong. It should look like the selected element's effect, but more subdued"): a faint line (0.35 to 0.45 of the focus colour), a light fill, a small glow.
 
 ## Lower case in the theme lists
 
