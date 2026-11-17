@@ -1,6 +1,6 @@
 # Themes
 
-A theme is one TOML file with a `name` and five tables: `chrome`, `terminal`, `semantic`, `tree` and `viewer`, plus an optional `font` table. Every colour key is required and every value is a `#rrggbb` colour; an unknown or missing key is an error. Arkos ships thirteen themes built in (`navy`, `timo-purple`, `peach-watercolor`, `lavender-watercolor`, `lavender-material`, `matrix`, `tokyo-rain`, `composition-notebook`, `material`, `arabia-solar`, `material-solar`, `material-ocean`, `material-palenight`, shown as Material Navy, Timo Purple, Watercolor Peach, Watercolor Lavender, Material Lavender, The Matrix, Tokyo Rain, Composition Notebook, Material Bright, Solar Arabia, Material Solar, Material Ocean and Material Palenight; `peach-light` and `peach-material` (0.8.11) are old names of `peach-watercolor`, and `lavender-light` of `lavender-watercolor`; they still load them); the files in `crates/arkos/themes/` are complete examples to copy.
+A theme is one TOML file with a `name` and five tables: `chrome`, `terminal`, `semantic`, `tree` and `viewer`, plus an optional `font` table. Every colour key is required and every value is a `#rrggbb` colour; an unknown or missing key is an error. Arkos ships fourteen themes built in (`navy`, `timo-purple`, `peach-watercolor`, `lavender-watercolor`, `lavender-material`, `matrix`, `tokyo-rain`, `composition-notebook`, `material`, `arabia-solar`, `material-solar`, `material-ocean`, `material-palenight`, `material-sublime`, shown as Material Navy, Timo Purple, Watercolor Peach, Watercolor Lavender, Material Lavender, The Matrix, Tokyo Rain, Composition Notebook, Material Bright, Solar Arabia, Material Solar, Material Ocean, Material Palenight and Material Sublime; `peach-light` and `peach-material` (0.8.11) are old names of `peach-watercolor`, and `lavender-light` of `lavender-watercolor`; they still load them); the files in `crates/arkos/themes/` are complete examples to copy.
 
 ## Contrast rules
 
@@ -23,7 +23,7 @@ Optional: how Settings and the palette show the theme. `title` is the name a per
 Paper"). `group` puts the theme in a group Settings lists as one row with a choice of its
 members, in each list it has members in: Watercolor (Watercolor Lavender and Watercolor Peach),
 Material in the light list (Material Solar, Material Bright and Material Lavender) and Material in
-the dark list (Material Navy, Material Ocean and Material Palenight); each row keeps its own pick. `group_default = true` marks the member the group's row
+the dark list (Material Navy, Material Ocean, Material Palenight and Material Sublime); each row keeps its own pick. `group_default = true` marks the member the group's row
 shows until one of the group has been chosen (after that it shows the last one chosen, kept in
 `group-picks` in Application Support): Watercolor Lavender, Material Solar, and Material Navy for
 the dark list.
@@ -130,7 +130,7 @@ Optional. A shader effect drawn under the window's text.
 
 | Key | What it sets |
 | --- | --- |
-| `name` | The effect the theme was designed with; as a preset it draws with this one; the custom look (Settings, Appearance, or `arkos effect use`) puts any effect over its colours. `peach-watercolor` and `lavender-watercolor` set `watercolor`, `matrix` and `tokyo-rain` set `runic`, `composition-notebook` sets `notebook`, `timo-purple` and `arabia-solar` set `overworld`, and `navy` (Material Navy, the default), `material-ocean`, `material-palenight`, `material`, `material-solar` and `lavender-material` set `material`, which draws a dark theme's sidebar colour as the frame and its window colour as the cards, so a dark Material theme keeps its sidebar the darker. |
+| `name` | The effect the theme was designed with; as a preset it draws with this one; the custom look (Settings, Appearance, or `arkos effect use`) puts any effect over its colours. `peach-watercolor` and `lavender-watercolor` set `watercolor`, `matrix` and `tokyo-rain` set `runic`, `composition-notebook` sets `notebook`, `timo-purple` and `arabia-solar` set `overworld`, and `navy` (Material Navy, the default), `material-ocean`, `material-palenight`, `material-sublime`, `material`, `material-solar` and `lavender-material` set `material`, which draws a dark theme's sidebar colour as the frame and its window colour as the cards, so a dark Material theme keeps its sidebar the darker. |
 | `scene` | Optional: which of the effect's scenes the theme shows, by a name the effect's manifest lists in `scenes`. The runic effect has `city` (a rainy Tokyo skyline at the sidebar's foot, Tokyo Rain's) and `code` (a digital horizon, The Matrix's). Absent, the effect's first. |
 
 ## Adding a theme

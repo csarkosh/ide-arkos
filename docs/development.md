@@ -666,7 +666,9 @@ Things only a person at the screen can check, in order of value:
   while wet; under Navy with `effect.name = "notebook"` the cover's label and the rules read in
   Navy's colours
 - effects: Material Navy (`effect.name = "theme"`, the default) draws the material effect as
-  Material's dark surfaces: cards lighter than the frame round them
+  Material's dark surfaces: cards lighter than the frame round them; under every Material theme the
+  sidebar (Pane 0) is a card with a pane's margins, rounded as a pane's, a shade darker than the
+  panes' cards
 - effects: under Timo Purple, overworld draws a night scene at the foot of the sidebar
   (stars, a crescent moon, a castle with cyan windows, pines, grass and a path) with crisp 3 point
   pixels on Retina and on a 1x screen, and a lantern on each pane's active tab; the lantern ends
@@ -1104,7 +1106,7 @@ Things only a person at the screen can check, in order of value:
   keys back to the pane; the ring never shifts the pills
 - Settings, Appearance, Presets: every preset reads by its title in lower case (material
   navy, the matrix); the dark list has one row reading "material navy ▾" (Navy, Ocean,
-  Palenight) and the light list one reading "watercolor lavender ▾" and one reading
+  Palenight, Sublime) and the light list one reading "watercolor lavender ▾" and one reading
   "material solar ▾" when neither is in force; picking in the dark Material row leaves the
   light one's pick alone; in the list's own text, aligned with the rows
   around them; a click anywhere on the row

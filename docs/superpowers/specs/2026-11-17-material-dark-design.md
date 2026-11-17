@@ -20,11 +20,25 @@ sidebar (and title bar and status bar) the darker and its window, tabs and termi
 - **Material Palenight**: the Material Theme's Palenight palette, frame #1b1e2b and cards #292d3e,
   the accent the palette's light purple #c792ea (its deeper one is under 4.5:1 on the cards).
 
-Both palettes' text and comments are lifted until every colour clears docs/themes.md's rules, the
+- **Material Sublime**: Sublime Text's classic dark look, its Monokai colours (Cyrus: "the
+  classic dark sublime theme as an option in the dark Material theme options"), frame #1e1f1c
+  and cards #272822, the cyan accent #66d9ef; Monokai's pink lifted to #ff4d8d (its own is 3.9:1
+  on the cards).
+
+The palettes' text and comments are lifted until every colour clears docs/themes.md's rules, the
 terminal text 11:1. They are the group "Material" with `appearance = "dark"`; Material Navy is the
 dark row's default. A group is one row in each list it has members in, so each group's remembered
 pick is kept by group and list ("Material dark", "Material light"; a pick written before by the
 group's name alone still counts).
+
+## Pane 0 a card
+
+Cyrus, 2026-11-17: "the material theme's Pane 0 to have the same look as the Pane 1", then "Pane
+0 can be darker than the Pane 1". The material effect turns `sidebar_margin` on (its margin the
+gap, as a pane's), and the wash paints the sidebar's column as a card rounded as a pane's, its
+colour half way from a pane's card to the frame; a selected row's pill lies on that card. The
+sidebar's focus glow is rounded as a pane's ring is. Its text keeps its contrast: the card lies
+between the frame and a pane's card, both checked against it.
 
 ## Lower case in the theme lists
 

@@ -430,7 +430,9 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
     let sidebar_glow = root
         .glow
         .sync(SIDEBAR_GLOW_KEY, has_keys.then_some(()), now)
-        .map(|(_, opacity)| crate::pane_view::focus_glow(&theme, 0.0, width - margin, total_h, breath, opacity))
+        // Rounded as a pane's card is when the sidebar keeps a pane's margins under an effect
+        // that rounds them.
+        .map(|(_, opacity)| crate::pane_view::focus_glow(&theme, if margin > 0.0 { style.pane_radius } else { 0.0 }, width - margin, total_h, breath, opacity))
         .into_iter()
         .flatten();
     let column = div()

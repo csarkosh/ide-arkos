@@ -440,6 +440,7 @@ mod tests {
         let e = parse(&with("pane_radius = 30")).unwrap_err();
         assert!(e.contains("pane_radius must be 0.0 to 24.0 (was 30.0)"), "{e}");
         assert_eq!(m.binder, 0.0, "no binder: the gap is the gutter beside the sidebar");
+        assert!(m.sidebar_margin && m.edge_gap.is_none(), "the sidebar is a card as the panes are, with their margins (the gap)");
         assert!(b.glyphs.is_none(), "the text stays as the font draws it");
     }
 

@@ -21,6 +21,8 @@ constant float RIPPLE_LAYER = 0.12;
 // A card's corner radius, in points: the manifest's `pane_radius`, so the app's focus ring
 // follows it.
 constant float CARD_RADIUS = 14.0;
+// The sidebar's card, this far from a pane's card toward the frame: a shade darker.
+constant float SIDE_CARD = 0.5;
 // The drawer's pill, in from the sidebar's edges.
 constant float PILL_INSET = 8.0;
 // The pane number's chip: its centre from the strip's left, its radius, and its container. On a
@@ -130,6 +132,7 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     float k = saturate(u.intensity);
     float3 frame = u.colors[ARKOS_SIDEBAR].rgb;
     float3 card = u.colors[ARKOS_WINDOW_BG].rgb;
+    float3 side_card = mix(card, frame, SIDE_CARD);
     float3 primary = u.colors[ARKOS_FOCUS_RING].rgb;
     float3 ink = u.colors[ARKOS_TEXT].rgb;
     float3 col = frame;
@@ -147,6 +150,13 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
         int kind = int(blk.kind);
         float4 r = blk.rect;
         bool inside = p.x >= r.x && p.x <= r.x + r.z && p.y >= r.y && p.y <= r.y + r.w;
+        if (kind == ARKOS_SIDEBAR_BLOCK) {
+            // The sidebar's card: its column, inside the margins a pane keeps, rounded as a
+            // pane's card is (Cyrus, 2026-11-17: "Pane 0 to have the same look as the Pane 1"),
+            // a shade darker than a pane's, half way to the frame ("Pane 0 can be darker").
+            col = mix(col, side_card, round_box(p, r, CARD_RADIUS));
+            continue;
+        }
         if (kind == ARKOS_ROW_HIGHLIGHT_BLOCK || kind == ARKOS_TAB_HIGHLIGHT_BLOCK) {
             bool row = kind == ARKOS_ROW_HIGHLIGHT_BLOCK;
             // A row in the sidebar has a pill spanning it, inset from its edges (any other row, a
@@ -162,7 +172,8 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             int state = max(int(blk.ordinal), 0);
             float v = saturate(blk.value) * k;
             if (row && state >= 1) {
-                col = mix(col, container(u, u.colors[ARKOS_SELECTION].rgb, 1.0, frame), shape * v);
+                // A sidebar row's pill lies on the sidebar's card.
+                col = mix(col, container(u, u.colors[ARKOS_SELECTION].rgb, 1.0, in_side ? side_card : frame), shape * v);
             }
             if (state == 0 || state == 2) {
                 col = mix(col, ink, shape * v * HOVER_LAYER);

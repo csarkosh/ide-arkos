@@ -11,6 +11,9 @@ gap = 8                       # 0 to 16 points round each pane: the frame betwee
 pane_radius = 14              # 0 to 24; the cards' corner radius (the wash's CARD_RADIUS), so the
                               # focused pane's ring is rounded to match
 ink_borders = true            # the app hides its own 1 px borders; the wash draws what lines remain
+sidebar_margin = true         # the sidebar is a card as the panes are, with their margins (Cyrus,
+                              # 2026-11-17: "the material theme's Pane 0 to have the same look as
+                              # the Pane 1")
 highlights = "effect"         # "effect": the wash paints the selected and hovered rows, the hovered
                               # tab and the active tabs' underlines; "app" (the default): the app
                               # keeps its own fills and reports no highlight blocks

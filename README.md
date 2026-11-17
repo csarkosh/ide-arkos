@@ -12,7 +12,7 @@ from you: needing your input → still at work → quiet or done.
 
 - **Durable:** sessions keep running through a frozen window or an update, and come back with
   their conversations after a restart, a shutdown or a macOS update.
-- **Customizable:** thirteen distinct themes, some of them animated, and layouts you arrange by drag
+- **Customizable:** fourteen distinct themes, some of them animated, and layouts you arrange by drag
   and drop: split a session, move any pane or tab, and start more Claude Code sessions in it.
 - **Keyboard first:** the keys you know from Chrome. Cmd+0 jumps to your sessions, Cmd+1 to 9
   to a pane, Ctrl+Tab through the tabs, and Cmd+T opens a new Claude or Codex tab.
@@ -30,7 +30,7 @@ brew install --cask csarkosh/tap/arkos-ide
 
 ## Who it's for
 
-Seven ways people use it, each shot in one of the thirteen built-in themes. Every picture is a real
+Seven ways people use it, each shot in one of the fourteen built-in themes. Every picture is a real
 session, taken by [`scripts/shoot.sh`](docs/development.md#screenshots).
 
 **The multi tasker** runs Claude Code on unrelated work at once: a rate limiter, an inbox and a
