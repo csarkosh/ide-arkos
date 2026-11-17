@@ -6,15 +6,19 @@
   <img alt="Seven Arkos IDE windows fanned out like postcards, each in its own theme. In front, the multi tasker: three Claude Code sessions side by side, each running its own subagents on an unrelated project. Behind, the blogger with a launch plan in the markdown editor, the data analyst with a weekly report and its chart, the hacker hardening a service in Matrix green, the indie game dev with a dungeon crawl in pixel-framed purple, the student with lecture notes on a ruled notebook page, and the web developer with the app's page in a web tab" src="docs/images/hero-dark.png" width="900">
 </picture>
 
-Arkos keeps all your Claude Code sessions in one window and shows you which one needs you next.
+Arkos runs your Claude Code sessions the way a chat app runs conversations. Every session is a
+row in one inbox, sorted by what it needs from you: a question first, then the answers you have
+not read, then the ones still at work. Open a row and that session fills the window; mark it
+unread, schedule it for later or end it, as you would a thread.
 
-- The Inbox sorts your sessions by what they need from you and shows one at a time.
-- Each session is a grid of its own: split it, drag any pane or tab, and start more Claude Code
-  sessions in it.
-- A file browser, a web page and an editor for the documents Claude writes sit beside your
-  sessions.
-- Sessions that last: they keep running through a frozen window, an update or a restart, and
-  pick up right where you left them.
+- **Durable:** sessions keep running through a frozen window or an update, and come back with
+  their conversations after a restart, a shutdown or a macOS update.
+- **Customizable:** ten distinct themes, some of them animated, and layouts you arrange by drag
+  and drop: split a session, move any pane or tab, and start more Claude Code sessions in it.
+- **All in one place:** a file browser, web pages and an editor for the documents Claude writes
+  sit beside your sessions.
+- **Self-updating:** new versions install in the background, with the window on screen
+  throughout and your unsent prompt kept.
 
 Built for Apple silicon, macOS 14 or later.
 
@@ -24,9 +28,6 @@ Built for Apple silicon, macOS 14 or later.
 brew trust --cask csarkosh/tap/arkos-ide
 brew install --cask csarkosh/tap/arkos-ide
 ```
-
-Open it and start `claude` in a tab: the tabs follow what each session is doing from the first
-launch, and from then on the app updates itself (see [Updating](docs/guide.md#updating)).
 
 ## Who it's for
 
