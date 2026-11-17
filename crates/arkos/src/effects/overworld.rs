@@ -394,7 +394,7 @@ mod tests {
             Shape { key: 8, rect: Rect { x: rows.x + 4.0, y: rows.y + 4.0, w: rows.w - 8.0, h: rows.h - 8.0 }, kind: Kind::Rows, pitch: 18.0 },
         ];
         let (busy, focus, waiting) = (if busy { vec![1] } else { vec![] }, [(1, focus)], if waiting { vec![2] } else { vec![] });
-        let scene = Scene { gap: GAP, focus: &focus, waiting: &waiting, ..crate::effects::active::scene(content, GAP, None, Some(NAMES_END), &panes, &busy, &shapes, &[]) };
+        let scene = Scene { edge_gap: GAP, focus: &focus, waiting: &waiting, ..crate::effects::active::scene(content, GAP, None, Some(NAMES_END), &panes, &busy, &shapes, &[]) };
         blocks(&scene, false)
     }
 
@@ -441,7 +441,7 @@ mod tests {
             let content = Rect { x: SIDE + GAP, y: TOP + GAP, w: W as f32 - SIDE - 2.0 * GAP, h: H as f32 - TOP - 2.0 * GAP };
             let panes = [(1, content)];
             // A long file list: the names run to the sidebar's foot, over the whole scene.
-            let scene = crate::effects::blocks::Scene { gap: GAP, ..crate::effects::active::scene(content, GAP, None, None, &panes, &[], &[], &[]) };
+            let scene = crate::effects::blocks::Scene { edge_gap: GAP, ..crate::effects::active::scene(content, GAP, None, None, &panes, &[], &[], &[]) };
             for t in [0.0, 3.7, 21.3] {
                 let frame = render(&theme, t, &blocks(&scene, false));
                 let seen = pixels(&frame, sidebar_inside());
@@ -458,7 +458,7 @@ mod tests {
         let content = Rect { x: SIDE + GAP, y: TOP + GAP, w: W as f32 - SIDE - 2.0 * GAP, h: H as f32 - TOP - 2.0 * GAP };
         let panes = [(1, content)];
         let shapes = [Shape { key: 1, rect: WORDS, kind: Kind::TitleGroup, pitch: 0.0 }, Shape { key: 2, rect: ICONS, kind: Kind::TitleGroup, pitch: 0.0 }];
-        blocks(&Scene { gap: GAP, ..crate::effects::active::scene(content, GAP, None, Some(names_end), &panes, &[], &shapes, &[]) }, false)
+        blocks(&Scene { edge_gap: GAP, ..crate::effects::active::scene(content, GAP, None, Some(names_end), &panes, &[], &shapes, &[]) }, false)
     }
 
     #[test]

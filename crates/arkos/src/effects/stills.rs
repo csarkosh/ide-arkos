@@ -24,7 +24,10 @@ mod tests {
     fn window_to(gap: f32, sidebar_focus: f32, names_end: f32) -> Vec<crate::effects::blocks::Block> {
         let top = crate::chrome::TITLE_BAR_H;
         let tab = crate::pane_view::TAB_BAR_H;
-        let content = Rect { x: SIDE + gap, y: top + gap, w: W as f32 - SIDE - 2.0 * gap, h: H as f32 - top - 2.0 * gap };
+        // As the app lays it out: the gap as the gutter beside the sidebar (reported as the
+        // binder), the effect's edge margin off the bar and the window's edges.
+        let edge = edge();
+        let content = Rect { x: SIDE + gap, y: top + edge, w: W as f32 - SIDE - gap - edge, h: H as f32 - top - 2.0 * edge };
         let pw = (content.w - gap) / 2.0;
         let left = Rect { x: content.x, y: content.y, w: pw, h: content.h };
         let right = Rect { x: content.x + pw + gap, y: content.y, w: pw, h: content.h };
@@ -40,7 +43,7 @@ mod tests {
         let row = Mark { key: 99, rect: Rect { x: 8.0, y: top + 120.0, w: SIDE - 16.0, h: 34.0 }, kind: Kind::RowHighlight, state: HighlightState::Selected };
         let strokes = [(row, 1.0)];
         let (busy, focus, waiting) = ([1u64], [(1u64, 1.0f32)], [2u64]);
-        let scene = Scene { gap, sidebar_margin: gap, focus: &focus, sidebar_focus, waiting: &waiting, ..crate::effects::active::scene(content, 0.0, Some(top + 330.0), Some(names_end), &panes, &busy, &shapes, &strokes) };
+        let scene = Scene { edge_gap: edge, sidebar_margin: edge, focus: &focus, sidebar_focus, waiting: &waiting, ..crate::effects::active::scene(content, gap, Some(top + 330.0), Some(names_end), &panes, &busy, &shapes, &strokes) };
         let manifest = crate::effects::manifest::parse(crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().manifest).unwrap();
         blocks(&scene, manifest.ink_borders)
     }
@@ -82,6 +85,12 @@ mod tests {
         metal::Device::system_default().is_some()
     }
 
+    /// The runic effect's edge margin (its `edge_gap`, else its gap).
+    fn edge() -> f32 {
+        let m = crate::effects::manifest::parse(crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().manifest).unwrap();
+        m.edge_gap.unwrap_or(m.gap)
+    }
+
     fn gap() -> f32 {
         crate::effects::manifest::parse(crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().manifest).unwrap().gap
     }
@@ -111,7 +120,7 @@ mod tests {
         // down, neither shared with a neighbour: the left pane is focused.
         let (y0, y1) = (300.0, 340.0);
         let lit = brightest(&frame, SIDE + g - 5.0, y0, y1);
-        let idle = brightest(&frame, W as f32 - g + 5.0, y0, y1);
+        let idle = brightest(&frame, W as f32 - edge() + 5.0, y0, y1);
         assert!(lit > idle + 40, "focused {lit} against {idle}");
     }
 
@@ -130,7 +139,7 @@ mod tests {
             let frame = runic_frame(&theme, t, &window(g, 0.0));
             for y in 200..500 {
                 focused += luma(at(&frame, SIDE + g - 2.0, y as f32));
-                other += luma(at(&frame, W as f32 - g + 1.0, y as f32));
+                other += luma(at(&frame, W as f32 - edge() + 1.0, y as f32));
             }
         }
         assert!(focused > other * 2, "inside the focused pane's frame {focused} against {other}");
@@ -148,8 +157,8 @@ mod tests {
         // points inside the frame's line (in the room between the pane and its frame) and 3
         // outside it see the same glow from the line, so the room's pixel is nearer the strip's
         // own (12 points into the bar) than the ground's is.
-        let x = SIDE + g + (W as f32 - SIDE - 3.0 * g) / 2.0 + g + 200.0;
-        let top = crate::chrome::TITLE_BAR_H + g;
+        let x = SIDE + g + (W as f32 - SIDE - 2.0 * g - edge()) / 2.0 + g + 200.0;
+        let top = crate::chrome::TITLE_BAR_H + edge();
         let (room, ground, strip) = (at(&frame, x, top - 2.0), at(&frame, x, top - 8.0), at(&frame, x, top + 12.0));
         let far = |a: crate::palette::Rgb, b: crate::palette::Rgb| (a.r as i32 - b.r as i32).abs() + (a.g as i32 - b.g as i32).abs() + (a.b as i32 - b.b as i32).abs();
         assert!(far(room, strip) < far(ground, strip), "room {room:?} ground {ground:?} strip {strip:?}");
@@ -164,7 +173,7 @@ mod tests {
         let (off, on) = (runic_frame(&theme, 0.0, &window(gap(), 0.0)), runic_frame(&theme, 0.0, &window(gap(), 1.0)));
         // Its left frame line, 5 points out from its column (which keeps the gap from the
         // window's edge, as a pane does), part way down.
-        let x = gap() - 5.0;
+        let x = edge() - 5.0;
         assert!(brightest(&on, x, 200.0, 240.0) > brightest(&off, x, 200.0, 240.0) + 40);
     }
 
@@ -184,8 +193,9 @@ mod tests {
         let column = |x0: u32, x1: u32| (x0..x1).max_by_key(|&x| luma(at(&frame, x as f32, y))).unwrap();
         // A line's centre on a pixel's edge lights the pixels either side alike: a pixel's slack.
         let near = |found: u32, want: f32| (found as f32 + 0.5 - want).abs() <= 1.0;
-        let left = column(0, g as u32 + 2);
-        assert!(near(left, g - 5.0), "the sidebar's left frame line at {left}");
+        let e = edge();
+        let left = column(0, e as u32 + 2);
+        assert!(near(left, e - 5.0), "the sidebar's left frame line at {left}");
         let right = column(SIDE as u32 - 2, SIDE as u32 + 8);
         assert!(near(right, SIDE + 5.0), "its right frame line at {right}, 5 out from its column");
     }

@@ -250,10 +250,11 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
     // The New File prompt is a row of the tree while it is open or fading out.
     let entries = root.explorer.rows();
     let tree_rows = entries.len() + usize::from(root.new_file.current(root.frame_now).is_some());
-    // The sidebar's own height: the panes' area and the gap an effect keeps above and below it,
+    // The sidebar's own height: the panes' area and the edge margin an effect keeps above and
+    // below it,
     // less the margin an effect that frames the sidebar as a pane keeps above and below it.
     let margin = style.sidebar_margin;
-    let total_h = root.content.h + 2.0 * style.gap - 2.0 * margin;
+    let total_h = root.content.h + 2.0 * style.edge_gap - 2.0 * margin;
     // The column is the session list, or the files, chosen by a switch at its top (the Grid
     // layout, with the files alone, went on 2026-11-16).
     let inbox = true;
@@ -451,6 +452,16 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .font_family(family)
         .text_size(px(style.ui(13.0)))
         .text_color(c.text.hsla())
+        // A press anywhere in the column gives it the keys (the Cmd+0 pane is focused), where it
+        // last had them; what was pressed may then move them within it.
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
+                if !root.sidebar_has_keys() {
+                    root.focus_sessions(cx);
+                }
+            }),
+        )
         // The group headings take the keys here while the ring is on one (`Root::group_key_down`).
         .track_focus(&root.header_focus)
         // Only while the column itself has the keys: a key the switcher, the tree or the

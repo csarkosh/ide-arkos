@@ -642,9 +642,15 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
                         // ellipsis rather than be clipped.
                         .child(div().w(px((width - pad - 26.0).max(0.0))).line_height(px(style.ui(15.0))).overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(style.ui(11.0))).text_color(line_color).child(e.line)),
                 )
-                .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| match key {
-                    RowKey::Live(page) => root.show_row(page, cx),
-                    RowKey::Ended(i) => root.resume_ended(i, cx),
+                // A click shows the session and keeps the keys in the list, as Enter does: the
+                // Cmd+0 pane is focused, not the session's pane.
+                .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
+                    match key {
+                        RowKey::Live(page) => root.show_row(page, cx),
+                        RowKey::Ended(i) => root.resume_ended(i, cx),
+                    }
+                    root.keys_to_session_list();
+                    cx.notify();
                 }))
                 .on_mouse_down(
                     MouseButton::Right,

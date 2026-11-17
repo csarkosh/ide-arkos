@@ -40,6 +40,9 @@ pub struct Manifest {
     /// Points kept clear round each pane: between the panes, and between the panes and the
     /// window's bars and edges, so the wash can draw them as cards on a ground; 0, none.
     pub gap: f32,
+    /// Points kept between the panes and the window's bars and edges (the sidebar's margin too,
+    /// with `sidebar_margin`); absent, `gap`.
+    pub edge_gap: Option<f32>,
     /// The corner radius in points of the panes as the wash draws them; with one, the focused
     /// pane's glow is a ring rounded to match instead of the four straight strips.
     pub pane_radius: f32,
@@ -124,6 +127,7 @@ impl Default for Manifest {
             bar_end_clear: 0.0,
             binder: 0.0,
             gap: 0.0,
+            edge_gap: None,
             pane_radius: 0.0,
             ink_borders: false,
             sidebar_margin: false,
@@ -202,6 +206,9 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
     in_range("bar_end_clear", m.bar_end_clear, 0.0, 64.0)?;
     in_range("binder", m.binder, 0.0, 32.0)?;
     in_range("gap", m.gap, 0.0, 16.0)?;
+    if let Some(e) = m.edge_gap {
+        in_range("edge_gap", e, 0.0, 16.0)?;
+    }
     in_range("pane_radius", m.pane_radius, 0.0, 24.0)?;
     in_range("paper_alpha", m.paper_alpha, 0.5, 1.0)?;
     if let Some(a) = m.document_paper_alpha {
@@ -432,6 +439,9 @@ mod tests {
         // frame and its cursor.
         assert_eq!(parse(MINIMAL).unwrap().sidebar_pad, 0.0);
         assert!(!parse(MINIMAL).unwrap().sidebar_margin, "a sidebar keeps no margin unless asked");
+        assert_eq!(parse(MINIMAL).unwrap().edge_gap, None, "the edges keep the gap unless told");
+        assert_eq!(parse(&with("edge_gap = 11")).unwrap().edge_gap, Some(11.0));
+        assert!(parse(&with("edge_gap = 20")).unwrap_err().contains("edge_gap must be 0.0 to 16.0"));
         assert!(parse(&with("sidebar_margin = true")).unwrap().sidebar_margin);
         assert_eq!(parse(&with("sidebar_pad = 12")).unwrap().sidebar_pad, 12.0);
         let e = parse(&with("sidebar_pad = 30")).unwrap_err();
@@ -647,9 +657,10 @@ mod tests {
         let b = BUILTIN.iter().find(|b| b.name == "runic").expect("runic is built in");
         let m = parse(b.manifest).unwrap();
         assert_eq!((m.frame_rate, m.scale, m.ui_text_bump), (30, 0.5, 0.0), "a pixel a point on a Retina display: full size cost 11 to 14 ms a frame there");
-        assert_eq!((m.gap, m.title_pad, m.sidebar_pad, m.bar_end_clear), (16.0, 8.0, 12.0, 48.0), "room for the frames, the plates, the chevron and the lamp left of the +");
+        assert_eq!((m.gap, m.title_pad, m.sidebar_pad, m.bar_end_clear), (16.0, 8.0, 2.0, 48.0), "room for the frames, the plates, the chevron and the lamp left of the +");
         assert_eq!(m.scenes, ["city", "code"]);
         assert!(m.sidebar_margin, "the sidebar keeps a pane's margins, so it is framed as one");
+        assert_eq!(m.edge_gap, Some(11.0), "6 points of ground between a frame and the window's edge, as between two frames");
         assert!(m.ink_borders && m.glyph_motion && m.terminal_decode);
         assert_eq!(m.highlights, Highlights::Effect);
         assert_eq!(m.menus, MenuLook::Glow);

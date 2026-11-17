@@ -182,9 +182,8 @@ pub struct Scene<'a> {
     pub tab_bar_h: f32,
     /// The gutter's width between the sidebar and `content`; 0, none.
     pub binder: f32,
-    /// The effect's gap, which keeps `content` that far off the window's right and bottom edges:
-    /// the title bar and the sidebar still reach those edges.
-    pub gap: f32,
+    /// Points between the panes and the window's bars and edges (`Style::edge_gap`).
+    pub edge_gap: f32,
     pub divider_y: Option<f32>,
     /// The window y in points where the sidebar's last visible name ends, when laid out.
     pub sidebar_end: Option<f32>,
@@ -212,9 +211,9 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
     let edges = |bits: u32| if ink_borders { bits } else { 0 };
     let c = scene.content;
     let bar = scene.title_bar_h;
-    let bottom = c.y + c.h + scene.gap;
+    let bottom = c.y + c.h + scene.edge_gap;
     let mut out = vec![Block {
-        rect: Rect { x: 0.0, y: 0.0, w: c.x + c.w + scene.gap, h: bar },
+        rect: Rect { x: 0.0, y: 0.0, w: c.x + c.w + scene.edge_gap, h: bar },
         kind: Kind::TitleBar,
         edges: edges(EDGE_BOTTOM),
         seed: 1.0,
@@ -226,10 +225,10 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
         waiting: 0.0,
     }];
     let side = (c.x - scene.binder).max(0.0);
-    // The sidebar's own column, inside the margin it keeps (none but under an effect that asks):
-    // `side` reaches the panes, so the column also stops a gap short of them, as a pane does.
+    // The sidebar's own column, inside the margin it keeps (none but under an effect that asks);
+    // `side` stops at the gutter (the binder, or the gap the app reports as one).
     let m = scene.sidebar_margin.min(side / 2.0);
-    let column_w = if m > 0.0 { (side - scene.gap - m).max(0.0) } else { side };
+    let column_w = (side - m).max(0.0);
     if side > 1.0 {
         out.push(Block {
             rect: Rect { x: m, y: bar + m, w: column_w, h: (bottom - bar - 2.0 * m).max(0.0) },
@@ -399,7 +398,7 @@ mod tests {
     }
 
     fn scene<'a>(content: Rect, divider_y: Option<f32>, panes: &'a [(PaneId, Rect)], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
-        Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, gap: 0.0, sidebar_margin: 0.0, divider_y, sidebar_end: None, panes, busy: &[], focus: &[], sidebar_focus: 0.0, waiting: &[], shapes: &[], strokes }
+        Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, edge_gap: 0.0, sidebar_margin: 0.0, divider_y, sidebar_end: None, panes, busy: &[], focus: &[], sidebar_focus: 0.0, waiting: &[], shapes: &[], strokes }
     }
 
     /// The content area starting at `x`, under the title bar and down to y 800.
@@ -416,9 +415,10 @@ mod tests {
     #[test]
     fn a_sidebar_that_keeps_a_margin_reports_its_column_inside_it() {
         static PANES: [(PaneId, Rect); 1] = [(1, Rect { x: 256.0, y: 54.0, w: 928.0, h: 730.0 })];
-        // Content 16 in from the sidebar (240 wide) and 16 under the bar, as the gap keeps it.
+        // Content past a 16 point gutter from the sidebar (240 wide; the app reports the gutter as
+        // the binder) and 16 under the bar, as the gap keeps it.
         let content = rect(256.0, 54.0, 928.0, 730.0);
-        let s = Scene { gap: 16.0, sidebar_margin: 16.0, divider_y: Some(400.0), sidebar_end: Some(500.0), ..scene(content, None, &PANES, &[]) };
+        let s = Scene { edge_gap: 16.0, binder: 16.0, sidebar_margin: 16.0, divider_y: Some(400.0), sidebar_end: Some(500.0), ..scene(content, None, &PANES, &[]) };
         let out = blocks(&s, true);
         let side = out.iter().find(|b| b.kind == Kind::Sidebar).unwrap().rect;
         assert_eq!(side, rect(16.0, 54.0, 224.0, 730.0), "16 in from the window's edge, the bar and the foot, as a pane is");
@@ -534,7 +534,7 @@ mod tests {
         // A 1200 by 800 window, its panes kept 15 points off the bars and the edges.
         let content = rect(240.0 + 15.0, 38.0 + 15.0, 1200.0 - 240.0 - 30.0, 800.0 - 38.0 - 30.0);
         let panes = [(1, content)];
-        let s = Scene { binder: 15.0, gap: 15.0, sidebar_end: Some(300.0), ..scene(content, None, &panes, &[]) };
+        let s = Scene { binder: 15.0, edge_gap: 15.0, sidebar_end: Some(300.0), ..scene(content, None, &panes, &[]) };
         let out = blocks(&s, false);
         let of = |kind: Kind| out.iter().find(|b| b.kind == kind).unwrap().rect;
         assert_eq!(of(Kind::TitleBar), rect(0.0, 0.0, 1200.0, 38.0));
@@ -596,7 +596,7 @@ mod tests {
         assert_eq!((out[1].value, out[1].ordinal), (0.6, HighlightState::Hovered as u32 as f32));
         // The same stroke gives the same block in the wash and in the backdrop.
         let panes = [];
-        let in_wash = blocks(&Scene { content: rect(0.0, 0.0, 800.0, 600.0), title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, gap: 0.0, sidebar_margin: 0.0, divider_y: None, sidebar_end: None, panes: &panes, busy: &[], focus: &[], sidebar_focus: 0.0, waiting: &[], shapes: &[], strokes: &[(inside, 0.6)] }, true);
+        let in_wash = blocks(&Scene { content: rect(0.0, 0.0, 800.0, 600.0), title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, edge_gap: 0.0, sidebar_margin: 0.0, divider_y: None, sidebar_end: None, panes: &panes, busy: &[], focus: &[], sidebar_focus: 0.0, waiting: &[], shapes: &[], strokes: &[(inside, 0.6)] }, true);
         assert_eq!(in_wash.last(), out.last());
     }
 

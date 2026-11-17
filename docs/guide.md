@@ -652,7 +652,8 @@ and a lamp on it (a red paper lantern under Tokyo Rain, a changing rune under Th
 lamp at the bar's right end is lit on the focused pane. A pane's top shades into a band of storm
 cloud (Tokyo Rain) or a drizzle of falling code (The Matrix), and its foot is two rows of skyline
 with a few lit windows. The tab bar and the body reach the pane's frame, cut at its corners as the
-frame is. The sidebar keeps the same margins as a pane, framed as one. The
+frame is. The sidebar keeps the same margins as a pane, framed as one, and every frame
+keeps the same narrow ground round it, to the window's edges and between frames. The
 title bar is a strip of storm clouds, its words and icons on plates, and a chevron marks the
 sidebar's selected row. At the sidebar's foot, below the names, stands the theme's scene:
 Tokyo Rain's is Tokyo at night in the rain (Tokyo Tower in orange lattice, the Skytree, lit
@@ -711,7 +712,7 @@ session list, and the command palette (Shift+Cmd+P) for everything else.
 
 | Keys | Action |
 | --- | --- |
-| Cmd+0 | the session list: the sidebar opens on Sessions and the keys go to its filter; type to narrow it, Up and Down move the ring through the rows, Enter shows the ringed session (a closed one is resumed) and keeps the keys in the list, so you can look through sessions one after another; Escape clears what you typed and then hands the keys to the session shown, as a click on it does. Up from the first row rings the Sessions/Files switcher: Left and Right switch the sidebar between the two, Down or Enter goes into the list shown. On Files, the Explorer and Worktrees headings are stops too: Left folds a group, Right opens it, Enter or Space flips it, and Up and Down go on through the switcher, the files and the worktrees. Up from the switcher rings the title bar's bell: Left and Right move between the bell and the doctor, Enter opens its menu (Up, Down and Enter press its buttons, Escape closes it), Down comes back. Cmd+0 only moves the keys: the tab and the ring stay where you left them, so it comes back to the same session, heading or file |
+| Cmd+0 | the session list: the sidebar opens on Sessions and the keys go to its filter; type to narrow it, Up and Down move the ring through the rows, Enter shows the ringed session (a closed one is resumed) and keeps the keys in the list, so you can look through sessions one after another; Escape clears what you typed and then hands the keys to the session shown, as a click in its pane does. A click on a session shows it the same way and keeps the keys in the list, and a click anywhere in the sidebar gives it the keys. Up from the first row rings the Sessions/Files switcher: Left and Right switch the sidebar between the two, Down or Enter goes into the list shown. On Files, the Explorer and Worktrees headings are stops too: Left folds a group, Right opens it, Enter or Space flips it, and Up and Down go on through the switcher, the files and the worktrees. Up from the switcher rings the title bar's bell: Left and Right move between the bell and the doctor, Enter opens its menu (Up, Down and Enter press its buttons, Escape closes it), Down comes back. Cmd+0 only moves the keys: the tab and the ring stay where you left them, so it comes back to the same session, heading or file |
 | Cmd+1 to Cmd+8 | focus pane 1 to 8 of the session shown |
 | Cmd+9 | focus the last pane |
 | Ctrl+Tab, Ctrl+Shift+Tab | next and previous tab in the focused pane |

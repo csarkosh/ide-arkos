@@ -2382,17 +2382,10 @@ impl Root {
                     Some(sessions_list::RowKey::Live(page)) => self.show_row(page, cx),
                     None => {}
                 }
-                // The keys stay in the list, the ring on the session now shown (Cyrus,
-                // 2026-11-17: "Only mouse clicks should change focus to the selected list
-                // option's pane"); Escape on the empty filter hands them to its pane.
+                // The keys stay in the list, the ring on the session now shown; Escape on the
+                // empty filter hands them to its pane.
                 if target.is_some() {
-                    self.sidebar_focused = false;
-                    self.wt_focused = false;
-                    self.switcher_focused = false;
-                    self.bar_ring = None;
-                    self.header_ring = None;
-                    self.session_filter_focused = true;
-                    self.session_cursor = Some(sessions_list::RowKey::Live(self.tree.page));
+                    self.keys_to_session_list();
                 }
                 cx.notify();
             }
@@ -2422,6 +2415,19 @@ impl Root {
 
     /// Whether the sidebar (the Cmd+0 pane) has the keys: its filter, switcher, a heading, the
     /// file tree or the worktrees.
+    /// The keys to the session list (the Cmd+0 pane), its ring on the session shown: after a
+    /// session is shown from the list, by Enter or by a click (Cyrus, 2026-11-17: "clicking on
+    /// Pane 0 or one of its sessions should cause it to go in focus").
+    pub fn keys_to_session_list(&mut self) {
+        self.sidebar_focused = false;
+        self.wt_focused = false;
+        self.switcher_focused = false;
+        self.bar_ring = None;
+        self.header_ring = None;
+        self.session_filter_focused = true;
+        self.session_cursor = Some(sessions_list::RowKey::Live(self.tree.page));
+    }
+
     pub fn sidebar_has_keys(&self) -> bool {
         self.session_filter_focused || self.switcher_focused || self.header_ring.is_some() || self.sidebar_focused || self.wt_focused
     }
@@ -5961,7 +5967,7 @@ impl Root {
         let e = self.effect.as_mut()?;
         let style = e.style(now);
         let sidebar_focus = self.glow.opacity(&sidebar::SIDEBAR_GLOW_KEY, now);
-        let scene = effects::blocks::Scene { title_bar_h: chrome::TITLE_BAR_H + style.title_grow, gap: style.gap, sidebar_margin: style.sidebar_margin, focus: &focus, sidebar_focus, waiting: &waiting, ..effects::active::scene(self.content, self.binder, self.effect_divider, self.effect_sidebar_end, &layout.panes, &busy, &self.effect_shapes, &strokes) };
+        let scene = effects::blocks::Scene { title_bar_h: chrome::TITLE_BAR_H + style.title_grow, edge_gap: style.edge_gap, sidebar_margin: style.sidebar_margin, focus: &focus, sidebar_focus, waiting: &waiting, ..effects::active::scene(self.content, self.binder, self.effect_divider, self.effect_sidebar_end, &layout.panes, &busy, &self.effect_shapes, &strokes) };
         self.effect_strokes_now = strokes.clone();
         let blocks = effects::blocks::blocks(&scene, style.ink_borders);
         let (size, scale) = e.layer.metrics();
@@ -6144,7 +6150,7 @@ impl Render for Root {
         // While Cmd+B's slide runs, the panes follow the width on screen frame by frame (each
         // frame relays them out, as dragging the edge does; no terminal is made again).
         let side = self.sidebar.shown_width(now);
-        let (content, binder) = split_view::content_area(side, self.effect_style().binder, self.effect_style().gap, top + banner_h, f32::from(size.width), f32::from(size.height));
+        let (content, binder) = split_view::content_area(side, self.effect_style().binder, self.effect_style().gap, self.effect_style().edge_gap, top + banner_h, f32::from(size.width), f32::from(size.height));
         self.binder = binder;
         if content != self.content {
             // Measurements taken at the old size would parse a replay at the wrong grid.

@@ -37,7 +37,8 @@ session you are on.
 2. Press Enter: that session fills the window, and the keys stay in the list, so you can look
    through sessions one after another.
 3. To type in the session shown, press Escape (it clears what you typed first, then hands the
-   keys to the session), or click it.
+   keys to the session), or click in its pane. A click on a session in the list shows it as
+   Enter does, the keys staying in the list.
 
 Up from the top of the list reaches the Sessions/Files switcher at the top of the sidebar.
 There, Left and Right switch between your sessions and your files, and Down or Enter goes into

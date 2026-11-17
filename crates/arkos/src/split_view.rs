@@ -24,16 +24,16 @@ pub fn ratio_from_pointer(area: Rect, orientation: Orientation, x: f32, y: f32) 
 
 /// The area the panes are laid out in, and the gutter's width between it and the sidebar: right
 /// of a sidebar `side` points wide, below the window's bars (`top`), in a window `width` by
-/// `height`, kept the effect's `gap` off the bars and the window's edges. Beside a shown sidebar
+/// `height`, kept the effect's `edge` off the bars and the window's edges. Beside a shown sidebar
 /// the gutter is the effect's `binder`, else its `gap`; with the sidebar hidden there is none and
-/// the gap keeps the panes off the window's left edge. A window smaller than its chrome lays out
+/// the edge margin keeps the panes off the window's left edge. A window smaller than its chrome lays out
 /// at zero.
-pub fn content_area(side: f32, binder: f32, gap: f32, top: f32, width: f32, height: f32) -> (Rect, f32) {
+pub fn content_area(side: f32, binder: f32, gap: f32, edge: f32, top: f32, width: f32, height: f32) -> (Rect, f32) {
     let shown = side > 1.0;
     let gutter = if !shown { 0.0 } else if binder > 0.0 { binder } else { gap };
-    let x = if shown { side + gutter } else { side + gap };
-    let y = top + gap;
-    (Rect { x, y, w: (width - x - gap).max(0.0), h: (height - y - gap).max(0.0) }, gutter)
+    let x = if shown { side + gutter } else { side + edge };
+    let y = top + edge;
+    (Rect { x, y, w: (width - x - edge).max(0.0), h: (height - y - edge).max(0.0) }, gutter)
 }
 
 /// The panes as drawn with `gap` points between them: each side that faces another pane (not on
@@ -154,26 +154,35 @@ mod tests {
 
     #[test]
     fn the_panes_start_past_the_binder_only_while_the_sidebar_shows() {
-        let (area, binder) = content_area(240.0, 20.0, 0.0, 28.0, 1200.0, 800.0);
+        let (area, binder) = content_area(240.0, 20.0, 0.0, 0.0, 28.0, 1200.0, 800.0);
         assert_eq!(area, Rect { x: 260.0, y: 28.0, w: 940.0, h: 772.0 });
         assert_eq!(binder, 20.0);
-        let (area, binder) = content_area(0.0, 20.0, 0.0, 28.0, 1200.0, 800.0);
+        let (area, binder) = content_area(0.0, 20.0, 0.0, 0.0, 28.0, 1200.0, 800.0);
         assert_eq!((area.x, area.w, binder), (0.0, 1200.0, 0.0), "no sidebar, no binder");
-        let (area, binder) = content_area(240.0, 0.0, 0.0, 28.0, 1200.0, 800.0);
+        let (area, binder) = content_area(240.0, 0.0, 0.0, 0.0, 28.0, 1200.0, 800.0);
         assert_eq!((area.x, binder), (240.0, 0.0));
-        let (area, _) = content_area(240.0, 20.0, 0.0, 900.0, 200.0, 800.0);
+        let (area, _) = content_area(240.0, 20.0, 0.0, 0.0, 900.0, 200.0, 800.0);
         assert_eq!((area.w, area.h), (0.0, 0.0), "a window smaller than its chrome lays out at zero");
     }
 
     #[test]
     fn a_gap_keeps_the_panes_off_every_edge_and_is_the_gutter_beside_a_sidebar_without_a_binder() {
-        let (area, left) = content_area(240.0, 0.0, 8.0, 28.0, 1200.0, 800.0);
+        let (area, left) = content_area(240.0, 0.0, 8.0, 8.0, 28.0, 1200.0, 800.0);
         assert_eq!(area, Rect { x: 248.0, y: 36.0, w: 944.0, h: 756.0 });
         assert_eq!(left, 8.0, "the gutter beside the sidebar");
-        let (area, left) = content_area(0.0, 0.0, 8.0, 28.0, 1200.0, 800.0);
+        let (area, left) = content_area(0.0, 0.0, 8.0, 8.0, 28.0, 1200.0, 800.0);
         assert_eq!((area.x, area.w, left), (8.0, 1184.0, 0.0), "no sidebar: off the window's edge");
-        let (_, left) = content_area(240.0, 20.0, 8.0, 28.0, 1200.0, 800.0);
+        let (_, left) = content_area(240.0, 20.0, 8.0, 8.0, 28.0, 1200.0, 800.0);
         assert_eq!(left, 20.0, "a binder is the gutter where there is one");
+    }
+
+    #[test]
+    fn an_edge_margin_narrower_than_the_gap_keeps_the_gap_as_the_gutter() {
+        let (area, left) = content_area(240.0, 0.0, 16.0, 11.0, 28.0, 1200.0, 800.0);
+        assert_eq!(area, Rect { x: 256.0, y: 39.0, w: 933.0, h: 750.0 }, "11 off the bar, the right and the foot; 16 beside the sidebar");
+        assert_eq!(left, 16.0);
+        let (area, _) = content_area(0.0, 0.0, 16.0, 11.0, 28.0, 1200.0, 800.0);
+        assert_eq!(area.x, 11.0, "no sidebar: the edge margin");
     }
 
     #[test]

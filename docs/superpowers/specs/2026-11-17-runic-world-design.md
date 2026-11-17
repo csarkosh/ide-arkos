@@ -49,12 +49,18 @@ match the shape too").
 
 ## The sidebar keeps a pane's margins
 
-The manifest's `sidebar_margin` has the app keep the gap round the sidebar's column, as round a
-pane: from the window's edge, under the title bar and above the foot (the gutter to the panes is
-the gap already). The sidebar block is that column, and the wash frames it as a pane, 5 points
-out, the ground reaching the frame and cut at its corners; 6 points of ground lie between its
-frame and the first pane's, as between two panes' (Cyrus, 2026-11-17: "Pane 0 to have the same
-margins around it as Pane 1").
+The manifest's `sidebar_margin` has the app keep the edge margin round the sidebar's column, as
+round a pane: from the window's edge, under the title bar and above the foot (the gutter to the
+panes is the gap already). The sidebar block is that column, and the wash frames it as a pane, 5
+points out, the ground reaching the frame and cut at its corners (Cyrus, 2026-11-17: "Pane 0 to
+have the same margins around it as Pane 1"). Then, "decrease the space between Pane 0 and the
+other panes" and "the margin between the panes and the window edges": a new key, `edge_gap`
+(11 for runic), keeps the panes and the sidebar off the title bar and the window's edges, the gap
+(16) staying between the panes and beside the sidebar; so 6 points of ground lie beyond every
+frame, to the window's edge, under the title bar and between any two frames. Its rows' pad
+(`sidebar_pad`) is 2, room for the chevron, the frame lying outside the column. A press anywhere
+in the sidebar gives it the keys, and a click on a session shows it and keeps the keys in the list
+(Cyrus: "clicking on Pane 0 or one of its sessions should cause it to go in focus").
 
 ## No lines of runes in the window
 

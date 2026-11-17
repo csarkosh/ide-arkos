@@ -9,10 +9,12 @@ scale = 0.5                   # 0.1 to 1.0; the wash's pixels per window pixel, 
 ui_text_bump = 0              # 0 to 4 points added to the project window's UI text
 gap = 16                      # 0 to 16 points round each pane: room for its frame, 5 points out,
                               # and 6 points of ground between two neighbours' frames
+edge_gap = 11                 # 0 to 16 points off the title bar and the window's edges (the sidebar's
+                              # margin too): 6 of ground beyond a frame, as between two frames
 title_pad = 8                 # 0 to 24 points inside the title bar at both ends: its words and
                               # icons on their plates
-sidebar_pad = 12              # 0 to 24 points before each row and header of the sidebar: room for
-                              # its frame and the chevron on the selected row
+sidebar_pad = 2               # 0 to 24 points before each row and header of the sidebar: room for
+                              # the chevron on the selected row (its frame lies outside its column)
 bar_end_clear = 48            # 0 to 64 points at a pane bar's right end: its lamp, 38 in, left of the +
 ink_borders = true            # the app hides its own 1 px borders; the wash draws the edges
 sidebar_margin = true         # the sidebar keeps the gap round it as a pane does, framed as one
