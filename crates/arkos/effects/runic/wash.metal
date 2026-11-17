@@ -37,6 +37,9 @@ constant float RUNE_CHANGE = 0.5;
 constant float RAIN_ALPHA = 0.22;
 // How much more rain the tab strips carry, as a share of RAIN_ALPHA laid again over them.
 constant float TAB_RAIN = 0.4;
+// How much of the rain the sidebar carries: what a pane's paper (0.92) lets through of its rain
+// and PANE_RAIN's more, so the Cmd+0 pane is as quiet as a source file.
+constant float SIDE_RAIN = 0.11;
 // How much more rain the pane bodies carry, as a share of RAIN_ALPHA laid again over them: a
 // terminal's paper covers the wash (paper_alpha), so without it the rain all but vanishes there;
 // a little, so it stays a quiet ground behind the text (Cyrus, 2026-11-17: "blend it better
@@ -475,9 +478,11 @@ constant float UNDER_NAMES = 0.08;
 // that is higher), thinning out over this many points at each end.
 constant float CLOUD_FADE = 40.0;
 // How many clouds, and the slowest and fastest of their speeds across, in points a second.
-constant int CLOUD_COUNT = 9;
+constant int CLOUD_COUNT = 16;
 constant float CLOUD_SPEED_MIN = 2.0;
 constant float CLOUD_SPEED_MAX = 11.0;
+// The overcast's share behind the clouds at its heaviest.
+constant float OVERCAST = 0.35;
 // How far down the scene the clouds reach, as a share of its height.
 constant float CLOUD_FOOT = 0.42;
 // Lightning: one bolt a cycle at most, lasting this long; none in the first cycle.
@@ -618,7 +623,7 @@ float3 storm_clouds(float2 p, float top, float bottom, float x0, float w, float 
     float cloud = 0.0;
     for (int i = 0; i < CLOUD_COUNT; i++) {
         uint id = uint(i) * 7919u + 31u;
-        float2 half_size = float2(mix(22.0, 52.0, hash01(id)), mix(7.0, 15.0, hash01(id + 1u)));
+        float2 half_size = float2(mix(36.0, 84.0, hash01(id)), mix(11.0, 22.0, hash01(id + 1u)));
         float y = mix(top + half_size.y, bottom - half_size.y, hash01(id + 2u));
         float speed = mix(CLOUD_SPEED_MIN, CLOUD_SPEED_MAX, hash01(id + 3u));
         // Its place across, wrapping: it leaves on the right and comes back on the left.
@@ -626,15 +631,21 @@ float3 storm_clouds(float2 p, float top, float bottom, float x0, float w, float 
         float x = x0 - half_size.x + fract(hash01(id + 4u) + t * speed / span) * span;
         float2 q = (p - float2(x, y)) / half_size;
         // A ragged edge: the blob's outline pushed in and out by noise of its own.
-        float rag = (vnoise((p - float2(x, y)) / 9.0 + float2(float(i) * 13.0, 5.0)) - 0.5) * 0.55;
+        float rag = (vnoise((p - float2(x, y)) / 11.0 + float2(float(i) * 13.0, 5.0)) - 0.5) * 0.45;
         float d = length(q) + rag;
         // Flatter below than above, as a storm cloud's base is.
         d += q.y > 0.0 ? q.y * 0.35 : 0.0;
-        cloud = max(cloud, smoothstep(1.0, 0.55, d));
+        // Overlapping clouds build up into banks rather than one hiding the next.
+        float one = smoothstep(1.0, 0.5, d);
+        cloud = cloud + one * (1.0 - cloud);
     }
+    // An overcast behind them, heaviest in the middle of the band, so a storm's sky shows no
+    // open patches: Cyrus, 2026-11-17, "the clouds need to be fuller given how hard it's raining".
+    float overcast = OVERCAST * smoothstep(0.0, 0.5, (p.y - top) / max(bottom - top, 1.0)) * (0.8 + 0.4 * fbm(float2((p.x + t * 3.0) / 70.0, p.y / 30.0)));
+    cloud = cloud + overcast * (1.0 - cloud);
     float ends = saturate((p.y - top) / CLOUD_FADE) * saturate((bottom - p.y) / CLOUD_FADE);
     float3 cloud_c = mix(col, u.colors[ARKOS_TEXT_DIM].rgb, 0.22 + 0.25 * env);
-    return mix(col, cloud_c, cloud * ends * 0.85);
+    return mix(col, cloud_c, saturate(cloud) * ends * 0.9);
 }
 
 // The city's scene at q (points into the band, band sz), over the sky colour sky: clouds, a bolt
@@ -815,9 +826,8 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     float3 white_c = u.colors[ARKOS_ANSI + 15].rgb;
     float3 green = toward_accent(theme_green(u), u.colors[ARKOS_FOCUS_RING].rgb);
 
-    // The ground, flat, and the rain laid over it, so it shows on a light ground as on black.
+    // The rain; laid over the flat ground once the blocks say where the sidebar is.
     float4 r = rain(p, u.time, green);
-    float3 col = mix(bg, r.rgb, r.a * RAIN_ALPHA * k);
 
     // The blocks: the bars darkened a little, the highlights glowing, every reported edge live.
     int nb = min(int(u.block_count), 48);
@@ -868,6 +878,11 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
         }
         nearest_edge(p, blk, d, hit, u.size);
     }
+    // The ground, flat, and the rain laid over it, so it shows on a light ground as on black;
+    // over the sidebar as faint as behind a pane's paper, in the rain's own colour (Cyrus,
+    // 2026-11-17: "apply the same muted runic rain to the Cmd+0 pane").
+    float in_side = side.z > 0.0 ? 1.0 - smoothstep(-0.5, 0.5, sd_box(p - (side.xy + side.zw * 0.5), side.zw * 0.5)) : 0.0;
+    float3 col = mix(bg, mix(r.rgb, green, in_side), r.a * RAIN_ALPHA * mix(1.0, SIDE_RAIN, in_side) * k);
     col = mix(col, bg * 0.8, dim * k);
     // The tab strips carry the rain more strongly: TAB_RAIN more of it, laid over the first.
     col = mix(col, r.rgb, r.a * RAIN_ALPHA * TAB_RAIN * tab * k);

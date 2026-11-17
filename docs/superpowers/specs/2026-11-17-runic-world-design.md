@@ -25,7 +25,7 @@ manifest `scenes` (`["city", "code"]`); the wash reads it as `ArkosInputs::scene
 | hills behind a terminal | the far skyline along its foot |
 | text typed in | text decoding, as before |
 
-`city`: nine separate storm clouds, each its own size, height and speed (2 to 11 points a second), drifting from half the sidebar's height (or the scene's top, if higher)
+`city`: sixteen storm clouds building into banks over an overcast, each its own size, height and speed (2 to 11 points a second), drifting from half the sidebar's height (or the scene's top, if higher)
 down into the skyline (Cyrus, 2026-11-17: "make the clouds continue to 50% height"), softened
 under the names, the far and near skyline with sparse lit windows (a few warm, a few
 flickering), Tokyo Tower in orange lattice with a red beacon, the Skytree pale with its decks,
@@ -36,6 +36,12 @@ from the second on, a black cat with a green rim and lit eyes crosses the street
 again the same way while a glitch line sweeps the scene.
 
 The clock's zero (Reduce Motion) has no bolt and no cat, and every light on.
+
+## Quiet rain
+
+Behind a pane the rain is as faint as behind a source file (the paper covers 92% of it, for
+terminals too), and over the sidebar it is laid at the same ninth, in its own colour, its heads
+never whitened (Cyrus, 2026-11-17).
 
 ## Cost
 
