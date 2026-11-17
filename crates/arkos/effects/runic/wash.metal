@@ -469,6 +469,11 @@ constant float SOFT_BUFFER = 30.0;
 // How much of the scene shows under the names (the rest is the sidebar's own colour): little
 // enough that the dim text keeps 4.5:1 over a lit window (a GPU test holds it).
 constant float UNDER_NAMES = 0.08;
+// The clouds over the city: they reach up the sidebar to half its height (or the scene's top, if
+// that is higher), thinning out over this many points at each end.
+constant float CLOUD_FADE = 40.0;
+// How far down the scene the clouds reach, as a share of its height.
+constant float CLOUD_FOOT = 0.42;
 // Lightning: one bolt a cycle at most, lasting this long; none in the first cycle.
 constant float BOLT_CYCLE = 9.0;
 constant float BOLT_FOR = 0.45;
@@ -583,6 +588,31 @@ float bolt_x(float y, float y0, float y1, float x0, uint key) {
     return x0 + mix(a, b, fract(f));
 }
 
+// The bolt's envelope at t, 0 to 1 (two flickers and a fade), and its slot's key; 0 in the first
+// cycle and between strikes.
+float bolt_env(float t, thread uint& key) {
+    float slot = floor(t / BOLT_CYCLE);
+    key = uint(slot) * 2654435761u + 17u;
+    float at = t - slot * BOLT_CYCLE - hash01(key) * (BOLT_CYCLE - BOLT_FOR - 1.0);
+    if (slot < 1.0 || at < 0.0 || at >= BOLT_FOR) {
+        return 0.0;
+    }
+    return at < 0.06 ? 1.0 : (at < 0.12 ? 0.25 : (at < 0.22 ? 0.9 : 1.0 - (at - 0.22) / (BOLT_FOR - 0.22)));
+}
+
+// The storm clouds over the city at p (window points), between top and bottom (where they thin
+// out to nothing over CLOUD_FADE at each end), drifting, lit by a bolt's envelope env, over col.
+float3 storm_clouds(float2 p, float top, float bottom, float t, float env, constant ArkosInputs& u, float3 col) {
+    if (p.y < top || p.y > bottom) {
+        return col;
+    }
+    float c = fbm(float2((p.x + t * 6.0) / 46.0, p.y / 18.0));
+    float ends = saturate((p.y - top) / CLOUD_FADE) * saturate((bottom - p.y) / CLOUD_FADE);
+    float cloud = smoothstep(0.42, 0.7, c) * ends;
+    float3 cloud_c = mix(col, u.colors[ARKOS_TEXT_DIM].rgb, 0.22 + 0.25 * env);
+    return mix(col, cloud_c, cloud * 0.85);
+}
+
 // The city's scene at q (points into the band, band sz), over the sky colour sky: clouds, a bolt
 // now and then, the far and near skyline with Tokyo Tower and the Skytree, lit windows, rain.
 float3 city_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 green, float3 white_c, float3 sb) {
@@ -590,21 +620,11 @@ float3 city_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
     // The sky: what is under it (sb), lit low by the city's glow.
     float glow = saturate(q.y / sz.y);
     float3 col = mix(sb, mix(sb, green, 0.14), glow * glow);
-    // A bolt: its envelope this frame (two flickers), its slot's place and its path.
-    float slot = floor(t / BOLT_CYCLE);
-    uint key = uint(slot) * 2654435761u + 17u;
-    float at = t - slot * BOLT_CYCLE - hash01(key) * (BOLT_CYCLE - BOLT_FOR - 1.0);
-    float env = 0.0;
-    if (slot >= 1.0 && at >= 0.0 && at < BOLT_FOR) {
-        env = at < 0.06 ? 1.0 : (at < 0.12 ? 0.25 : (at < 0.22 ? 0.9 : 1.0 - (at - 0.22) / (BOLT_FOR - 0.22)));
-    }
+    // A bolt: its envelope this frame (two flickers), its slot's key and its path. The clouds
+    // over the city are drawn over the whole sidebar's lower half (`storm_clouds`).
+    uint key = 0u;
+    float env = bolt_env(t, key);
     col = mix(col, mix(col, white_c, 0.35), env * 0.35 * (1.0 - glow));
-    // The clouds, along the band's top, drifting.
-    float c = fbm(float2((q.x + t * 6.0) / 46.0, q.y / 18.0));
-    float top = saturate(1.0 - q.y / (sz.y * 0.42));
-    float cloud = smoothstep(0.42, 0.7, c) * top;
-    float3 cloud_c = mix(sb, u.colors[ARKOS_TEXT_DIM].rgb, 0.22 + 0.25 * env);
-    col = mix(col, cloud_c, cloud * 0.85);
     // The bolt, from the clouds to a rooftop, its path drawn in runes.
     if (env > 0.0) {
         float x0 = sz.x * (0.18 + 0.64 * hash01(key + 9u));
@@ -677,8 +697,9 @@ float3 city_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
     // The rain, slanting a little, over all of it.
     float rx = q.x + q.y * 0.18;
     float colx = floor(rx / 5.0);
-    float speed = 170.0 + 90.0 * hash2(float2(colx, 3.0));
-    float pos = fract((q.y + t * speed) / 60.0 + hash2(float2(colx, 7.0))) * 60.0;
+    // Falling: a streak's place goes down the band as the clock goes on.
+    float speed = 90.0 + 50.0 * hash2(float2(colx, 3.0));
+    float pos = fract((q.y - t * speed) / 60.0 + hash2(float2(colx, 7.0))) * 60.0;
     float streak = (fract(rx / 5.0) < 0.2 && pos < 9.0 && hash2(float2(colx, 11.0)) < 0.5) ? (1.0 - pos / 9.0) : 0.0;
     col = mix(col, mix(u.colors[ARKOS_TEXT_DIM].rgb, white_c, 0.2), streak * 0.3);
     return col;
@@ -845,6 +866,16 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             float under = p.y < names_end ? 1.0 - UNDER_NAMES : saturate(1.0 - (p.y - names_end) / SOFT_BUFFER) * (1.0 - UNDER_NAMES);
             art = mix(art, col, max(under, 1.0 - saturate(q.y / 60.0)) * (q.y < 60.0 ? 1.0 : 0.0) + under * (q.y >= 60.0 ? 1.0 : 0.0));
             col = mix(col, art, k);
+        }
+        // The city's storm clouds, from half the sidebar's height (or the scene's top, if higher)
+        // down into the scene, softened under the names as the scene is.
+        if (u.scene < 0.5 && band.w >= SCENE_MIN_H) {
+            float top = min(side.y + side.w * 0.5, band.y);
+            float bottom = band.y + band.w * CLOUD_FOOT;
+            uint bkey = 0u;
+            float3 clouded = storm_clouds(p, top, bottom, u.time, bolt_env(u.time, bkey), u, col);
+            float under = p.y < names_end ? 1.0 - UNDER_NAMES : saturate(1.0 - (p.y - names_end) / SOFT_BUFFER) * (1.0 - UNDER_NAMES);
+            col = mix(col, mix(clouded, col, under), k);
         }
         float4 fr = float4(side.x + SIDE_FRAME_IN, side.y + SIDE_FRAME_IN, side.z - 2.0 * SIDE_FRAME_IN, side.w - 2.0 * SIDE_FRAME_IN);
         float2 hb = fr.zw * 0.5;

@@ -25,9 +25,11 @@ manifest `scenes` (`["city", "code"]`); the wash reads it as `ArkosInputs::scene
 | hills behind a terminal | the far skyline along its foot |
 | text typed in | text decoding, as before |
 
-`city`: storm clouds drifting, the far and near skyline with sparse lit windows (a few warm, a few
+`city`: storm clouds drifting from half the sidebar's height (or the scene's top, if higher)
+down into the skyline (Cyrus, 2026-11-17: "make the clouds continue to 50% height"), softened
+under the names, the far and near skyline with sparse lit windows (a few warm, a few
 flickering), Tokyo Tower in orange lattice with a red beacon, the Skytree pale with its decks,
-slanting rain; once a 9 second cycle, from the second on, a bolt of lightning made of a chain of
+slanting rain falling at 90 to 140 points a second; once a 9 second cycle, from the second on, a bolt of lightning made of a chain of
 runes strikes a rooftop and lights the clouds. `code`: towers of falling code, their roofs lit, a
 phone booth on the street whose light rings twice every three seconds, and once a 26 second cycle,
 from the second on, a black cat with a green rim and lit eyes crosses the street, then crosses it
