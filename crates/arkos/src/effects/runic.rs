@@ -534,4 +534,174 @@ mod tests {
             }
         }
     }
+
+    const AMBER: f32 = 1.0;
+
+    /// A walker on the road's sidewalk, as wash.metal's `road_walker_at` places it: where it is
+    /// along the road, and whether it is walking.
+    fn road_walker_at(dir: f32, key: (f32, f32), t: f32) -> (f32, bool) {
+        let block = CROSS_EVERY * GRID_Z;
+        let cross = GRID_Z + 2.0 * WALK_AT;
+        let h = |d: f32| hash2(key.0 + d, key.1 + d);
+        let brisk = h(2.0) < 0.65;
+        let v = if brisk { 0.54 + 0.06 * h(6.0) } else { 0.31 + 0.05 * h(6.0) };
+        let laps = if brisk { 1.0 } else { 2.0 };
+        let period = laps * SIG_CYCLE;
+        let late = (ROAD_GREEN - AMBER).min(ROAD_GREEN - cross / v);
+        let c = (h(3.0) * laps).floor() * SIG_CYCLE + late * h(4.0);
+        let k = ((t - c) / period).floor();
+        let x = (v * (t - c - k * period)).min(block);
+        let j = (h(5.0) * 8.0).floor() + dir * k;
+        let corner = if dir > 0.0 { j * block - WALK_AT } else { j * block + GRID_Z + WALK_AT };
+        (corner + dir * x, x < block)
+    }
+
+    /// A stroller on the road's sidewalk, as wash.metal's `road_stroller_at` places it: where it
+    /// is along the road, and how much of it shows (it steps out of one door and into another).
+    fn road_stroller_at(dir: f32, key: (f32, f32), t: f32) -> (f32, f32) {
+        let block = CROSS_EVERY * GRID_Z;
+        let span = block - GRID_Z - 2.0 * WALK_AT;
+        let h = |d: f32| hash2(key.0 + d, key.1 + d);
+        let v = 0.36 + 0.22 * h(2.0);
+        let period = span / v + 1.0;
+        let s = t + h(3.0) * period;
+        let k = (s / period).floor();
+        let lap = |d: f32| hash2(key.0 + k * 7.0 + d, key.1 + d);
+        let len = span * (0.4 + 0.6 * lap(5.0));
+        let a = lap(4.0) * (span - len);
+        let dur = len / v;
+        let into = s - k * period;
+        let x = into.min(dur) * v;
+        let smooth = |e0: f32, e1: f32, x: f32| {
+            let u = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+            u * u * (3.0 - 2.0 * u)
+        };
+        let shown = smooth(0.0, 0.4, into) * (1.0 - smooth(dur - 0.4, dur, into));
+        let j = (lap(6.0) * 8.0).floor();
+        let base = j * block + GRID_Z + WALK_AT;
+        (base + if dir > 0.0 { a + x } else { a + len - x }, shown)
+    }
+
+    /// The road's sidewalk people, one side: the walkers and the strollers.
+    fn sidewalk(side: f32) -> (Vec<(f32, (f32, f32))>, Vec<(f32, (f32, f32))>) {
+        let walkers = (0..PEOPLE).map(|j| {
+            let key = (j as f32, side * 17.0 + 61.0);
+            (if hash2(key.0 + 1.0, key.1 + 1.0) < 0.5 { 1.0 } else { -1.0 }, key)
+        });
+        let strollers = (0..STROLLERS).map(|j| {
+            let key = (j as f32, side * 17.0 + 211.0);
+            (if hash2(key.0 + 1.0, key.1 + 1.0) < 0.5 { 1.0 } else { -1.0 }, key)
+        });
+        (walkers.collect(), strollers.collect())
+    }
+
+    const PEOPLE: usize = 40;
+    const STROLLERS: usize = 48;
+
+    #[test]
+    fn a_walker_crosses_a_cross_street_only_on_the_road_s_green_and_a_stroller_never_does() {
+        let block = CROSS_EVERY * GRID_Z;
+        // In a cross street: between its curbs.
+        let in_street = |w: f32| w - (w / block).floor() * block < GRID_Z;
+        for side in [0.0, 1.0] {
+            let (walkers, strollers) = sidewalk(side);
+            for (dir, key) in walkers {
+                let mut t = 0.0f32;
+                while t < 600.0 {
+                    let (w, walking) = road_walker_at(dir, key, t);
+                    let sig = t - (t / SIG_CYCLE).floor() * SIG_CYCLE;
+                    if in_street(w) {
+                        assert!(walking && sig < ROAD_GREEN, "walker {key:?} in a cross street at {t} ({sig} into the cycle)");
+                    }
+                    t += 0.05;
+                }
+            }
+            for (dir, key) in strollers {
+                let mut t = 0.0f32;
+                while t < 600.0 {
+                    let (w, shown) = road_stroller_at(dir, key, t);
+                    let local = w - (w / block).floor() * block;
+                    assert!(shown == 0.0 || (local >= GRID_Z + WALK_AT - 1e-3 && local <= block - WALK_AT + 1e-3), "stroller {key:?} off its block's sidewalk at {t}: {local}");
+                    t += 0.05;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_road_s_sidewalks_are_full_of_people_walking_between_the_corners() {
+        // Cyrus, 2026-11-17: "more pedestrian traffic moving vertically", "distributed so the
+        // pedestrian traffic looks fuller". Every block overlaid: its sidewalk between the
+        // crosswalks in six stretches, each with people walking in it on average and hardly ever
+        // none, and only a few people standing at the corners at once.
+        let block = CROSS_EVERY * GRID_Z;
+        let (lo, hi) = (GRID_Z + WALK_AT, block - WALK_AT);
+        let (walkers, strollers) = sidewalk(0.0);
+        let (mut moments, mut empty, mut most_standing) = (0usize, 0usize, 0usize);
+        let mut total = [0usize; 6];
+        let mut t = 0.0f32;
+        while t < 240.0 {
+            let mut bins = [0usize; 6];
+            let mut standing = 0;
+            let mut put = |w: f32| {
+                let local = w - (w / block).floor() * block;
+                if local >= lo && local < hi {
+                    bins[(((local - lo) / (hi - lo)) * 6.0) as usize] += 1;
+                }
+            };
+            for &(dir, key) in &walkers {
+                let (w, walking) = road_walker_at(dir, key, t);
+                if walking { put(w) } else { standing += 1 }
+            }
+            for &(dir, key) in &strollers {
+                let (w, shown) = road_stroller_at(dir, key, t);
+                if shown > 0.5 {
+                    put(w);
+                }
+            }
+            for (i, n) in bins.iter().enumerate() {
+                total[i] += n;
+                empty += usize::from(*n == 0);
+            }
+            moments += 1;
+            most_standing = most_standing.max(standing);
+            t += 0.25;
+        }
+        let means: Vec<f32> = total.iter().map(|&n| n as f32 / moments as f32).collect();
+        let empty_share = empty as f32 / (moments * 6) as f32;
+        eprintln!("stretches {means:?}, empty {empty_share}, most standing {most_standing} of {}", PEOPLE + STROLLERS);
+        assert!(means.iter().all(|&m| m >= 4.0), "a thin stretch: {means:?}");
+        // The crowd before (forty walkers all leaving the corners on the green and standing at the
+        // next) averaged under three a stretch, a stretch empty a third of the time.
+        assert!(empty_share < 0.05, "a stretch empty {empty_share} of the time");
+        assert!(most_standing * 4 <= PEOPLE + STROLLERS, "{most_standing} people standing at once");
+    }
+
+    #[test]
+    fn the_wash_s_sidewalks_are_the_ones_checked_here() {
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        for line in [
+            "constant float AMBER = 1.0;",
+            "constant int PEOPLE = 40;",
+            "constant int STROLLERS = 48;",
+            "    bool brisk = hash2(key + 2.0) < 0.65;",
+            "    float v = brisk ? mix(0.54, 0.6, hash2(key + 6.0)) : mix(0.31, 0.36, hash2(key + 6.0));",
+            "    float late = min(ROAD_GREEN - AMBER, ROAD_GREEN - cross / v);",
+            "    float c = floor(hash2(key + 3.0) * laps) * SIG_CYCLE + late * hash2(key + 4.0);",
+            "    float x = min(v * (t - c - k * period), block);",
+            "    float j = floor(hash2(key + 5.0) * 8.0) + dir * k;",
+            "    float v = mix(0.36, 0.58, hash2(key + 2.0));",
+            "    float period = span / v + 1.0;",
+            "    float s = t + hash2(key + 3.0) * period;",
+            "    float2 lap = key + float2(k * 7.0, 0.0);",
+            "    float len = span * mix(0.4, 1.0, hash2(lap + 5.0));",
+            "    float a = hash2(lap + 4.0) * (span - len);",
+            "    float shown = smoothstep(0.0, 0.4, into) * (1.0 - smoothstep(dur - 0.4, dur, into));",
+            "    float j = floor(hash2(lap + 6.0) * 8.0);",
+            "            float2 key = float2(float(j), float(side) * 17.0 + 61.0);",
+            "            float2 key = float2(float(j), float(side) * 17.0 + 211.0);",
+        ] {
+            assert!(wash.contains(line), "wash.metal lacks {line}");
+        }
+    }
 }

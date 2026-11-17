@@ -665,7 +665,7 @@ you, alive with a busy city's traffic, all of it keeping the law (cars queueing 
 the right and waiting at their stop lines for green (headlights coming on down the road, tail
 lights going away, cars crossing on the cross streets between the blocks, and cyclists in the bike lanes by the
 curbs keeping the same law), and crowds on the
-sidewalks crossing only on the crosswalks with their light and gathering at the corners on red, lit
+sidewalks walking the whole length of every block, crossing only on the crosswalks with their light and gathering at the corners on red, people stepping in and out of doors between, lit
 windows in the near towers, parks of lit trees and a warm lamp where empty lots meet, and on a lone empty lot a subway
 entrance with its green globes and people going down and coming up, a food cart under a striped
 umbrella with its queue, or a basketball court with players running, drones

@@ -592,7 +592,8 @@ constant float STOP_BACK = 0.4;
 constant float CROSS_STOP = 0.42;
 constant float WALK_AT = 0.18;
 constant float WALK_W = 0.24;
-// People: PEOPLE on each of the road's sidewalks, CROSS_PEOPLE on each of a cross street's two,
+// People: PEOPLE walkers and STROLLERS strollers on each of the road's sidewalks, CROSS_PEOPLE on
+// each of a cross street's two,
 // PERSON_H camera heights tall, their legs swinging STEPS times a second while they walk.
 // Cyclists (Cyrus, 2026-11-17: "include cyclists on the street traffic too"): ROAD_BIKES each way
 // in the road's bike lanes by the curbs, BIKE_LANE out from the middle, keeping the law as the cars
@@ -601,6 +602,7 @@ constant float WALK_W = 0.24;
 constant int ROAD_BIKES = 3;
 constant float BIKE_LANE = 0.78;
 constant int PEOPLE = 40;
+constant int STROLLERS = 48;
 constant int CROSS_PEOPLE = 12;
 constant float PERSON_H = 0.16;
 constant float STEPS = 2.2;
@@ -1323,6 +1325,53 @@ float road_bike_at(float dir, float2 key, float t) {
     return stop_line + dir * block * x * x * (3.0 - 2.0 * x);
 }
 
+// Where a walker on the road's sidewalk is along the road, in the world, at t, and whether it is
+// walking (x) or standing at a corner (y 0). It crosses a cross street only on the road's green,
+// stepping off the curb early enough to be over before the green ends: a brisk one (most) a block
+// every cycle, so it hardly stands, a slow one a block every two, standing a few seconds at a
+// corner for the next green. Each steps off at its own time in the green, so a block's walkers
+// spread out along it.
+float2 road_walker_at(float dir, float2 key, float t) {
+    float block = float(CROSS_EVERY) * GRID_Z;
+    float cross = GRID_Z + 2.0 * WALK_AT;
+    bool brisk = hash2(key + 2.0) < 0.65;
+    float v = brisk ? mix(0.54, 0.6, hash2(key + 6.0)) : mix(0.31, 0.36, hash2(key + 6.0));
+    float laps = brisk ? 1.0 : 2.0;
+    float period = laps * SIG_CYCLE;
+    float late = min(ROAD_GREEN - AMBER, ROAD_GREEN - cross / v);
+    float c = floor(hash2(key + 3.0) * laps) * SIG_CYCLE + late * hash2(key + 4.0);
+    float k = floor((t - c) / period);
+    float x = min(v * (t - c - k * period), block);
+    float j = floor(hash2(key + 5.0) * 8.0) + dir * k;
+    float corner = dir > 0.0 ? j * block - WALK_AT : j * block + GRID_Z + WALK_AT;
+    return float2(corner + dir * x, x < block ? 1.0 : 0.0);
+}
+
+// A stroller on the road's sidewalk (Cyrus, 2026-11-17: the people "distributed so the pedestrian
+// traffic looks fuller"): out of a door, or round the corner from a cross street's sidewalk, and
+// along its block into another door or round the far corner, never into a street,
+// so it keeps no light and comes and goes at its own times, filling the sidewalk between the
+// corners. Where it is along the road, in the world, at t (x), and how much of it shows (y), as
+// it steps out of a door and in at another.
+float2 road_stroller_at(float dir, float2 key, float t) {
+    float block = float(CROSS_EVERY) * GRID_Z;
+    float span = block - GRID_Z - 2.0 * WALK_AT;
+    float v = mix(0.36, 0.58, hash2(key + 2.0));
+    float period = span / v + 1.0;
+    float s = t + hash2(key + 3.0) * period;
+    float k = floor(s / period);
+    float2 lap = key + float2(k * 7.0, 0.0);
+    float len = span * mix(0.4, 1.0, hash2(lap + 5.0));
+    float a = hash2(lap + 4.0) * (span - len);
+    float dur = len / v;
+    float into = s - k * period;
+    float x = min(into, dur) * v;
+    float shown = smoothstep(0.0, 0.4, into) * (1.0 - smoothstep(dur - 0.4, dur, into));
+    float j = floor(hash2(lap + 6.0) * 8.0);
+    float base = j * block + GRID_Z + WALK_AT;
+    return float2(base + (dir > 0.0 ? a + x : a + len - x), shown);
+}
+
 // A cyclist's light at p seen end on (riding toward or away from the camera), at screen point
 // foot, s points to a camera height: the bike a thin upright, the rider seated on it, pedalling
 // while it moves, and its light (headlight or tail light, the caller's colour) at the bike's
@@ -1684,23 +1733,29 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
     int near_side = q.x < cx ? 0 : 1;
     for (int side = near_side; side < (by_walk ? near_side + 1 : near_side); side++) {
         float sx = (side == 0 ? -1.0 : 1.0) * edge_x;
+        float out_x = side == 0 ? -1.0 : 1.0;
         for (int j = 0; j < PEOPLE; j++) {
             float2 key = float2(float(j), float(side) * 17.0 + 61.0);
             float h = hash2(key);
             float dir = hash2(key + 1.0) < 0.5 ? 1.0 : -1.0;
-            float v = mix(0.36, 0.55, hash2(key + 2.0));
-            float tt = t + floor(hash2(key + 3.0) * 2.0) * SIG_CYCLE;
-            float k = floor(tt / (2.0 * SIG_CYCLE));
-            float tau = tt - k * 2.0 * SIG_CYCLE;
-            float delta = 0.3 * hash2(key + 4.0);
-            float walked = clamp(tau - delta, 0.0, block / v);
-            float j0 = floor(hash2(key + 5.0) * 8.0) + dir * k;
-            float corner = dir > 0.0 ? j0 * block - WALK_AT : j0 * block + GRID_Z + WALK_AT;
-            float z = wrap_view(corner + dir * v * walked - run);
+            float2 at = road_walker_at(dir, key, t);
+            float z = wrap_view(at.x - run);
             float seen = (1.0 - smoothstep(Z_FAR * 0.55, Z_FAR, z)) * smoothstep(Z_NEAR, Z_NEAR + 0.6, z);
-            float2 foot = float2(cx + (sx + (side == 0 ? -1.0 : 1.0) * (hash2(key + 6.0) - 0.3) * WALK_W) * f / z, yh + f / z);
-            bool walking = tau > delta && tau < delta + block / v;
-            col = light_on(col, mix(green, white_c, 0.3), person_light(q, foot, PERSON_H * f / z, t, h, walking) * 0.85 * seen, u.dark);
+            float2 foot = float2(cx + (sx + out_x * (hash2(key + 7.0) - 0.3) * WALK_W) * f / z, yh + f / z);
+            col = light_on(col, mix(green, white_c, 0.3), person_light(q, foot, PERSON_H * f / z, t, h, at.y > 0.0) * 0.85 * seen, u.dark);
+        }
+        for (int j = 0; j < STROLLERS; j++) {
+            float2 key = float2(float(j), float(side) * 17.0 + 211.0);
+            float dir = hash2(key + 1.0) < 0.5 ? 1.0 : -1.0;
+            float2 at = road_stroller_at(dir, key, t);
+            if (at.y <= 0.0) {
+                continue;
+            }
+            float z = wrap_view(at.x - run);
+            float seen = (1.0 - smoothstep(Z_FAR * 0.55, Z_FAR, z)) * smoothstep(Z_NEAR, Z_NEAR + 0.6, z) * at.y;
+            // Out of a door: nearer the buildings than the walkers keep.
+            float2 foot = float2(cx + (sx + out_x * (0.1 + 0.6 * hash2(key + 7.0)) * WALK_W) * f / z, yh + f / z);
+            col = light_on(col, mix(green, white_c, 0.3), person_light(q, foot, PERSON_H * f / z, t, hash2(key), true) * 0.85 * seen, u.dark);
         }
     }
     return col;

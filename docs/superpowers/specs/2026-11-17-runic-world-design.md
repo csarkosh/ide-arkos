@@ -115,9 +115,19 @@ turned; its trips are timed so every intersection it crosses is crossed on the g
 mirrors its arithmetic and checks it over ten minutes). A cross car comes in from the side,
 queues at its stop line, and goes in turn on the cross streets' green. Crosswalks are zebra
 stripes, over the road beside each cross street and over each cross street beside the road.
-People keep to the sidewalks: forty on each of the road's, walking either way at their own pace,
-crossing the cross streets with the road's green and waiting at the corner otherwise (standing,
-their legs together); twelve on each of a cross street's two sidewalks, out of a doorway, to the
+People keep to the sidewalks. On each of the road's (Cyrus, 2026-11-17: "more pedestrian traffic
+moving vertically", "distributed so the pedestrian traffic looks fuller"), forty walkers and
+forty-eight strollers (forty walkers before, all stepping off on the green and standing at the
+next corner, so the sidewalks filled in waves and emptied between them). A walker (`road_walker_at`)
+crosses the cross streets with the road's green and waits at the corner otherwise (standing, its
+legs together); most are brisk, a block every cycle, so they hardly stand, the rest a block every
+two, and each steps off at its own time in the green, early enough to be over before it ends. A
+stroller (`road_stroller_at`) comes out of a door or round the corner from a cross street's
+sidewalk and walks along its block into another door or round the far corner, never into a
+street, so it keeps no light and comes and goes at its own times, fading in and out at the door.
+Every block overlaid, a sixth of its sidewalk has four to seven people walking in it on average
+and is empty under five per cent of the time (under three, and a third of the time, before);
+`runic.rs` checks both the laws and that fullness on a mirror of the arithmetic. Twelve on each of a cross street's two sidewalks, out of a doorway, to the
 corner, over the road on the crosswalk with the cross streets' green, into a doorway on the far
 side. Spread across the sidewalk's width, not single file. Every motion is locked to the cycle,
 so it is worked out from the clock alone; the city wraps every four blocks, so whatever wraps is
