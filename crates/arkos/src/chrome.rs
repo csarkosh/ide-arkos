@@ -103,29 +103,30 @@ fn icon_segs(icon: Icon) -> Vec<Seg> {
             Move((6.87, 14.0)),
             Cubic((9.13, 14.0), (7.2, 14.8), (8.8, 14.8)),
         ],
-        // A hospital (Cyrus, 2026-11-17: "something resembling a hospital"): a building on the
-        // ground, its roof stepped up in the middle, a cross on its front and a door at its foot.
+        // A first-aid kit (Cyrus, 2026-11-17: "something indicating 'Medical' so the user gets
+        // an impression that it fixes issues with the IDE"; a hospital before it did not read):
+        // a case with rounded corners, its handle on top and a cross on its front.
         Icon::Doctor => vec![
-            Move((1.5, 14.5)),
-            Line((14.5, 14.5)),
-            Move((2.5, 14.5)),
-            Line((2.5, 6.0)),
-            Line((5.0, 6.0)),
-            Line((5.0, 2.5)),
-            Line((11.0, 2.5)),
-            Line((11.0, 6.0)),
-            Line((13.5, 6.0)),
-            Line((13.5, 14.5)),
+            Move((3.5, 4.5)),
+            Line((12.5, 4.5)),
+            Cubic((14.5, 6.5), (13.6, 4.5), (14.5, 5.4)),
+            Line((14.5, 12.0)),
+            Cubic((12.5, 14.0), (14.5, 13.1), (13.6, 14.0)),
+            Line((3.5, 14.0)),
+            Cubic((1.5, 12.0), (2.4, 14.0), (1.5, 13.1)),
+            Line((1.5, 6.5)),
+            Cubic((3.5, 4.5), (1.5, 5.4), (2.4, 4.5)),
+            Close,
+            // The handle.
+            Move((5.8, 4.5)),
+            Line((5.8, 2.6)),
+            Line((10.2, 2.6)),
+            Line((10.2, 4.5)),
             // The cross.
-            Move((8.0, 4.3)),
-            Line((8.0, 9.1)),
-            Move((5.6, 6.7)),
-            Line((10.4, 6.7)),
-            // The door.
-            Move((6.6, 14.5)),
-            Line((6.6, 11.3)),
-            Line((9.4, 11.3)),
-            Line((9.4, 14.5)),
+            Move((8.0, 6.6)),
+            Line((8.0, 11.9)),
+            Move((5.35, 9.25)),
+            Line((10.65, 9.25)),
         ],
         // A question mark in a ring.
         Icon::Help => {
@@ -572,14 +573,20 @@ pub fn keys_ring_is_shaped(style: &Style) -> bool {
 /// with a faint wash of the focus colour; overworld's square frame filled with a fainter active
 /// tab's colour, as its selected rows are filled; else the thin outline round the row.
 pub fn keys_ring(theme: &Theme, style: &Style) -> Div {
+    keys_ring_inset(theme, style, PILL_INSET)
+}
+
+/// `keys_ring`, its pill inset `pill_inset` from the element's sides (a tab's ring sits closer to
+/// its edges than a sidebar row's).
+pub fn keys_ring_inset(theme: &Theme, style: &Style, pill_inset: f32) -> Div {
     let ring = theme.chrome.focus_ring;
     let base = div().absolute();
     match style.keys_ring {
         KeysRing::Pill => base
             .top_0()
             .bottom_0()
-            .left(px(PILL_INSET))
-            .right(px(PILL_INSET))
+            .left(px(pill_inset))
+            .right(px(pill_inset))
             .rounded(px(999.0))
             .border_1()
             .border_color(ring.alpha(KEYS_PILL_LINE))

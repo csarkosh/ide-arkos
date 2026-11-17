@@ -123,6 +123,14 @@ side. Spread across the sidewalk's width, not single file. Every motion is locke
 so it is worked out from the clock alone; the city wraps every four blocks, so whatever wraps is
 still at a stop line or a corner.
 
+## Busier road
+
+Cyrus, 2026-11-17: "there's not enough vehicles moving vertically. Only horizontal movement across
+the graphic looks like NYC's traffic density". Twenty-four cars a lane on the road (five before),
+queued up to four deep behind a stop line a car's length (0.3) apart; only the first at the line
+goes two blocks on a green, so none behind it is still crossing when the light turns (the law
+test, mirroring them, caught the first try at that).
+
 ## Cyclists
 
 Cyrus, 2026-11-17: "include cyclists on the street traffic too". Three each way ride the road's

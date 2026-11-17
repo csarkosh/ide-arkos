@@ -759,7 +759,7 @@ option_as_meta = true
 # Action name = keystrokes, in gpui syntax: modifiers cmd, ctrl, alt and shift joined with "-"
 # before the key, as in "cmd-shift-p"; chords are separated by a space, as in "cmd-k cmd-m".
 # An empty string "" unbinds an action. The defaults are Chrome's keys where Chrome has one
-# (Cmd+0 the session list, Cmd+1 to 9 the panes, Ctrl+Tab the tabs, Cmd+T a new tab); an action
+# (Cmd+0 the session list, Cmd+1 to 9 the panes, the pane's number again its tabs, Cmd+T a new tab); an action
 # written "" here has no key until you give it one, and the command palette runs every action:
 # "clear to start" = "cmd-k"
 # "focus pane 1" = "cmd-1"
@@ -788,8 +788,8 @@ option_as_meta = true
 # "previous tab" = "alt-cmd-left"
 # "next tab alt" = "cmd-shift-]"
 # "previous tab alt" = "cmd-shift-["
-# "next tab ctrl" = "ctrl-tab"
-# "previous tab ctrl" = "ctrl-shift-tab"
+# "next tab ctrl" = ""
+# "previous tab ctrl" = ""
 # "most recently used tab" = ""
 # "new tab" = "cmd-t"
 # "close tab" = "cmd-w"

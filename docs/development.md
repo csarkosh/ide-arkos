@@ -1089,8 +1089,8 @@ Things only a person at the screen can check, in order of value:
   ("shown after 0.5s … off screen") and the desktop in front does not change. A sampler of the
   window list (`CGWindowListCopyWindowInfo` every millisecond, alpha and owner) shows an opaque
   window at every sample; `screencapture` needs Screen Recording, which the sampler does not
-- title bar keys: Cmd+0, Up past the switcher rings the bell; Right rings the hospital (the
-  doctor), then the question mark (Help), then the cog (Settings); Enter on the hospital opens
+- title bar keys: Cmd+0, Up past the switcher rings the bell; Right rings the first-aid kit (the
+  doctor), then the question mark (Help), then the cog (Settings); Enter on the first-aid kit opens
   the doctor's menu with a ring on its first button, Down moves it, Enter presses it, Escape
   closes the menu and the ring stays there; Enter on the question mark opens the Help menu (the
   menu bar's Help items), on the cog the Settings window; Down goes back to the switcher;
@@ -1168,7 +1168,7 @@ Things only a person at the screen can check, in order of value:
 - a 5 MB markdown file opens and scrolls without stutter; typing in it keeps up; Reduce
   Motion changes nothing here; a `.rs` file is still read-only; a file that is not UTF-8 opens
   read-only with a banner
-- the title bar's right side shows a bell, a hospital (the doctor), a question mark (Help) and a
+- the title bar's right side shows a bell, a first-aid kit (the doctor), a question mark (Help) and a
   cog (Settings) and no text; with an
   update staged the bell wears a dot and its popover says "Update ready: X" with "Update now";
   after an update the bell says "Updated to X", and after you open and close it the dot goes

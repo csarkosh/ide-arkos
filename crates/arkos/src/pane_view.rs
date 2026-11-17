@@ -658,6 +658,7 @@ fn render_invitation(root: &mut Root, cx: &mut Context<Root>) -> Div {
 }
 
 fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: &[(String, TabMark)], height: f32, cx: &mut Context<Root>) -> Stateful<Div> {
+    let tab_ringed = root.tab_ring == Some(pane);
     let style = root.effect_style();
     let theme = root.theme.clone();
     let c = &theme.chrome;
@@ -854,6 +855,9 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
                 .gap(if slot_width.is_some() { px(0.0) } else { px(6.0) })
                 // Under an effect the wash is the bar's colour; the active tab is a lighter patch on it.
                 .bg(if is_active { c.tab_active.alpha(style.active_tab_alpha) } else { c.tab_inactive.alpha(style.chrome_alpha) })
+                // The keyboard's ring on the tab shown while the tab bar has it (its pane's
+                // Cmd+number pressed again), in the effect's own shape.
+                .when(is_active && tab_ringed, |el| el.relative().child(crate::chrome::keys_ring_inset(&root.theme, &style, 2.0)))
                 .text_color(text)
                 .when_some(glyph, |el, g| el.child(g))
                 .child(match renaming {

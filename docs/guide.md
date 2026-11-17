@@ -661,7 +661,7 @@ windows, storm clouds, and now and then a soft bolt of lightning made of runes t
 the clouds and fades over a second);
 The Matrix's is a digital horizon: a floor of grid lines running toward a line of light, a dense
 city of wireframe towers on both sides of an open road coming toward you with the floor and past
-you, alive with a city's traffic, all of it keeping the law: signals at every corner, cars keeping to
+you, alive with a busy city's traffic, all of it keeping the law (cars queueing at the lights): signals at every corner, cars keeping to
 the right and waiting at their stop lines for green (headlights coming on down the road, tail
 lights going away, cars crossing on the cross streets between the blocks, and cyclists in the bike lanes by the
 curbs keeping the same law), and crowds on the
@@ -996,7 +996,7 @@ the interval it started with. `auto` and `idle_after_secs` apply at once.
 
 Claude Code tips: fast trackpad scrolling in a fullscreen `claude` jumps unless
 `wheelScrollAccelerationEnabled` is `false` in `~/.claude/settings.json`; the doctor (the
-hospital at the right of the title bar) sets it for you, there and in every other Claude config
+first-aid kit at the right of the title bar) sets it for you, there and in every other Claude config
 folder it has seen in use ([Session awareness](#session-awareness)).
 
 Claude Code takes the Arkos colours through a Claude Code theme Arkos writes,
@@ -1210,7 +1210,7 @@ An agent finds `arkos guide` in three ways, from no setup to one command:
 3. `arkos --help` lists `guide` first and `open`, `video` and `panes` after it, and `arkos theme`,
    `arkos open` and `arkos video` with no arguments say `see: arkos guide`.
 
-The doctor ("Agent guide for Claude Code" in the hospital's list) offers to install or refresh the
+The doctor ("Agent guide for Claude Code" in the first-aid kit's list) offers to install or refresh the
 skill, and `arkos doctor` has a `themes:` section: `{n} themes, all valid` or one line per theme
 file that does not load (ending with the `arkos theme validate` command to run on it), a
 `theme.dark` or `theme.light` that names no theme, and the skill's state (installed, not

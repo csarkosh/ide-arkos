@@ -17,8 +17,8 @@ pub fn page(overrides: &BTreeMap<String, String>) -> String {
     format!(
         "# Keyboard navigation
 
-Arkos uses Chrome's keys: a number jumps to a place, Tab steps through tabs, the arrows move
-through the session list, and the command palette runs everything else. These get you anywhere:
+Arkos uses a few keys: a number jumps to a place, the same number again puts you on that pane's
+tabs, the arrows move through what you are on, and the command palette runs everything else. These get you anywhere:
 
 | Keys | Where it takes you |
 | --- | --- |
@@ -49,7 +49,7 @@ the list shown. In the files, the Explorer and Worktrees headings are stops: Lef
 group, Right opens it, Enter flips it. In the file tree, Up and Down move, Right and Left open
 and close a folder, Enter opens a file and Space previews it.
 
-Up from the switcher reaches the title bar's icons, the bell, the doctor (a hospital), Help and
+Up from the switcher reaches the title bar's icons, the bell, the doctor (a first-aid kit), Help and
 Settings (a cog): Left and Right move between them, Enter opens the menu (Up, Down and Enter
 press its buttons, Escape closes it; the cog opens Settings), and Down comes back.
 
@@ -65,8 +65,9 @@ A session is a page of panes, each with its own tabs. Each pane's number is at t
 its tab bar.
 
 - {p1} to {p8}: that pane; {last}: the last one.
-- {next_ctrl} and {prev_ctrl} (or {next_tab} and {prev_tab}): the next and previous tab of the
-  pane you are in.
+- The pane's number again (press {p1} while pane 1 has the keys): a ring on its tab bar. Left
+  and Right move to the tab before or after, as on the sidebar's switcher and the title bar's
+  icons; Enter, Down or Escape put you in the tab shown. ({next_tab} and {prev_tab} do it too.)
 - {new_tab}: a new tab. Pick Claude, Codex or Shell with Up, Down and Enter.
 - {close}: close the tab; {reopen}: bring it back.
 - {split}: split the pane in two, side by side.
@@ -88,8 +89,6 @@ from the palette and set it under `[keybindings]`, for example
         palette = k("command palette"),
         next_session = k("next session"),
         prev_session = k("previous session"),
-        next_ctrl = k("next tab ctrl"),
-        prev_ctrl = k("previous tab ctrl"),
         next_tab = k("next tab"),
         prev_tab = k("previous tab"),
         new_tab = k("new tab"),
@@ -117,7 +116,7 @@ mod tests {
     #[test]
     fn the_page_names_the_default_keys() {
         let p = page(&BTreeMap::new());
-        for keys in ["**Cmd+0**", "**Cmd+1** to **Cmd+8**", "**Cmd+9**", "**Shift+Cmd+P**", "**Cmd+T**", "**Ctrl+Tab**", "**Option+Cmd+Down**"] {
+        for keys in ["**Cmd+0**", "**Cmd+1** to **Cmd+8**", "**Cmd+9**", "**Shift+Cmd+P**", "**Cmd+T**", "**Option+Cmd+Down**"] {
             assert!(p.contains(keys), "{keys} in:\n{p}");
         }
         assert!(!p.contains("(no key)"), "every key the page names is bound by default");

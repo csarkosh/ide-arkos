@@ -435,14 +435,15 @@ mod tests {
     fn road_car_at(dir: f32, key: (f32, f32), t: f32) -> f32 {
         let block = CROSS_EVERY * GRID_Z;
         let h = |d: f32| hash2(key.0 + d, key.1 + d);
-        let n = if h(0.0) < 0.5 { 1.0 } else { 2.0 };
+        let queue = (h(4.0) * 4.0).floor() * 0.3;
+        let n = if h(0.0) < 0.5 || queue > 0.0 { 1.0 } else { 2.0 };
         let dur = if n == 1.0 { 7.0 + 4.0 * h(1.0) } else { 7.0 + 3.0 * h(1.0) };
         let delta = 0.4 * h(2.0);
         let j0 = (h(3.0) * 8.0).floor();
         let k = (t / SIG_CYCLE).floor();
         let x = ((t - k * SIG_CYCLE - delta) / dur).clamp(0.0, 1.0);
         let j = j0 + dir * k * n;
-        let stop_line = if dir > 0.0 { j * block - STOP_BACK } else { j * block + GRID_Z + STOP_BACK };
+        let stop_line = (if dir > 0.0 { j * block - STOP_BACK } else { j * block + GRID_Z + STOP_BACK }) - dir * queue;
         stop_line + dir * n * block * x * x * (3.0 - 2.0 * x)
     }
 
@@ -473,8 +474,13 @@ mod tests {
             "    float dur = n == 1.0 ? mix(7.0, 11.0, hash2(key + 1.0)) : mix(7.0, 10.0, hash2(key + 1.0));",
             "    float delta = 0.4 * hash2(key + 2.0);",
             "    float j0 = floor(hash2(key + 3.0) * 8.0);",
-            "    float stop_line = dir > 0.0 ? j * block - STOP_BACK : j * block + GRID_Z + STOP_BACK;",
+            "    float queue = floor(hash2(key + 4.0) * QUEUE_CARS) * QUEUE_GAP;",
+            "    float n = (hash2(key) < 0.5 || queue > 0.0) ? 1.0 : 2.0;",
+            "    float stop_line = (dir > 0.0 ? j * block - STOP_BACK : j * block + GRID_Z + STOP_BACK) - dir * queue;",
             "    return stop_line + dir * n * block * x * x * (3.0 - 2.0 * x);",
+            "constant float QUEUE_CARS = 4.0;",
+            "constant float QUEUE_GAP = 0.3;",
+            "constant int ROAD_CARS = 24;",
             "            float z = wrap_view(road_car_at(dir, float2(float(j), float(lane) * 13.0 + 31.0), t) - run);",
             "    float dur = mix(8.5, 11.5, hash2(key + 1.0));",
             "    float delta = 0.8 * hash2(key + 2.0);",
@@ -498,7 +504,7 @@ mod tests {
         };
         // The road's cars (five a lane) and its cyclists (three), each as the wash places them.
         let riders = [(0.0f32, -1.0f32), (1.0, 1.0)].into_iter().flat_map(|(lane, dir)| {
-            let cars = (0..5).map(move |j| (lane, dir, (j as f32, lane * 13.0 + 31.0), false));
+            let cars = (0..24).map(move |j| (lane, dir, (j as f32, lane * 13.0 + 31.0), false));
             let bikes = (0..3).map(move |j| (lane, dir, (j as f32, lane * 13.0 + 141.0), true));
             cars.chain(bikes)
         });

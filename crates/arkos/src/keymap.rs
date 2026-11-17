@@ -254,7 +254,8 @@ pub const ACTIONS: &[ActionSpec] = &[
     row(Section::Tabs, "move tab to previous pane", ""), row(Section::Tabs, "move tab to next pane", ""),
     row(Section::Tabs, "next tab", "alt-cmd-right"), row(Section::Tabs, "previous tab", "alt-cmd-left"),
     row(Section::Tabs, "next tab alt", "cmd-shift-]"), row(Section::Tabs, "previous tab alt", "cmd-shift-["),
-    row(Section::Tabs, "next tab ctrl", "ctrl-tab"), row(Section::Tabs, "previous tab ctrl", "ctrl-shift-tab"),
+    // Ctrl+Tab gave way to the pane's number pressed again (`tab_ring_key`); bind it here to keep it.
+    row(Section::Tabs, "next tab ctrl", ""), row(Section::Tabs, "previous tab ctrl", ""),
     row(Section::Tabs, "most recently used tab", ""),
     row(Section::Tabs, "new tab", "cmd-t"),
     row(Section::Tabs, "close tab", "cmd-w"), row(Section::Tabs, "reopen closed tab", "cmd-shift-t"), row(Section::Tabs, "close all in pane", ""),
@@ -800,6 +801,27 @@ pub fn command_for(name: &str) -> Option<Command> {
     })
 }
 
+/// What a key does while a pane's tab bar has the keyboard's ring (its Cmd+number pressed while
+/// it had the keys; Cyrus, 2026-11-17, in place of Ctrl+Tab, "re-using existing navigation
+/// rules"): Left and Right show the tab before or after the one shown, stopping at either end, as
+/// the switcher and the title bar's icons do; Enter, Down and Escape leave the ring, the keys in
+/// the tab shown; any other key passes to the pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabRingKey {
+    Show(usize),
+    Leave,
+    Pass,
+}
+
+pub fn tab_ring_key(key: &str, active: usize, n: usize) -> TabRingKey {
+    match key {
+        "left" => TabRingKey::Show(active.saturating_sub(1)),
+        "right" => TabRingKey::Show((active + 1).min(n.saturating_sub(1))),
+        "enter" | "down" | "escape" => TabRingKey::Leave,
+        _ => TabRingKey::Pass,
+    }
+}
+
 pub fn tab_cycle(active: usize, len: usize, delta: isize) -> usize {
     if len == 0 {
         return 0;
@@ -862,6 +884,19 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tab_bar_s_ring_walks_the_tabs_with_left_and_right_and_leaves_on_enter_down_or_escape() {
+        assert_eq!(tab_ring_key("right", 0, 3), TabRingKey::Show(1));
+        assert_eq!(tab_ring_key("right", 2, 3), TabRingKey::Show(2), "stops at the last");
+        assert_eq!(tab_ring_key("left", 1, 3), TabRingKey::Show(0));
+        assert_eq!(tab_ring_key("left", 0, 3), TabRingKey::Show(0), "stops at the first");
+        for key in ["enter", "down", "escape"] {
+            assert_eq!(tab_ring_key(key, 1, 3), TabRingKey::Leave, "{key}");
+        }
+        assert_eq!(tab_ring_key("a", 1, 3), TabRingKey::Pass, "typing goes to the pane");
+        assert!(ACTIONS.iter().any(|r| r.name == "next tab ctrl" && r.keys.is_empty()), "Ctrl+Tab is no longer bound");
+    }
     use std::collections::BTreeMap;
 
     fn keys_of(kb: &KeyBinding) -> String {
@@ -884,7 +919,7 @@ mod tests {
         ("", "move tab to previous pane", "MoveTabToPrevPane"), ("", "move tab to next pane", "MoveTabToNextPane"),
         ("alt-cmd-right", "next tab", "NextTab"), ("alt-cmd-left", "previous tab", "PrevTab"),
         ("cmd-shift-]", "next tab alt", "NextTabAlt"), ("cmd-shift-[", "previous tab alt", "PrevTabAlt"),
-        ("ctrl-tab", "next tab ctrl", "NextTab"), ("ctrl-shift-tab", "previous tab ctrl", "PrevTab"),
+        ("", "next tab ctrl", "NextTab"), ("", "previous tab ctrl", "PrevTab"),
         ("", "most recently used tab", "MruTab"),
         ("cmd-t", "new tab", "NewTabMenu"),
         ("cmd-w", "close tab", "CloseTab"), ("cmd-shift-t", "reopen closed tab", "ReopenClosedTab"), ("", "close all in pane", "CloseAllInPane"),

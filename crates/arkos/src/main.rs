@@ -387,6 +387,10 @@ pub struct Root {
     pub session_filter_focused: bool,
     /// The session list's keyboard cursor (Chrome keys spec, section 2): the row Enter opens.
     pub session_cursor: Option<sessions_list::Stop>,
+    /// The pane whose tab bar has the keyboard's ring: its Cmd+number pressed while it already
+    /// had the keys (Cyrus, 2026-11-17, in place of Ctrl+Tab). Left and Right move between its
+    /// tabs, Enter or Down go into the tab shown, Escape leaves.
+    pub tab_ring: Option<PaneId>,
     /// Each session's reminder, by its page (sessions hold grids spec, section 4). Saved with
     /// the workspace.
     pub reminders: HashMap<tree::PageKey, reminder::Reminder>,
@@ -940,6 +944,7 @@ impl Root {
             popover_mark: 0,
             session_filter_focused: false,
             session_cursor: None,
+            tab_ring: None,
             dock_badge: 0,
             held: None,
             session_submenu: None,
@@ -2609,6 +2614,32 @@ impl Root {
         }
     }
 
+    /// A key while a pane's tab bar has the keyboard's ring (`keymap::tab_ring_key`): true when it
+    /// was the ring's, so the pane's own content does not see it. Any other key takes the ring
+    /// away and goes on to the pane; a chord (Cmd+1 again) leaves it to its command.
+    pub fn tab_ring_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
+        let Some(pane) = self.tab_ring else { return false };
+        let Some(p) = self.tree.pane(pane) else {
+            self.tab_ring = None;
+            return false;
+        };
+        let m = &ks.modifiers;
+        if m.platform || m.control || m.alt {
+            return false;
+        }
+        match keymap::tab_ring_key(&ks.key, p.active, p.tabs.len()) {
+            keymap::TabRingKey::Show(idx) => self.activate_tab(pane, idx, cx),
+            keymap::TabRingKey::Leave => self.tab_ring = None,
+            keymap::TabRingKey::Pass => {
+                self.tab_ring = None;
+                cx.notify();
+                return false;
+            }
+        }
+        cx.notify();
+        true
+    }
+
     /// A key while the title bar's icons have the keyboard (`chrome::bar_key`).
     pub fn bar_key_down(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
         let Some(ring) = self.bar_ring else { return };
@@ -4075,6 +4106,10 @@ impl Root {
     pub fn run(&mut self, cmd: keymap::Command, window: &mut Window, cx: &mut Context<Self>) {
         use keymap::Command::*;
         let focused = self.tree.focused;
+        // A pane's Cmd+number pressed while it already has the keys rings its tab bar; any other
+        // command takes the ring away.
+        let again = matches!(cmd, FocusPane(i) if self.tree.pane_at(i) == Some(focused) && !self.keys_outside_panes());
+        self.tab_ring = None;
         // The user has moved on: the last notice goes (a command may put up a new one).
         if self.notice.hide(Instant::now()) {
             cx.notify();
@@ -4091,6 +4126,10 @@ impl Root {
             cx.notify();
         }
         match cmd {
+            FocusPane(_) if again => {
+                self.tab_ring = Some(focused);
+                cx.notify();
+            }
             FocusPane(i) => {
                 if let Some(p) = self.tree.pane_at(i) {
                     self.focus_pane(p, cx);
@@ -6415,9 +6454,15 @@ impl Render for Root {
             // holds the keys gives them back here, whoever handles the press and even if it stops
             // there. AppKit will not: gpui's view declines first responder on a click. The next
             // frame would otherwise read the page as just clicked and undo the press's focus.
-            .capture_any_mouse_down(cx.listener(|root, _ev: &MouseDownEvent, _window, _cx| root.keys_back_to_arkos()))
+            .capture_any_mouse_down(cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
+                root.keys_back_to_arkos();
+                // A press anywhere takes the keyboard's ring off a tab bar.
+                if root.tab_ring.take().is_some() {
+                    cx.notify();
+                }
+            }))
             .capture_key_down(cx.listener(|root, ev: &KeyDownEvent, _window, cx| {
-                if root.new_tab_menu_key(&ev.keystroke, cx) || root.escape_closes_menu(&ev.keystroke, cx) {
+                if root.tab_ring_key(&ev.keystroke, cx) || root.new_tab_menu_key(&ev.keystroke, cx) || root.escape_closes_menu(&ev.keystroke, cx) {
                     cx.stop_propagation();
                 }
             }))
