@@ -163,7 +163,9 @@ The flags:
 - `--new`: another tab even when one already shows the file.
 - `--wait`: let a video that does not exist yet open; the tab says "waiting for file" and loads it
   once it appears and stops changing. Only for a video; any other missing file is still refused.
-- `--focus`: move the keyboard focus to the tab.
+- `--focus`: move the keyboard focus to the tab. While the user is looking at another session's
+  page, the window stays where it is: the tab becomes the focused one on your session's page, for
+  when they go there, and nothing on their screen moves.
 - `--window PID`: another window, from `arkos panes --all`.
 - `--json`: one JSON value on stdout, below.
 

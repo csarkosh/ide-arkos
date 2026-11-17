@@ -87,6 +87,15 @@ pub fn neighbor_step(tree: &Tree, from: PaneId, bounds: Rect) -> OpenStep {
     }
 }
 
+/// The page an agent's open is worked on, when it is not the page shown: its session's own
+/// (sessions hold grids spec, section 1). It is brought up only for the open and put away again,
+/// `--focus` or not (Cyrus, 2026-11-17: a session that is not the one selected "should not change
+/// the selected session to itself" when it opens a file or a pane); `--focus` then focuses the tab
+/// on that page, for when the user goes there. `None`: the page shown is the session's own.
+pub fn open_within(session_page: Option<crate::tree::PageKey>, shown: crate::tree::PageKey) -> Option<crate::tree::PageKey> {
+    session_page.filter(|p| *p != shown)
+}
+
 /// Refuses an open that needs the calling session's pane when the session has no tab in this
 /// window (closed, in its minute of grace): a plain open or a split would otherwise land in
 /// whichever pane has the focus. `--pane N` names its pane and still works.
@@ -352,23 +361,26 @@ impl Root {
 
     /// An agent's open. What a session opens goes on its own page (sessions hold grids spec,
     /// section 1): when that page is not the one shown it is brought up for the open and put
-    /// away again after, so the user's own view is left as it was; with `--focus` the session's
-    /// page is shown instead.
+    /// away again after, so the user's own view is left as it was (`open_within`), even with
+    /// `--focus`, which then focuses the tab on the session's page for when the user goes there.
     fn direct_open(&mut self, a: OpenArgs, cx: &mut Context<Self>) -> Result<Prepared, String> {
         let page = a.session.and_then(|s| self.tree.find_session(s)).and_then(|(pane, _)| self.tree.page_of(pane));
         let shown = self.tree.page;
-        let Some(page) = page.filter(|p| *p != shown) else { return self.direct_open_here(a, cx) };
-        if a.focus {
-            self.tree.show_page(page);
-            self.grids.clear();
-            let out = self.direct_open_here(a, cx);
-            self.save(cx);
-            return out;
-        }
+        let Some(page) = open_within(page, shown) else { return self.direct_open_here(a, cx) };
+        let focus_there = a.focus;
         self.tree.show_page_for(page);
         // Answered now, from the page that holds the tab: once the page is put away again
         // nothing loads the tab until its session is chosen.
-        let out = self.direct_open_here(a, cx).and_then(|(answer, _, _, _)| Ok((Answer::Now(self.answer_outcome(&answer, cx)?), Vec::new(), Vec::new(), false)));
+        let out = self.direct_open_here(OpenArgs { focus: false, ..a }, cx).and_then(|(answer, _, _, _)| {
+            // Asked for the keys: the tab is the one focused on its page, which stays put away.
+            if let (true, Answer::Opened { tab, .. }) = (focus_there, &answer) {
+                if let Some((pane, idx)) = self.tree.locate(*tab) {
+                    self.tree.activate_quiet(pane, idx);
+                    self.tree.focused = pane;
+                }
+            }
+            Ok((Answer::Now(self.answer_outcome(&answer, cx)?), Vec::new(), Vec::new(), false))
+        });
         self.tree.show_page_for(shown);
         self.save(cx);
         out
@@ -644,6 +656,22 @@ type Prepared = (Answer, Vec<TabId>, Vec<Settle>, bool);
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_open_from_another_session_s_page_never_shows_that_page() {
+        // The Game Port session ran `arkos open … --pane 2 --focus` while Cyrus typed in another
+        // session, and the window switched to Game Port. The open is worked on its session's page
+        // and put away again, `--focus` or not.
+        let mut tree = Tree::new(terminal(1));
+        let shown = tree.page;
+        tree.blank_page();
+        let other = tree.page;
+        tree.show_page(shown);
+        assert_eq!(super::open_within(Some(other), shown), Some(other), "worked on its own page, put away again");
+        assert_eq!(super::open_within(Some(shown), shown), None, "the page shown is the session's own");
+        assert_eq!(super::open_within(None, shown), None);
+        assert!(!include_str!("direct.rs").contains("if a.focus {\n            self.tree.show_page(page);"), "no open shows its session's page");
+    }
+
 
     #[test]
     fn a_web_address_is_never_refused_as_a_missing_file() {
