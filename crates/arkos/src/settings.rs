@@ -226,6 +226,11 @@ pub enum PresetRow {
     Group { name: String, members: Vec<(usize, String)>, pick: usize },
 }
 
+/// A group's row as one line of the list's text: the group, the member it shows, a caret.
+pub fn group_line(group: &str, member: &str) -> String {
+    format!("{group} {member} \u{25be}")
+}
+
 /// A group member's name in its group's dropdown: its title without the group's word in front
 /// ("Watercolor Lavender" is "Lavender" under Watercolor), else its whole title.
 pub fn member_name(title: &str, group: &str) -> String {
@@ -996,23 +1001,15 @@ impl SettingsWindow {
                         list = list.child(row);
                     }
                     PresetRow::Group { name: group, members, pick } => {
-                        // One row for the group, the whole row a select: its choice on the right
-                        // (quiet text with a caret), and a click anywhere on it opens a small menu
-                        // of the members floating over the list, where a click picks one.
+                        // One row for the group, the whole row a select, read as one line of the
+                        // list's own text ("Watercolor Lavender ▾", aligned with every other row):
+                        // a click anywhere on it opens a small menu of the members floating over
+                        // the list, where a click picks one.
                         let is_current = members.iter().any(|(ix, _)| &self.themes[*ix].0 == current);
                         let pick_name = members.iter().find(|(ix, _)| *ix == pick).map(|(_, t)| member_name(t, &group)).unwrap_or_default();
                         let open = self.open_group.as_ref().is_some_and(|(s, g)| *s == slot && *g == group);
                         let toggle_group = group.clone();
-                        let choice = div()
-                            .ml_auto()
-                            .flex()
-                            .items_center()
-                            .gap(px(4.0))
-                            .px(px(6.0))
-                            .text_color(c.dim)
-                            .child(pick_name)
-                            .child(div().text_size(px(9.0)).child("\u{25be}"));
-                        let mut row = list_row((list_id, 20_000 + pick), group.clone(), is_current, enabled, c).relative().child(choice);
+                        let mut row = list_row((list_id, 20_000 + pick), group_line(&group, &pick_name), is_current, enabled, c).relative();
                         if enabled {
                             // `list_row` gives a row not in force its hover already; gpui takes
                             // one hover style an element, so only the row in force adds one here.
@@ -1481,6 +1478,11 @@ mod tests {
         assert_eq!(preset_list(&themes, &shown, Dark, "navy"), vec![PresetRow::One { ix: 0, label: "Plain Navy".into() }]);
         assert_eq!(preset_list(&themes, &shown, Light, "navy")[0], PresetRow::One { ix: 0, label: "Plain Navy (a dark theme)".into() });
         assert_eq!(theme::title_case("my-dark-theme"), "My Dark Theme", "a user's theme without a title reads in capitalised words");
+    }
+
+    #[test]
+    fn a_group_s_row_reads_as_one_line_of_text() {
+        assert_eq!(group_line("Watercolor", "Lavender"), "Watercolor Lavender \u{25be}");
     }
 
     #[test]

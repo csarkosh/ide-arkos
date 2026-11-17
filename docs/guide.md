@@ -874,8 +874,9 @@ window, as Keybindings (Cmd+/) does.
   - Presets: a preset is a finished look, a theme with its own effect and fonts. Mode (System,
     Dark, Light), the dark and the light preset lists side by side, "Add preset…" and "Show
     presets folder". Each preset reads by its title (Plain Navy, The Matrix, Tokyo Rain…),
-    and a group is one row with its choice on the right: Watercolor (Lavender, the default, or
-    Peach) and Material (Solar, the default, Bright or Lavender). The whole row is a select: a click
+    and a group is one row that reads as its group and its choice, "Watercolor Lavender ▾":
+    Watercolor (Lavender, the default, or Peach) and Material (Solar, the default, Bright or
+    Lavender). The whole row is a select: a click
     on it opens a small menu of the members, the one in force checked; a click on one puts it in
     force, and a click outside the menu closes it. "Add preset…" takes a theme's `.toml` file (anything else is refused), names
     the copy after the file's own `name`, shows the error under the button for a bad file, and

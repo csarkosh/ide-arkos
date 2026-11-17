@@ -1102,8 +1102,9 @@ Things only a person at the screen can check, in order of value:
   its first row, and Up from there rings the switcher again; Escape on the switcher gives the
   keys back to the pane; the ring never shifts the pills
 - Settings, Appearance, Presets: every preset reads by its title (Plain Navy, Enter The
-  Matrix); the light list has one Watercolor row showing "Watercolor Lavender ▾" and one
-  Material row showing "Material Solar ▾" when neither is in force; a click anywhere on the row
+  Matrix); the light list has one row reading "Watercolor Lavender ▾" and one reading
+  "Material Solar ▾" when neither is in force, in the list's own text, aligned with the rows
+  around them; a click anywhere on the row
   opens a small card of the members floating over the rows below, the one in force checked; a
   click on one puts it in force (the row's check and choice follow) and closes the card, a click
   elsewhere closes it; the palette's "Theme: Enter The
