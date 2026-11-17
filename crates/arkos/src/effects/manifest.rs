@@ -59,6 +59,9 @@ pub struct Manifest {
     /// A document's paper over the wash (rendered markdown and the viewer). Absent,
     /// `paper_alpha`.
     pub document_paper_alpha: Option<f32>,
+    /// A menu's paper over the backdrop the effect paints for it, so its rows read over the
+    /// effect. Absent, `paper_alpha`.
+    pub menu_paper_alpha: Option<f32>,
     /// The bars and the sidebar over the wash.
     pub chrome_alpha: f32,
     /// The bars inside a tab's body over the wash: a grid's banner, a sheet strip, a video's
@@ -105,6 +108,11 @@ impl Manifest {
         self.body_bars_alpha.unwrap_or(self.chrome_alpha)
     }
 
+    /// The paper a menu reads on: the `menu_paper_alpha` key, else `paper_alpha`.
+    pub fn menu_paper_alpha(&self) -> f32 {
+        self.menu_paper_alpha.unwrap_or(self.paper_alpha)
+    }
+
     /// The paper a document reads on: the `document_paper_alpha` key, else `paper_alpha`.
     pub fn document_paper_alpha(&self) -> f32 {
         self.document_paper_alpha.unwrap_or(self.paper_alpha)
@@ -135,6 +143,7 @@ impl Default for Manifest {
             menus: MenuLook::App,
             paper_alpha: 0.5,
             document_paper_alpha: None,
+            menu_paper_alpha: None,
             chrome_alpha: 0.0,
             body_bars_alpha: None,
             active_tab_alpha: 0.55,
@@ -213,6 +222,9 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
     in_range("paper_alpha", m.paper_alpha, 0.5, 1.0)?;
     if let Some(a) = m.document_paper_alpha {
         in_range("document_paper_alpha", a, 0.5, 1.0)?;
+    }
+    if let Some(a) = m.menu_paper_alpha {
+        in_range("menu_paper_alpha", a, 0.5, 1.0)?;
     }
     in_range("chrome_alpha", m.chrome_alpha, 0.0, 1.0)?;
     if let Some(a) = m.body_bars_alpha {
@@ -439,6 +451,9 @@ mod tests {
         // frame and its cursor.
         assert_eq!(parse(MINIMAL).unwrap().sidebar_pad, 0.0);
         assert!(!parse(MINIMAL).unwrap().sidebar_margin, "a sidebar keeps no margin unless asked");
+        assert_eq!(parse(&with("paper_alpha = 0.6")).unwrap().menu_paper_alpha(), 0.6, "a menu's paper is the terminal's unless told");
+        assert_eq!(parse(&with("menu_paper_alpha = 0.9")).unwrap().menu_paper_alpha(), 0.9);
+        assert!(parse(&with("menu_paper_alpha = 0.2")).unwrap_err().contains("menu_paper_alpha must be 0.5 to 1.0"));
         assert_eq!(parse(MINIMAL).unwrap().edge_gap, None, "the edges keep the gap unless told");
         assert_eq!(parse(&with("edge_gap = 11")).unwrap().edge_gap, Some(11.0));
         assert!(parse(&with("edge_gap = 20")).unwrap_err().contains("edge_gap must be 0.0 to 16.0"));
@@ -660,6 +675,7 @@ mod tests {
         assert_eq!((m.gap, m.title_pad, m.sidebar_pad, m.bar_end_clear), (16.0, 8.0, 2.0, 48.0), "room for the frames, the plates, the chevron and the lamp left of the +");
         assert_eq!(m.scenes, ["city", "code"]);
         assert!(m.sidebar_margin, "the sidebar keeps a pane's margins, so it is framed as one");
+        assert_eq!(m.menu_paper_alpha(), 0.92, "a menu's rows read over the rain, though the panes' paper lets the wash through");
         assert_eq!(m.edge_gap, Some(11.0), "6 points of ground between a frame and the window's edge, as between two frames");
         assert!(m.ink_borders && m.glyph_motion && m.terminal_decode);
         assert_eq!(m.highlights, Highlights::Effect);

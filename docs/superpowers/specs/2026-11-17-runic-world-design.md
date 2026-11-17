@@ -92,6 +92,15 @@ frame, to the window's edge, under the title bar and between any two frames. Its
 in the sidebar gives it the keys, and a click on a session shows it and keeps the keys in the list
 (Cyrus: "clicking on Pane 0 or one of its sessions should cause it to go in focus").
 
+## Menus read over the rain
+
+The panes' paper went to 0.6 so their top and foot show, and the menus, whose paper was the
+panes', went see-through with it (Cyrus, 2026-11-17: the "Remind me in" menu "is not opaque
+enough"). A new manifest key, `menu_paper_alpha` (absent, `paper_alpha`), gives the menus their
+own: 0.92 for runic. The "Remind me in" and "Move to" card beside a session's menu had no backdrop
+of its own at all, its fill clear under an effect that paints the menus; it reports itself as a
+menu now (key 0x18), so it gets the backdrop and the paper as the menu beside it does.
+
 ## No lines of runes in the window
 
 The panes', the sidebar's and the title bar's own edges are their frames, strips and clouds, not

@@ -821,6 +821,11 @@ pub fn render_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     let mut sub = card(div().absolute().left(anchor.origin.x + anchor.size.width).top(anchor.origin.y - px(4.0)).min_w(px(190.0)))
         .occlude()
         .on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation());
+    // Where the effect paints the menus, the card's fill is clear: it needs the effect's backdrop
+    // and its paper under its rows, as the menu beside it has, or the window shows through it.
+    if style.menu_edges {
+        sub = sub.child(crate::chrome::menu_report(0x18, opacity, cx));
+    }
     let pick = |id: (&'static str, usize), label: &'static str, hint: &'static str, action: RowAction, cx: &mut Context<Root>| {
         let key = blocks::menu_row_key(if id.0 == "session-move-row" { 0x15 } else { 0x16 }, id.1);
         crate::chrome::menu_row_hover(

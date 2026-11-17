@@ -466,7 +466,7 @@ pub fn menu_fill(m: MenuColors, effect_menus: bool) -> gpui::Hsla {
 }
 
 /// The paper laid over an effect's backdrop in a menu: the window's colour at the effect's
-/// `paper_alpha`, as a terminal's or a document's paper lies over the wash.
+/// menu paper (`Style::menu_paper_alpha`), as a terminal's or a document's paper lies over the wash.
 pub fn menu_paper(theme: &Theme, paper_alpha: f32) -> gpui::Hsla {
     theme.chrome.window_bg.alpha(paper_alpha)
 }
@@ -535,7 +535,7 @@ pub fn menu_report(key: u64, opacity: f32, cx: &mut gpui::Context<crate::Root>) 
         },
         move |b, rect, window, cx| {
             let painted = painter.update(cx, |root, _| {
-                let paper = menu_paper(&root.theme, root.effect_style().paper_alpha);
+                let paper = menu_paper(&root.theme, root.effect_style().menu_paper_alpha);
                 (root.menu_backdrop(key, rect, opacity), paper)
             });
             if let Ok((backdrop, paper)) = painted {

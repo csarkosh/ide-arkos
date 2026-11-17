@@ -32,6 +32,8 @@ paper_alpha = 0.6             # 0.5 to 1.0; a terminal's paper over the wash: th
                               # its skyline, the rain as faint as a source file's), as overworld does
 document_paper_alpha = 0.6    # 0.5 to 1.0; a markdown or viewer tab's paper, the terminal's, so
                               # a document's body reads as a terminal's (absent, paper_alpha)
+menu_paper_alpha = 0.92        # 0.5 to 1.0; a menu's paper over the backdrop the wash paints for it:
+                              # nearly opaque, so its rows read over the rain (Cyrus, 2026-11-17)
 chrome_alpha = 0.0            # 0.0 to 1.0; the bars and the sidebar over the wash
 active_tab_alpha = 0.0        # 0.0 to 1.0; the active tab over the wash: clear, the wash paints
                               # it as a doorway with its line and its lamp

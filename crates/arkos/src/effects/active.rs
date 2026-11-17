@@ -39,6 +39,9 @@ pub struct Style {
     /// The paper of a document, rendered markdown or the viewer: the manifest's
     /// `document_paper_alpha`, else its `paper_alpha`.
     pub document_paper_alpha: f32,
+    /// The paper over a menu's backdrop: the manifest's `menu_paper_alpha`, else its
+    /// `paper_alpha`.
+    pub menu_paper_alpha: f32,
     /// The title bar, the tab bars, the inactive tabs and the sidebar.
     pub chrome_alpha: f32,
     /// The bars inside a tab's body: the manifest's `body_bars_alpha`, else its `chrome_alpha`.
@@ -92,7 +95,7 @@ pub struct Style {
 impl Style {
     /// The app as it paints without an effect.
     pub fn plain() -> Style {
-        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, body_bars_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, title_grow: 0.0, sidebar_pad: 0.0, sidebar_margin: 0.0, bar_end_clear: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, edge_gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
+        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, menu_paper_alpha: 1.0, chrome_alpha: 1.0, body_bars_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, title_grow: 0.0, sidebar_pad: 0.0, sidebar_margin: 0.0, bar_end_clear: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, edge_gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
     }
 
     /// The ground a document's own fills go with: a markdown table's header and paper rows and a
@@ -126,6 +129,7 @@ pub fn style_at(manifest: &Manifest, fade: f32) -> Style {
     Style {
         paper_alpha: lerp(1.0, manifest.paper_alpha.max(0.5), f),
         document_paper_alpha: lerp(1.0, manifest.document_paper_alpha().max(0.5), f),
+        menu_paper_alpha: lerp(1.0, manifest.menu_paper_alpha().max(0.5), f),
         chrome_alpha: lerp(1.0, manifest.chrome_alpha, f),
         body_bars_alpha: lerp(1.0, manifest.body_bars_alpha(), f),
         active_tab_alpha: lerp(1.0, manifest.active_tab_alpha, f),
@@ -808,7 +812,7 @@ mod tests {
         assert_eq!(style_at(&m, 0.0), Style::plain());
         assert_eq!(
             style_at(&m, 1.0),
-            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, body_bars_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, title_pad: 0.0, title_grow: 0.0, sidebar_pad: 0.0, sidebar_margin: 0.0, bar_end_clear: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, edge_gap: 0.0, pane_radius: 0.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false, terminal_paint: true }
+            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, menu_paper_alpha: 0.5, chrome_alpha: 0.0, body_bars_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, title_pad: 0.0, title_grow: 0.0, sidebar_pad: 0.0, sidebar_margin: 0.0, bar_end_clear: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, edge_gap: 0.0, pane_radius: 0.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false, terminal_paint: true }
         );
         let half = style_at(&m, 0.5);
         assert_eq!((half.paper_alpha, half.chrome_alpha, half.ground_alpha), (0.75, 0.5, 0.5));
