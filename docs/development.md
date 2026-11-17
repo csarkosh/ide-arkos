@@ -529,9 +529,9 @@ Things only a person at the screen can check, in order of value:
   file is not among them; `arkos open` run in B's shell while A is shown changes nothing on
   screen and the file is on B's page when B is chosen; `arkos panes` from B lists B's page;
   End on A closes its tabs with it; after a relaunch each session still has its own
-- layouts: a click in the filter field rings it in the focus colour and shows a caret;
-  typing narrows the rows and opens Done; "No session matches." when none does; Enter shows the
-  first row's session with the keys in its terminal; Escape clears the field and the list
+- session list keys: Pane 0 has no filter field; Cmd+0 gives the list the keys, typing does
+  nothing, Up and Down move the ring, Enter shows the ringed session with the keys left in the
+  list, Escape gives them to the pane shown
   returns; a click on a pane takes the keys back and leaves what was typed
 - sessions: a click on an Unread row leaves it under Unread with its dot turned to a ring; a
   click on another row moves it to Unanswered; a right click opens "Move to" with a ▸, and
@@ -563,7 +563,7 @@ Things only a person at the screen can check, in order of value:
   row's menu has "Unschedule" after "Remind me in", which puts the row where its terminals stand
   (and an unscheduled row's menu has none)
 - layouts: with the sidebar hidden or on Files, a new window shows Sessions; "+ New
-  session" sits under the filter, above the first group; under overworld the
+  session" sits at the top of the list, above the first group; under overworld the
   sidebar's scene has mountains (by day mesas) above the castle, at the same pixel size as the
   castle, its sky reaching half the sidebar's height in a tall window with the stars thinning
   to none at its top and the sun where it was, and the names dim only the part of it they lie over, a short list leaving the castle
@@ -572,7 +572,7 @@ Things only a person at the screen can check, in order of value:
 - sessions: every group's heading has a chevron and folds or opens its rows on a click, Quiet
   and Done folded on a first open; the Unread heading is visibly heavier than the others, in
   Departure Mono too; what is folded is the same after a relaunch
-- sessions: "+ New session" is a small filled button, as wide as its words, at the left under the filter; the session it starts is
+- sessions: "+ New session" is a small filled button, as wide as its words, at the left at the top of the list; the session it starts is
   listed under New, leaves New at its first prompt, and an untouched one is under Quiet ten
   minutes later without a click
 - layouts: "A session's files open" on Neighbor: with one pane an `arkos open` splits a pane
@@ -1119,7 +1119,7 @@ Things only a person at the screen can check, in order of value:
   as on the MacBook's own display, with no stutter or uneven steps; dragged back to the MacBook,
   as smooth as before
 - watercolor keys: under Lavender Watercolor, Cmd+0 then Up rings Sessions in the switcher with a
-  soft lavender wash, no line; Down washes the filter field and the session list's mark; Up
+  soft lavender wash, no line; Down washes the session list's mark; Up
   past the switcher to the bell and Right to the question mark washes that icon; Enter and Down
   wash Keybindings in the Help menu; under Material, Runic and Overworld the marks are as before
 - Settings keys: Cmd+, then Down rings Appearance in the left column; Down shows Layout; Up
@@ -1175,8 +1175,8 @@ Things only a person at the screen can check, in order of value:
   `"focus sessions" = "cmd-shift-s"` in the config it says Shift+Cmd+S; from the chooser it opens
   in the default Markdown app
 - Chrome keys: Cmd+0 opens the sidebar on Sessions with a ring on the session shown, every
-  group open while it has the keys (Quiet and Done fold back after), Up and Down move the ring, typing narrows the list, Enter shows the ringed
-  session and the keys stay in the list (the glow on the sidebar, the ring on that session), Escape clears the filter and then gives the keys to the pane shown;
+  group open while it has the keys (Quiet and Done fold back after), Up and Down move the ring, typing does nothing, Enter shows the ringed
+  session and the keys stay in the list (the glow on the sidebar, the ring on that session), Escape gives the keys to the pane shown;
   Cmd+9 is the last pane; Ctrl+Tab and Ctrl+Shift+Tab step the tabs, also in a terminal running
   Claude Code; Option+Cmd+Down and Up go through the sessions as listed, wrapping; Cmd+T opens
   the focused pane's "+" menu with Claude ringed, and Down, Enter opens Codex; Cmd+0 in a web tab

@@ -29,18 +29,16 @@ tabs, the arrows move through what you are on, and the command palette runs ever
 
 ## Switching sessions
 
-Press {sessions}. The sidebar opens on your sessions, every group unfolded, with a ring on the
-session you are on.
+Press {sessions}. The sidebar opens on your sessions, with a ring on the session you are on.
 
-1. Press Up or Down to move the ring, or type a few letters of a session's name to narrow the
-   list.
+1. Press Up or Down to move the ring.
 2. Press Enter: that session fills the window, and the keys stay in the list, so you can look
    through sessions one after another.
 The groups' headings (Needs you, Working, Quiet, Done) are stops too: Left folds a group (from a
 session, it first steps up to the group's heading), Right opens it, and Enter folds or opens it,
 as the Files tab's folders do.
-3. To type in the session shown, press Escape (it clears what you typed first, then hands the
-   keys to the session), or click in its pane. A click on a session in the list shows it as
+3. To type in the session shown, press Escape (it hands the keys to the session), or click in
+   its pane. A click on a session in the list shows it as
    Enter does, the keys staying in the list.
 
 Up from the top of the list reaches the Sessions/Files switcher at the top of the sidebar.

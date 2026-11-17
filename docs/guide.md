@@ -36,8 +36,8 @@ you (a question beats an answer, an answer beats work), with that one's line and
 ("3 sessions") beside its age; its name is its first terminal's. A session you start ("+ New
 session", or one resumed) is New until something happens in it, and one left untouched for ten
 minutes moves to Quiet. A click on a group's heading folds it or opens it; Quiet (not
-finished, nothing happening) and Done start folded, the window remembers what you leave
-folded, and typing in the filter opens them all while it finds. A click on a row shows its
+finished, nothing happening) and Done start folded, and the window remembers what you leave
+folded. A click on a row shows its
 session, on the pane that needs you when one does, else as you left it, and "Next session that
 needs you" in the palette (no key unless you give it one) goes to the first that is your move: a blocked one, then an
 unread one, then an unanswered one. A row you click stays where it was until you choose
@@ -108,7 +108,7 @@ split as you left it, and coming back brings this one back the same way.
   Code session beside the first: it belongs to the same session, and the list counts it.
   The tab bar's "+" asks what to start: Claude or Codex opens a tab with the agent already
   started in its shell (quit it and the shell is still there), Shell a plain terminal as
-  Ctrl+Shift+` does. "+ New session", under the filter, starts a session of its own instead.
+  Ctrl+Shift+` does. "+ New session", at the top of the session list, starts a session of its own instead.
 - Every pane has its tab bar, the session's first one included. Its left end shows the pane's
   key, "⌘1", "⌘2" and so on, the Command key's sign before the number Cmd focuses it with; the
   sidebar shows "⌘0" at its top left. A pane moves by that number at the left end of its tab bar: drag it onto an edge of another pane to put it there, tabs and
@@ -120,11 +120,9 @@ split as you left it, and coming back brings this one back the same way.
 - Closing a session's last terminal closes its other tabs with it (a file's edits are saved
   first), and the list shows the session next to it.
 
-The sidebar's top switches between Sessions and Files (the Explorer and Worktrees). Under the
-filter, "+ New session" starts one; the filter field narrows the list as you type to the
-sessions whose name or line holds every word, or any of their terminals' names, closed ones
-under Done included; Enter goes to the first of them (a closed one is resumed) and Escape
-clears it.
+The sidebar's top switches between Sessions and Files (the Explorer and Worktrees). At the top
+of the session list, "+ New session" starts one. There is no filter field (it went on 2026-11-17):
+the list takes the keys itself.
 
 Until 2026-11-16 there were two layouts, Grid and Inbox. A window saved in either opens with
 each terminal a session of its own, keeping the files it had opened beside it.
@@ -739,7 +737,7 @@ session list, and the command palette (Shift+Cmd+P) for everything else.
 
 | Keys | Action |
 | --- | --- |
-| Cmd+0 | the session list: the sidebar opens on Sessions and the keys go to its filter; type to narrow it, Up and Down move the ring through the rows, Enter shows the ringed session (a closed one is resumed) and keeps the keys in the list; the groups' headings are stops too, and fold as the Files tab's folders do: Left folds an open group (and steps from a session up to its heading), Right opens a folded one (and steps into an open one), Enter folds or opens it, so you can look through sessions one after another; Escape clears what you typed and then hands the keys to the session shown, as a click in its pane does. A click on a session shows it the same way and keeps the keys in the list, and a click anywhere in the sidebar gives it the keys. Up from the first row rings the Sessions/Files switcher: Left and Right switch the sidebar between the two, Down or Enter goes into the list shown. On Files, the Explorer and Worktrees headings are stops too: Left folds a group, Right opens it, Enter or Space flips it, and Up and Down go on through the switcher, the files and the worktrees. Up from the switcher rings the title bar's bell: Left and Right move along its icons (the bell, the doctor, Help and Settings), Enter opens its menu (Up, Down and Enter press its buttons, Escape closes it; on the cog it opens Settings, which takes the keys as well), Down comes back. A menu opened with a click takes the keys too: Down marks its first row (Up its last), Enter presses it, and when it closes the keys go back where they were Cmd+0 only moves the keys: the tab and the ring stay where you left them, so it comes back to the same session, heading or file |
+| Cmd+0 | the session list: the sidebar opens on Sessions and the list takes the keys; Up and Down move the ring through the rows, Enter shows the ringed session (a closed one is resumed) and keeps the keys in the list; the groups' headings are stops too, and fold as the Files tab's folders do: Left folds an open group (and steps from a session up to its heading), Right opens a folded one (and steps into an open one), Enter folds or opens it, so you can look through sessions one after another; Escape hands the keys to the session shown, as a click in its pane does. A click on a session shows it the same way and keeps the keys in the list, and a click anywhere in the sidebar gives it the keys. Up from the first row rings the Sessions/Files switcher: Left and Right switch the sidebar between the two, Down or Enter goes into the list shown. On Files, the Explorer and Worktrees headings are stops too: Left folds a group, Right opens it, Enter or Space flips it, and Up and Down go on through the switcher, the files and the worktrees. Up from the switcher rings the title bar's bell: Left and Right move along its icons (the bell, the doctor, Help and Settings), Enter opens its menu (Up, Down and Enter press its buttons, Escape closes it; on the cog it opens Settings, which takes the keys as well), Down comes back. A menu opened with a click takes the keys too: Down marks its first row (Up its last), Enter presses it, and when it closes the keys go back where they were Cmd+0 only moves the keys: the tab and the ring stay where you left them, so it comes back to the same session, heading or file |
 | Cmd+1 to Cmd+8 | focus pane 1 to 8 of the session shown |
 | Cmd+9 | focus the last pane |
 | Ctrl+Tab, Ctrl+Shift+Tab | next and previous tab in the focused pane |

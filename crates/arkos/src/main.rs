@@ -369,8 +369,7 @@ pub struct Root {
     pub sessions_folded: sessions_list::Folded,
     /// The Inbox's filter over its session list: what is typed, its focus, and whether the
     /// keys are in it.
-    pub session_filter: line_edit::LineEdit,
-    pub session_filter_focus: FocusHandle,
+    pub session_list_focus: FocusHandle,
     /// The Sessions/Files switcher has the keys (reached by Up from the top of either list).
     pub switcher_focused: bool,
     pub switcher_focus: FocusHandle,
@@ -384,7 +383,7 @@ pub struct Root {
     /// Where in the sidebar the keys last were, for Cmd+0 to go back to.
     pub sidebar_spot: Option<sidebar::Spot>,
     pub popover_mark: usize,
-    pub session_filter_focused: bool,
+    pub session_list_focused: bool,
     /// The session list's keyboard cursor (Chrome keys spec, section 2): the row Enter opens.
     pub session_cursor: Option<sessions_list::Stop>,
     /// The pane whose tab bar has the keyboard's ring: its Cmd+number pressed while it already
@@ -956,8 +955,7 @@ impl Root {
             ended: saved_ended,
             resume_input: HashMap::new(),
             sessions_folded: saved_folded,
-            session_filter: line_edit::LineEdit::new(),
-            session_filter_focus: cx.focus_handle(),
+            session_list_focus: cx.focus_handle(),
             switcher_focused: false,
             switcher_focus: cx.focus_handle(),
             bar_ring: None,
@@ -966,7 +964,7 @@ impl Root {
             header_focus: cx.focus_handle(),
             sidebar_spot: None,
             popover_mark: 0,
-            session_filter_focused: false,
+            session_list_focused: false,
             session_cursor: None,
             tab_ring: None,
             bar_by_mouse: false,
@@ -1116,7 +1114,7 @@ impl Root {
     fn click_popover(&mut self, which: chrome::Popover, cx: &mut Context<Self>) {
         self.toggle_popover(which, cx);
         if self.popover.value() == Some(&which) && self.bar_ring.is_none() {
-            self.session_filter_focused = false;
+            self.session_list_focused = false;
             self.switcher_focused = false;
             self.sidebar_focused = false;
             self.wt_focused = false;
@@ -2359,7 +2357,7 @@ impl Root {
     pub fn focus_pane(&mut self, pane: PaneId, cx: &mut Context<Self>) {
         self.sidebar_focused = false;
         self.wt_focused = false;
-        self.session_filter_focused = false;
+        self.session_list_focused = false;
         self.switcher_focused = false;
         self.bar_ring = None;
         self.header_ring = None;
@@ -2441,35 +2439,26 @@ impl Root {
     /// A key in the Inbox's filter field: typing narrows the list, Enter goes to the first
     /// session left (a closed one is resumed), Escape clears the filter; either hands the keys
     /// back to the panes.
-    pub fn session_filter_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
-        if ks.modifiers.platform && ks.key == "v" {
-            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                self.session_filter.insert_str(text.lines().next().unwrap_or(""));
-                cx.notify();
-            }
-            return;
-        }
-        // Left and Right on an empty filter fold and open the groups as the Files tab's keys do
-        // its folders (with text typed they move the caret, and every group is open).
+    pub fn session_list_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
         let plain = !(ks.modifiers.platform || ks.modifiers.control || ks.modifiers.alt || ks.modifiers.shift);
-        if plain && self.session_filter.text.is_empty() && matches!(ks.key.as_str(), "left" | "right") {
-            if let Some(at) = self.session_cursor {
-                let groups = sessions_list::grouped(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held));
-                match sessions_list::group_move(at, ks.key == "right", &groups, &self.sessions_folded) {
-                    Some(sessions_list::GroupMove::Fold(kind)) | Some(sessions_list::GroupMove::Open(kind)) => {
-                        sessions_list::toggle_fold(&mut self.sessions_folded, kind);
-                        self.save(cx);
+        match sessions_list::list_key(&ks.key, plain) {
+            sessions_list::ListKey::Fold { open } => {
+                // Left folds an open group (and steps from a session up to its heading), Right opens
+                // a folded one (and steps into an open one), as the Files tab's keys do its folders.
+                if let Some(at) = self.session_cursor {
+                    let groups = sessions_list::grouped(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held));
+                    match sessions_list::group_move(at, open, &groups, &self.sessions_folded) {
+                        Some(sessions_list::GroupMove::Fold(kind)) | Some(sessions_list::GroupMove::Open(kind)) => {
+                            sessions_list::toggle_fold(&mut self.sessions_folded, kind);
+                            self.save(cx);
+                        }
+                        Some(sessions_list::GroupMove::To(stop)) => self.session_cursor = Some(stop),
+                        None => {}
                     }
-                    Some(sessions_list::GroupMove::To(stop)) => self.session_cursor = Some(stop),
-                    None => {}
+                    cx.notify();
                 }
-                cx.notify();
             }
-            return;
-        }
-        match self.session_filter.handle(ks) {
-            edit @ (line_edit::Edit::Up | line_edit::Edit::Down) => {
-                let delta = if matches!(edit, line_edit::Edit::Up) { -1 } else { 1 };
+            sessions_list::ListKey::Step(delta) => {
                 let rows = self.shown_session_rows();
                 // Up from the first row reaches the Sessions/Files switcher.
                 if delta < 0 && self.session_cursor.is_none_or(|c| rows.first() == Some(&c)) {
@@ -2479,7 +2468,7 @@ impl Root {
                 self.session_cursor = sessions_list::cursor_step(&rows, self.session_cursor, delta);
                 cx.notify();
             }
-            line_edit::Edit::Submit | line_edit::Edit::SubmitBack => {
+            sessions_list::ListKey::Press => {
                 let rows = self.shown_session_rows();
                 // On a heading Enter folds or opens its group, as on a folder in the Files tab;
                 // with nothing marked, the first row.
@@ -2491,40 +2480,27 @@ impl Root {
                     cx.notify();
                     return;
                 }
-                self.session_filter.clear();
                 match target {
                     Some(sessions_list::Stop::Row(sessions_list::RowKey::Ended(i))) => self.resume_ended(i, cx),
                     Some(sessions_list::Stop::Row(sessions_list::RowKey::Live(page))) => self.show_row(page, cx),
                     _ => {}
                 }
-                // The keys stay in the list, the ring on the session now shown; Escape on the
-                // empty filter hands them to its pane.
+                // The keys stay in the list, the ring on the session now shown; Escape hands them
+                // to its pane.
                 if target.is_some() {
                     self.keys_to_session_list();
                 }
                 cx.notify();
             }
-            // Escape clears what was typed; on an empty filter it gives the keys back.
-            line_edit::Edit::Cancel => {
-                if self.session_filter.text.is_empty() {
-                    self.session_filter_focused = false;
-                    self.switcher_focused = false;
-                    self.bar_ring = None;
-                    self.header_ring = None;
-                } else {
-                    self.session_filter.clear();
-                }
+            // Escape gives the keys back to the pane shown.
+            sessions_list::ListKey::Leave => {
+                self.session_list_focused = false;
+                self.switcher_focused = false;
+                self.bar_ring = None;
+                self.header_ring = None;
                 cx.notify();
             }
-            line_edit::Edit::Changed => {
-                // A narrower list: the cursor goes to its first row unless its stop is still there.
-                let rows = self.shown_session_rows();
-                if !self.session_cursor.is_some_and(|c| rows.contains(&c)) {
-                    self.session_cursor = rows.iter().copied().find(|s| matches!(s, sessions_list::Stop::Row(_))).or(rows.first().copied());
-                }
-                cx.notify();
-            }
-            _ => {}
+            sessions_list::ListKey::Pass => {}
         }
     }
 
@@ -2539,12 +2515,12 @@ impl Root {
         self.switcher_focused = false;
         self.bar_ring = None;
         self.header_ring = None;
-        self.session_filter_focused = true;
+        self.session_list_focused = true;
         self.session_cursor = Some(sessions_list::Stop::Row(sessions_list::RowKey::Live(self.tree.page)));
     }
 
     pub fn sidebar_has_keys(&self) -> bool {
-        self.session_filter_focused || self.switcher_focused || self.header_ring.is_some() || self.sidebar_focused || self.wt_focused
+        self.session_list_focused || self.switcher_focused || self.header_ring.is_some() || self.sidebar_focused || self.wt_focused
     }
 
     /// Whether the keys are somewhere no pane is: the sidebar, or the title bar's icons. No pane
@@ -2555,7 +2531,7 @@ impl Root {
 
     /// The Sessions/Files switcher takes the keys (Chrome keys spec, section 2).
     pub fn focus_switcher(&mut self, cx: &mut Context<Self>) {
-        self.session_filter_focused = false;
+        self.session_list_focused = false;
         self.sidebar_focused = false;
         self.wt_focused = false;
         self.bar_ring = None;
@@ -2566,7 +2542,7 @@ impl Root {
 
     /// A group heading of the Files view takes the keys (Chrome keys spec, section 2).
     pub fn focus_group(&mut self, group: sidebar::Group, cx: &mut Context<Self>) {
-        self.session_filter_focused = false;
+        self.session_list_focused = false;
         self.switcher_focused = false;
         self.sidebar_focused = false;
         self.wt_focused = false;
@@ -2645,7 +2621,7 @@ impl Root {
 
     /// The title bar's icons take the keys, the ring on the bell (Chrome keys spec, section 2).
     pub fn focus_bar(&mut self, cx: &mut Context<Self>) {
-        self.session_filter_focused = false;
+        self.session_list_focused = false;
         self.switcher_focused = false;
         self.sidebar_focused = false;
         self.wt_focused = false;
@@ -2763,7 +2739,7 @@ impl Root {
                 self.switcher_focused = false;
                 self.bar_ring = None;
                 self.header_ring = None;
-                self.session_filter_focused = true;
+                self.session_list_focused = true;
                 self.session_cursor = self.shown_session_rows().first().copied();
             }
             sidebar::SwitcherKey::Up => {
@@ -2778,11 +2754,9 @@ impl Root {
 
     /// The rows the session list shows now, in order, for the keyboard's cursor.
     fn shown_session_rows(&self) -> Vec<sessions_list::Stop> {
-        let query = &self.session_filter.text;
-        let groups = sessions_list::grouped(sessions_list::matching(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held), query));
-        // As the list shows them: each group's heading, its rows unless folded (a typed filter
-        // opens them all).
-        sessions_list::cursor_stops(&groups, &self.sessions_folded, !query.trim().is_empty())
+        let groups = sessions_list::grouped(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held));
+        // As the list shows them: each group's heading, its rows unless folded.
+        sessions_list::cursor_stops(&groups, &self.sessions_folded)
     }
 
     /// Cmd+0 (Chrome keys spec, section 2): the sidebar open on its session list, the keys in
@@ -2799,13 +2773,13 @@ impl Root {
         let spot = sidebar::spot_for(self.sidebar_spot, self.sidebar.inbox_files);
         self.sidebar_focused = false;
         self.wt_focused = false;
-        self.session_filter_focused = false;
+        self.session_list_focused = false;
         self.switcher_focused = false;
         self.bar_ring = None;
         self.header_ring = None;
         match spot {
             sidebar::Spot::Sessions => {
-                self.session_filter_focused = true;
+                self.session_list_focused = true;
                 let rows = self.shown_session_rows();
                 // The ring stays on its row while that row is listed; else the session shown.
                 if !self.session_cursor.is_some_and(|c| rows.contains(&c)) {
@@ -2835,8 +2809,8 @@ impl Root {
     fn cycle_session(&mut self, delta: isize, cx: &mut Context<Self>) {
         let rows = sessions_list::shown_rows(
             &sessions_list::grouped(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held)),
-            &self.sessions_folded,
-            true,
+            // Every group's rows, a folded group's too.
+            &sessions_list::Folded::default(),
         );
         if let Some(page) = sessions_list::cycle_session(&rows, self.tree.page, delta) {
             self.show_row(page, cx);
@@ -3160,7 +3134,7 @@ impl Root {
     pub fn activate_tab(&mut self, pane: PaneId, idx: usize, cx: &mut Context<Self>) {
         self.sidebar_focused = false;
         self.wt_focused = false;
-        self.session_filter_focused = false;
+        self.session_list_focused = false;
         self.switcher_focused = false;
         self.bar_ring = None;
         self.header_ring = None;
@@ -4047,7 +4021,7 @@ impl Root {
         }
         self.sidebar_focused = false;
         self.wt_focused = false;
-        self.session_filter_focused = false;
+        self.session_list_focused = false;
         self.switcher_focused = false;
         self.bar_ring = None;
         self.header_ring = None;
@@ -4181,7 +4155,7 @@ impl Root {
         if (self.sidebar_focused || self.wt_focused) && !keeps_tree_focus(&cmd) {
             self.sidebar_focused = false;
             self.wt_focused = false;
-            self.session_filter_focused = false;
+            self.session_list_focused = false;
             self.switcher_focused = false;
             self.bar_ring = None;
             self.header_ring = None;
@@ -4400,7 +4374,7 @@ impl Root {
                 if self.sidebar.collapsed {
                     self.sidebar_focused = false;
                     self.wt_focused = false;
-                    self.session_filter_focused = false;
+                    self.session_list_focused = false;
                     self.switcher_focused = false;
                     self.bar_ring = None;
                     self.header_ring = None;
@@ -4424,7 +4398,7 @@ impl Root {
                 }
                 self.sidebar_focused = true;
                 self.wt_focused = false;
-                self.session_filter_focused = false;
+                self.session_list_focused = false;
                 self.switcher_focused = false;
                 self.bar_ring = None;
                 self.header_ring = None;
@@ -5883,7 +5857,7 @@ impl Root {
         if let Some(pane) = focus {
             self.sidebar_focused = false;
             self.wt_focused = false;
-            self.session_filter_focused = false;
+            self.session_list_focused = false;
             self.switcher_focused = false;
             self.bar_ring = None;
             self.header_ring = None;
@@ -6396,7 +6370,7 @@ impl Render for Root {
         // while they hold the keys. An open prompt holds them only while the list does, so a
         // click on a pane takes them back without losing what was typed.
         // Where the sidebar has the keys now, kept for Cmd+0 to come back to.
-        if let Some(spot) = sidebar::spot_now(self.session_filter_focused, self.switcher_focused, self.header_ring, self.sidebar_focused, self.wt_focused) {
+        if let Some(spot) = sidebar::spot_now(self.session_list_focused, self.switcher_focused, self.header_ring, self.sidebar_focused, self.wt_focused) {
             self.sidebar_spot = Some(spot);
         }
         let wanted = if let Some(f) = self.palette.value().and_then(|p| p.focus.clone()) {
@@ -6413,8 +6387,8 @@ impl Render for Root {
             Some(self.header_focus.clone())
         } else if self.switcher_focused {
             Some(self.switcher_focus.clone())
-        } else if self.session_filter_focused {
-            Some(self.session_filter_focus.clone())
+        } else if self.session_list_focused {
+            Some(self.session_list_focus.clone())
         } else if self.wt_focused {
             Some(self.wt_focus.clone())
         } else if self.sidebar_focused && self.new_file.value().is_some() {

@@ -234,22 +234,6 @@ pub fn title_line(title: &str, name: &str, shell: &str) -> Option<String> {
     (!t.is_empty() && t != name && t != shell).then(|| t.to_string())
 }
 
-/// The entries a filter leaves: those whose name or line holds every word typed, whatever its
-/// case. A blank filter leaves them all.
-pub fn matching(entries: Vec<Entry>, query: &str) -> Vec<Entry> {
-    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
-    if words.is_empty() {
-        return entries;
-    }
-    entries
-        .into_iter()
-        .filter(|e| {
-            let text = format!("{} {} {}", e.name, e.line, e.names.join(" ")).to_lowercase();
-            words.iter().all(|w| text.contains(w.as_str()))
-        })
-        .collect()
-}
-
 /// The session to go to for "the next session that needs you": the first of Needs you, then of
 /// Unread, then of Unanswered that is not `current`, and `current` itself when it is the only
 /// one. None when no session is the user's move.
@@ -275,10 +259,9 @@ pub fn toggle_fold(folded: &mut Folded, kind: Attention) {
     }
 }
 
-/// Whether `kind`'s rows are hidden under its heading: folded, and no filter typed, since a
-/// filter shows every row it finds.
-pub fn is_folded(folded: &Folded, kind: Attention, filtering: bool) -> bool {
-    !filtering && folded.contains(&kind)
+/// Whether `kind`'s rows are hidden under its heading.
+pub fn is_folded(folded: &Folded, kind: Attention) -> bool {
+    folded.contains(&kind)
 }
 
 /// The key of `e`'s row: its page, or its place in the kept list for a closed session.
@@ -291,8 +274,8 @@ pub fn row_key(e: &Entry) -> RowKey {
 
 /// The rows the list shows, in order: every group's rows but a folded group's (Chrome keys spec,
 /// section 2: what the keyboard's cursor moves through).
-pub fn shown_rows(groups: &[(Attention, Vec<Entry>)], folded: &Folded, filtering: bool) -> Vec<RowKey> {
-    groups.iter().filter(|(kind, _)| !is_folded(folded, *kind, filtering)).flat_map(|(_, rows)| rows.iter().map(row_key)).collect()
+pub fn shown_rows(groups: &[(Attention, Vec<Entry>)], folded: &Folded) -> Vec<RowKey> {
+    groups.iter().filter(|(kind, _)| !is_folded(folded, *kind)).flat_map(|(_, rows)| rows.iter().map(row_key)).collect()
 }
 
 /// Where the keyboard's cursor can stand in the list: a group's heading, or a row.
@@ -304,15 +287,44 @@ pub enum Stop {
 
 /// The cursor's stops, in order: each group's heading, then its rows unless it is folded
 /// (Cyrus, 2026-11-17: the groups fold from the keys as the Files tab's folders do).
-pub fn cursor_stops(groups: &[(Attention, Vec<Entry>)], folded: &Folded, filtering: bool) -> Vec<Stop> {
+pub fn cursor_stops(groups: &[(Attention, Vec<Entry>)], folded: &Folded) -> Vec<Stop> {
     let mut out = Vec::new();
     for (kind, rows) in groups {
         out.push(Stop::Group(*kind));
-        if !is_folded(folded, *kind, filtering) {
+        if !is_folded(folded, *kind) {
             out.extend(rows.iter().map(|e| Stop::Row(row_key(e))));
         }
     }
     out
+}
+
+/// What a key does while the session list has the keys (Cmd+0; Cyrus, 2026-11-17: the "Filter
+/// sessions" field removed, the list takes its keys itself): Up and Down move the ring (Up from
+/// the first stop reaches the Sessions/Files switcher), Enter or Space shows the ringed session or
+/// folds or opens the ringed heading, Left and Right fold and open the groups as the Files tab's
+/// keys do its folders, Escape gives the keys back to the pane shown. Typing does nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListKey {
+    Step(isize),
+    Press,
+    Fold { open: bool },
+    Leave,
+    Pass,
+}
+
+pub fn list_key(key: &str, plain: bool) -> ListKey {
+    if !plain {
+        return ListKey::Pass;
+    }
+    match key {
+        "up" => ListKey::Step(-1),
+        "down" => ListKey::Step(1),
+        "enter" | "space" => ListKey::Press,
+        "left" => ListKey::Fold { open: false },
+        "right" => ListKey::Fold { open: true },
+        "escape" => ListKey::Leave,
+        _ => ListKey::Pass,
+    }
 }
 
 /// What Left or Right does at a stop, as the Files tab's tree does at a folder or a file.
@@ -549,28 +561,22 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
     let theme = root.theme.clone();
     let c = &theme.chrome;
     let now = now_ms();
-    // The filter narrows the list, and opens Done so a closed session can be found.
-    let query = root.session_filter.text.clone();
-    let filtering = !query.trim().is_empty();
-    let groups = grouped(matching(hold(entries(root, now), root.held), &query));
+    let groups = grouped(hold(entries(root, now), root.held));
     let weak = cx.weak_entity();
     let (highlights, hovered) = (root.effect_highlights(), root.effect_hover);
     let shown = root.tree.page;
     let breath = root.breath.alpha(root.frame_now, motion::reduce_motion());
     let (selected_bg, hover_bg, dim) = (c.tab_active.hsla(), c.tab_inactive.hsla(), c.text_dim.hsla());
-    // The keyboard's cursor (Cmd+0), drawn as a ring while the filter has the keys.
-    let cursor = root.session_cursor.filter(|_| root.session_filter_focused);
+    // The keyboard's cursor (Cmd+0), drawn as a ring while the list has the keys.
+    let cursor = root.session_cursor.filter(|_| root.session_list_focused);
 
     let pad = 10.0 + style.sidebar_pad;
     let mut list = div().id("session-rows").flex_1().min_h_0().overflow_y_scroll().flex().flex_col();
-    if filtering && groups.is_empty() {
-        list = list.child(div().px(px(pad)).py(px(8.0)).text_size(px(style.ui(12.0))).text_color(dim).child("No session matches."));
-    }
     for (kind, rows) in groups {
-        // A typed filter opens every group; the list having the keys does not (Cyrus,
-        // 2026-11-17: "when Pane 0 is in focus, it should not uncollapse all the session
-        // states"), so the ring passes over a folded group's sessions.
-        let folded = is_folded(&root.sessions_folded, kind, filtering);
+        // The list having the keys opens no group (Cyrus, 2026-11-17: "when Pane 0 is in focus, it
+        // should not uncollapse all the session states"), so the ring passes over a folded
+        // group's sessions.
+        let folded = is_folded(&root.sessions_folded, kind);
         // The keyboard's ring on the heading, as on a row.
         let ringed = cursor == Some(Stop::Group(kind));
         let heading = div()
@@ -725,48 +731,6 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
         list = list.child(crate::sidebar::sidebar_end_marker(cx));
     }
     list
-}
-
-/// The Inbox's filter field over its list: a click puts the keys in it, typing narrows the
-/// list to the sessions whose name or line holds every word, Enter goes to the first of them
-/// and Escape clears it.
-pub fn render_filter(root: &mut Root, cx: &mut Context<Root>) -> Div {
-    let style = root.effect_style();
-    let theme = root.theme.clone();
-    let c = &theme.chrome;
-    let focused = root.session_filter_focused;
-    div().flex_none().px(px(8.0 + style.sidebar_pad)).pr(px(8.0)).pb(px(6.0)).child(
-        div()
-            .id("session-filter")
-            .key_context("SessionFilter")
-            .track_focus(&root.session_filter_focus)
-            .h(px(24.0))
-            .px(px(8.0))
-            .flex()
-            .items_center()
-            .rounded(px(6.0))
-            .border_1()
-            .border_color(if focused && crate::chrome::keys_wash(&theme, &style).is_none() { c.focus_ring.hsla() } else { c.border.hsla() })
-            // Under watercolor the field with the keys is washed softly instead of outlined.
-            .when_some(crate::chrome::keys_wash(&theme, &style).filter(|_| focused), |d, p| {
-                d.bg(p.alpha(crate::chrome::KEYS_WASH_FILL)).shadow(vec![gpui::BoxShadow { color: p.alpha(crate::chrome::KEYS_WASH_RIM), offset: gpui::point(px(0.0), px(0.0)), blur_radius: px(4.0), spread_radius: px(0.0) }])
-            })
-            .overflow_hidden()
-            .cursor_text()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|root, _: &MouseDownEvent, _window, cx| {
-                    cx.stop_propagation();
-                    root.sidebar_focused = false;
-                    root.wt_focused = false;
-                    root.session_filter_focused = true;
-                    root.switcher_focused = false;
-                    cx.notify();
-                }),
-            )
-            .on_key_down(cx.listener(|root, ev: &gpui::KeyDownEvent, _window, cx| root.session_filter_key(&ev.keystroke, cx)))
-            .child(crate::line_edit::render_with(&root.session_filter, "Filter sessions", &theme, root.ui_family(), style.ui(12.0), focused)),
-    )
 }
 
 /// The right-click menu of a session's row, while one is open or fading out: its rows, and beside
@@ -930,6 +894,21 @@ pub fn render_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_session_list_takes_its_own_keys_and_typing_does_nothing() {
+        assert_eq!(list_key("up", true), ListKey::Step(-1));
+        assert_eq!(list_key("down", true), ListKey::Step(1));
+        assert_eq!((list_key("enter", true), list_key("space", true)), (ListKey::Press, ListKey::Press));
+        assert_eq!((list_key("left", true), list_key("right", true)), (ListKey::Fold { open: false }, ListKey::Fold { open: true }));
+        assert_eq!(list_key("escape", true), ListKey::Leave);
+        for typed in ["a", "z", "backspace", "tab"] {
+            assert_eq!(list_key(typed, true), ListKey::Pass, "{typed} filters nothing now");
+        }
+        assert_eq!(list_key("down", false), ListKey::Pass, "a chord is its command's");
+        let sidebar = include_str!("sidebar.rs");
+        assert!(!sidebar.contains("render_filter") && !include_str!("sessions_list.rs").contains("\"Filter sessions\""), "no filter field in Pane 0");
+    }
+
     fn entry(id: u64, attention: Attention, since: u64) -> Entry {
         Entry { ended: None, page: id, session: SessionId(id), pane: 1, idx: 0, name: format!("s{id}"), line: String::new(), names: vec![format!("s{id}")], count: 1, attention, group: attention, alive: true, since, scheduled_until: None, repeats: false, reminded: false }
     }
@@ -976,13 +955,6 @@ mod tests {
         assert_eq!(badge(&came), Badge::Reminder);
         let plain = page_entry(7, vec![term(1, 10, Attention::Working)], None, None, 50).unwrap();
         assert_eq!(badge(&plain), Badge::None);
-    }
-
-    #[test]
-    fn the_filter_finds_a_row_by_any_of_its_terminals_names() {
-        let e = page_entry(7, vec![term(1, 10, Attention::Quiet), term(2, 20, Attention::Quiet)], None, None, 0).unwrap();
-        assert_eq!(matching(vec![e.clone()], "t2").len(), 1);
-        assert_eq!(matching(vec![e], "t9").len(), 0);
     }
 
     #[test]
@@ -1036,29 +1008,15 @@ mod tests {
     }
 
     #[test]
-    fn the_filter_keeps_the_sessions_whose_name_or_line_holds_every_word() {
-        let named = |id: u64, name: &str, line: &str| Entry { name: name.into(), line: line.into(), ..entry(id, Attention::Working, 0) };
-        let all = vec![named(1, "Film", "Allow Bash: ffmpeg -i shot-04.mov"), named(2, "Phone Farm", "Which device pool should I use?"), named(3, "Game 2", "The save system passes all 14 tests.")];
-        let ids = |q: &str| matching(all.clone(), q).iter().map(|e| e.session.0).collect::<Vec<_>>();
-        assert_eq!(ids(""), [1, 2, 3]);
-        assert_eq!(ids("   "), [1, 2, 3]);
-        assert_eq!(ids("farm"), [2]);
-        assert_eq!(ids("FFMPEG"), [1], "a line matches too, whatever the case");
-        assert_eq!(ids("game tests"), [3], "every word, in any order and from either line");
-        assert_eq!(ids("game ffmpeg"), Vec::<u64>::new());
-    }
-
-    #[test]
     fn every_group_folds_under_its_heading_quiet_and_done_at_first_and_a_filter_opens_them() {
         let mut folded: Folded = Attention::FOLDED_AT_FIRST.into_iter().collect();
-        let shut = |f: &Folded| Attention::ALL.into_iter().filter(|k| is_folded(f, *k, false)).collect::<Vec<_>>();
+        let shut = |f: &Folded| Attention::ALL.into_iter().filter(|k| is_folded(f, *k)).collect::<Vec<_>>();
         assert_eq!(shut(&folded), [Attention::Quiet, Attention::Done]);
         toggle_fold(&mut folded, Attention::Working);
         toggle_fold(&mut folded, Attention::Done);
         assert_eq!(shut(&folded), [Attention::Working, Attention::Quiet]);
         toggle_fold(&mut folded, Attention::Working);
         assert_eq!(shut(&folded), [Attention::Quiet]);
-        assert!(Attention::ALL.iter().all(|k| !is_folded(&folded, *k, true)), "a filter shows what it finds");
         // Saved by the sections' names.
         assert_eq!(serde_json::to_string(&Attention::NeedsYou).unwrap(), "\"needs_you\"");
     }
@@ -1067,14 +1025,13 @@ mod tests {
     fn the_headings_are_stops_and_left_and_right_fold_and_open_them_as_the_tree_s_folders() {
         let groups = grouped(vec![entry(1, Attention::NeedsYou, 9), entry(2, Attention::Working, 8), entry(3, Attention::Quiet, 7)]);
         let folded: Folded = [Attention::Quiet].into_iter().collect();
-        let stops = cursor_stops(&groups, &folded, false);
+        let stops = cursor_stops(&groups, &folded);
         let (needs, working, quiet) = (Attention::NeedsYou, Attention::Working, Attention::Quiet);
         assert_eq!(
             stops,
             [Stop::Group(needs), Stop::Row(RowKey::Live(1)), Stop::Group(working), Stop::Row(RowKey::Live(2)), Stop::Group(quiet)],
             "each heading, then its rows unless folded"
         );
-        assert_eq!(cursor_stops(&groups, &folded, true).len(), 6, "a filter opens every group");
         // Right opens a folded heading, then steps into it; Left steps up to the heading, then folds it.
         assert_eq!(group_move(Stop::Group(quiet), true, &groups, &folded), Some(GroupMove::Open(quiet)));
         assert_eq!(group_move(Stop::Group(working), true, &groups, &folded), Some(GroupMove::To(Stop::Row(RowKey::Live(2)))));
@@ -1088,10 +1045,9 @@ mod tests {
     fn the_keyboard_cursor_moves_through_the_rows_shown_and_stops_at_either_end() {
         let groups = grouped(vec![entry(1, Attention::NeedsYou, 9), entry(2, Attention::Working, 8), entry(3, Attention::Quiet, 7), entry(4, Attention::Working, 6)]);
         let folded: Folded = [Attention::Quiet].into_iter().collect();
-        let rows = shown_rows(&groups, &folded, false);
+        let rows = shown_rows(&groups, &folded);
         assert!(!rows.contains(&RowKey::Live(3)), "a folded group's rows are skipped");
         assert_eq!(rows.len(), 3);
-        assert_eq!(shown_rows(&groups, &folded, true).len(), 4, "a filter shows every row it finds");
         assert_eq!(cursor_step(&rows, None, 1), Some(rows[0]), "from nowhere, the first row");
         assert_eq!(cursor_step(&rows, Some(RowKey::Live(3)), 1), Some(rows[0]), "from a row gone, the first row");
         assert_eq!(cursor_step(&rows, Some(rows[0]), 1), Some(rows[1]));

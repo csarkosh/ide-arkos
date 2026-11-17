@@ -352,7 +352,11 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .flex_none()
         .h(px(sessions_h))
         .min_h_0()
-        .when(inbox && !files_view, |d| d.child(crate::sessions_list::render_filter(root, cx)))
+        // The list takes the keys itself (no filter field since 2026-11-17): Cmd+0 or a press in
+        // the column puts them here (`Root::session_list_key`).
+        .track_focus(&root.session_list_focus)
+        .key_context("SessionList")
+        .on_key_down(cx.listener(|root, ev: &KeyDownEvent, _window, cx| root.session_list_key(&ev.keystroke, cx)))
         .children(new_row)
         .when(inbox && session_groups.is_empty(), |d| d.child(div().px(px(12.0 + style.sidebar_pad)).py(px(8.0)).text_size(px(style.ui(12.0))).text_color(c.text_dim.hsla()).child("No sessions yet.")).child(sidebar_end_marker(cx)))
         .when(!session_groups.is_empty() && sessions_h > 0.0, |d| d.child(crate::sessions_list::render(root, width, inbox, cx).opacity(sessions_o)));
