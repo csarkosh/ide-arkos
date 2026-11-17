@@ -700,6 +700,7 @@ pub fn render_filter(root: &mut Root, cx: &mut Context<Root>) -> Div {
                     root.sidebar_focused = false;
                     root.wt_focused = false;
                     root.session_filter_focused = true;
+                    root.switcher_focused = false;
                     cx.notify();
                 }),
             )

@@ -248,6 +248,9 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
     let switch_h = if inbox { ROW_H + 6.0 } else { 0.0 };
     let switch = inbox.then(|| {
         let files = root.sidebar.inbox_files;
+        // The keyboard's ring on the view shown while the switcher has the keys.
+        let ringed = root.switcher_focused;
+        let ring = c.focus_ring.hsla();
         let (on, off, hover) = (c.tab_active.hsla(), c.tab_inactive.alpha(0.0), c.tab_inactive.hsla());
         let pill = |id: &'static str, label: &'static str, current: bool| {
             div()
@@ -259,10 +262,17 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
                 .text_size(px(style.ui(12.0)))
                 .text_color(if current { c.text.hsla() } else { c.text_dim.hsla() })
                 .bg(if current { on } else { off })
+                // Always a border, clear unless ringed, so the ring never moves the pill.
+                .border_1()
+                .border_color(if current && ringed { ring } else { gpui::transparent_black() })
                 .when(!current, |d| d.cursor_pointer().hover(move |s| s.bg(hover)))
                 .child(label)
         };
         div()
+            .id("inbox-switch")
+            .track_focus(&root.switcher_focus)
+            .key_context("SidebarSwitcher")
+            .on_key_down(cx.listener(|root, ev: &KeyDownEvent, _window, cx| root.switcher_key_down(&ev.keystroke, cx)))
             .h(px(switch_h))
             .flex_none()
             .pl(px(8.0 + style.sidebar_pad))
@@ -2122,6 +2132,11 @@ impl Root {
         let selected = self.explorer.selected.clone().and_then(|s| rows.iter().find(|r| r.path == s).cloned());
         match ks.key.as_str() {
             "down" => self.explorer.select_next(),
+            // Up from the first row reaches the Sessions/Files switcher.
+            "up" if rows.first().is_none_or(|r| self.explorer.selected.as_ref() == Some(&r.path)) => {
+                self.focus_switcher(cx);
+                return;
+            }
             "up" => self.explorer.select_prev(),
             "right" => match selected {
                 Some(r) if r.is_dir && !r.expanded => {
@@ -2218,8 +2233,40 @@ impl Root {
     }
 }
 
+/// What a key does while the Sessions/Files switcher has the keyboard (Chrome keys spec, section
+/// 2): Left shows the sessions, Right the files, Down or Enter goes into the list shown, Escape
+/// gives the keys back to the pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwitcherKey {
+    Show { files: bool },
+    Enter,
+    Leave,
+    Pass,
+}
+
+pub fn switcher_key(key: &str) -> SwitcherKey {
+    match key {
+        "left" => SwitcherKey::Show { files: false },
+        "right" => SwitcherKey::Show { files: true },
+        "down" | "enter" => SwitcherKey::Enter,
+        "escape" => SwitcherKey::Leave,
+        _ => SwitcherKey::Pass,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_switcher_takes_left_and_right_and_goes_down_into_its_list() {
+        use super::{switcher_key, SwitcherKey};
+        assert_eq!(switcher_key("left"), SwitcherKey::Show { files: false });
+        assert_eq!(switcher_key("right"), SwitcherKey::Show { files: true });
+        assert_eq!(switcher_key("down"), SwitcherKey::Enter);
+        assert_eq!(switcher_key("enter"), SwitcherKey::Enter);
+        assert_eq!(switcher_key("escape"), SwitcherKey::Leave);
+        assert_eq!(switcher_key("a"), SwitcherKey::Pass);
+    }
+
     #[test]
     fn worktrees_take_what_the_explorer_does_not_need_and_never_less_than_a_third() {
         let (e, w) = super::sidebar_split(900.0, 200.0, true, true);

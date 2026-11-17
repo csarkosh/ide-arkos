@@ -37,6 +37,11 @@ session you are on.
 2. Press Enter: that session fills the window, and the keys go to it.
 3. Changed your mind? Escape clears what you typed; Escape again goes back where you were.
 
+Up from the top of the list reaches the Sessions/Files switcher at the top of the sidebar.
+There, Left and Right switch between your sessions and your files, and Down or Enter goes into
+the list shown. In the files, Up and Down move, Right and Left open and close a folder, Enter
+opens a file and Space previews it; Up from the top comes back to the switcher.
+
 Without opening the list, {next_session} and {prev_session} go to the next and previous session
 in the list's order.
 

@@ -34,6 +34,13 @@ Enter opens the cursor's session and gives the keys to its
 pane (a closed one is resumed); Escape clears the filter, and on an empty filter goes back to the
 pane. A click anywhere else takes the keys as before.
 
+Up from the first row (or from the file tree's first row) rings the Sessions/Files switcher at
+the top of the sidebar (Cyrus, 2026-11-16: "the session list navigation can reach the
+Sessions/Files switcher and I can use left/right arrow keys to switch between the 2"). Left
+shows the sessions, Right the files; Down or Enter goes into the list shown (the filter with its
+ring on the first row, or the file tree on its first row); Escape gives the keys back to the
+pane. "Focus file tree" and "Focus worktrees" show the Files view too, which they did not.
+
 ## 3. In the "+" menu
 
 Opened by Cmd+T or a click, the menu takes Up, Down, Enter and Escape: the first row is marked,

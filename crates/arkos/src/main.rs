@@ -370,6 +370,9 @@ pub struct Root {
     /// keys are in it.
     pub session_filter: line_edit::LineEdit,
     pub session_filter_focus: FocusHandle,
+    /// The Sessions/Files switcher has the keys (reached by Up from the top of either list).
+    pub switcher_focused: bool,
+    pub switcher_focus: FocusHandle,
     pub session_filter_focused: bool,
     /// The session list's keyboard cursor (Chrome keys spec, section 2): the row Enter opens.
     pub session_cursor: Option<sessions_list::RowKey>,
@@ -878,6 +881,8 @@ impl Root {
             sessions_folded: saved_folded,
             session_filter: line_edit::LineEdit::new(),
             session_filter_focus: cx.focus_handle(),
+            switcher_focused: false,
+            switcher_focus: cx.focus_handle(),
             session_filter_focused: false,
             session_cursor: None,
             dock_badge: 0,
@@ -2209,6 +2214,7 @@ impl Root {
         self.sidebar_focused = false;
         self.wt_focused = false;
         self.session_filter_focused = false;
+        self.switcher_focused = false;
         if self.tree.pane(pane).is_none() {
             return;
         }
@@ -2299,6 +2305,11 @@ impl Root {
             edit @ (line_edit::Edit::Up | line_edit::Edit::Down) => {
                 let delta = if matches!(edit, line_edit::Edit::Up) { -1 } else { 1 };
                 let rows = self.shown_session_rows();
+                // Up from the first row reaches the Sessions/Files switcher.
+                if delta < 0 && self.session_cursor.is_none_or(|c| rows.first() == Some(&c)) {
+                    self.focus_switcher(cx);
+                    return;
+                }
                 self.session_cursor = sessions_list::cursor_step(&rows, self.session_cursor, delta);
                 cx.notify();
             }
@@ -2306,6 +2317,7 @@ impl Root {
                 let rows = self.shown_session_rows();
                 let target = self.session_cursor.filter(|c| rows.contains(c)).or_else(|| rows.first().copied());
                 self.session_filter_focused = false;
+                self.switcher_focused = false;
                 self.session_filter.clear();
                 match target {
                     Some(sessions_list::RowKey::Ended(i)) => self.resume_ended(i, cx),
@@ -2317,6 +2329,7 @@ impl Root {
             line_edit::Edit::Cancel => {
                 if self.session_filter.text.is_empty() {
                     self.session_filter_focused = false;
+                    self.switcher_focused = false;
                 } else {
                     self.session_filter.clear();
                 }
@@ -2332,6 +2345,46 @@ impl Root {
             }
             _ => {}
         }
+    }
+
+    /// The Sessions/Files switcher takes the keys (Chrome keys spec, section 2).
+    pub fn focus_switcher(&mut self, cx: &mut Context<Self>) {
+        self.session_filter_focused = false;
+        self.sidebar_focused = false;
+        self.wt_focused = false;
+        self.switcher_focused = true;
+        cx.notify();
+    }
+
+    /// A key on the switcher: Left and Right show the sessions or the files, Down or Enter goes
+    /// into the list shown (the filter with its ring, or the file tree), Escape back to the pane.
+    pub fn switcher_key_down(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
+        let m = &ks.modifiers;
+        if m.platform || m.control || m.alt || m.shift {
+            return;
+        }
+        match sidebar::switcher_key(&ks.key) {
+            sidebar::SwitcherKey::Show { files } => self.sidebar.inbox_files = files,
+            sidebar::SwitcherKey::Enter if self.sidebar.inbox_files => {
+                self.switcher_focused = false;
+                if !self.sidebar.explorer_open {
+                    self.sidebar.explorer_open = true;
+                    self.save(cx);
+                }
+                if self.explorer.selected.is_none() {
+                    self.explorer.select_next();
+                }
+                self.sidebar_focused = true;
+            }
+            sidebar::SwitcherKey::Enter => {
+                self.switcher_focused = false;
+                self.session_filter_focused = true;
+                self.session_cursor = self.shown_session_rows().first().copied();
+            }
+            sidebar::SwitcherKey::Leave => self.switcher_focused = false,
+            sidebar::SwitcherKey::Pass => return,
+        }
+        cx.notify();
     }
 
     /// The rows the session list shows now, in order, for the keyboard's cursor.
@@ -2354,6 +2407,7 @@ impl Root {
         self.sidebar_focused = false;
         self.wt_focused = false;
         self.session_filter_focused = true;
+        self.switcher_focused = false;
         let rows = self.shown_session_rows();
         let shown = sessions_list::RowKey::Live(self.tree.page);
         self.session_cursor = if rows.contains(&shown) { Some(shown) } else { rows.first().copied() };
@@ -2691,6 +2745,7 @@ impl Root {
         self.sidebar_focused = false;
         self.wt_focused = false;
         self.session_filter_focused = false;
+        self.switcher_focused = false;
         self.tree.activate(pane, idx);
         self.acknowledge_focused(cx);
         if let Some(h) = self.bar_scroll.get(&pane) {
@@ -3575,6 +3630,7 @@ impl Root {
         self.sidebar_focused = false;
         self.wt_focused = false;
         self.session_filter_focused = false;
+        self.switcher_focused = false;
         cx.notify();
     }
 
@@ -3702,6 +3758,7 @@ impl Root {
             self.sidebar_focused = false;
             self.wt_focused = false;
             self.session_filter_focused = false;
+            self.switcher_focused = false;
             cx.notify();
         }
         match cmd {
@@ -3914,6 +3971,7 @@ impl Root {
                     self.sidebar_focused = false;
                     self.wt_focused = false;
                     self.session_filter_focused = false;
+                    self.switcher_focused = false;
                 }
                 // The panes change width: measurements taken before are stale, as on a resize.
                 self.grids.clear();
@@ -3921,6 +3979,8 @@ impl Root {
                 cx.notify();
             }
             FocusFileTree => {
+                // The tree is in the column's Files view: show it, or the keys go to a hidden tree.
+                self.sidebar.inbox_files = true;
                 if self.sidebar.collapsed {
                     self.sidebar.set_collapsed(false, Instant::now());
                     self.grids.clear();
@@ -3933,10 +3993,12 @@ impl Root {
                 self.sidebar_focused = true;
                 self.wt_focused = false;
                 self.session_filter_focused = false;
+                self.switcher_focused = false;
                 cx.notify();
             }
             NextCallingSession => self.next_calling_session(cx),
             FocusWorktrees => {
+                self.sidebar.inbox_files = true;
                 if self.sidebar.collapsed {
                     self.sidebar.set_collapsed(false, Instant::now());
                     self.grids.clear();
@@ -5267,6 +5329,7 @@ impl Root {
             self.sidebar_focused = false;
             self.wt_focused = false;
             self.session_filter_focused = false;
+            self.switcher_focused = false;
             self.tree.focus(pane);
         }
     }
@@ -5716,6 +5779,8 @@ impl Render for Root {
             Some(self.tab_rename_focus.clone())
         } else if self.remind_picker.value().is_some() {
             Some(self.remind_focus.clone())
+        } else if self.switcher_focused {
+            Some(self.switcher_focus.clone())
         } else if self.session_filter_focused {
             Some(self.session_filter_focus.clone())
         } else if self.wt_focused {

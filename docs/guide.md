@@ -691,7 +691,7 @@ session list, and the command palette (Shift+Cmd+P) for everything else.
 
 | Keys | Action |
 | --- | --- |
-| Cmd+0 | the session list: the sidebar opens on Sessions and the keys go to its filter; type to narrow it, Up and Down move the ring through the rows, Enter opens the ringed session (a closed one is resumed), Escape clears what you typed and then goes back to the pane |
+| Cmd+0 | the session list: the sidebar opens on Sessions and the keys go to its filter; type to narrow it, Up and Down move the ring through the rows, Enter opens the ringed session (a closed one is resumed), Escape clears what you typed and then goes back to the pane. Up from the first row rings the Sessions/Files switcher: Left and Right switch the sidebar between the two, Down or Enter goes into the list shown, and Up from the file tree's first row comes back |
 | Cmd+1 to Cmd+8 | focus pane 1 to 8 of the session shown |
 | Cmd+9 | focus the last pane |
 | Ctrl+Tab, Ctrl+Shift+Tab | next and previous tab in the focused pane |
