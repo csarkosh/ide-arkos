@@ -118,6 +118,9 @@ pub fn render_new_tab_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Di
         let row = div().id(("new-tab-row", i)).px(px(10.0)).py(px(4.0)).flex().justify_between().child(kind.label()).child(div().text_color(dim).child(keys));
         // The marked row (the keys') is lit as a hovered one is, and the mouse moves the mark.
         let marked = live && menu.mark == i;
+        // Where the app paints the menu, the hover fill follows only the mouse, so the marked
+        // row is filled here; where the effect paints it, the mark is reported as a hover.
+        let row = row.when(marked && !effect_rows, |r| r.bg(hover));
         m = m.child(row.when(live, |row| {
             let key = crate::effects::blocks::menu_row_key(0x17, i);
             crate::chrome::menu_row_hover(row.cursor_pointer(), key, marked || hovered == Some(key), effect_rows, hover, cx)
