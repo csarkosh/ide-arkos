@@ -551,6 +551,8 @@ constant float GRID_SPEED = 0.45;
 constant int LANES = 6;
 constant int ROAD_CELLS = 1;
 constant float TOWER_ON = 0.8;
+// Trees in each lot of a park (and a lamp post).
+constant int PARK_TREES = 3;
 constant float Z_NEAR = 0.7;
 constant float Z_FAR = 30.0;
 // The tallest tower, in camera heights.
@@ -1057,6 +1059,81 @@ float road_car_at(float dir, float2 key, float t) {
     return stop_line + dir * n * block * x * x * (3.0 - 2.0 * x);
 }
 
+float grid_line(float phase);
+
+// Whether the city's cell (kx across, m along) has a tower: four in five of the lots beside the
+// road do; the road and the cross streets have none.
+bool lot_built(int kx, int m) {
+    return hash2(float2(float(kx), float(m)) + float2(17.0, 3.0)) <= TOWER_ON;
+}
+
+// Whether a cell is a lot (beside the road, not on a cross street) with no tower.
+bool lot_empty(int kx, int m) {
+    bool road = kx >= -ROAD_CELLS && kx < ROAD_CELLS;
+    bool out = kx < -(ROAD_CELLS + LANES) || kx >= ROAD_CELLS + LANES;
+    bool cross = ((m % CROSS_EVERY) + CROSS_EVERY) % CROSS_EVERY == 0;
+    return !road && !out && !cross && !lot_built(kx, m);
+}
+
+// Whether an empty lot is part of open ground big enough for a park: it touches another empty
+// lot across or along (Cyrus, 2026-11-17: "if the blank space is large enough, I'd like
+// something like a park").
+bool lot_in_park(int kx, int m) {
+    return lot_empty(kx - 1, m) || lot_empty(kx + 1, m) || lot_empty(kx, m - 1) || lot_empty(kx, m + 1);
+}
+
+// A park on the lot (kx, m), whose near edge is zc in view, at p over col: its grass (the ground
+// tinted and hatched), PARK_TREES trees (a trunk and a canopy of light) and a lamp post lit warm,
+// farthest first; f, cx and yh are the scene's projection.
+float3 park_at(float2 p, int kx, int m, float zc, float cx, float yh, float f, float t, constant ArkosInputs& u, float3 green, float3 white_c, float3 col) {
+    float x0 = float(kx) * GRID_X;
+    float2 cell = float2(float(kx), float(m));
+    float seen_far = 1.0 - smoothstep(Z_FAR * 0.55, Z_FAR, zc);
+    // The grass: where p is on the ground inside the lot.
+    if (p.y > yh) {
+        float zg = f / (p.y - yh);
+        float xg = (p.x - cx) * zg / f;
+        if (zg > zc && zg < zc + GRID_Z && xg > x0 && xg < x0 + GRID_X && zg > Z_NEAR) {
+            col = mix(col, mix(col, green, 0.35), 0.25 * seen_far);
+            col = light_on(col, green, grid_line((xg + zg) / 0.12) * 0.08 * seen_far, u.dark);
+        }
+    }
+    // Its trees and its lamp, farthest first (the larger depth drawn first).
+    for (int i = PARK_TREES; i >= 0; i--) {
+        float2 key = cell * 3.0 + float2(float(i), 5.0);
+        float tz = zc + mix(0.2, 0.8, (float(i) + hash2(key)) / float(PARK_TREES + 1)) * GRID_Z;
+        float tx = x0 + mix(0.2, 0.8, hash2(key + 1.0)) * GRID_X;
+        if (tz < Z_NEAR) {
+            continue;
+        }
+        float seen = (1.0 - smoothstep(Z_FAR * 0.55, Z_FAR, tz)) * smoothstep(Z_NEAR, Z_NEAR + 0.6, tz);
+        float2 foot = float2(cx + tx * f / tz, yh + f / tz);
+        float s = f / tz;
+        if (i == PARK_TREES) {
+            // The lamp post: a thin pole and a warm lamp.
+            float2 lamp = float2(foot.x, yh + f * (1.0 - 0.32) / tz);
+            float pole = seg_dist(p, foot, lamp);
+            col = light_on(col, green, (1.0 - smoothstep(0.0, 0.7, pole)) * 0.3 * seen, u.dark);
+            col = light_on(col, u.colors[ARKOS_ANSI + 3].rgb, (1.0 - smoothstep(0.02 * s, 0.07 * s + 1.0, length(p - lamp))) * 0.8 * seen, u.dark);
+            continue;
+        }
+        float h = mix(0.32, 0.5, hash2(key + 2.0));
+        float r = mix(0.14, 0.22, hash2(key + 3.0)) * s;
+        float2 crown = float2(foot.x, yh + f * (1.0 - h) / tz);
+        float trunk = seg_dist(p, foot, float2(foot.x, crown.y + r * 0.6));
+        float d = length((p - crown) / float2(1.0, 1.15));
+        // A canopy of light: a soft dark fill hiding what is behind, its rim lit, leaves in it.
+        if (d < r) {
+            col = mix(col, u.colors[ARKOS_WINDOW_BG].rgb * 0.8, 0.7 * seen);
+            float leaves = hash2(floor((p - crown) / max(s * 0.04, 1.0)) + cell * 7.0) < 0.3 ? 0.35 : 0.0;
+            col = light_on(col, green, leaves * seen, u.dark);
+        }
+        float rim = 1.0 - smoothstep(0.0, 1.0, abs(d - r));
+        col = light_on(col, mix(green, white_c, 0.1), (rim * 0.7 + (1.0 - smoothstep(0.0, 0.8, trunk)) * 0.45) * seen, u.dark);
+    }
+    return col;
+}
+
 // A car's light at screen point s, r points across, at p: a soft round glow.
 float car_light(float2 p, float2 s, float r) {
     return 1.0 - smoothstep(r * 0.5, r * 1.6, length(p - s));
@@ -1264,7 +1341,11 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
                     continue;
                 }
                 float2 cell = float2(float(kx), float(m));
-                if (hash2(cell + float2(17.0, 3.0)) > TOWER_ON) {
+                if (!lot_built(kx, m)) {
+                    // An empty lot: where it touches another, the open ground is a park.
+                    if (lot_in_park(kx, m)) {
+                        col = park_at(q, kx, m, zc, cx, yh, f, t, u, green, white_c, col);
+                    }
                     continue;
                 }
                 float tw = GRID_X * (0.5 + 0.35 * hash2(cell + float2(5.0, 11.0)));
