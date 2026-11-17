@@ -212,9 +212,9 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
             "explorer-header" => group_ring == Some(Group::Explorer),
             _ => group_ring == Some(Group::Worktrees),
         };
-        // Under an effect that draws the rows as pills the ring is the keyboard's pill behind the
+        // Under an effect that gives the keyboard's ring its own shape, that shape behind the
         // heading's words (`chrome::keys_ring`); else the heading's own border.
-        let pill = crate::chrome::keys_ring_is_pill(&style);
+        let pill = crate::chrome::keys_ring_is_shaped(&style);
         div()
             .id(id)
             .relative()

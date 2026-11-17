@@ -17,6 +17,7 @@ sidebar_margin = true         # the sidebar is a card as the panes are, with the
 highlights = "effect"         # "effect": the wash paints the selected and hovered rows, the hovered
                               # tab and the active tabs' underlines; "app" (the default): the app
                               # keeps its own fills and reports no highlight blocks
+keys_ring = "pill"            # the keyboard's ring in the sidebar: a pill as a selected row, fainter
 menus = "app"                 # "ink", "glow" or "app" (the default): how the menus and popovers
                               # look while the effect is on
 paper_alpha = 0.5             # 0.5 to 1.0; a terminal's or document's paper over the wash

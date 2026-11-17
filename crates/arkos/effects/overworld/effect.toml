@@ -25,6 +25,7 @@ ink_borders = false           # the app keeps drawing its own 1 px borders, insi
 highlights = "effect"         # "effect": the wash paints the selected and hovered rows, the hovered
                               # tab and the active tabs with their lanterns; "app" (the default):
                               # the app keeps its own fills and reports no highlight blocks
+keys_ring = "pixel"           # the keyboard's ring in the sidebar: a square frame, a fainter fill
 menus = "app"                 # "ink", "glow" or "app" (the default): how the menus and popovers
                               # look while the effect is on
 paper_alpha = 0.6             # 0.5 to 1.0; a terminal's or a document's paper over the wash: the

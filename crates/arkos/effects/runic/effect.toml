@@ -21,6 +21,7 @@ sidebar_margin = true         # the sidebar keeps the gap round it as a pane doe
 highlights = "effect"         # "effect": the wash paints the selected and hovered rows and the
                               # hovered tab from the highlight blocks; "app" (the default): the
                               # app keeps its own fills and reports no highlight blocks
+keys_ring = "glow"            # the keyboard's ring in the sidebar: a glowing line, a faint wash
 menus = "glow"                # "ink", "glow" or "app" (the default): how the menus and popovers
                               # look while the effect is on
 glyph_motion = true           # the glyph shader reads the clock, so the text is redrawn on a timer

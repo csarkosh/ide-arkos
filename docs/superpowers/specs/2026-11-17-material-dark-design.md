@@ -48,7 +48,11 @@ currently-selected element". Where the effect paints the rows as pills on rounde
 (`chrome::keys_ring_is_pill`: highlights painted and a pane radius, material's), the ring on a
 session row or a group heading is a pill inset as a selected row's (8 points from the sidebar's
 edges), outlined in the focus colour and filled with the selection colour at 0.45, laid behind
-the row's text; elsewhere it stays the outline round the row.
+the row's text. Then ("the same ... in-focus element changes ... applied to the other effects too
+like Runic and Overworld"): a manifest key, `keys_ring`, names the ring's shape for each effect:
+material's `pill`; runic's `glow`, a glowing line round the row with a faint wash of the focus
+colour, as its lit rows; overworld's `pixel`, a square two point frame filled with a fainter
+active tab's colour, as its selected rows are filled; `outline`, the app's own, for the rest.
 
 ## Lower case in the theme lists
 

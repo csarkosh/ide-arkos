@@ -5,7 +5,7 @@
 //! goes to the panes.
 
 use crate::effects::active::Style;
-use crate::effects::manifest::MenuLook;
+use crate::effects::manifest::{KeysRing, MenuLook};
 use crate::palette::Rgb;
 use crate::theme::Theme;
 use gpui::{canvas, div, point, prelude::*, px, App, ClickEvent, Div, FontWeight, MouseButton, MouseDownEvent, PathBuilder, Pixels, Point, SharedString, Window};
@@ -471,33 +471,49 @@ pub const PILL_INSET: f32 = 8.0;
 /// How strongly the keyboard's pill is filled with the selection colour: a fainter version of a
 /// selected row's pill.
 pub const KEYS_PILL_FILL: f32 = 0.45;
+/// How strongly runic's glowing ring washes the row with the focus colour: fainter than a lit
+/// selected row.
+pub const KEYS_GLOW_FILL: f32 = 0.12;
+/// How strongly overworld's pixel frame fills the row with the active tab's colour: fainter than a
+/// selected row's fill.
+pub const KEYS_PIXEL_FILL: f32 = 0.55;
 
-/// Whether the keyboard's ring in the sidebar is a pill: under an effect that paints the rows as
-/// pills on rounded cards (material's), so the ring matches the selected row's shape.
-pub fn keys_ring_is_pill(style: &Style) -> bool {
-    style.highlights && style.pane_radius > 0.0
+/// Whether the keyboard's ring in the sidebar is drawn as a shape of its own behind the row's
+/// text (a pill, a glow, a pixel frame), not the thin outline round the row.
+pub fn keys_ring_is_shaped(style: &Style) -> bool {
+    style.keys_ring != KeysRing::Outline
 }
 
 /// The keyboard's ring on a sidebar row or heading, laid behind its text (the row's first child,
-/// the row `relative`): under an effect that draws the rows as pills, a pill inset as a selected
-/// row's, outlined in the focus colour and filled with a fainter selection colour (Cyrus,
-/// 2026-11-17: "the outline to match the background shape and the background should be a fainter
-/// version of the currently-selected element"); otherwise the outline round the row.
+/// the row `relative`), matching how the effect draws a selected row (Cyrus, 2026-11-17: "the
+/// outline to match the background shape and the background should be a fainter version of the
+/// currently-selected element", for every effect): material's pill inset as its selected rows,
+/// filled with a fainter selection colour; runic's glowing line round the row with a faint wash
+/// of the focus colour; overworld's square two point frame filled with a fainter active tab's
+/// colour, as its selected rows are filled; else the thin outline round the row.
 pub fn keys_ring(theme: &Theme, style: &Style) -> Div {
-    let ring = theme.chrome.focus_ring.hsla();
-    if keys_ring_is_pill(style) {
-        return div()
-            .absolute()
+    let ring = theme.chrome.focus_ring;
+    let base = div().absolute();
+    match style.keys_ring {
+        KeysRing::Pill => base
             .top_0()
             .bottom_0()
             .left(px(PILL_INSET))
             .right(px(PILL_INSET))
             .rounded(px(999.0))
             .border_1()
-            .border_color(ring)
-            .bg(theme.terminal.selection.alpha(KEYS_PILL_FILL));
+            .border_color(ring.hsla())
+            .bg(theme.terminal.selection.alpha(KEYS_PILL_FILL)),
+        KeysRing::Glow => base
+            .inset_0()
+            .rounded(px(2.0))
+            .border_1()
+            .border_color(ring.hsla())
+            .bg(ring.alpha(KEYS_GLOW_FILL))
+            .shadow(vec![gpui::BoxShadow { color: ring.alpha(0.55), offset: point(px(0.0), px(0.0)), blur_radius: px(8.0), spread_radius: px(0.0) }]),
+        KeysRing::Pixel => base.inset_0().border_2().border_color(ring.hsla()).bg(theme.chrome.tab_active.alpha(KEYS_PIXEL_FILL)),
+        KeysRing::Outline => base.inset_0().rounded(px(4.0)).border_1().border_color(ring.hsla()),
     }
-    div().absolute().inset_0().rounded(px(4.0)).border_1().border_color(ring)
 }
 
 /// The paper laid over an effect's backdrop in a menu: the window's colour at the effect's
@@ -720,16 +736,19 @@ mod tests {
     }
 
     #[test]
-    fn the_keyboard_s_ring_is_a_pill_where_the_effect_draws_the_rows_as_pills() {
+    fn the_keyboard_s_ring_takes_each_effect_s_own_shape() {
         let style = |name: &str| {
             let m = crate::effects::manifest::load(name, std::path::Path::new("/nonexistent")).unwrap().manifest;
             crate::effects::active::style_at(&m, 1.0)
         };
-        assert!(keys_ring_is_pill(&style("material")), "material's rows are pills on rounded cards");
-        for name in ["runic", "overworld", "watercolor"] {
-            assert!(!keys_ring_is_pill(&style(name)), "{name} keeps the outline round the row");
-        }
-        assert!(!keys_ring_is_pill(&Style::plain()), "no effect: the outline");
+        assert_eq!(style("material").keys_ring, KeysRing::Pill, "material's rows are pills on rounded cards");
+        assert_eq!(style("runic").keys_ring, KeysRing::Glow, "runic's rows are lit");
+        assert_eq!(style("overworld").keys_ring, KeysRing::Pixel, "overworld's rows are pixel fills");
+        assert_eq!(style("watercolor").keys_ring, KeysRing::Outline);
+        assert!(keys_ring_is_shaped(&style("runic")) && !keys_ring_is_shaped(&Style::plain()), "no effect: the outline");
+        // Faded out, the app's own outline.
+        let m = crate::effects::manifest::load("material", std::path::Path::new("/nonexistent")).unwrap().manifest;
+        assert_eq!(crate::effects::active::style_at(&m, 0.0).keys_ring, KeysRing::Outline);
         let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "material").unwrap().wash;
         assert!(wash.contains(&format!("constant float PILL_INSET = {PILL_INSET:?};")), "inset as the wash's pills are");
     }

@@ -54,6 +54,9 @@ pub struct Manifest {
     pub highlights: Highlights,
     /// How the app draws its menus and popovers while the effect is on.
     pub menus: MenuLook,
+    /// How the keyboard's ring in the sidebar looks, to match how the effect draws a selected
+    /// row.
+    pub keys_ring: KeysRing,
     /// A terminal's or document's paper over the wash.
     pub paper_alpha: f32,
     /// A document's paper over the wash (rendered markdown and the viewer). Absent,
@@ -141,6 +144,7 @@ impl Default for Manifest {
             sidebar_margin: false,
             highlights: Highlights::App,
             menus: MenuLook::App,
+            keys_ring: KeysRing::Outline,
             paper_alpha: 0.5,
             document_paper_alpha: None,
             menu_paper_alpha: None,
@@ -179,6 +183,22 @@ pub enum MenuLook {
     Glow,
     #[default]
     App,
+}
+
+/// How the keyboard's ring on a sidebar row or heading looks under an effect (Cyrus, 2026-11-17:
+/// the in-focus element should match "the theme's effect"): `outline`, a thin line round the row
+/// (the app's own, the default); `pill`, a pill inset as material's selected rows are, filled with
+/// a fainter selection colour; `glow`, a glowing line round the row with a faint wash of the
+/// focus colour (runic's lit rows); `pixel`, a square two point frame with a fainter fill of the
+/// active tab's colour (overworld's selected rows).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeysRing {
+    #[default]
+    Outline,
+    Pill,
+    Glow,
+    Pixel,
 }
 
 /// Refuses `value` outside `lo..=hi`, naming the key and the range.
@@ -452,6 +472,9 @@ mod tests {
         // frame and its cursor.
         assert_eq!(parse(MINIMAL).unwrap().sidebar_pad, 0.0);
         assert!(!parse(MINIMAL).unwrap().sidebar_margin, "a sidebar keeps no margin unless asked");
+        assert_eq!(parse(MINIMAL).unwrap().keys_ring, KeysRing::Outline);
+        assert_eq!(parse(&with("keys_ring = \"pixel\"")).unwrap().keys_ring, KeysRing::Pixel);
+        assert!(parse(&with("keys_ring = \"round\"")).is_err());
         assert_eq!(parse(&with("paper_alpha = 0.6")).unwrap().menu_paper_alpha(), 0.6, "a menu's paper is the terminal's unless told");
         assert_eq!(parse(&with("menu_paper_alpha = 0.9")).unwrap().menu_paper_alpha(), 0.9);
         assert!(parse(&with("menu_paper_alpha = 0.2")).unwrap_err().contains("menu_paper_alpha must be 0.5 to 1.0"));

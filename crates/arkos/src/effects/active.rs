@@ -83,6 +83,8 @@ pub struct Style {
     pub pane_radius: f32,
     /// How the menus and popovers look (`chrome::menu_colors`).
     pub menus: MenuLook,
+    /// The keyboard's ring in the sidebar (the manifest's `keys_ring`).
+    pub keys_ring: crate::effects::manifest::KeysRing,
     /// The effect draws the menus' and popovers' edges from above (its wash's `arkos_overlay`),
     /// so the app draws no line of its own around them.
     pub menu_edges: bool,
@@ -95,7 +97,7 @@ pub struct Style {
 impl Style {
     /// The app as it paints without an effect.
     pub fn plain() -> Style {
-        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, menu_paper_alpha: 1.0, chrome_alpha: 1.0, body_bars_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, title_grow: 0.0, sidebar_pad: 0.0, sidebar_margin: 0.0, bar_end_clear: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, edge_gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
+        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, menu_paper_alpha: 1.0, chrome_alpha: 1.0, body_bars_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, title_grow: 0.0, sidebar_pad: 0.0, sidebar_margin: 0.0, bar_end_clear: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, edge_gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, keys_ring: crate::effects::manifest::KeysRing::Outline, menu_edges: false, terminal_decode: false, terminal_paint: false }
     }
 
     /// The ground a document's own fills go with: a markdown table's header and paper rows and a
@@ -148,6 +150,7 @@ pub fn style_at(manifest: &Manifest, fade: f32) -> Style {
         edge_gap: if full { manifest.edge_gap.unwrap_or(manifest.gap) } else { 0.0 },
         pane_radius: if full { manifest.pane_radius } else { 0.0 },
         menus: if full { manifest.menus } else { MenuLook::App },
+        keys_ring: if full { manifest.keys_ring } else { crate::effects::manifest::KeysRing::Outline },
         // Only the effect's wash knows whether it has a menu stage: `ActiveEffect::style`.
         menu_edges: false,
         terminal_decode: full && manifest.terminal_decode,
@@ -536,7 +539,7 @@ impl<L> ActiveEffect<L> {
     pub fn style(&self, now: Instant) -> Style {
         let s = style_at(&self.effect.manifest, self.amount(now));
         if self.leaving() {
-            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, title_grow: 0.0, sidebar_pad: 0.0, sidebar_margin: 0.0, bar_end_clear: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, edge_gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false, ..s }
+            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, title_grow: 0.0, sidebar_pad: 0.0, sidebar_margin: 0.0, bar_end_clear: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, edge_gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, keys_ring: crate::effects::manifest::KeysRing::Outline, menu_edges: false, terminal_decode: false, terminal_paint: false, ..s }
         } else {
             // The menus' edges cut over with the rest once the effect is fully on.
             Style { menu_edges: self.amount(now) >= 1.0 && has_overlay(&self.effect.wash), ..s }
@@ -812,7 +815,7 @@ mod tests {
         assert_eq!(style_at(&m, 0.0), Style::plain());
         assert_eq!(
             style_at(&m, 1.0),
-            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, menu_paper_alpha: 0.5, chrome_alpha: 0.0, body_bars_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, title_pad: 0.0, title_grow: 0.0, sidebar_pad: 0.0, sidebar_margin: 0.0, bar_end_clear: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, edge_gap: 0.0, pane_radius: 0.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false, terminal_paint: true }
+            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, menu_paper_alpha: 0.5, chrome_alpha: 0.0, body_bars_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, title_pad: 0.0, title_grow: 0.0, sidebar_pad: 0.0, sidebar_margin: 0.0, bar_end_clear: 0.0, text_grid: 0.0, binder: 0.0, gap: 0.0, edge_gap: 0.0, pane_radius: 0.0, menus: MenuLook::Ink, keys_ring: crate::effects::manifest::KeysRing::Outline, menu_edges: false, terminal_decode: false, terminal_paint: true }
         );
         let half = style_at(&m, 0.5);
         assert_eq!((half.paper_alpha, half.chrome_alpha, half.ground_alpha), (0.75, 0.5, 0.5));
