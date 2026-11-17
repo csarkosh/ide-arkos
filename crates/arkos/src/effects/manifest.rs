@@ -45,6 +45,9 @@ pub struct Manifest {
     pub pane_radius: f32,
     /// The app hides its own 1 px borders and the wash draws the edges.
     pub ink_borders: bool,
+    /// The sidebar keeps the `gap` round it as a pane does (on the window's side, above and below;
+    /// the gutter to the panes is already the gap), so the wash frames it as a pane.
+    pub sidebar_margin: bool,
     pub highlights: Highlights,
     /// How the app draws its menus and popovers while the effect is on.
     pub menus: MenuLook,
@@ -123,6 +126,7 @@ impl Default for Manifest {
             gap: 0.0,
             pane_radius: 0.0,
             ink_borders: false,
+            sidebar_margin: false,
             highlights: Highlights::App,
             menus: MenuLook::App,
             paper_alpha: 0.5,
@@ -427,6 +431,8 @@ mod tests {
         // The sidebar's padding: none unless asked for, and overworld asks for room for its
         // frame and its cursor.
         assert_eq!(parse(MINIMAL).unwrap().sidebar_pad, 0.0);
+        assert!(!parse(MINIMAL).unwrap().sidebar_margin, "a sidebar keeps no margin unless asked");
+        assert!(parse(&with("sidebar_margin = true")).unwrap().sidebar_margin);
         assert_eq!(parse(&with("sidebar_pad = 12")).unwrap().sidebar_pad, 12.0);
         let e = parse(&with("sidebar_pad = 30")).unwrap_err();
         assert!(e.contains("sidebar_pad must be 0.0 to 24.0 (was 30.0)"), "{e}");
@@ -643,6 +649,7 @@ mod tests {
         assert_eq!((m.frame_rate, m.scale, m.ui_text_bump), (30, 0.5, 0.0), "a pixel a point on a Retina display: full size cost 11 to 14 ms a frame there");
         assert_eq!((m.gap, m.title_pad, m.sidebar_pad, m.bar_end_clear), (16.0, 8.0, 12.0, 48.0), "room for the frames, the plates, the chevron and the lamp left of the +");
         assert_eq!(m.scenes, ["city", "code"]);
+        assert!(m.sidebar_margin, "the sidebar keeps a pane's margins, so it is framed as one");
         assert!(m.ink_borders && m.glyph_motion && m.terminal_decode);
         assert_eq!(m.highlights, Highlights::Effect);
         assert_eq!(m.menus, MenuLook::Glow);

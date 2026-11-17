@@ -652,7 +652,7 @@ and a lamp on it (a red paper lantern under Tokyo Rain, a changing rune under Th
 lamp at the bar's right end is lit on the focused pane. A pane's top shades into a band of storm
 cloud (Tokyo Rain) or a drizzle of falling code (The Matrix), and its foot is two rows of skyline
 with a few lit windows. The tab bar and the body reach the pane's frame, cut at its corners as the
-frame is. The
+frame is. The sidebar keeps the same margins as a pane, framed as one. The
 title bar is a strip of storm clouds, its words and icons on plates, and a chevron marks the
 sidebar's selected row. At the sidebar's foot, below the names, stands the theme's scene:
 Tokyo Rain's is Tokyo at night in the rain (Tokyo Tower in orange lattice, the Skytree, lit

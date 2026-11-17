@@ -509,8 +509,6 @@ constant float FOOT_WINDOW = 0.32;
 // 2026-11-17: the lamp at 16 sat on the +).
 constant float LAMP_R = 2.6;
 constant float LAMP_IN = 38.0;
-// The sidebar's frame line, its inset from the sidebar's edges.
-constant float SIDE_FRAME_IN = 3.5;
 // The scene at the sidebar's foot: its height, the least room it is drawn in, and how far below
 // the last name it comes back to full strength.
 constant float SCENE_H = 230.0;
@@ -1031,8 +1029,10 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             bar_focus = saturate(blk.focus);
         }
         float2 hb = rect.zw * 0.5;
-        float d = sd_box(p - (rect.xy + hb), hb);
         int kind = int(blk.kind);
+        // The sidebar's ground reaches its frame, FRAME_OUT round its column and cut at the
+        // frame's corners, as a pane's does (its column keeps a pane's margins).
+        float d = kind == ARKOS_SIDEBAR_BLOCK ? sd_chamfer(p - (rect.xy + hb), hb + FRAME_OUT, FRAME_CHAMFER) : sd_box(p - (rect.xy + hb), hb);
         if (kind == ARKOS_TITLE_BAR_BLOCK || kind == ARKOS_TAB_BAR_BLOCK || kind == ARKOS_SIDEBAR_BLOCK) {
             float inside = 1.0 - smoothstep(-0.5, 0.5, d);
             float amount = kind == ARKOS_SIDEBAR_BLOCK ? 0.35 : (kind == ARKOS_TAB_BAR_BLOCK ? 0.0 : 0.42);
@@ -1065,7 +1065,7 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     // The ground, flat, and the rain laid over it, so it shows on a light ground as on black;
     // over the sidebar as faint as behind a pane's paper, in the rain's own colour (Cyrus,
     // 2026-11-17: "apply the same muted runic rain to the Cmd+0 pane").
-    float in_side = side.z > 0.0 ? 1.0 - smoothstep(-0.5, 0.5, sd_box(p - (side.xy + side.zw * 0.5), side.zw * 0.5)) : 0.0;
+    float in_side = side.z > 0.0 ? 1.0 - smoothstep(-0.5, 0.5, sd_chamfer(p - (side.xy + side.zw * 0.5), side.zw * 0.5 + FRAME_OUT, FRAME_CHAMFER)) : 0.0;
     float3 col = mix(bg, mix(drop.rgb, green, in_side), drop.a * RAIN_ALPHA * mix(1.0, SIDE_RAIN, in_side) * k);
     col = mix(col, bg * 0.8, dim * k);
     col = mix(col, green, lift * k);
@@ -1074,10 +1074,11 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     // plates; the panes' far skyline, frames, packets, waiting cursors, underlines and lamps.
     float3 ring_c = u.colors[ARKOS_FOCUS_RING].rgb;
     float3 sb = u.colors[ARKOS_SIDEBAR].rgb;
-    // The sidebar: its scene at its foot, softened under the names; its frame; its chevron.
+    // The sidebar: its scene at its foot, softened under the names; its frame; its chevron. Its
+    // block is its column, inside a pane's margins, so it is framed as a pane is.
     if (side.z > 1.0 && inside_box(p, side)) {
-        float4 band = float4(side.x + SIDE_FRAME_IN + 2.0, max(side.y + side.w - SCENE_H, side.y + 40.0), side.z - 2.0 * (SIDE_FRAME_IN + 2.0), 0.0);
-        band.w = side.y + side.w - SIDE_FRAME_IN - 2.0 - band.y;
+        float4 band = float4(side.x + 2.0, max(side.y + side.w - SCENE_H, side.y + 40.0), side.z - 4.0, 0.0);
+        band.w = side.y + side.w - 2.0 - band.y;
         if (band.w >= SCENE_MIN_H && inside_box(p, band)) {
             float2 q = p - band.xy;
             // The scene's sky is what is under it, so its top melts into the sidebar.
@@ -1096,12 +1097,16 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             float under = p.y < names_end ? 1.0 - UNDER_NAMES : saturate(1.0 - (p.y - names_end) / SOFT_BUFFER) * (1.0 - UNDER_NAMES);
             col = mix(col, mix(clouded, col, under), k);
         }
-        float4 fr = float4(side.x + SIDE_FRAME_IN, side.y + SIDE_FRAME_IN, side.z - 2.0 * SIDE_FRAME_IN, side.w - 2.0 * SIDE_FRAME_IN);
+    }
+    if (side.z > 1.0) {
+        // The frame, FRAME_OUT round the column, as a pane's: stronger while it has the keys.
+        float4 fr = float4(side.xy - FRAME_OUT, side.zw + 2.0 * FRAME_OUT);
         float2 hb = fr.zw * 0.5;
         float d = abs(sd_chamfer(p - (fr.xy + hb), hb, FRAME_CHAMFER));
-        if (d < FRAME_HALO) {
+        if (d < FOCUS_FRAME_HALO + 2.0) {
             float3 c = mix(green, ring_c, side_focus);
-            col = light_on(col, c, line_light(d, FRAME_W, FRAME_HALO) * mix(FRAME_IDLE, 1.0, side_focus) * k, u.dark);
+            float s = line_light(d, mix(FRAME_W, FOCUS_FRAME_W, side_focus), mix(FRAME_HALO, FOCUS_FRAME_HALO, side_focus)) * mix(FRAME_IDLE, FOCUS_FRAME_LIGHT, side_focus);
+            col = light_on(col, c, s * k, u.dark);
         }
     }
     for (int i = 0; i < nb; i++) {
@@ -1117,7 +1122,7 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
         }
         if (kind == ARKOS_ROW_HIGHLIGHT_BLOCK && blk.ordinal >= 1.0 && side.z > 1.0 && r.x < side.x + side.z) {
             // The selected row's chevron in the sidebar's left padding.
-            float cx = side.x + SIDE_FRAME_IN + 4.0;
+            float cx = side.x + 4.0;
             float cy = r.y + r.w * 0.5;
             float2 a = p - float2(cx, cy);
             float d = abs(abs(a.y) - (3.5 - a.x));

@@ -250,8 +250,10 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
     // The New File prompt is a row of the tree while it is open or fading out.
     let entries = root.explorer.rows();
     let tree_rows = entries.len() + usize::from(root.new_file.current(root.frame_now).is_some());
-    // The sidebar's own height: the panes' area and the gap an effect keeps above and below it.
-    let total_h = root.content.h + 2.0 * style.gap;
+    // The sidebar's own height: the panes' area and the gap an effect keeps above and below it,
+    // less the margin an effect that frames the sidebar as a pane keeps above and below it.
+    let margin = style.sidebar_margin;
+    let total_h = root.content.h + 2.0 * style.gap - 2.0 * margin;
     // The column is the session list, or the files, chosen by a switch at its top (the Grid
     // layout, with the files alone, went on 2026-11-16).
     let inbox = true;
@@ -427,13 +429,18 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
     let sidebar_glow = root
         .glow
         .sync(SIDEBAR_GLOW_KEY, has_keys.then_some(()), now)
-        .map(|(_, opacity)| crate::pane_view::focus_glow(&theme, 0.0, width, total_h, breath, opacity))
+        .map(|(_, opacity)| crate::pane_view::focus_glow(&theme, 0.0, width - margin, total_h, breath, opacity))
         .into_iter()
         .flatten();
     let column = div()
         .relative()
         .w(px(width))
         .h_full()
+        // Under an effect that frames the sidebar as a pane, the pane's margins: on the window's
+        // side, above and below (the gutter to the panes is already the gap).
+        .pl(px(margin))
+        .pt(px(margin))
+        .pb(px(margin))
         .flex_none()
         .flex()
         .flex_col()
@@ -456,7 +463,8 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .children(switch)
         .when(sessions_h > 0.0 || !inbox, |d| d.child(sessions))
         .when(files_view, |d| d.child(explorer).child(worktrees))
-        .children(sidebar_glow)
+        // The glow lies round the column inside the margin, as a pane's lies round the pane.
+        .child(div().absolute().left(px(margin)).top(px(margin)).right(px(0.0)).bottom(px(margin)).children(sidebar_glow))
         .child(handle);
     if !sliding {
         return Some(column);
@@ -1162,7 +1170,8 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
     let selected = root.worktrees.selected.clone();
     let still = crate::motion::reduce_motion();
     let now = Instant::now();
-    let width = root.sidebar.width;
+    // The column's own width, inside the margin an effect may keep on its left.
+    let width = root.sidebar.width - root.effect_style().sidebar_margin;
     let c = &theme.chrome;
     let (selected_bg, hover_bg, dim) = (c.tab_active.hsla(), c.tab_inactive.hsla(), c.text_dim.hsla());
     let mut moving = false;

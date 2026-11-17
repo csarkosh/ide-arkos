@@ -5961,7 +5961,7 @@ impl Root {
         let e = self.effect.as_mut()?;
         let style = e.style(now);
         let sidebar_focus = self.glow.opacity(&sidebar::SIDEBAR_GLOW_KEY, now);
-        let scene = effects::blocks::Scene { title_bar_h: chrome::TITLE_BAR_H + style.title_grow, gap: style.gap, focus: &focus, sidebar_focus, waiting: &waiting, ..effects::active::scene(self.content, self.binder, self.effect_divider, self.effect_sidebar_end, &layout.panes, &busy, &self.effect_shapes, &strokes) };
+        let scene = effects::blocks::Scene { title_bar_h: chrome::TITLE_BAR_H + style.title_grow, gap: style.gap, sidebar_margin: style.sidebar_margin, focus: &focus, sidebar_focus, waiting: &waiting, ..effects::active::scene(self.content, self.binder, self.effect_divider, self.effect_sidebar_end, &layout.panes, &busy, &self.effect_shapes, &strokes) };
         self.effect_strokes_now = strokes.clone();
         let blocks = effects::blocks::blocks(&scene, style.ink_borders);
         let (size, scale) = e.layer.metrics();

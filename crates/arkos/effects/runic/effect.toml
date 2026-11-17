@@ -15,6 +15,7 @@ sidebar_pad = 12              # 0 to 24 points before each row and header of the
                               # its frame and the chevron on the selected row
 bar_end_clear = 48            # 0 to 64 points at a pane bar's right end: its lamp, 38 in, left of the +
 ink_borders = true            # the app hides its own 1 px borders; the wash draws the edges
+sidebar_margin = true         # the sidebar keeps the gap round it as a pane does, framed as one
 highlights = "effect"         # "effect": the wash paints the selected and hovered rows and the
                               # hovered tab from the highlight blocks; "app" (the default): the
                               # app keeps its own fills and reports no highlight blocks

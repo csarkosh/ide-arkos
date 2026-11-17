@@ -197,6 +197,9 @@ pub struct Scene<'a> {
     /// The sidebar's focus fade, 0 to 1: 1 while it (the Cmd+0 pane) has the keys, so an effect
     /// that frames it lights its frame as a focused pane's.
     pub sidebar_focus: f32,
+    /// Points the sidebar keeps clear on the window's side, above and below (`Style::sidebar_margin`):
+    /// its block, its divider and its foot start that far in.
+    pub sidebar_margin: f32,
     /// The panes whose active tab is a terminal whose Claude session waits for the user.
     pub waiting: &'a [PaneId],
     pub shapes: &'a [Shape],
@@ -223,9 +226,13 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
         waiting: 0.0,
     }];
     let side = (c.x - scene.binder).max(0.0);
+    // The sidebar's own column, inside the margin it keeps (none but under an effect that asks):
+    // `side` reaches the panes, so the column also stops a gap short of them, as a pane does.
+    let m = scene.sidebar_margin.min(side / 2.0);
+    let column_w = if m > 0.0 { (side - scene.gap - m).max(0.0) } else { side };
     if side > 1.0 {
         out.push(Block {
-            rect: Rect { x: 0.0, y: bar, w: side, h: (bottom - bar).max(0.0) },
+            rect: Rect { x: m, y: bar + m, w: column_w, h: (bottom - bar - 2.0 * m).max(0.0) },
             kind: Kind::Sidebar,
             edges: edges(EDGE_RIGHT),
             seed: 2.0,
@@ -239,7 +246,7 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
         // The line between Explorer and Worktrees: a block with no height.
         if let Some(y) = scene.divider_y.filter(|y| *y > bar && *y < bottom) {
             out.push(Block {
-                rect: Rect { x: 0.0, y, w: side, h: 0.0 },
+                rect: Rect { x: m, y, w: column_w, h: 0.0 },
                 kind: Kind::Divider,
                 edges: edges(EDGE_TOP),
                 seed: 3.0,
@@ -253,9 +260,9 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
         }
         // The empty space below the last name, down to the sidebar's bottom, never reaching up
         // into the title bar.
-        if let Some(y) = scene.sidebar_end.filter(|y| *y > bar && *y < bottom - 1.0) {
+        if let Some(y) = scene.sidebar_end.filter(|y| *y > bar && *y < bottom - m - 1.0) {
             out.push(Block {
-                rect: Rect { x: 0.0, y, w: side, h: bottom - y },
+                rect: Rect { x: m, y, w: column_w, h: bottom - m - y },
                 kind: Kind::SidebarFoot,
                 edges: 0,
                 seed: 5.0,
@@ -392,7 +399,7 @@ mod tests {
     }
 
     fn scene<'a>(content: Rect, divider_y: Option<f32>, panes: &'a [(PaneId, Rect)], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
-        Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, gap: 0.0, divider_y, sidebar_end: None, panes, busy: &[], focus: &[], sidebar_focus: 0.0, waiting: &[], shapes: &[], strokes }
+        Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, gap: 0.0, sidebar_margin: 0.0, divider_y, sidebar_end: None, panes, busy: &[], focus: &[], sidebar_focus: 0.0, waiting: &[], shapes: &[], strokes }
     }
 
     /// The content area starting at `x`, under the title bar and down to y 800.
@@ -404,6 +411,21 @@ mod tests {
     fn scene_with(content: Rect, sidebar_end: Option<f32>) -> Scene<'static> {
         static PANES: [(PaneId, Rect); 1] = [(1, Rect { x: 240.0, y: 38.0, w: 960.0, h: 762.0 })];
         Scene { sidebar_end, ..scene(content, None, &PANES, &[]) }
+    }
+
+    #[test]
+    fn a_sidebar_that_keeps_a_margin_reports_its_column_inside_it() {
+        static PANES: [(PaneId, Rect); 1] = [(1, Rect { x: 256.0, y: 54.0, w: 928.0, h: 730.0 })];
+        // Content 16 in from the sidebar (240 wide) and 16 under the bar, as the gap keeps it.
+        let content = rect(256.0, 54.0, 928.0, 730.0);
+        let s = Scene { gap: 16.0, sidebar_margin: 16.0, divider_y: Some(400.0), sidebar_end: Some(500.0), ..scene(content, None, &PANES, &[]) };
+        let out = blocks(&s, true);
+        let side = out.iter().find(|b| b.kind == Kind::Sidebar).unwrap().rect;
+        assert_eq!(side, rect(16.0, 54.0, 224.0, 730.0), "16 in from the window's edge, the bar and the foot, as a pane is");
+        let divider = out.iter().find(|b| b.kind == Kind::Divider).unwrap().rect;
+        assert_eq!((divider.x, divider.w), (16.0, 224.0));
+        let foot = out.iter().find(|b| b.kind == Kind::SidebarFoot).unwrap().rect;
+        assert_eq!((foot.x, foot.y, foot.w, foot.y + foot.h), (16.0, 500.0, 224.0, 784.0), "the foot ends at the column's foot");
     }
 
     fn scene_with_sidebar_end(end: Option<f32>) -> Scene<'static> {
@@ -574,7 +596,7 @@ mod tests {
         assert_eq!((out[1].value, out[1].ordinal), (0.6, HighlightState::Hovered as u32 as f32));
         // The same stroke gives the same block in the wash and in the backdrop.
         let panes = [];
-        let in_wash = blocks(&Scene { content: rect(0.0, 0.0, 800.0, 600.0), title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, gap: 0.0, divider_y: None, sidebar_end: None, panes: &panes, busy: &[], focus: &[], sidebar_focus: 0.0, waiting: &[], shapes: &[], strokes: &[(inside, 0.6)] }, true);
+        let in_wash = blocks(&Scene { content: rect(0.0, 0.0, 800.0, 600.0), title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, gap: 0.0, sidebar_margin: 0.0, divider_y: None, sidebar_end: None, panes: &panes, busy: &[], focus: &[], sidebar_focus: 0.0, waiting: &[], shapes: &[], strokes: &[(inside, 0.6)] }, true);
         assert_eq!(in_wash.last(), out.last());
     }
 

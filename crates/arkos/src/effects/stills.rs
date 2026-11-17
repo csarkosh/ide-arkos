@@ -40,7 +40,7 @@ mod tests {
         let row = Mark { key: 99, rect: Rect { x: 8.0, y: top + 120.0, w: SIDE - 16.0, h: 34.0 }, kind: Kind::RowHighlight, state: HighlightState::Selected };
         let strokes = [(row, 1.0)];
         let (busy, focus, waiting) = ([1u64], [(1u64, 1.0f32)], [2u64]);
-        let scene = Scene { gap, focus: &focus, sidebar_focus, waiting: &waiting, ..crate::effects::active::scene(content, 0.0, Some(top + 330.0), Some(names_end), &panes, &busy, &shapes, &strokes) };
+        let scene = Scene { gap, sidebar_margin: gap, focus: &focus, sidebar_focus, waiting: &waiting, ..crate::effects::active::scene(content, 0.0, Some(top + 330.0), Some(names_end), &panes, &busy, &shapes, &strokes) };
         let manifest = crate::effects::manifest::parse(crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().manifest).unwrap();
         blocks(&scene, manifest.ink_borders)
     }
@@ -162,8 +162,32 @@ mod tests {
         }
         let theme = crate::theme::builtin("matrix").unwrap();
         let (off, on) = (runic_frame(&theme, 0.0, &window(gap(), 0.0)), runic_frame(&theme, 0.0, &window(gap(), 1.0)));
-        // Its left frame line, 3.5 points in, part way down.
-        assert!(brightest(&on, 3.5, 200.0, 240.0) > brightest(&off, 3.5, 200.0, 240.0) + 40);
+        // Its left frame line, 5 points out from its column (which keeps the gap from the
+        // window's edge, as a pane does), part way down.
+        let x = gap() - 5.0;
+        assert!(brightest(&on, x, 200.0, 240.0) > brightest(&off, x, 200.0, 240.0) + 40);
+    }
+
+    #[test]
+    fn on_the_gpu_the_sidebar_keeps_a_pane_s_margins() {
+        if !gpu() {
+            return;
+        }
+        let g = gap();
+        let theme = crate::theme::builtin("tokyo-rain").unwrap();
+        let frame = runic_frame(&theme, 0.0, &window(g, 0.0));
+        // The sidebar's frame line lies as far from the window's left edge as the left pane's
+        // lies from the sidebar's column, and the ground between the sidebar's and the pane's
+        // frames is as wide as between two panes': its brightest column, half way down, is 5
+        // points out from its column, and none brighter lies in the margin before it.
+        let y = 320.0;
+        let column = |x0: u32, x1: u32| (x0..x1).max_by_key(|&x| luma(at(&frame, x as f32, y))).unwrap();
+        // A line's centre on a pixel's edge lights the pixels either side alike: a pixel's slack.
+        let near = |found: u32, want: f32| (found as f32 + 0.5 - want).abs() <= 1.0;
+        let left = column(0, g as u32 + 2);
+        assert!(near(left, g - 5.0), "the sidebar's left frame line at {left}");
+        let right = column(SIDE as u32 - 2, SIDE as u32 + 8);
+        assert!(near(right, SIDE + 5.0), "its right frame line at {right}, 5 out from its column");
     }
 
     #[test]

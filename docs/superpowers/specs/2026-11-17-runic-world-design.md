@@ -47,6 +47,15 @@ frame on its left, and the body's night (its band, its skyline, measured from th
 rain) fills it beside and below the body (Cyrus, 2026-11-17: "flush with the pane's borders and
 match the shape too").
 
+## The sidebar keeps a pane's margins
+
+The manifest's `sidebar_margin` has the app keep the gap round the sidebar's column, as round a
+pane: from the window's edge, under the title bar and above the foot (the gutter to the panes is
+the gap already). The sidebar block is that column, and the wash frames it as a pane, 5 points
+out, the ground reaching the frame and cut at its corners; 6 points of ground lie between its
+frame and the first pane's, as between two panes' (Cyrus, 2026-11-17: "Pane 0 to have the same
+margins around it as Pane 1").
+
 ## No lines of runes in the window
 
 The panes', the sidebar's and the title bar's own edges are their frames, strips and clouds, not
