@@ -306,13 +306,15 @@ mod tests {
             // Below the highlighted row's spill and above the skyline at the body's foot.
             .flat_map(|&t| pixels(&render_frame(&matrix.wash, &theme, (W, H), t, &small_window()), 4, 106, 104, 122))
             .collect();
+        // Measured from the terminal's own ground, which is not black.
+        let ground = theme.terminal.background.g as f32 / 255.0;
         let text = theme.terminal.foreground.g as f32 / 255.0;
         let max = interior.iter().map(|p| p.g as f32 / 255.0).fold(0.0, f32::max);
         let (rain, body) = (crate::effects::runic::RAIN_ALPHA, crate::effects::runic::BODY_RAIN);
         assert_eq!(matrix.manifest.paper_alpha, crate::effects::runic::PAPER, "the wash draws through the manifest's paper");
-        let seen = max * (1.0 - matrix.manifest.paper_alpha);
-        assert!(seen <= text * rain * body * 1.02 + 1.0 / 255.0, "the rain seen through the paper is too bright: green channel {seen:.3}");
-        assert!(interior.iter().any(|p| p.g > 4), "the rain does not show at all");
+        let seen = (max - ground).max(0.0) * (1.0 - matrix.manifest.paper_alpha);
+        assert!(seen <= (text - ground) * rain * body * 1.02 + 1.0 / 255.0, "the rain seen through the paper is too bright: green channel {seen:.3}");
+        assert!(interior.iter().any(|p| p.g > theme.terminal.background.g + 4), "the rain does not show at all");
     }
 
     #[test]

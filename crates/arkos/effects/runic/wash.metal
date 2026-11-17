@@ -416,6 +416,7 @@ float3 toward_accent(float3 c, float3 accent) {
   }
   float3 h = rgb_to_hsv(c);
   h.x = fract(h.x + a.x - rgb_to_hsv(HOME).x + 1.0);
+  h.y *= min(a.y / rgb_to_hsv(HOME).y, 1.0);
   return hsv_to_rgb(h);
 }
 
@@ -444,10 +445,11 @@ float3 theme_green(constant ArkosInputs& u) {
 // the rain over it as faint as over a source file. The title bar is a strip of storm
 // clouds, its words and icons on plates. The sidebar wears a frame, a chevron marks its selected
 // row, and at its foot, below the names, stands the theme's scene (`ArkosInputs::scene`): 0 a
-// city skyline in the rain, its towers' windows lit, runic lightning now and then; 1 a city of
-// falling code with a phone booth's light ringing and, now and then, a black cat crossing the
-// street twice. Behind a terminal, the far skyline along its foot. The clock's zero (Reduce
-// Motion) has no bolt, no cat and every light on.
+// city skyline in the rain, its towers' windows lit, runic lightning now and then; 1 a digital
+// horizon, a grid floor running to a line of light, code falling onto it and rippling where it
+// lands, wireframe towers rising and folding back. Behind a terminal, the far skyline along its
+// foot. The clock's zero (Reduce Motion) has no bolt, nothing falling, every tower standing and
+// every light on.
 
 // The frame's line: how far outside a pane's edges (the gap is 16, so two neighbours' frames keep
 // 6 points of ground between them), its width, its halo, its corner cut.
@@ -534,11 +536,20 @@ constant float BOLT_FOR = 1.2;
 // soft, never a hard flicker (Cyrus, 2026-11-17: "softened so it is not as jarring").
 constant float BOLT_RISE = 0.15;
 constant float BOLT_PEAK = 0.7;
-// The black cat: a pass across the street, then the same pass again, once a cycle.
-constant float CAT_CYCLE = 26.0;
-constant float CAT_PASS = 4.0;
-// The phone booth's ring: two short rings, then quiet, every cycle.
-constant float RING_CYCLE = 3.0;
+// The digital horizon (the code scene; Cyrus, 2026-11-17, picked over the city of code): the
+// horizon's height as a share of the scene, the grid's spacing across and into it (in camera
+// heights) and how many of its rows come toward the viewer a second, the falling code's streams
+// and their cycle, and the towers, their number and cycle.
+constant float HZ_AT = 0.4;
+constant float GRID_X = 0.9;
+constant float GRID_Z = 1.6;
+constant float GRID_SPEED = 0.45;
+constant int HZ_DROPS = 3;
+constant float DROP_CYCLE = 3.4;
+constant float DROP_FALL = 0.32;
+constant float RIPPLE_MAX = 3.2;
+constant int HZ_TOWERS = 4;
+constant float TOWER_CYCLE = 12.0;
 
 float hash2(float2 c) {
     uint ux = uint(int(c.x) + 1048576);
@@ -901,79 +912,135 @@ float3 city_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
     return col;
 }
 
-// Whether q (in the cat's own units, 1 a point at its size) is on the black cat: a body, a head
-// with two ears, two legs and a tail curling up behind.
-bool cat_at(float2 cq) {
-    bool body = cq.x >= 0.0 && cq.x < 7.0 && cq.y >= 2.0 && cq.y < 5.0;
-    bool head = cq.x >= 7.0 && cq.x < 10.5 && cq.y >= 0.0 && cq.y < 3.5 && !(cq.y < 1.0 && cq.x >= 8.2 && cq.x < 9.3);
-    bool legs = cq.y >= 5.0 && cq.y < 6.5 && (abs(cq.x - 1.0) < 0.6 || abs(cq.x - 6.0) < 0.6);
-    bool tail = cq.x >= -3.5 && cq.x < 0.0 && abs(cq.y - (3.0 - (cq.x + 3.5) * 0.7)) < 0.6;
-    return body || head || legs || tail;
+// The distance from p to the segment from a to b.
+float seg_dist(float2 p, float2 a, float2 b) {
+    float2 ab = b - a;
+    float k = saturate(dot(p - a, ab) / max(dot(ab, ab), 1e-4));
+    return length(p - a - ab * k);
 }
 
-// The code city's scene at q: towers on the city's skyline whose insides are falling code, their
-// outlines lit, a phone booth whose light rings, and a black cat crossing the street twice.
+// A line's light at a phase (lines at whole numbers), drawn about a pixel wide whatever the
+// phase's rate across the screen: `fwidth` keeps far lines fine and near ones crisp.
+float grid_line(float phase) {
+    float d = abs(fract(phase - 0.5) - 0.5) / max(fwidth(phase), 1e-4);
+    return 1.0 - smoothstep(0.0, 1.2, d);
+}
+
+// The code scene: a digital horizon. Above it a faint rain of code; on the horizon a line of
+// light; below it a floor of grid lines in perspective, its rows coming toward the viewer. Now
+// and then a stream of code falls to the floor and lands, and a ripple spreads across the grid
+// from it; wireframe towers rise out of the grid, stand, and fold back into it, each in its turn.
+// The clock's zero (Reduce Motion) has every tower standing and nothing falling.
 float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 green, float3 white_c, float3 sb) {
     float3 bg = u.colors[ARKOS_WINDOW_BG].rgb;
     float3 col = sb;
-    float near_top = code_top(q.x, sz.y, 1);
-    float far_top = code_top(q.x, sz.y, 0);
-    bool in_far = q.y > far_top;
-    bool in_near = q.y > near_top;
-    if (in_far || in_near) {
-        // The code falling inside: 5 by 7 point cells, a stream a column.
+    float yh = sz.y * HZ_AT;
+    float cx = sz.x * 0.5;
+    float f = sz.x * 0.9;
+    bool still = t <= 0.0;
+    if (q.y < yh) {
+        // The sky's rain: 5 by 7 point cells, a slow stream a column, fading toward the horizon.
         float2 cell = floor(q / float2(5.0, 7.0));
-        float speed = 4.0 + 6.0 * hash2(float2(cell.x, 2.0 + (in_near ? 1.0 : 0.0)));
-        float head = floor(fract(t * speed / 40.0 + hash2(float2(cell.x, 9.0))) * 40.0);
+        float speed = 3.0 + 4.0 * hash2(float2(cell.x, 4.0));
+        float head = floor(fract(t * speed / 30.0 + hash2(float2(cell.x, 11.0))) * 30.0);
         float behind = head - cell.y;
-        float2 f = fract(q / float2(5.0, 7.0));
-        float2 bit = floor(float2(f.x * 5.0, f.y * 7.0));
-        float on = (bit.x >= 1.0 && bit.x <= 3.0 && bit.y >= 1.0 && bit.y <= 5.0 && hash2(cell * 7.0 + bit + floor(t / 0.4)) < 0.5) ? 1.0 : 0.0;
-        float trail = (behind >= 0.0 && behind < 14.0) ? 1.0 - behind / 14.0 : 0.15;
-        float3 base = in_near ? bg * 0.6 : mix(sb, bg, 0.5);
-        float3 head_c = behind < 1.0 && behind >= 0.0 ? mix(green, white_c, 0.5) : green;
-        col = mix(base, head_c, on * trail * (in_near ? 1.0 : 0.55));
-        // The tower's outline.
-        float edge = in_near ? (q.y - near_top < 1.0 ? 1.0 : 0.0) : (q.y - far_top < 1.0 ? 0.6 : 0.0);
-        col = light_on(col, green, edge * 0.5, u.dark);
-    }
-    // The street.
-    if (q.y > sz.y - 3.0) {
-        col = mix(bg, green, 0.12);
-    }
-    // The phone booth, ringing: two short rings a cycle, then quiet.
-    float2 booth = float2(sz.x * 0.62, sz.y - 3.0 - 22.0);
-    float2 bq = q - booth;
-    if (bq.x >= 0.0 && bq.x < 11.0 && bq.y >= 0.0 && bq.y < 22.0) {
-        bool frame_px = bq.x < 1.0 || bq.x >= 10.0 || bq.y < 1.0 || bq.y >= 21.0 || abs(bq.y - 9.0) < 0.5;
-        col = frame_px ? mix(green, white_c, 0.2) : mix(bg, green, 0.08);
-    }
-    float rt = fract(t / RING_CYCLE) * RING_CYCLE;
-    float ring = (rt < 0.3 || (rt >= 0.5 && rt < 0.8)) ? 1.0 : 0.15;
-    float ld = length(q - (booth + float2(5.5, -2.0)));
-    if (ld < 2.5) {
-        col = light_on(col, mix(green, white_c, 0.6), (1.0 - ld / 2.5) * ring, u.dark);
-    }
-    // The black cat: it crosses the street, and a moment later crosses it again the same way, a
-    // glitch across the scene as it does. None in the first cycle.
-    float cslot = floor(t / CAT_CYCLE);
-    float ct = t - cslot * CAT_CYCLE;
-    float pass = ct < CAT_PASS ? ct / CAT_PASS : ((ct >= CAT_PASS + 0.8 && ct < 2.0 * CAT_PASS + 0.8) ? (ct - CAT_PASS - 0.8) / CAT_PASS : -1.0);
-    if (cslot >= 1.0 && pass >= 0.0) {
-        float2 cat = float2(-18.0 + pass * (sz.x + 36.0), sz.y - 3.0 - 9.0);
-        float2 cq = (q - cat) / 1.5;
-        if (cat_at(cq)) {
-            col = bg * 0.15;
-            // Its eyes, two lit points in its head.
-            if (abs(cq.y - 1.5) < 0.5 && (abs(cq.x - 8.0) < 0.45 || abs(cq.x - 9.3) < 0.45)) {
-                col = mix(green, white_c, 0.5);
+        float2 fq = fract(q / float2(5.0, 7.0));
+        float2 bit = floor(float2(fq.x * 5.0, fq.y * 7.0));
+        float on = (bit.x >= 1.0 && bit.x <= 3.0 && bit.y >= 1.0 && bit.y <= 5.0 && hash2(cell * 7.0 + bit + floor(t / 0.5)) < 0.45) ? 1.0 : 0.0;
+        float trail = (behind >= 0.0 && behind < 10.0) ? 1.0 - behind / 10.0 : 0.0;
+        col = mix(col, green, on * trail * 0.3 * saturate(q.y / (yh * 0.6)));
+    } else {
+        // The floor: darker than the sky, its grid's rows coming on.
+        float dy = q.y - yh;
+        float z = f / max(dy, 0.5);
+        float xw = (q.x - cx) * z / f;
+        col = mix(col, bg * 0.7, 0.6);
+        float near = saturate(dy / (sz.y - yh));
+        float lines = max(grid_line(z / GRID_Z + t * GRID_SPEED), grid_line(xw / GRID_X + 0.5));
+        col = light_on(col, green, lines * (0.18 + 0.5 * near), u.dark);
+        // The ripples where the code lands, rings across the floor.
+        for (int i = 0; i < HZ_DROPS; i++) {
+            float ph = (t + float(i) * DROP_CYCLE / float(HZ_DROPS)) / DROP_CYCLE;
+            float slot = floor(ph);
+            float pp = fract(ph);
+            if (still || pp < DROP_FALL) {
+                continue;
             }
-        } else if (cat_at(cq + float2(0.7, 0.0)) || cat_at(cq - float2(0.7, 0.0)) || cat_at(cq + float2(0.0, 0.7)) || cat_at(cq - float2(0.0, 0.7))) {
-            // A rim of green round it, so a black cat shows on a dark street.
-            col = mix(col, green, 0.55);
+            float2 at = float2(-3.0 + 6.0 * hash2(float2(slot, float(i) * 7.0 + 1.0)), 4.0 + 10.0 * hash2(float2(slot, float(i) * 7.0 + 2.0)));
+            float age = (pp - DROP_FALL) / (1.0 - DROP_FALL);
+            float d = length(float2(xw - at.x, (z - at.y) * 0.6));
+            float ring = abs(d - age * RIPPLE_MAX) / max(fwidth(d), 1e-4);
+            col = light_on(col, mix(green, white_c, 0.25), (1.0 - smoothstep(0.0, 1.5, ring)) * (1.0 - age) * 0.8, u.dark);
         }
-        if (ct >= CAT_PASS + 0.8 && abs(q.y - fract(t * 3.0) * sz.y) < 0.8) {
-            col = light_on(col, green, 0.35, u.dark);
+    }
+    // The horizon's line, and its glow either side.
+    float hd = abs(q.y - yh);
+    col = light_on(col, green, (1.0 - smoothstep(0.0, 1.2, hd)) * 0.6 + exp(-hd / 4.0) * 0.18, u.dark);
+    // The towers, farthest first: each rises out of the grid, stands, folds back and is gone a
+    // while, in its own turn.
+    for (int i = 0; i < HZ_TOWERS; i++) {
+        float tz = 17.0 - float(i) * 3.0;
+        // Spread across the floor, alternating sides so they never stand in a row.
+        float tx = (i % 2 == 0 ? -1.0 : 1.0) * (1.2 + 3.2 * hash2(float2(float(i), 3.0)));
+        float tw = 0.7 + 0.8 * hash2(float2(float(i), 5.0));
+        float th = 1.6 + 2.6 * hash2(float2(float(i), 6.0));
+        float ph = fract(t / TOWER_CYCLE + float(i) * 0.25);
+        float grow = still ? 1.0 : (ph < 0.12 ? smoothstep(0.0, 0.12, ph) : (ph < 0.62 ? 1.0 : (ph < 0.74 ? 1.0 - smoothstep(0.62, 0.74, ph) : 0.0)));
+        if (grow <= 0.0) {
+            continue;
+        }
+        float h = th * grow;
+        float base = yh + f / tz;
+        float top = yh + f * (1.0 - h) / tz;
+        float x0 = cx + (tx - tw * 0.5) * f / tz;
+        float x1 = cx + (tx + tw * 0.5) * f / tz;
+        // Its back face, a tower's width deeper: drawn so it reads as a box in perspective.
+        float bz = tz + tw;
+        float btop = yh + f * (1.0 - h) / bz;
+        float bx0 = cx + (tx - tw * 0.5) * f / bz;
+        float bx1 = cx + (tx + tw * 0.5) * f / bz;
+        if (q.x < min(x0, bx0) - 1.0 || q.x > max(x1, bx1) + 1.0 || q.y < min(top, btop) - 1.0 || q.y > base + 0.5) {
+            continue;
+        }
+        // Its face hides the grid behind it; its outline and its floors are lines of light.
+        bool inside = q.x > x0 && q.x < x1 && q.y > top && q.y < base;
+        if (inside) {
+            col = mix(col, bg * 0.75, 0.85);
+        }
+        float edge = min(min(abs(q.x - x0), abs(q.x - x1)), abs(q.y - top));
+        float floors = grid_line((base - q.y) / (f * 0.5 / tz));
+        float mid = abs(q.x - (x0 + x1) * 0.5);
+        float s = (1.0 - smoothstep(0.0, 1.0, edge)) * 0.9 + (inside ? floors * 0.35 + (1.0 - smoothstep(0.0, 0.8, mid)) * 0.25 : 0.0);
+        if (!inside) {
+            // The top's back edge and the edges running back to it, and the back's outer upright
+            // (the side away from the middle shows), fainter than the face.
+            float outer_x = tx < 0.0 ? bx0 : bx1;
+            float back = min(seg_dist(q, float2(bx0, btop), float2(bx1, btop)), min(seg_dist(q, float2(x0, top), float2(bx0, btop)), seg_dist(q, float2(x1, top), float2(bx1, btop))));
+            back = min(back, seg_dist(q, float2(outer_x, btop), float2(outer_x, yh + f / bz)));
+            back = min(back, seg_dist(q, float2(tx < 0.0 ? x0 : x1, base), float2(outer_x, yh + f / bz)));
+            s = max(s, (1.0 - smoothstep(0.0, 1.0, back)) * 0.6);
+        }
+        col = light_on(col, mix(green, white_c, 0.15), s * (0.6 + 0.4 * grow), u.dark);
+    }
+    // The code falling to the floor: a stream of bits from the sky to where it lands.
+    for (int i = 0; i < HZ_DROPS; i++) {
+        if (still) {
+            break;
+        }
+        float ph = (t + float(i) * DROP_CYCLE / float(HZ_DROPS)) / DROP_CYCLE;
+        float slot = floor(ph);
+        float pp = fract(ph);
+        if (pp >= DROP_FALL) {
+            continue;
+        }
+        float2 at = float2(-3.0 + 6.0 * hash2(float2(slot, float(i) * 7.0 + 1.0)), 4.0 + 10.0 * hash2(float2(slot, float(i) * 7.0 + 2.0)));
+        float lx = cx + at.x * f / at.y;
+        float ly = yh + f / at.y;
+        float head = mix(-14.0, ly, pp / DROP_FALL);
+        float behind = head - q.y;
+        if (abs(q.x - lx) < 2.0 && behind >= 0.0 && behind < 18.0) {
+            float on = hash2(floor(float2(q.x, q.y) / 2.0) + float2(slot, floor(t * 8.0))) < 0.6 ? 1.0 : 0.3;
+            col = light_on(col, behind < 2.0 ? mix(green, white_c, 0.5) : green, on * (1.0 - behind / 18.0) * 0.9, u.dark);
         }
     }
     return col;

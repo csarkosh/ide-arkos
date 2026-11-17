@@ -84,6 +84,7 @@ float3 toward_accent(float3 c, float3 accent) {
   }
   float3 h = rgb_to_hsv(c);
   h.x = fract(h.x + a.x - rgb_to_hsv(HOME).x + 1.0);
+  h.y *= min(a.y / rgb_to_hsv(HOME).y, 1.0);
   return hsv_to_rgb(h);
 }
 

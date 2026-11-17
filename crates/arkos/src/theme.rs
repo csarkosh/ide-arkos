@@ -987,11 +987,13 @@ mod tests {
     }
 
     #[test]
-    fn matrix_is_built_in_black_with_green_text_and_recommends_the_runic_effect() {
+    fn matrix_is_built_in_soft_green_on_dark_green_grey_and_recommends_the_runic_effect() {
         let m = builtin("matrix").expect("matrix is built in");
         assert!(!m.is_light());
-        assert_eq!(m.chrome.window_bg, Rgb { r: 0, g: 0, b: 0 });
-        assert_eq!(m.terminal.background, Rgb { r: 0, g: 0, b: 0 });
+        // Softened 2026-11-17: off pure black, and the text a sage-mint rather than phosphor.
+        assert_eq!(m.chrome.window_bg, Rgb { r: 0x0b, g: 0x10, b: 0x0d });
+        assert_eq!(m.terminal.background, m.chrome.window_bg);
+        assert_eq!(m.terminal.foreground, Rgb { r: 0xa9, g: 0xd1, b: 0xa6 });
         assert_eq!(m.recommended_effect(), Some("runic"));
         assert_eq!(BUILTIN.len(), 11);
     }

@@ -32,12 +32,27 @@ flickering), Tokyo Tower in orange lattice with a red beacon, the Skytree pale w
 slanting rain falling at 90 to 140 points a second; once a 9 second cycle, from the second on, a bolt of lightning made of a chain of
 runes strikes a rooftop and lights the clouds: softly (Cyrus, 2026-11-17: "not as jarring"), rising
 over 0.15 s to 0.7 and fading over the rest of 1.2 s, no flicker, the bolt pale in the rain's colour
-and the sky glowing toward it rather than flashing white. `code`: towers of falling code, their roofs lit, a
-phone booth on the street whose light rings twice every three seconds, and once a 26 second cycle,
-from the second on, a black cat with a green rim and lit eyes crosses the street, then crosses it
-again the same way while a glitch line sweeps the scene.
+and the sky glowing toward it rather than flashing white. `code` was first towers of falling code with a ringing phone booth and a
+black cat crossing twice; Cyrus, 2026-11-17: "not impressed by the graphic in Pane 0 for The
+Matrix", and he picked a digital horizon over a code waterfall, a corridor of doors and a rabbit
+with two pills. Now: a faint code rain in the sky; a line of light on the horizon (40% down the
+scene); a floor of grid lines in perspective, its rows coming toward the viewer; three streams of
+code falling in turn (a 3.4 s cycle) to the floor, each spreading a ripple across the grid where
+it lands; four wireframe towers spread across the floor, each rising out of the grid, standing
+and folding back once a 12 s cycle, a quarter apart, their back faces drawn so they read as boxes.
 
-The clock's zero (Reduce Motion) has no bolt and no cat, and every light on.
+The clock's zero (Reduce Motion) has no bolt, nothing falling, every tower standing and every
+light on.
+
+## The Matrix, softened
+
+Cyrus, 2026-11-17: "the green text on black background is too intense for my eyes". The ground is
+a very dark green-grey (#0b100d) instead of black, the text a sage-mint (#a9d1a6, 11.3:1) instead
+of phosphor green, and the greens and the ANSI colours lose most of their saturation. The runic
+effect softens its own greens with the theme: `toward_accent` now also scales their saturation by
+the focus ring's over the green they were made around (`HOME`), never raising it, so under The
+Matrix's soft ring the rain, the glows and the text's halo lose colour too, and under every other
+built-in (whose rings are at least as saturated) nothing changes.
 
 ## Panes flush with their frames
 

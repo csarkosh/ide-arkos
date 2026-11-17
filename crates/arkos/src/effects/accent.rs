@@ -1,8 +1,11 @@
-//! The runic effect's colours turned toward the theme's own: its greens were made around the
-//! matrix theme's focus ring, `HOME`, and under another theme each is turned round the colour
-//! wheel by the distance from `HOME`'s hue to that theme's focus ring's, keeping its saturation
-//! and its brightness. Under the matrix theme nothing turns; under navy the greens go blue. A
-//! focus ring with too little colour to have a hue (under `MIN_SATURATION`) turns nothing.
+//! The runic effect's colours turned toward the theme's own: its greens were made around a
+//! phosphor green, `HOME` (the matrix theme's focus ring until 2026-11-17), and under a theme each
+//! is turned round the colour wheel by the distance from `HOME`'s hue to that theme's focus
+//! ring's, keeping its brightness; and a ring less saturated than `HOME` softens them to match,
+//! their saturation scaled by the ring's over `HOME`'s (never raised). Under navy the greens go
+//! blue at full colour; under the matrix theme, whose ring is a soft green, they keep their hue and
+//! lose some of their colour. A focus ring with too little colour to have a hue (under
+//! `MIN_SATURATION`) turns nothing.
 //!
 //! The runic shaders (`effects/runic/wash.metal` and `effects/runic/glyphs.metal`) carry the
 //! same arithmetic as `toward_accent`, and the decode turns its fresh colours with it; a change
@@ -10,7 +13,7 @@
 
 use crate::palette::Rgb;
 
-/// The colour the runic effect's greens were made around: the matrix theme's focus ring.
+/// The colour the runic effect's greens were made around: a phosphor green.
 pub const HOME: Rgb = Rgb { r: 0x7e, g: 0xd6, b: 0x6b };
 /// The least saturation a focus ring needs for its hue to turn anything.
 pub const MIN_SATURATION: f32 = 0.2;
@@ -41,8 +44,9 @@ pub fn hsv_to_rgb([h, s, v]: [f32; 3]) -> [f32; 3] {
     [k(5.0), k(3.0), k(1.0)]
 }
 
-/// `c` turned round the wheel by the distance from `HOME`'s hue to `accent`'s, its saturation
-/// and value kept; `c` itself when `accent` has under `MIN_SATURATION`.
+/// `c` turned round the wheel by the distance from `HOME`'s hue to `accent`'s, its value kept and
+/// its saturation scaled by `accent`'s over `HOME`'s when that is under 1; `c` itself when
+/// `accent` has under `MIN_SATURATION`.
 pub fn toward_accent(c: Rgb, accent: Rgb) -> Rgb {
     let f = |c: Rgb| [c.r, c.g, c.b].map(|v| f32::from(v) / 255.0);
     let a = rgb_to_hsv(f(accent));
@@ -50,7 +54,9 @@ pub fn toward_accent(c: Rgb, accent: Rgb) -> Rgb {
         return c;
     }
     let mut h = rgb_to_hsv(f(c));
-    h[0] = (h[0] + a[0] - rgb_to_hsv(f(HOME))[0] + 1.0).fract();
+    let home = rgb_to_hsv(f(HOME));
+    h[0] = (h[0] + a[0] - home[0] + 1.0).fract();
+    h[1] *= (a[1] / home[1]).min(1.0);
     let [r, g, b] = hsv_to_rgb(h).map(|v| (v * 255.0).round().clamp(0.0, 255.0) as u8);
     Rgb { r, g, b }
 }
@@ -76,11 +82,33 @@ mod tests {
     }
 
     #[test]
-    fn under_the_matrix_theme_nothing_turns() {
-        let matrix = crate::theme::builtin("matrix").expect("matrix is built in");
-        assert_eq!(matrix.chrome.focus_ring, HOME, "HOME is the matrix theme's focus ring");
+    fn under_home_itself_nothing_turns() {
         for c in greens() {
             assert!(close(toward_accent(c, HOME), c), "{c:?} turned to {:?}", toward_accent(c, HOME));
+        }
+    }
+
+    #[test]
+    fn under_the_matrix_theme_s_soft_ring_the_greens_keep_hue_and_light_and_lose_colour() {
+        let ring = crate::theme::builtin("matrix").expect("matrix is built in").chrome.focus_ring;
+        let f = |c: Rgb| rgb_to_hsv([c.r, c.g, c.b].map(|v| f32::from(v) / 255.0));
+        let scale = f(ring)[1] / f(HOME)[1];
+        assert!(scale < 0.8, "the matrix ring is softer than HOME ({scale})");
+        for c in greens().into_iter().filter(|c| f(*c)[1] > 0.2) {
+            let (was, now) = (f(c), f(toward_accent(c, ring)));
+            assert!((now[2] - was[2]).abs() < 0.01, "{c:?} changed its light");
+            assert!((now[1] - was[1] * scale).abs() < 0.02, "{c:?} saturation {} not {}", now[1], was[1] * scale);
+            let turn = (now[0] - was[0] + 1.5).fract() - 0.5;
+            assert!((turn - (f(ring)[0] - f(HOME)[0])).abs() < 0.02, "{c:?} turned {turn}");
+        }
+    }
+
+    #[test]
+    fn a_ring_as_saturated_as_home_keeps_every_green_s_colour() {
+        let navy = crate::theme::builtin("navy").unwrap().chrome.focus_ring;
+        let f = |c: Rgb| rgb_to_hsv([c.r, c.g, c.b].map(|v| f32::from(v) / 255.0));
+        for c in greens() {
+            assert!((f(toward_accent(c, navy))[1] - f(c)[1]).abs() < 0.02, "{c:?} lost colour under navy");
         }
     }
 
@@ -114,6 +142,7 @@ mod tests {
             "float3 toward_accent(float3 c, float3 accent) {",
             "  if (a.y < MIN_SATURATION) {",
             "  h.x = fract(h.x + a.x - rgb_to_hsv(HOME).x + 1.0);",
+            "  h.y *= min(a.y / rgb_to_hsv(HOME).y, 1.0);",
         ];
         for line in lines {
             assert!(wash.contains(line), "wash.metal lacks {line}");
