@@ -3,7 +3,7 @@
 <p align="center">Run many Claude Code sessions side by side, and never lose one.</p>
 
 <picture>
-  <img alt="Seven Arkos IDE windows fanned out like postcards, each in its own theme. In front, the multi tasker: three Claude Code sessions side by side, each running its own subagents on an unrelated project. Behind, the blogger with a launch plan in the markdown editor, the data analyst with a weekly report and its chart, the hacker hardening a service in Matrix green, the indie game dev with a dungeon crawl in pixel-framed purple, the student with lecture notes on a ruled notebook page, and the web developer with the app's page in a web tab" src="docs/images/hero-dark.png" width="900">
+  <img alt="Seven Arkos IDE windows fanned out like postcards, each in its own theme. In front, the multi tasker: three Claude Code sessions side by side, each running its own subagents on an unrelated project. Behind, the blogger with a launch plan in the markdown editor, the data analyst with a weekly report and its chart, the hacker hardening a service in The Matrix's soft green, the indie game dev with a dungeon crawl in pixel-framed purple, the student with lecture notes on a ruled notebook page, and the web developer with the app's page in a web tab" src="docs/images/hero-dark.png" width="900">
 </picture>
 
 Arkos keeps track of where each of your Claude Code sessions stands, so with many running at
@@ -40,14 +40,14 @@ first, then the answers not yet read, then the ones at work. Shot in Tokyo Rain,
 Navy, the theme Arkos starts in.
 
 <picture>
-  <img alt="An Arkos IDE window in Tokyo Rain, rain falling behind the text: the session list on the left, sorted into Needs you (a trip to book), Unread (a blog post and a household budget), Working (a rate limiter, a trip and an inbox), then one for later and one done; the rate limiter's Claude Code session shown at full size, its three background agents writing the limiter, wiring it into the server and documenting it" src="docs/images/multitasker-dark-inbox.png" width="760">
+  <img alt="An Arkos IDE window in Tokyo Rain, rain falling behind the text and a night skyline at the foot of the session list: the list on the left, sorted into Needs you (a trip to book), Unread (a budget and a blog post), Working (a rate limiter and a trip), then one scheduled for later and one done; the rate limiter's Claude Code session shown at full size, its three background agents writing the limiter, wiring it into the server and documenting it" src="docs/images/multitasker-dark-inbox.png" width="760">
 </picture>
 
 **The web developer** keeps a feature branch in a worktree, with Claude Code on it and the app's
 page in a web tab beside the code. Shot in Material Lavender.
 
 <picture>
-  <img alt="An Arkos IDE window in Lavender Material, its panes as rounded near-white cards on a lavender frame: the session list on the left, Claude Code in the middle adding rate limiting to a link shortener and updating its README, and a web tab on the right showing the app's page, served from localhost" src="docs/images/web-developer-dark-inbox.png" width="760">
+  <img alt="An Arkos IDE window in Material Lavender, its panes as rounded near-white cards on a lavender frame: the session list on the left, Claude Code in the middle adding rate limiting to a link shortener and updating its README, and a web tab on the right showing the app's page, served from localhost" src="docs/images/web-developer-dark-inbox.png" width="760">
 </picture>
 
 **The blogger** lives in markdown: a launch plan rendered in the editor, and Claude Code beside it
@@ -56,7 +56,7 @@ window in pigment and ink and turn the foot of the session list into a painter's
 painting on its easel and a cat that wanders in now and then.
 
 <picture>
-  <img alt="An Arkos IDE window in Peach Watercolor, washed in the theme's pigments with ink lines round each pane: the session list on the left, and the session shown with a launch plan rendered in the markdown editor on top, its status table drawn with a wash over its header, and below it Claude Code updating the plan from the notes" src="docs/images/blogger-dark-inbox.png" width="620">
+  <img alt="An Arkos IDE window in Watercolor Peach, washed in the theme's pigments with ink lines round each pane: the session list on the left with a painter's loft at its foot, the Great Wave on the easel and a cat on the floor; the session shown with a launch plan rendered in the markdown editor on top, its status table drawn with a wash over its header, and below it Claude Code updating the plan from the notes" src="docs/images/blogger-dark-inbox.png" width="620">
 </picture>
 
 **The indie game dev** builds a dungeon crawl: Claude Code fixes the combat rule a test caught and
@@ -79,7 +79,7 @@ written in by hand.
 fills in, chart and all. Shot in Material Bright.
 
 <picture>
-  <img alt="An Arkos IDE window in Material, its panes as white rounded cards on a pale frame: the session list on the left, Claude Code in the middle summing up the week's signups by channel, and the weekly signups report rendered on the right with this week's table filled in and a light blue bar chart" src="docs/images/data-analyst-dark-inbox.png" width="760">
+  <img alt="An Arkos IDE window in Material Bright, its panes as white rounded cards on a pale frame: the session list on the left, Claude Code in the middle summing up the week's signups by channel, and the weekly signups report rendered on the right with this week's table filled in and a light blue bar chart" src="docs/images/data-analyst-dark-inbox.png" width="760">
 </picture>
 
 **The hacker** has Claude Code audit a file-drop service and harden its sign-in, while a second
@@ -87,7 +87,7 @@ session reads the ssh log for the intruder. Shot in The Matrix, with rune rain b
 and a city that keeps the traffic laws at the foot of the session list.
 
 <picture>
-  <img alt="An Arkos IDE window in the Matrix theme, black with green text and rune rain falling behind the panes: the session list on the left, a session asking whether to rotate a signing key, and Claude Code at full size hardening a file-drop service's sign-in, its diff in red and green" src="docs/images/hacker-dark-inbox.png" width="760">
+  <img alt="An Arkos IDE window in The Matrix, soft green on dark green-grey with rune rain falling behind the panes and a city's traffic under it at the foot of the session list: the list on the left, a session asking whether to rotate a signing key, and Claude Code at full size hardening a file-drop service's sign-in, its diff in red and green" src="docs/images/hacker-dark-inbox.png" width="760">
 </picture>
 
 ## Privacy
