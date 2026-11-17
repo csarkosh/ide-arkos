@@ -104,9 +104,11 @@ of tabs that you split and arrange: its first terminal (where you run Claude Cod
 whatever it opens and you open in it. Choosing another session shows that session's page,
 split as you left it, and coming back brings this one back the same way.
 
-- Open another terminal in the session (Cmd+T, a split, the tab bar's "+") for another Claude
+- Open another terminal in the session (Ctrl+Shift+`, a split, the tab bar's "+") for another Claude
   Code session beside the first: it belongs to the same session, and the list counts it.
-  "+ New session", under the filter, starts a session of its own instead.
+  The tab bar's "+" asks what to start: Claude or Codex opens a tab with the agent already
+  started in its shell (quit it and the shell is still there), Shell a plain terminal as
+  Ctrl+Shift+` does. "+ New session", under the filter, starts a session of its own instead.
 - Every pane has its tab bar, the session's first one included. A pane moves by its number at
   the left end of its tab bar: drag it onto an edge of another pane to put it there, tabs and
   all, or into another pane's middle or tab bar to join its tabs to that pane's. A tab drags
@@ -842,6 +844,12 @@ window closes them and quits the app. New Window from any of the three goes to t
 or brings the chooser forward. The three draw the project window's title bar instead of the native
 one: the window's name in bold where the project path would be, dragged to move the window and
 double clicked to zoom it (About keeps its fixed size).
+
+The bell at the right of the project window's title bar lists what Arkos has to tell you: an
+update ready, a config or theme error, the Claude Code hooks it set up. It wears a dot while
+something is new, and opening it reads everything. A notice that is over (an error put right,
+"Updated to X" once you have seen it) moves under "Earlier", dimmed, with the last five such,
+for as long as the window runs.
 
 Help, Keybindings (or Cmd+/, or "Keybindings" in the palette) opens a read-only list of every
 action with the keys in force, grouped by what it acts on: Window and app, Panes, Tabs, Terminal,

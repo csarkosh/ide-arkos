@@ -1075,6 +1075,11 @@ Things only a person at the screen can check, in order of value:
   ("shown after 0.5s … off screen") and the desktop in front does not change. A sampler of the
   window list (`CGWindowListCopyWindowInfo` every millisecond, alpha and owner) shows an opaque
   window at every sample; `screencapture` needs Screen Recording, which the sampler does not
+- the tab bar's "+": a click opens Claude, Codex and Shell under it (Shell showing Ctrl+Shift+`),
+  inside the window for a pane at the left edge; a second click, a click elsewhere or Escape
+  closes it; Claude opens a tab whose shell starts `claude`, Codex one that starts `codex` (or
+  says `command not found` without it), Shell a plain shell; quitting the agent leaves a prompt
+  in the tab
 - hooks set up by themselves: with the hooks removed from `~/.claude/settings.json` (a copy
   kept), the installed app's next start writes them back with a `.bak`, the bell says so naming
   the file, and a `claude` started in a tab then shows its marks; a second start writes nothing
@@ -1088,8 +1093,10 @@ Things only a person at the screen can check, in order of value:
   read-only with a banner
 - the title bar's right side shows a bell and a wrench (the doctor) and no text; with an
   update staged the bell wears a dot and its popover says "Update ready: X" with "Update now";
-  after an update the bell says "Updated to X" once, gone after you open and close it; a
-  daemon drop shows "arkosd reconnecting" there and the row goes when it is back
+  after an update the bell says "Updated to X", and after you open and close it the dot goes
+  and the line moves under "Earlier", dimmed, with the last few notices that went (a config
+  error put right among them, without its button); a daemon drop shows "arkosd reconnecting"
+  there and the row goes when it is back, leaving nothing under "Earlier"
 - with `wheelScrollAccelerationEnabled` absent from `~/.claude/settings.json` the doctor wears a
   dot; "Apply" writes the key and a `settings.json.bak`; a restarted `claude` scrolls smoothly
   in a fullscreen conversation; the doctor's Start at login and title hook rows match the

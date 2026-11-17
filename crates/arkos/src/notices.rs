@@ -1,6 +1,8 @@
 //! What the bell shows: one notice per kind, newest first, read once the popover has been
-//! opened. An update waiting keeps its dot whatever was read. Pure bookkeeping; the window
-//! feeds it and draws it.
+//! opened. An update waiting keeps its dot whatever was read. A notice that goes (its trouble
+//! put right, or "Updated" once seen) stays below as read history, the few most recent (Cyrus,
+//! 2026-11-16: "I'd still like to see past notifications"). Pure bookkeeping; the window feeds
+//! it and draws it.
 
 use std::time::{Duration, SystemTime};
 
@@ -36,10 +38,14 @@ pub struct Notice {
     pub action: Option<Action>,
 }
 
-/// The notices now standing, at most one per kind.
+/// How many past notices the bell keeps.
+pub const PAST_KEPT: usize = 5;
+
+/// The notices now standing, at most one per kind, and the few that went most recently.
 #[derive(Default)]
 pub struct Notices {
     items: Vec<Notice>,
+    past: Vec<Notice>,
     opened_at: Option<SystemTime>,
     seen_updated: bool,
 }
@@ -64,11 +70,30 @@ impl Notices {
         self.items.sort_by(|a, b| b.at.cmp(&a.at));
     }
 
-    /// Drops the kind's notice; false if there was none.
+    /// Drops the kind's notice into the history; false if there was none.
     pub fn clear(&mut self, kind: Kind) -> bool {
-        let before = self.items.len();
-        self.items.retain(|n| n.kind != kind);
-        self.items.len() != before
+        let Some(i) = self.items.iter().position(|n| n.kind == kind) else { return false };
+        let gone = self.items.remove(i);
+        self.keep(gone);
+        true
+    }
+
+    /// A notice that went, kept as history: newest first, with no button (what it acted on has
+    /// gone), the same text replacing its older line, at most `PAST_KEPT`. The connection and a
+    /// waiting update are status while they hold, never history.
+    fn keep(&mut self, gone: Notice) {
+        if matches!(gone.kind, Kind::Daemon | Kind::UpdateReady) {
+            return;
+        }
+        self.past.retain(|p| !(p.kind == gone.kind && p.text == gone.text));
+        self.past.insert(0, Notice { action: None, ..gone });
+        self.past.sort_by(|a, b| b.at.cmp(&a.at));
+        self.past.truncate(PAST_KEPT);
+    }
+
+    /// The notices that went, newest first: drawn as read.
+    pub fn past(&self) -> &[Notice] {
+        &self.past
     }
 
     /// The notices, newest first.
@@ -113,7 +138,8 @@ impl Notices {
         self.opened_at = Some(now);
     }
 
-    /// The popover closed: an Updated notice that was on show has been seen and goes.
+    /// The popover closed: an Updated notice that was on show has been seen and goes into the
+    /// history.
     pub fn closed(&mut self) {
         if self.seen_updated {
             self.clear(Kind::Updated);
@@ -264,6 +290,52 @@ mod tests {
         n.opened(t(5));
         n.closed();
         assert!(!n.has(Kind::Updated));
+    }
+
+    #[test]
+    fn a_notice_that_goes_is_kept_as_read_history_newest_first() {
+        let mut n = Notices::default();
+        n.set(Kind::ConfigError, "config.toml line 3: bad key", Some(Action::OpenConfig), t(10));
+        n.set(Kind::ClaudeHooks, "Arkos set up Claude Code's hooks", None, t(20));
+        n.clear(Kind::ConfigError);
+        n.set(Kind::Updated, "Updated to 0.8.41", None, t(30));
+        n.opened(t(40));
+        n.closed();
+        let past: Vec<&str> = n.past().iter().map(|x| x.text.as_str()).collect();
+        assert_eq!(past, ["Updated to 0.8.41", "config.toml line 3: bad key"], "the Updated notice seen, then the error put right");
+        assert_eq!(n.past()[1].action, None, "a past notice's button would act on something gone");
+        assert_eq!(n.past()[1].at, t(10), "it keeps the time it came");
+        assert_eq!(n.items().len(), 1, "the hooks notice still stands");
+        assert!(!n.dot(), "history is never news");
+    }
+
+    #[test]
+    fn the_history_keeps_a_few_and_one_of_each_text() {
+        let mut n = Notices::default();
+        for i in 0..(PAST_KEPT as u64 + 3) {
+            n.set(Kind::ThemeError, format!("theme {i}: bad colour"), None, t(i));
+            n.clear(Kind::ThemeError);
+        }
+        assert_eq!(n.past().len(), PAST_KEPT);
+        assert_eq!(n.past()[0].text, format!("theme {}: bad colour", PAST_KEPT + 2), "the newest kept");
+        n.set(Kind::ThemeError, "theme 0: bad colour", None, t(100));
+        n.clear(Kind::ThemeError);
+        n.set(Kind::ThemeError, "theme 0: bad colour", None, t(200));
+        n.clear(Kind::ThemeError);
+        assert_eq!(n.past().iter().filter(|x| x.text == "theme 0: bad colour").count(), 1, "the same news again replaces its old line");
+        assert_eq!(n.past()[0].at, t(200));
+    }
+
+    #[test]
+    fn live_status_leaves_no_history() {
+        // The connection and a waiting update are status while they hold: a reconnect during
+        // every update, or an update applied, is not news worth keeping.
+        let mut n = Notices::default();
+        n.set(Kind::Daemon, "arkosd reconnecting", None, t(10));
+        n.set(Kind::UpdateReady, "Update ready: 0.8.41", Some(Action::UpdateNow), t(20));
+        n.clear(Kind::Daemon);
+        n.clear(Kind::UpdateReady);
+        assert!(n.past().is_empty());
     }
 
     #[test]
