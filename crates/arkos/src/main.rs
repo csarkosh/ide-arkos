@@ -386,7 +386,7 @@ pub struct Root {
     pub popover_mark: usize,
     pub session_filter_focused: bool,
     /// The session list's keyboard cursor (Chrome keys spec, section 2): the row Enter opens.
-    pub session_cursor: Option<sessions_list::RowKey>,
+    pub session_cursor: Option<sessions_list::Stop>,
     /// Each session's reminder, by its page (sessions hold grids spec, section 4). Saved with
     /// the workspace.
     pub reminders: HashMap<tree::PageKey, reminder::Reminder>,
@@ -2361,6 +2361,24 @@ impl Root {
             }
             return;
         }
+        // Left and Right on an empty filter fold and open the groups as the Files tab's keys do
+        // its folders (with text typed they move the caret, and every group is open).
+        let plain = !(ks.modifiers.platform || ks.modifiers.control || ks.modifiers.alt || ks.modifiers.shift);
+        if plain && self.session_filter.text.is_empty() && matches!(ks.key.as_str(), "left" | "right") {
+            if let Some(at) = self.session_cursor {
+                let groups = sessions_list::grouped(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held));
+                match sessions_list::group_move(at, ks.key == "right", &groups, &self.sessions_folded) {
+                    Some(sessions_list::GroupMove::Fold(kind)) | Some(sessions_list::GroupMove::Open(kind)) => {
+                        sessions_list::toggle_fold(&mut self.sessions_folded, kind);
+                        self.save(cx);
+                    }
+                    Some(sessions_list::GroupMove::To(stop)) => self.session_cursor = Some(stop),
+                    None => {}
+                }
+                cx.notify();
+            }
+            return;
+        }
         match self.session_filter.handle(ks) {
             edit @ (line_edit::Edit::Up | line_edit::Edit::Down) => {
                 let delta = if matches!(edit, line_edit::Edit::Up) { -1 } else { 1 };
@@ -2375,12 +2393,21 @@ impl Root {
             }
             line_edit::Edit::Submit | line_edit::Edit::SubmitBack => {
                 let rows = self.shown_session_rows();
-                let target = self.session_cursor.filter(|c| rows.contains(c)).or_else(|| rows.first().copied());
+                // On a heading Enter folds or opens its group, as on a folder in the Files tab;
+                // with nothing marked, the first row.
+                let first_row = rows.iter().copied().find(|s| matches!(s, sessions_list::Stop::Row(_)));
+                let target = self.session_cursor.filter(|c| rows.contains(c)).or(first_row);
+                if let Some(sessions_list::Stop::Group(kind)) = target {
+                    sessions_list::toggle_fold(&mut self.sessions_folded, kind);
+                    self.save(cx);
+                    cx.notify();
+                    return;
+                }
                 self.session_filter.clear();
                 match target {
-                    Some(sessions_list::RowKey::Ended(i)) => self.resume_ended(i, cx),
-                    Some(sessions_list::RowKey::Live(page)) => self.show_row(page, cx),
-                    None => {}
+                    Some(sessions_list::Stop::Row(sessions_list::RowKey::Ended(i))) => self.resume_ended(i, cx),
+                    Some(sessions_list::Stop::Row(sessions_list::RowKey::Live(page))) => self.show_row(page, cx),
+                    _ => {}
                 }
                 // The keys stay in the list, the ring on the session now shown; Escape on the
                 // empty filter hands them to its pane.
@@ -2402,10 +2429,10 @@ impl Root {
                 cx.notify();
             }
             line_edit::Edit::Changed => {
-                // A narrower list: the cursor goes to its first row unless its row is still there.
+                // A narrower list: the cursor goes to its first row unless its stop is still there.
                 let rows = self.shown_session_rows();
                 if !self.session_cursor.is_some_and(|c| rows.contains(&c)) {
-                    self.session_cursor = rows.first().copied();
+                    self.session_cursor = rows.iter().copied().find(|s| matches!(s, sessions_list::Stop::Row(_))).or(rows.first().copied());
                 }
                 cx.notify();
             }
@@ -2425,7 +2452,7 @@ impl Root {
         self.bar_ring = None;
         self.header_ring = None;
         self.session_filter_focused = true;
-        self.session_cursor = Some(sessions_list::RowKey::Live(self.tree.page));
+        self.session_cursor = Some(sessions_list::Stop::Row(sessions_list::RowKey::Live(self.tree.page)));
     }
 
     pub fn sidebar_has_keys(&self) -> bool {
@@ -2623,11 +2650,12 @@ impl Root {
     }
 
     /// The rows the session list shows now, in order, for the keyboard's cursor.
-    fn shown_session_rows(&self) -> Vec<sessions_list::RowKey> {
+    fn shown_session_rows(&self) -> Vec<sessions_list::Stop> {
         let query = &self.session_filter.text;
         let groups = sessions_list::grouped(sessions_list::matching(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held), query));
-        // As the list shows them: a folded group's rows only while a filter is typed.
-        sessions_list::shown_rows(&groups, &self.sessions_folded, !query.trim().is_empty())
+        // As the list shows them: each group's heading, its rows unless folded (a typed filter
+        // opens them all).
+        sessions_list::cursor_stops(&groups, &self.sessions_folded, !query.trim().is_empty())
     }
 
     /// Cmd+0 (Chrome keys spec, section 2): the sidebar open on its session list, the keys in
@@ -2654,7 +2682,7 @@ impl Root {
                 let rows = self.shown_session_rows();
                 // The ring stays on its row while that row is listed; else the session shown.
                 if !self.session_cursor.is_some_and(|c| rows.contains(&c)) {
-                    let shown = sessions_list::RowKey::Live(self.tree.page);
+                    let shown = sessions_list::Stop::Row(sessions_list::RowKey::Live(self.tree.page));
                     self.session_cursor = if rows.contains(&shown) { Some(shown) } else { rows.first().copied() };
                 }
             }

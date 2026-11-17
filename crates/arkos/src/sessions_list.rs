@@ -295,9 +295,55 @@ pub fn shown_rows(groups: &[(Attention, Vec<Entry>)], folded: &Folded, filtering
     groups.iter().filter(|(kind, _)| !is_folded(folded, *kind, filtering)).flat_map(|(_, rows)| rows.iter().map(row_key)).collect()
 }
 
+/// Where the keyboard's cursor can stand in the list: a group's heading, or a row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stop {
+    Group(Attention),
+    Row(RowKey),
+}
+
+/// The cursor's stops, in order: each group's heading, then its rows unless it is folded
+/// (Cyrus, 2026-11-17: the groups fold from the keys as the Files tab's folders do).
+pub fn cursor_stops(groups: &[(Attention, Vec<Entry>)], folded: &Folded, filtering: bool) -> Vec<Stop> {
+    let mut out = Vec::new();
+    for (kind, rows) in groups {
+        out.push(Stop::Group(*kind));
+        if !is_folded(folded, *kind, filtering) {
+            out.extend(rows.iter().map(|e| Stop::Row(row_key(e))));
+        }
+    }
+    out
+}
+
+/// What Left or Right does at a stop, as the Files tab's tree does at a folder or a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupMove {
+    Fold(Attention),
+    Open(Attention),
+    To(Stop),
+}
+
+/// Left (`right` false) or Right at `at`: Right opens a folded heading and steps into an open
+/// one (its first row); Left folds an open heading and steps from a row up to its heading.
+pub fn group_move(at: Stop, right: bool, groups: &[(Attention, Vec<Entry>)], folded: &Folded) -> Option<GroupMove> {
+    match at {
+        Stop::Group(kind) => {
+            let open = !folded.contains(&kind);
+            match (right, open) {
+                (true, false) => Some(GroupMove::Open(kind)),
+                (true, true) => groups.iter().find(|(k, _)| *k == kind).and_then(|(_, rows)| rows.first()).map(|e| GroupMove::To(Stop::Row(row_key(e)))),
+                (false, true) => Some(GroupMove::Fold(kind)),
+                (false, false) => None,
+            }
+        }
+        Stop::Row(key) if !right => groups.iter().find(|(_, rows)| rows.iter().any(|e| row_key(e) == key)).map(|(k, _)| GroupMove::To(Stop::Group(*k))),
+        Stop::Row(_) => None,
+    }
+}
+
 /// Where the keyboard's cursor goes from `at` by `delta` rows: it stops at either end, and from a
 /// row no longer shown (or none) it starts on the first.
-pub fn cursor_step(rows: &[RowKey], at: Option<RowKey>, delta: isize) -> Option<RowKey> {
+pub fn cursor_step<T: Copy + PartialEq>(rows: &[T], at: Option<T>, delta: isize) -> Option<T> {
     let i = at.and_then(|a| rows.iter().position(|r| *r == a));
     let next = match i {
         Some(i) => (i as isize + delta).clamp(0, rows.len() as isize - 1) as usize,
@@ -525,8 +571,12 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
         // 2026-11-17: "when Pane 0 is in focus, it should not uncollapse all the session
         // states"), so the ring passes over a folded group's sessions.
         let folded = is_folded(&root.sessions_folded, kind, filtering);
+        // The keyboard's ring on the heading, as on a row.
+        let ringed = cursor == Some(Stop::Group(kind));
         let heading = div()
             .id(("session-group", kind as usize))
+            .relative()
+            .when(ringed, |d| d.child(crate::chrome::keys_ring(&theme, &style)))
             .h(px(GROUP_H))
             .flex_none()
             .pl(px(pad))
@@ -591,7 +641,7 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
                 .flex()
                 .gap(px(6.0))
                 .when(is_selected && !highlights, |d| d.bg(selected_bg))
-                .when(cursor == Some(key), |d| d.child(crate::chrome::keys_ring(&theme, &style)))
+                .when(cursor == Some(Stop::Row(key)), |d| d.child(crate::chrome::keys_ring(&theme, &style)))
                 .when(!highlights, |d| d.hover(move |s| s.bg(hover_bg)))
                 .when(highlights, |d| {
                     let w_hover = weak.clone();
@@ -1010,6 +1060,27 @@ mod tests {
     }
 
     #[test]
+    fn the_headings_are_stops_and_left_and_right_fold_and_open_them_as_the_tree_s_folders() {
+        let groups = grouped(vec![entry(1, Attention::NeedsYou, 9), entry(2, Attention::Working, 8), entry(3, Attention::Quiet, 7)]);
+        let folded: Folded = [Attention::Quiet].into_iter().collect();
+        let stops = cursor_stops(&groups, &folded, false);
+        let (needs, working, quiet) = (Attention::NeedsYou, Attention::Working, Attention::Quiet);
+        assert_eq!(
+            stops,
+            [Stop::Group(needs), Stop::Row(RowKey::Live(1)), Stop::Group(working), Stop::Row(RowKey::Live(2)), Stop::Group(quiet)],
+            "each heading, then its rows unless folded"
+        );
+        assert_eq!(cursor_stops(&groups, &folded, true).len(), 6, "a filter opens every group");
+        // Right opens a folded heading, then steps into it; Left steps up to the heading, then folds it.
+        assert_eq!(group_move(Stop::Group(quiet), true, &groups, &folded), Some(GroupMove::Open(quiet)));
+        assert_eq!(group_move(Stop::Group(working), true, &groups, &folded), Some(GroupMove::To(Stop::Row(RowKey::Live(2)))));
+        assert_eq!(group_move(Stop::Row(RowKey::Live(2)), false, &groups, &folded), Some(GroupMove::To(Stop::Group(working))));
+        assert_eq!(group_move(Stop::Group(working), false, &groups, &folded), Some(GroupMove::Fold(working)));
+        assert_eq!(group_move(Stop::Group(quiet), false, &groups, &folded), None, "a folded heading stays");
+        assert_eq!(group_move(Stop::Row(RowKey::Live(2)), true, &groups, &folded), None, "a row has nothing to open");
+    }
+
+    #[test]
     fn the_keyboard_cursor_moves_through_the_rows_shown_and_stops_at_either_end() {
         let groups = grouped(vec![entry(1, Attention::NeedsYou, 9), entry(2, Attention::Working, 8), entry(3, Attention::Quiet, 7), entry(4, Attention::Working, 6)]);
         let folded: Folded = [Attention::Quiet].into_iter().collect();
@@ -1022,7 +1093,7 @@ mod tests {
         assert_eq!(cursor_step(&rows, Some(rows[0]), 1), Some(rows[1]));
         assert_eq!(cursor_step(&rows, Some(rows[0]), -1), Some(rows[0]), "stops at the top");
         assert_eq!(cursor_step(&rows, Some(rows[2]), 1), Some(rows[2]), "stops at the bottom");
-        assert_eq!(cursor_step(&[], None, 1), None);
+        assert_eq!(cursor_step::<RowKey>(&[], None, 1), None);
     }
 
     #[test]

@@ -36,6 +36,9 @@ session you are on.
    list.
 2. Press Enter: that session fills the window, and the keys stay in the list, so you can look
    through sessions one after another.
+The groups' headings (Needs you, Working, Quiet, Done) are stops too: Left folds a group (from a
+session, it first steps up to the group's heading), Right opens it, and Enter folds or opens it,
+as the Files tab's folders do.
 3. To type in the session shown, press Escape (it clears what you typed first, then hands the
    keys to the session), or click in its pane. A click on a session in the list shows it as
    Enter does, the keys staying in the list.

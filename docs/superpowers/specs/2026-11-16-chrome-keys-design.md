@@ -32,7 +32,12 @@ opens them (Quiet and Done are folded at first, and most sessions are Quiet most
 found on screen, 2026-11-16); Cyrus, 2026-11-17: "when Pane 0 is in focus, it should not
 uncollapse all the session states", so now the groups stay as he left them and the cursor passes
 over a folded group's rows (a typed filter still opens them, and Cmd+Option+Down and Up still go
-through every session). Typing narrows the list; Up and Down move the cursor through the rows;
+through every session). The groups' headings are stops for the cursor and fold as the Files tab's
+folders do (Cyrus, 2026-11-17: "collapse session state groups in the same way that I collapse
+directories in Pane 0's Files tab"): Left folds an open heading and steps from a row up to its
+heading, Right opens a folded heading and steps from an open one into its first row, Enter folds
+or opens it. Left and Right do this only on an empty filter; with text typed they move the caret
+(and a filter opens every group). Typing narrows the list; Up and Down move the cursor through the rows;
 Enter shows the cursor's session (a closed one is resumed) and keeps the keys in the list, the
 cursor on that session (Cyrus, 2026-11-17: "Only mouse clicks should change focus to the
 selected list option's pane"); Escape clears the filter, and on an empty filter hands the keys to
