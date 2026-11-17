@@ -431,14 +431,15 @@ mod tests {
         let e = parse(&with("sidebar_pad = 30")).unwrap_err();
         assert!(e.contains("sidebar_pad must be 0.0 to 24.0 (was 30.0)"), "{e}");
         for b in BUILTIN.iter() {
-            assert_eq!(parse(b.manifest).unwrap().sidebar_pad > 0.0, b.name == "overworld", "{}", b.name);
+            assert_eq!(parse(b.manifest).unwrap().sidebar_pad > 0.0, b.name == "overworld" || b.name == "runic", "{}", b.name);
         }
-        // The bar's right end kept clear: none unless asked for, and only overworld, for its gem.
+        // The bar's right end kept clear: none unless asked for; overworld for its gem, runic for
+        // its lamp.
         assert_eq!(parse(MINIMAL).unwrap().bar_end_clear, 0.0);
         let e = parse(&with("bar_end_clear = 80")).unwrap_err();
         assert!(e.contains("bar_end_clear must be 0.0 to 64.0 (was 80.0)"), "{e}");
         for b in BUILTIN.iter() {
-            assert_eq!(parse(b.manifest).unwrap().bar_end_clear > 0.0, b.name == "overworld", "{}", b.name);
+            assert_eq!(parse(b.manifest).unwrap().bar_end_clear > 0.0, b.name == "overworld" || b.name == "runic", "{}", b.name);
         }
         // A taller title bar: none unless asked for, and only overworld asks.
         assert_eq!(parse(MINIMAL).unwrap().title_grow, 0.0);
@@ -639,7 +640,9 @@ mod tests {
     fn the_built_in_runic_parses_with_its_fixed_values() {
         let b = BUILTIN.iter().find(|b| b.name == "runic").expect("runic is built in");
         let m = parse(b.manifest).unwrap();
-        assert_eq!((m.frame_rate, m.scale, m.ui_text_bump), (30, 0.5, 0.0));
+        assert_eq!((m.frame_rate, m.scale, m.ui_text_bump), (30, 1.0, 0.0), "full size, so the frames and the scene stay crisp");
+        assert_eq!((m.gap, m.title_pad, m.sidebar_pad, m.bar_end_clear), (12.0, 8.0, 12.0, 30.0), "room for the frames, the plates, the chevron and the lamp");
+        assert_eq!(m.scenes, ["city", "code"]);
         assert!(m.ink_borders && m.glyph_motion && m.terminal_decode);
         assert_eq!(m.highlights, Highlights::Effect);
         assert_eq!(m.menus, MenuLook::Glow);

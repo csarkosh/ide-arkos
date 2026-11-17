@@ -157,6 +157,17 @@ pub fn colors(theme: &Theme) -> [[f32; 4]; COLORS] {
 }
 
 /// A frame's inputs: the first `MAX_BLOCKS` of `blocks`, the rest dropped.
+/// The scene a theme names, as its own effect (a built-in) numbers it; 0 without one. The window
+/// sets the active effect's own number over it (`Manifest::scene_index`).
+pub fn theme_scene(theme: &Theme) -> f32 {
+    let Some(e) = theme.effect.as_ref() else { return 0.0 };
+    crate::effects::BUILTIN
+        .iter()
+        .find(|b| b.name == e.name)
+        .and_then(|b| crate::effects::manifest::parse(b.manifest).ok())
+        .map_or(0.0, |m| m.scene_index(e.scene.as_deref()))
+}
+
 pub fn build(theme: &Theme, intensity: f32, size: (f32, f32), scale: f32, time: f32, blocks: &[Block]) -> Inputs {
     let mut out = [ShaderBlock::default(); MAX_BLOCKS];
     let n = blocks.len().min(MAX_BLOCKS);
@@ -183,7 +194,7 @@ pub fn build(theme: &Theme, intensity: f32, size: (f32, f32), scale: f32, time: 
         block_count: n as f32,
         dark: if theme.is_light() { 0.0 } else { 1.0 },
         pigment_count: pigments(theme).1 as f32,
-        scene: 0.0,
+        scene: theme_scene(theme),
         spare: [0.0; 3],
         colors: colors(theme),
         blocks: out,
@@ -196,6 +207,13 @@ mod tests {
     use super::*;
     use crate::tree::Rect;
     use std::mem::{align_of, offset_of, size_of};
+
+    #[test]
+    fn a_theme_s_scene_is_numbered_by_its_effect_s_manifest() {
+        assert_eq!(theme_scene(&crate::theme::builtin("tokyo-rain").unwrap()), 0.0, "the city");
+        assert_eq!(theme_scene(&crate::theme::builtin("matrix").unwrap()), 1.0, "the code");
+        assert_eq!(theme_scene(&crate::theme::builtin("navy").unwrap()), 0.0, "no effect, no scene");
+    }
 
     #[test]
     fn the_inputs_struct_is_the_size_the_preamble_declares() {

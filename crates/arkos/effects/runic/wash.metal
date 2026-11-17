@@ -146,6 +146,10 @@ float sd_box(float2 q, float2 hb) {
     return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
 }
 
+bool inside_box(float2 p, float4 r) {
+    return p.x >= r.x && p.y >= r.y && p.x < r.x + r.z && p.y < r.y + r.w;
+}
+
 // How much of a rune's bit lies at local (points from its cell's top left) in the given cell at
 // time t: the cell's 5 by 7 pattern is the bits of a hash of the cell and its rune's slot, 24
 // bits from one hash and the last 11 from a second, so a pixel needs only the hash its bit is in.
@@ -423,6 +427,339 @@ float3 theme_green(constant ArkosInputs& u) {
     return greenness(ring) > greenness(best) ? ring : best;
 }
 
+
+// ---- The world: the overworld's features in the runic's light (runic world spec) ----
+// Every pane wears a frame in the gap round it, a neon line with its corners cut, lit in the
+// focus colour on the focused pane and on the sidebar while it has the keys; a packet of light
+// runs round the frame of a pane whose Claude session works, and a block cursor blinks on the
+// frame's foot of one whose session waits. The tab bar's active tab is underlined in light and
+// a lamp at the bar's right end is lit on the focused pane. The title bar is a strip of storm
+// clouds, its words and icons on plates. The sidebar wears a frame, a chevron marks its selected
+// row, and at its foot, below the names, stands the theme's scene (`ArkosInputs::scene`): 0 a
+// city skyline in the rain, its towers' windows lit, runic lightning now and then; 1 a city of
+// falling code with a phone booth's light ringing and, now and then, a black cat crossing the
+// street twice. Behind a terminal, the far skyline along its foot. The clock's zero (Reduce
+// Motion) has no bolt, no cat and every light on.
+
+// The frame's line: how far outside a pane's edges, its width, its halo, its corner cut.
+constant float FRAME_OUT = 6.0;
+constant float FRAME_W = 1.3;
+constant float FRAME_HALO = 4.0;
+constant float FRAME_CHAMFER = 7.0;
+// An unfocused frame's strength against a focused one's 1.
+constant float FRAME_IDLE = 0.5;
+// The packet of light round a working pane's frame: its length in points and its speed.
+constant float PACKET_LEN = 70.0;
+constant float PACKET_SPEED = 240.0;
+// The waiting cursor: its size, how far in from the frame's right end, and its blink.
+constant float2 WAIT_SIZE = float2(7.0, 10.0);
+constant float WAIT_IN = 26.0;
+constant float WAIT_BLINK = 1.1;
+// The lamp at a tab bar's right end: its radius and how far in from the end its centre sits.
+constant float LAMP_R = 2.6;
+constant float LAMP_IN = 16.0;
+// The sidebar's frame line, its inset from the sidebar's edges.
+constant float SIDE_FRAME_IN = 3.5;
+// The scene at the sidebar's foot: its height, the least room it is drawn in, and how far below
+// the last name it comes back to full strength.
+constant float SCENE_H = 230.0;
+constant float SCENE_MIN_H = 90.0;
+constant float SOFT_BUFFER = 30.0;
+// How much of the scene shows under the names (the rest is the sidebar's own colour).
+constant float UNDER_NAMES = 0.18;
+// Lightning: one bolt a cycle at most, lasting this long; none in the first cycle.
+constant float BOLT_CYCLE = 9.0;
+constant float BOLT_FOR = 0.45;
+// The black cat: a pass across the street, then the same pass again, once a cycle.
+constant float CAT_CYCLE = 26.0;
+constant float CAT_PASS = 4.0;
+// The phone booth's ring: two short rings, then quiet, every cycle.
+constant float RING_CYCLE = 3.0;
+
+float hash2(float2 c) {
+    uint ux = uint(int(c.x) + 1048576);
+    uint uy = uint(int(c.y) + 1048576);
+    return hash01(ux * 73856093u ^ uy * 19349663u);
+}
+
+float vnoise(float2 q) {
+    float2 i = floor(q);
+    float2 f = fract(q);
+    float2 w = f * f * (3.0 - 2.0 * f);
+    float a = hash2(i), b = hash2(i + float2(1.0, 0.0)), c = hash2(i + float2(0.0, 1.0)), d = hash2(i + float2(1.0, 1.0));
+    return mix(mix(a, b, w.x), mix(c, d, w.x), w.y);
+}
+
+float fbm(float2 q) {
+    return 0.55 * vnoise(q) + 0.3 * vnoise(q * 2.03 + 7.1) + 0.15 * vnoise(q * 4.01 + 3.3);
+}
+
+// A box with its corners cut by ch: its signed distance, as sd_box's.
+float sd_chamfer(float2 q, float2 hb, float ch) {
+    float2 a = abs(q);
+    return max(sd_box(q, hb), (a.x + a.y - (hb.x + hb.y - ch)) * 0.70710678);
+}
+
+// How far round r's outline p lies, clockwise from its top left, in points.
+float perimeter_at(float2 p, float4 r) {
+    float2 q = p - r.xy;
+    float w = r.z, h = r.w;
+    float dt = abs(q.y), dr = abs(q.x - w), db = abs(q.y - h), dl = abs(q.x);
+    float m = min(min(dt, dr), min(db, dl));
+    if (m == dt) { return clamp(q.x, 0.0, w); }
+    if (m == dr) { return w + clamp(q.y, 0.0, h); }
+    if (m == db) { return w + h + (w - clamp(q.x, 0.0, w)); }
+    return 2.0 * w + h + (h - clamp(q.y, 0.0, h));
+}
+
+// A light of colour c and strength s laid over col: added on a dark ground, mixed on a light one.
+float3 light_on(float3 col, float3 c, float s, float dark) {
+    return dark > 0.5 ? min(col + c * s, 1.0) : mix(col, c, saturate(s));
+}
+
+// A line's light at distance d: a core of width w and a halo out to reach.
+float line_light(float d, float w, float reach) {
+    float core = 1.0 - smoothstep(w * 0.5, w * 0.5 + 0.8, d);
+    float fall = max(0.0, 1.0 - d / reach);
+    return core + fall * fall * 0.35;
+}
+
+// The skyline's height at x (points into the band, band h points tall) for a layer: buildings of
+// the layer's width with hashed heights. layer 0 is the far one, taller and paler; 1 the near.
+float tower_top(float x, float h, int layer) {
+    float w = layer == 0 ? 14.0 : 10.0;
+    float cell = floor((x + (layer == 0 ? 4.0 : 0.0)) / w);
+    float r = hash2(float2(cell, float(layer) * 31.0 + 5.0));
+    return layer == 0 ? h * (1.0 - (0.26 + 0.24 * r)) : h * (1.0 - (0.1 + 0.2 * r));
+}
+
+// The code city's towers: taller, the near ones up to three quarters of the band.
+float code_top(float x, float h, int layer) {
+    float w = layer == 0 ? 15.0 : 11.0;
+    float cell = floor((x + (layer == 0 ? 5.0 : 0.0)) / w);
+    float r = hash2(float2(cell, float(layer) * 53.0 + 11.0));
+    return layer == 0 ? h * (1.0 - (0.5 + 0.35 * r)) : h * (1.0 - (0.28 + 0.42 * r));
+}
+
+// Whether a lit window is at q inside a building of the layer (3 by 4 point panes on a grid).
+float window_lit(float2 q, int layer, float t) {
+    float2 g = floor(q / float2(5.0, 6.0));
+    float2 f = fract(q / float2(5.0, 6.0));
+    if (f.x > 0.4 || f.y > 0.34) {
+        return 0.0;
+    }
+    float r = hash2(g + float2(float(layer) * 97.0, 13.0));
+    float lit = r < (layer == 0 ? 0.05 : 0.09) ? 1.0 : 0.0;
+    // A few flicker on and off.
+    if (r > 0.97) {
+        lit = fract(t * 0.13 + r * 7.0) < 0.5 ? 1.0 : 0.0;
+    }
+    return lit;
+}
+
+// A landmark's half width at depth r (0 at its top, 1 at its foot): Tokyo Tower's flared lattice
+// or the Skytree's slender spire, decks wider.
+float tower_half(float r, int which) {
+    if (which == 0) {
+        float hw = 1.2 + 12.0 * pow(r, 1.9);
+        if (abs(r - 0.42) < 0.025 || abs(r - 0.62) < 0.02) { hw += 2.5; }
+        return hw;
+    }
+    float hw = 0.9 + 3.2 * pow(r, 1.3);
+    if (abs(r - 0.22) < 0.02) { hw += 3.0; }
+    if (abs(r - 0.34) < 0.015) { hw += 2.0; }
+    return hw;
+}
+
+// The bolt's x at depth y for this strike (a jagged path of six legs from x0), in points.
+float bolt_x(float y, float y0, float y1, float x0, uint key) {
+    float legs = 6.0;
+    float f = saturate((y - y0) / max(y1 - y0, 1.0)) * legs;
+    float i = floor(f);
+    float a = i < 0.5 ? 0.0 : (hash01(key + uint(i)) - 0.5) * 22.0;
+    float b = (hash01(key + uint(i) + 1u) - 0.5) * 22.0;
+    return x0 + mix(a, b, fract(f));
+}
+
+// The city's scene at q (points into the band, band sz), over the sky colour sky: clouds, a bolt
+// now and then, the far and near skyline with Tokyo Tower and the Skytree, lit windows, rain.
+float3 city_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 green, float3 white_c, float3 sb) {
+    float3 bg = u.colors[ARKOS_WINDOW_BG].rgb;
+    // The sky: what is under it (sb), lit low by the city's glow.
+    float glow = saturate(q.y / sz.y);
+    float3 col = mix(sb, mix(sb, green, 0.14), glow * glow);
+    // A bolt: its envelope this frame (two flickers), its slot's place and its path.
+    float slot = floor(t / BOLT_CYCLE);
+    uint key = uint(slot) * 2654435761u + 17u;
+    float at = t - slot * BOLT_CYCLE - hash01(key) * (BOLT_CYCLE - BOLT_FOR - 1.0);
+    float env = 0.0;
+    if (slot >= 1.0 && at >= 0.0 && at < BOLT_FOR) {
+        env = at < 0.06 ? 1.0 : (at < 0.12 ? 0.25 : (at < 0.22 ? 0.9 : 1.0 - (at - 0.22) / (BOLT_FOR - 0.22)));
+    }
+    col = mix(col, mix(col, white_c, 0.35), env * 0.35 * (1.0 - glow));
+    // The clouds, along the band's top, drifting.
+    float c = fbm(float2((q.x + t * 6.0) / 46.0, q.y / 18.0));
+    float top = saturate(1.0 - q.y / (sz.y * 0.42));
+    float cloud = smoothstep(0.42, 0.7, c) * top;
+    float3 cloud_c = mix(sb, u.colors[ARKOS_TEXT_DIM].rgb, 0.22 + 0.25 * env);
+    col = mix(col, cloud_c, cloud * 0.85);
+    // The bolt, from the clouds to a rooftop, its path drawn in runes.
+    if (env > 0.0) {
+        float x0 = sz.x * (0.18 + 0.64 * hash01(key + 9u));
+        float y0 = sz.y * 0.16;
+        float y1 = tower_top(x0, sz.y, 1) - 2.0;
+        if (q.y >= y0 && q.y <= y1) {
+            float bx = bolt_x(q.y, y0, y1, x0, key + 20u);
+            float d = abs(q.x - bx);
+            // The bolt is a chain of runes: 5 by 7 bits of 1.2 points, a rune every 9 points
+            // down its path, each with its own pattern, over a thin bright core and a glow.
+            float s = 0.45 * (1.0 - smoothstep(0.3, 1.0, d)) + 0.6 * pow(max(0.0, 1.0 - d / 9.0), 2.0);
+            float2 g = float2((q.x - bx + 3.0) / 1.2, fract(q.y / 9.0) * 9.0 / 1.2);
+            float runes = 0.0;
+            if (g.x >= 0.0 && g.x < 5.0 && g.y >= 0.5 && g.y < 7.5) {
+                float2 b = floor(g - float2(0.0, 0.5));
+                float2 f = fract(g - float2(0.0, 0.5));
+                bool lit = hash2(float2(floor(q.y / 9.0) * 13.0 + b.x, b.y * 7.0 + float(key % 211u))) < 0.5;
+                runes = lit && max(abs(f.x - 0.5), abs(f.y - 0.5)) < 0.42 ? 1.3 : 0.0;
+            }
+            col = light_on(col, mix(green, white_c, 0.7), (s + runes) * env, u.dark);
+        }
+    }
+    // The far skyline, then the landmarks among it, then the near skyline.
+    float3 far_c = mix(mix(sb, bg, 0.6), green, 0.05);
+    float3 near_c = bg * 0.55;
+    float win = 0.0;
+    if (q.y > tower_top(q.x, sz.y, 0)) {
+        col = far_c;
+        win = window_lit(q, 0, t) * 0.6;
+    }
+    // Tokyo Tower, a little left of the middle, and the Skytree to the right.
+    for (int which = 0; which < 2; which++) {
+        float cx = sz.x * (which == 0 ? 0.3 : 0.78);
+        float ttop = sz.y * (which == 0 ? 0.2 : 0.02);
+        float r = (q.y - ttop) / (sz.y - ttop);
+        if (r >= 0.0 && r <= 1.0) {
+            float hw = tower_half(r, which);
+            float dx = abs(q.x - cx);
+            if (dx <= hw) {
+                col = mix(far_c, near_c, 0.4);
+                // Tokyo Tower's lattice in orange (the theme's red and yellow), lit; the
+                // Skytree's edges pale, its decks in the focus colour.
+                float3 orange = mix(u.colors[ARKOS_ANSI + 1].rgb, u.colors[ARKOS_ANSI + 3].rgb, 0.45);
+                float edge = dx > hw - 0.9 ? 1.0 : 0.0;
+                if (which == 0) {
+                    float lattice = (fract((q.x - cx + q.y) / 4.0) < 0.25 || fract((cx - q.x + q.y) / 4.0) < 0.25) ? 0.55 : 0.0;
+                    col = mix(col, orange, max(lattice, edge * 0.85));
+                } else {
+                    bool deck = abs(r - 0.22) < 0.02 || abs(r - 0.34) < 0.015;
+                    col = mix(col, deck ? mix(white_c, u.colors[ARKOS_FOCUS_RING].rgb, 0.5) : mix(white_c, green, 0.4), deck ? 0.45 : edge * 0.7);
+                }
+                win = 0.0;
+            }
+            // The beacon on its top, blinking red.
+            float bd = length(q - float2(cx, ttop - 1.5));
+            if (bd < 2.2) {
+                float on = fract(t * 0.7) < 0.5 ? 1.0 : 0.25;
+                col = light_on(col, u.colors[ARKOS_ANSI + 1].rgb, (1.0 - bd / 2.2) * on, u.dark);
+            }
+        }
+    }
+    if (q.y > tower_top(q.x, sz.y, 1)) {
+        col = near_c;
+        win = window_lit(q, 1, t);
+    }
+    // A window lit, now and then a warm one.
+    float3 warm = mix(u.colors[ARKOS_ANSI + 3].rgb, white_c, 0.3);
+    float3 win_c = hash2(floor(q / float2(5.0, 6.0)) + 3.0) < 0.3 ? warm : mix(green, white_c, 0.45);
+    col = mix(col, win_c, win * 0.85);
+    // The rain, slanting a little, over all of it.
+    float rx = q.x + q.y * 0.18;
+    float colx = floor(rx / 5.0);
+    float speed = 170.0 + 90.0 * hash2(float2(colx, 3.0));
+    float pos = fract((q.y + t * speed) / 60.0 + hash2(float2(colx, 7.0))) * 60.0;
+    float streak = (fract(rx / 5.0) < 0.2 && pos < 9.0 && hash2(float2(colx, 11.0)) < 0.5) ? (1.0 - pos / 9.0) : 0.0;
+    col = mix(col, mix(u.colors[ARKOS_TEXT_DIM].rgb, white_c, 0.2), streak * 0.3);
+    return col;
+}
+
+// Whether q (in the cat's own units, 1 a point at its size) is on the black cat: a body, a head
+// with two ears, two legs and a tail curling up behind.
+bool cat_at(float2 cq) {
+    bool body = cq.x >= 0.0 && cq.x < 7.0 && cq.y >= 2.0 && cq.y < 5.0;
+    bool head = cq.x >= 7.0 && cq.x < 10.5 && cq.y >= 0.0 && cq.y < 3.5 && !(cq.y < 1.0 && cq.x >= 8.2 && cq.x < 9.3);
+    bool legs = cq.y >= 5.0 && cq.y < 6.5 && (abs(cq.x - 1.0) < 0.6 || abs(cq.x - 6.0) < 0.6);
+    bool tail = cq.x >= -3.5 && cq.x < 0.0 && abs(cq.y - (3.0 - (cq.x + 3.5) * 0.7)) < 0.6;
+    return body || head || legs || tail;
+}
+
+// The code city's scene at q: towers on the city's skyline whose insides are falling code, their
+// outlines lit, a phone booth whose light rings, and a black cat crossing the street twice.
+float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 green, float3 white_c, float3 sb) {
+    float3 bg = u.colors[ARKOS_WINDOW_BG].rgb;
+    float3 col = sb;
+    float near_top = code_top(q.x, sz.y, 1);
+    float far_top = code_top(q.x, sz.y, 0);
+    bool in_far = q.y > far_top;
+    bool in_near = q.y > near_top;
+    if (in_far || in_near) {
+        // The code falling inside: 5 by 7 point cells, a stream a column.
+        float2 cell = floor(q / float2(5.0, 7.0));
+        float speed = 4.0 + 6.0 * hash2(float2(cell.x, 2.0 + (in_near ? 1.0 : 0.0)));
+        float head = floor(fract(t * speed / 40.0 + hash2(float2(cell.x, 9.0))) * 40.0);
+        float behind = head - cell.y;
+        float2 f = fract(q / float2(5.0, 7.0));
+        float2 bit = floor(float2(f.x * 5.0, f.y * 7.0));
+        float on = (bit.x >= 1.0 && bit.x <= 3.0 && bit.y >= 1.0 && bit.y <= 5.0 && hash2(cell * 7.0 + bit + floor(t / 0.4)) < 0.5) ? 1.0 : 0.0;
+        float trail = (behind >= 0.0 && behind < 14.0) ? 1.0 - behind / 14.0 : 0.15;
+        float3 base = in_near ? bg * 0.6 : mix(sb, bg, 0.5);
+        float3 head_c = behind < 1.0 && behind >= 0.0 ? mix(green, white_c, 0.5) : green;
+        col = mix(base, head_c, on * trail * (in_near ? 1.0 : 0.55));
+        // The tower's outline.
+        float edge = in_near ? (q.y - near_top < 1.0 ? 1.0 : 0.0) : (q.y - far_top < 1.0 ? 0.6 : 0.0);
+        col = light_on(col, green, edge * 0.5, u.dark);
+    }
+    // The street.
+    if (q.y > sz.y - 3.0) {
+        col = mix(bg, green, 0.12);
+    }
+    // The phone booth, ringing: two short rings a cycle, then quiet.
+    float2 booth = float2(sz.x * 0.62, sz.y - 3.0 - 22.0);
+    float2 bq = q - booth;
+    if (bq.x >= 0.0 && bq.x < 11.0 && bq.y >= 0.0 && bq.y < 22.0) {
+        bool frame_px = bq.x < 1.0 || bq.x >= 10.0 || bq.y < 1.0 || bq.y >= 21.0 || abs(bq.y - 9.0) < 0.5;
+        col = frame_px ? mix(green, white_c, 0.2) : mix(bg, green, 0.08);
+    }
+    float rt = fract(t / RING_CYCLE) * RING_CYCLE;
+    float ring = (rt < 0.3 || (rt >= 0.5 && rt < 0.8)) ? 1.0 : 0.15;
+    float ld = length(q - (booth + float2(5.5, -2.0)));
+    if (ld < 2.5) {
+        col = light_on(col, mix(green, white_c, 0.6), (1.0 - ld / 2.5) * ring, u.dark);
+    }
+    // The black cat: it crosses the street, and a moment later crosses it again the same way, a
+    // glitch across the scene as it does. None in the first cycle.
+    float cslot = floor(t / CAT_CYCLE);
+    float ct = t - cslot * CAT_CYCLE;
+    float pass = ct < CAT_PASS ? ct / CAT_PASS : ((ct >= CAT_PASS + 0.8 && ct < 2.0 * CAT_PASS + 0.8) ? (ct - CAT_PASS - 0.8) / CAT_PASS : -1.0);
+    if (cslot >= 1.0 && pass >= 0.0) {
+        float2 cat = float2(-18.0 + pass * (sz.x + 36.0), sz.y - 3.0 - 9.0);
+        float2 cq = (q - cat) / 1.5;
+        if (cat_at(cq)) {
+            col = bg * 0.15;
+            // Its eyes, two lit points in its head.
+            if (abs(cq.y - 1.5) < 0.5 && (abs(cq.x - 8.0) < 0.45 || abs(cq.x - 9.3) < 0.45)) {
+                col = mix(green, white_c, 0.5);
+            }
+        } else if (cat_at(cq + float2(0.7, 0.0)) || cat_at(cq - float2(0.7, 0.0)) || cat_at(cq + float2(0.0, 0.7)) || cat_at(cq - float2(0.0, 0.7))) {
+            // A rim of green round it, so a black cat shows on a dark street.
+            col = mix(col, green, 0.55);
+        }
+        if (ct >= CAT_PASS + 0.8 && abs(q.y - fract(t * 3.0) * sz.y) < 0.8) {
+            col = light_on(col, green, 0.35, u.dark);
+        }
+    }
+    return col;
+}
+
 fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u [[buffer(0)]]) {
     float2 p = in.uv * u.size;
     float k = saturate(u.intensity);
@@ -474,6 +811,133 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     // The pane bodies carry it more strongly still: PANE_RAIN more, under the panes' paper.
     col = mix(col, r.rgb, r.a * RAIN_ALPHA * PANE_RAIN * pane * k);
     col = mix(col, green, lift * k);
+
+    // The world (see above): the sidebar's scene, frame and chevron; the title bar's clouds and
+    // plates; the panes' far skyline, frames, packets, waiting cursors, underlines and lamps.
+    float3 ring_c = u.colors[ARKOS_FOCUS_RING].rgb;
+    float3 sb = u.colors[ARKOS_SIDEBAR].rgb;
+    float4 side = float4(0.0);
+    float side_focus = 0.0;
+    float names_end = 0.0;
+    float bar_focus = 0.0;
+    for (int i = 0; i < nb; i++) {
+        int kind = int(u.blocks[i].kind);
+        if (kind == ARKOS_SIDEBAR_BLOCK) {
+            side = u.blocks[i].rect;
+            side_focus = saturate(u.blocks[i].focus);
+            names_end = side.y + side.w;
+        } else if (kind == ARKOS_SIDEBAR_FOOT_BLOCK) {
+            names_end = u.blocks[i].rect.y;
+        } else if (kind == ARKOS_TAB_BAR_BLOCK && inside_box(p, u.blocks[i].rect)) {
+            bar_focus = saturate(u.blocks[i].focus);
+        }
+    }
+    // The sidebar: its scene at its foot, softened under the names; its frame; its chevron.
+    if (side.z > 1.0 && inside_box(p, side)) {
+        float4 band = float4(side.x + SIDE_FRAME_IN + 2.0, max(side.y + side.w - SCENE_H, side.y + 40.0), side.z - 2.0 * (SIDE_FRAME_IN + 2.0), 0.0);
+        band.w = side.y + side.w - SIDE_FRAME_IN - 2.0 - band.y;
+        if (band.w >= SCENE_MIN_H && inside_box(p, band)) {
+            float2 q = p - band.xy;
+            // The scene's sky is what is under it, so its top melts into the sidebar.
+            float3 art = u.scene > 0.5 ? code_scene(q, band.zw, u.time, u, green, white_c, col) : city_scene(q, band.zw, u.time, u, green, white_c, col);
+            float under = p.y < names_end ? 1.0 - UNDER_NAMES : saturate(1.0 - (p.y - names_end) / SOFT_BUFFER) * (1.0 - UNDER_NAMES);
+            art = mix(art, col, max(under, 1.0 - saturate(q.y / 60.0)) * (q.y < 60.0 ? 1.0 : 0.0) + under * (q.y >= 60.0 ? 1.0 : 0.0));
+            col = mix(col, art, k);
+        }
+        float4 fr = float4(side.x + SIDE_FRAME_IN, side.y + SIDE_FRAME_IN, side.z - 2.0 * SIDE_FRAME_IN, side.w - 2.0 * SIDE_FRAME_IN);
+        float2 hb = fr.zw * 0.5;
+        float d = abs(sd_chamfer(p - (fr.xy + hb), hb, FRAME_CHAMFER));
+        if (d < FRAME_HALO) {
+            float3 c = mix(green, ring_c, side_focus);
+            col = light_on(col, c, line_light(d, FRAME_W, FRAME_HALO) * mix(FRAME_IDLE, 1.0, side_focus) * k, u.dark);
+        }
+    }
+    for (int i = 0; i < nb; i++) {
+        ArkosBlock blk = u.blocks[i];
+        int kind = int(blk.kind);
+        float4 r = blk.rect;
+        if (kind == ARKOS_ROW_HIGHLIGHT_BLOCK && blk.ordinal >= 1.0 && side.z > 1.0 && r.x < side.x + side.z) {
+            // The selected row's chevron in the sidebar's left padding.
+            float cx = side.x + SIDE_FRAME_IN + 4.0;
+            float cy = r.y + r.w * 0.5;
+            float2 a = p - float2(cx, cy);
+            float d = abs(abs(a.y) - (3.5 - a.x));
+            if (a.x >= -0.5 && a.x <= 4.0 && abs(a.y) <= 4.0) {
+                float pulse = 0.75 + 0.25 * cos(u.time * 3.0);
+                col = light_on(col, ring_c, (1.0 - smoothstep(0.4, 1.2, d)) * pulse * blk.value * k, u.dark);
+            }
+        } else if (kind == ARKOS_TITLE_BAR_BLOCK && inside_box(p, r)) {
+            // Storm clouds along the bar, a plate behind its words and icons.
+            bool plate = false;
+            for (int j = 0; j < nb; j++) {
+                if (int(u.blocks[j].kind) == ARKOS_TITLE_GROUP_BLOCK) {
+                    float4 g = u.blocks[j].rect;
+                    float2 ghb = g.zw * 0.5 + float2(5.0, 3.0);
+                    float gd = sd_box(p - (g.xy + g.zw * 0.5), ghb - 3.0) - 3.0;
+                    if (gd < 0.0) {
+                        plate = true;
+                        col = mix(col, u.colors[ARKOS_TITLE_BAR].rgb * 0.85, k);
+                        col = light_on(col, green, (1.0 - smoothstep(0.0, 1.2, abs(gd + 0.6))) * 0.25 * k, u.dark);
+                    }
+                }
+            }
+            if (!plate) {
+                float c = fbm(float2((p.x + u.time * 5.0) / 70.0, p.y / 12.0));
+                col = mix(col, mix(col, u.colors[ARKOS_TEXT_DIM].rgb, 0.18), smoothstep(0.45, 0.75, c) * k);
+            }
+        } else if (kind == ARKOS_PANE_BODY_BLOCK && inside_box(p, r)) {
+            // The far skyline along a terminal's foot, faint under its paper.
+            float2 q = float2(p.x - r.x, p.y - (r.y + r.w - 50.0));
+            if (q.y > 0.0 && q.y > tower_top(q.x, 50.0, 0)) {
+                col = mix(col, mix(bg, sb, 0.5), 0.5 * k);
+            }
+        } else if (kind == ARKOS_ACTIVE_TAB_BLOCK && inside_box(p, float4(r.x, r.y + r.w - 2.0, r.z, 2.0))) {
+            // The active tab's underline, in the focus colour on the focused pane.
+            col = light_on(col, mix(green, ring_c, bar_focus), mix(0.5, 1.0, bar_focus) * k, u.dark);
+        } else if (kind == ARKOS_TAB_BAR_BLOCK) {
+            // The pane: this bar and the body laid out after it.
+            float4 pr = r;
+            ArkosBlock body = u.blocks[min(i + 1, nb - 1)];
+            if (i + 1 < nb && int(body.kind) == ARKOS_PANE_BODY_BLOCK) {
+                pr.w += body.rect.w;
+            }
+            float focus = saturate(blk.focus);
+            // The lamp at the bar's right end.
+            float ld = length(p - float2(r.x + r.z - LAMP_IN, r.y + r.w * 0.5));
+            if (ld < LAMP_R + 3.0) {
+                float blink = blk.busy > 0.5 ? (fract(u.time * 1.5) < 0.6 ? 1.0 : 0.35) : 1.0;
+                float3 lc = mix(green * 0.5, ring_c, focus);
+                float s = (1.0 - smoothstep(LAMP_R - 0.6, LAMP_R + 0.4, ld)) + 0.3 * max(0.0, 1.0 - ld / (LAMP_R + 3.0));
+                col = light_on(col, lc, s * mix(0.4, 1.0, focus) * blink * k, u.dark);
+            }
+            // The frame in the gap, a packet round it while the pane works.
+            float4 fr = float4(pr.xy - FRAME_OUT, pr.zw + 2.0 * FRAME_OUT);
+            float2 hb = fr.zw * 0.5;
+            float d = abs(sd_chamfer(p - (fr.xy + hb), hb, FRAME_CHAMFER));
+            if (d < FRAME_HALO + 2.0) {
+                float s = line_light(d, FRAME_W, FRAME_HALO) * mix(FRAME_IDLE, 1.0, focus);
+                float3 c = mix(green, ring_c, focus);
+                if (blk.busy > 0.5) {
+                    float per = 2.0 * (fr.z + fr.w);
+                    float behind = fract(u.time * PACKET_SPEED / per) * per - perimeter_at(p, fr);
+                    behind = behind < 0.0 ? behind + per : behind;
+                    if (behind < PACKET_LEN) {
+                        float g = 1.0 - behind / PACKET_LEN;
+                        c = mix(c, white_c, 0.6 * g);
+                        s += g * line_light(d, FRAME_W * 1.6, FRAME_HALO * 1.5);
+                    }
+                }
+                col = light_on(col, c, s * k, u.dark);
+            }
+            // The waiting cursor, blinking on the frame's foot.
+            if (blk.waiting > 0.5) {
+                float2 o = float2(fr.x + fr.z - WAIT_IN, fr.y + fr.w - WAIT_SIZE.y * 0.5);
+                if (inside_box(p, float4(o, WAIT_SIZE)) && fract(u.time / WAIT_BLINK) < 0.6) {
+                    col = mix(col, u.colors[ARKOS_WAITING].rgb, k);
+                }
+            }
+        }
+    }
     // The nearest reported edge's light, laid over the rest. On a dark ground it is added, as
     // the mock-up adds it, so a busy head or a tear burns on toward white until each channel
     // clips; on a light ground added light would vanish, so the colour is mixed in instead.

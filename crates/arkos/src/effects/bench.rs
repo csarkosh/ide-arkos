@@ -302,7 +302,9 @@ mod tests {
         // few moments, since about three fifths of the columns carry a stream at a time.
         let interior: Vec<Rgb> = [7.0, 23.0, 61.0]
             .iter()
-            .flat_map(|&t| pixels(&render_frame(&matrix.wash, &theme, (W, H), t, &small_window()), 4, 108, 116, 156))
+            // Clear of the right pane's frame too: this window has no gap, so its frame (6 points
+            // out, with its halo) lies in the left pane's body, as it never does in the app.
+            .flat_map(|&t| pixels(&render_frame(&matrix.wash, &theme, (W, H), t, &small_window()), 4, 108, 104, 156))
             .collect();
         let text = theme.terminal.foreground.g as f32 / 255.0;
         let head = text + (1.0 - text) * crate::effects::runic::RAIN_HEAD;
