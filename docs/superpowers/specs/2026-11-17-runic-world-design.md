@@ -123,6 +123,18 @@ side. Spread across the sidewalk's width, not single file. Every motion is locke
 so it is worked out from the clock alone; the city wraps every four blocks, so whatever wraps is
 still at a stop line or a corner.
 
+## Cyclists
+
+Cyrus, 2026-11-17: "include cyclists on the street traffic too". Three each way ride the road's
+bike lanes by the curbs (keeping to the right, as the cars), seen end on: the bike an upright,
+the rider seated and pedalling while it moves, a headlight coming on or a tail light going away.
+They keep the law as the road cars do but slower, one block a green (8.5 to 11.5 s, setting off
+up to 0.8 s late), clear of the intersection they cross before the light turns; the law test
+mirrors them too. On every cross street one rides each way in its bike lane by the curb, seen side
+on (two wheels, a frame, the rider, a headlight ahead and a tail light behind), waiting at the
+stop line ahead of the cars and going first on the cross streets' green. To pay for them, a pixel
+tests only the sidewalk crowd on its own side of the road.
+
 ## Parks on open ground
 
 Cyrus, 2026-11-17: "there's also blank space that is not occupied by streets or buildings. If the

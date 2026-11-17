@@ -663,7 +663,8 @@ The Matrix's is a digital horizon: a floor of grid lines running toward a line o
 city of wireframe towers on both sides of an open road coming toward you with the floor and past
 you, alive with a city's traffic, all of it keeping the law: signals at every corner, cars keeping to
 the right and waiting at their stop lines for green (headlights coming on down the road, tail
-lights going away, cars crossing on the cross streets between the blocks), and crowds on the
+lights going away, cars crossing on the cross streets between the blocks, and cyclists in the bike lanes by the
+curbs keeping the same law), and crowds on the
 sidewalks crossing only on the crosswalks with their light and gathering at the corners on red, lit
 windows in the near towers, parks of lit trees and a warm lamp where empty lots meet, and on a lone empty lot a subway
 entrance with its green globes and people going down and coming up, a food cart under a striped

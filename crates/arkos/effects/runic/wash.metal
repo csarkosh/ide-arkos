@@ -590,6 +590,12 @@ constant float WALK_AT = 0.18;
 constant float WALK_W = 0.24;
 // People: PEOPLE on each of the road's sidewalks, CROSS_PEOPLE on each of a cross street's two,
 // PERSON_H camera heights tall, their legs swinging STEPS times a second while they walk.
+// Cyclists (Cyrus, 2026-11-17: "include cyclists on the street traffic too"): ROAD_BIKES each way
+// in the road's bike lanes by the curbs, BIKE_LANE out from the middle, keeping the law as the cars
+// do but slower, one block a green; one each way on every cross street, waiting in its bike lane
+// at the stop line ahead of the cars and going first on the cross streets' green.
+constant int ROAD_BIKES = 3;
+constant float BIKE_LANE = 0.78;
 constant int PEOPLE = 40;
 constant int CROSS_PEOPLE = 12;
 constant float PERSON_H = 0.16;
@@ -1295,6 +1301,50 @@ float3 small_lot_at(float2 p, int kx, int m, float zc, float cx, float yh, float
     return col;
 }
 
+// Where a road cyclist is along the road at t: as a road car (`road_car_at`), but one block a
+// green, slower, and setting off a little later; clear of the intersection it crosses before the
+// light turns.
+float road_bike_at(float dir, float2 key, float t) {
+    float block = float(CROSS_EVERY) * GRID_Z;
+    float dur = mix(8.5, 11.5, hash2(key + 1.0));
+    float delta = 0.8 * hash2(key + 2.0);
+    float j0 = floor(hash2(key + 3.0) * 8.0);
+    float k = floor(t / SIG_CYCLE);
+    float x = saturate((t - k * SIG_CYCLE - delta) / dur);
+    float j = j0 + dir * k;
+    float stop_line = dir > 0.0 ? j * block - STOP_BACK : j * block + GRID_Z + STOP_BACK;
+    return stop_line + dir * block * x * x * (3.0 - 2.0 * x);
+}
+
+// A cyclist's light at p seen end on (riding toward or away from the camera), at screen point
+// foot, s points to a camera height: the bike a thin upright, the rider seated on it, pedalling
+// while it moves, and its light (headlight or tail light, the caller's colour) at the bike's
+// height. Returns the rider and bike's light and the lamp's apart.
+float2 bike_end_on(float2 p, float2 foot, float s, float t, float h, bool moving) {
+    float frame = seg_dist(p, foot, foot - float2(0.0, 0.1 * s));
+    float rider = person_light(p, foot - float2(0.0, 0.06 * s), 0.13 * s, t * 1.4, h, moving);
+    float lamp = car_light(p, foot - float2(0.0, 0.08 * s), clamp(0.03 * s, 0.6, 2.4));
+    return float2(max(rider, 1.0 - smoothstep(0.0, 0.8, frame)), lamp);
+}
+
+// A cyclist's light at p seen side on (riding across, dir +1 to the right), its wheels' contact
+// midpoint at screen point mid, s points to a camera height: two wheels, a frame, the rider
+// seated and pedalling, a headlight ahead and a tail light behind (returned apart).
+float3 bike_side_on(float2 p, float2 mid, float s, float dir, float t, float h) {
+    float r = 0.05 * s;
+    float2 w0 = mid + float2(-0.09 * s, -r);
+    float2 w1 = mid + float2(0.09 * s, -r);
+    float wheels = min(abs(length(p - w0) - r), abs(length(p - w1) - r));
+    float2 seat = mid + float2(-dir * 0.02 * s, -0.12 * s);
+    float2 bars = mid + float2(dir * 0.07 * s, -0.14 * s);
+    float frame = min(min(seg_dist(p, w0, seat), seg_dist(p, seat, bars)), min(seg_dist(p, bars, w1), seg_dist(p, w0, mid - float2(0.0, r))));
+    float body = min(wheels, frame);
+    float rider = person_light(p, seat + float2(0.0, 0.02 * s), 0.12 * s, t * 1.4, h, true);
+    float head = car_light(p, mid + float2(dir * 0.12 * s, -0.1 * s), clamp(0.025 * s, 0.6, 2.0));
+    float tail = car_light(p, mid + float2(-dir * 0.12 * s, -0.09 * s), clamp(0.025 * s, 0.6, 2.0));
+    return float3(max(rider, 1.0 - smoothstep(0.0, 0.8, body)), head, tail);
+}
+
 // A car's light at screen point s, r points across, at p: a soft round glow.
 float car_light(float2 p, float2 s, float r) {
     return 1.0 - smoothstep(r * 0.5, r * 1.6, length(p - s));
@@ -1354,9 +1404,13 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
     // Only near the road at p's depth (its lights sit just above the floor) can a car light p.
     float road_z = q.y > yh ? f * 0.92 / (q.y - yh) : Z_FAR;
     bool by_road = q.y > yh && abs(q.x - cx) < 0.6 * f / road_z + 4.0;
-    for (int lane = 0; lane < (by_road ? 2 : 0); lane++) {
+    // A cyclist rides out by the curb and stands a fifth of a camera height tall: the band its
+    // lane makes out from the vanishing point, its rider's height and its lights' reach included.
+    float bike_off = abs(q.x - cx) / max(q.y - yh, 1.0);
+    bool by_bike = q.y > yh && bike_off > 0.45 && bike_off < 1.2 + 4.0 / max(q.y - yh, 1.0);
+    for (int lane = 0; lane < ((by_road || by_bike) ? 2 : 0); lane++) {
         float dir = lane == 0 ? -1.0 : 1.0;
-        for (int j = 0; j < ROAD_CARS; j++) {
+        for (int j = 0; j < (by_road ? ROAD_CARS : 0); j++) {
             float z = wrap_view(road_car_at(dir, float2(float(j), float(lane) * 13.0 + 31.0), t) - run);
             float lx = dir * 0.5 * float(ROAD_CELLS) * GRID_X;
             float r = clamp(0.05 * f / z, 0.6, 3.0);
@@ -1366,6 +1420,19 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
             float x = cx + lx * f / z;
             float l = max(car_light(q, float2(x - gap, y), r), car_light(q, float2(x + gap, y), r));
             col = light_on(col, lane == 0 ? head_c : tail_c, l * seen * 0.9, u.dark);
+        }
+        // The cyclists in this way's bike lane, by the curb.
+        for (int j = 0; j < (by_bike ? ROAD_BIKES : 0); j++) {
+            float2 key = float2(float(j), float(lane) * 13.0 + 141.0);
+            float w = road_bike_at(dir, key, t);
+            bool moving = abs(road_bike_at(dir, key, t + 0.05) - w) > 1e-4;
+            float z = wrap_view(w - run);
+            float seen = (1.0 - smoothstep(Z_FAR * 0.55, Z_FAR, z)) * smoothstep(Z_NEAR, Z_NEAR + 0.6, z);
+            float sc = f / z;
+            float2 foot = float2(cx + dir * BIKE_LANE * float(ROAD_CELLS) * GRID_X * sc, yh + sc);
+            float2 b = bike_end_on(q, foot, sc, t, hash2(key + 7.0), moving);
+            col = light_on(col, mix(green, white_c, 0.3), b.x * 0.8 * seen, u.dark);
+            col = light_on(col, lane == 0 ? head_c : tail_c, b.y * seen, u.dark);
         }
     }
     // The city, farthest row first so nearer towers hide farther ones: each cell's tower stands
@@ -1438,6 +1505,33 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
                     col = light_on(col, head_c, car_light(q, front, r2) * seen * 0.9, u.dark);
                     col = light_on(col, tail_c, car_light(q, back, r2) * seen * 0.9, u.dark);
                 }
+            }
+            // Its cyclists, one each way in its bike lanes by the curbs: waiting at the stop line
+            // ahead of the cars, going first on the cross streets' green.
+            for (int dl = 0; dl < 2; dl++) {
+                float dir = dl == 0 ? 1.0 : -1.0;
+                float zb = zc + (dl == 0 ? 0.12 : 0.88) * GRID_Z;
+                if (zb < Z_NEAR) {
+                    continue;
+                }
+                float sc = f / zb;
+                float y = yh + sc;
+                if (q.y > y + 1.0 || q.y < y - 0.3 * sc - 2.0) {
+                    continue;
+                }
+                float2 key = float2(float(m) * 2.0 + float(dl), 131.0);
+                float v = mix(1.7, 2.2, hash2(key));
+                float arrive = mix(4.0, 6.5, hash2(key + 1.0));
+                float stop_x = -dir * (edge + CROSS_STOP);
+                float go = cross_on + 0.2;
+                float wx = sig < go ? stop_x - dir * v * max(arrive - sig, 0.0) : stop_x + dir * v * (sig - go);
+                if (abs(wx) > half_w) {
+                    continue;
+                }
+                float3 b = bike_side_on(q, float2(cx + wx * sc, y), sc, dir, t, hash2(key + 2.0));
+                col = light_on(col, mix(green, white_c, 0.3), b.x * 0.8 * seen, u.dark);
+                col = light_on(col, head_c, b.y * seen, u.dark);
+                col = light_on(col, tail_c, b.z * seen, u.dark);
             }
             // People on its near and far sidewalks (beside the crosswalks over the road): out of a
             // doorway, to the corner, waiting for the cross streets' green, over the road on the
@@ -1579,7 +1673,9 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
     float off = abs(q.x - cx);
     float slack = WALK_W + 0.4 * PERSON_H;
     bool by_walk = walk_dy > 0.0 && off > (edge_x - slack) * walk_dy - 3.0 && off < (edge_x + slack) * walk_dy / (1.0 - PERSON_H) + 3.0;
-    for (int side = 0; side < (by_walk ? 2 : 0); side++) {
+    // Only the sidewalk on p's side of the road can have a person on p.
+    int near_side = q.x < cx ? 0 : 1;
+    for (int side = near_side; side < (by_walk ? near_side + 1 : near_side); side++) {
         float sx = (side == 0 ? -1.0 : 1.0) * edge_x;
         for (int j = 0; j < PEOPLE; j++) {
             float2 key = float2(float(j), float(side) * 17.0 + 61.0);

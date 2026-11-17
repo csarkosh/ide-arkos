@@ -446,6 +446,19 @@ mod tests {
         stop_line + dir * n * block * x * x * (3.0 - 2.0 * x)
     }
 
+    fn road_bike_at(dir: f32, key: (f32, f32), t: f32) -> f32 {
+        let block = CROSS_EVERY * GRID_Z;
+        let h = |d: f32| hash2(key.0 + d, key.1 + d);
+        let dur = 8.5 + 3.0 * h(1.0);
+        let delta = 0.8 * h(2.0);
+        let j0 = (h(3.0) * 8.0).floor();
+        let k = (t / SIG_CYCLE).floor();
+        let x = ((t - k * SIG_CYCLE - delta) / dur).clamp(0.0, 1.0);
+        let j = j0 + dir * k;
+        let stop_line = if dir > 0.0 { j * block - STOP_BACK } else { j * block + GRID_Z + STOP_BACK };
+        stop_line + dir * block * x * x * (3.0 - 2.0 * x)
+    }
+
     #[test]
     fn the_wash_s_traffic_is_the_one_these_laws_are_checked_on() {
         let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
@@ -463,6 +476,11 @@ mod tests {
             "    float stop_line = dir > 0.0 ? j * block - STOP_BACK : j * block + GRID_Z + STOP_BACK;",
             "    return stop_line + dir * n * block * x * x * (3.0 - 2.0 * x);",
             "            float z = wrap_view(road_car_at(dir, float2(float(j), float(lane) * 13.0 + 31.0), t) - run);",
+            "    float dur = mix(8.5, 11.5, hash2(key + 1.0));",
+            "    float delta = 0.8 * hash2(key + 2.0);",
+            "    return stop_line + dir * block * x * x * (3.0 - 2.0 * x);",
+            "            float2 key = float2(float(j), float(lane) * 13.0 + 141.0);",
+            "constant int ROAD_BIKES = 3;",
         ] {
             assert!(wash.contains(line), "wash.metal lacks {line}");
         }
@@ -478,24 +496,32 @@ mod tests {
             let local = w - (w / block).floor() * block;
             local < GRID_Z + reach || local > block - reach
         };
-        for (lane, dir) in [(0.0, -1.0), (1.0, 1.0)] {
-            for j in 0..5 {
-                let key = (j as f32, lane * 13.0 + 31.0);
+        // The road's cars (five a lane) and its cyclists (three), each as the wash places them.
+        let riders = [(0.0f32, -1.0f32), (1.0, 1.0)].into_iter().flat_map(|(lane, dir)| {
+            let cars = (0..5).map(move |j| (lane, dir, (j as f32, lane * 13.0 + 31.0), false));
+            let bikes = (0..3).map(move |j| (lane, dir, (j as f32, lane * 13.0 + 141.0), true));
+            cars.chain(bikes)
+        });
+        for (lane, dir, key, bike) in riders {
+            {
+                let j = key.0;
+                let kind = if bike { "cyclist" } else { "car" };
+                let at = |t: f32| if bike { road_bike_at(dir, key, t) } else { road_car_at(dir, key, t) };
                 let mut t = 0.0f32;
                 while t < 600.0 {
-                    let (w, next) = (road_car_at(dir, key, t), road_car_at(dir, key, t + 0.05));
+                    let (w, next) = (at(t), at(t + 0.05));
                     let sig = t - (t / SIG_CYCLE).floor() * SIG_CYCLE;
                     let moving = (next - w).abs() > 1e-4;
                     if inside(w) && moving {
-                        assert!(sig < ROAD_GREEN, "car {j} of lane {lane} in an intersection at {t} ({sig} into the cycle, not the road's green)");
+                        assert!(sig < ROAD_GREEN, "{kind} {j} of lane {lane} in an intersection at {t} ({sig} into the cycle, not the road's green)");
                     }
                     if sig >= ROAD_GREEN && sig + 0.05 < SIG_CYCLE {
-                        assert!(!moving || !inside(next), "car {j} of lane {lane} moves into an intersection on its red at {t}");
+                        assert!(!moving || !inside(next), "{kind} {j} of lane {lane} moves into an intersection on its red at {t}");
                     }
                     // A car waiting, or come to rest, is behind its stop line: never in an
                     // intersection.
                     if !moving {
-                        assert!(!inside(w), "car {j} of lane {lane} stands in an intersection at {t}");
+                        assert!(!inside(w), "{kind} {j} of lane {lane} stands in an intersection at {t}");
                     }
                     t += 0.05;
                 }
