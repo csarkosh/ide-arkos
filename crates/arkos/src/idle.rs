@@ -58,75 +58,47 @@ pub fn quiet_since(last_input: Instant, now: Instant, chrome: Chrome) -> Instant
     if chrome.any() { now } else { last_input }
 }
 
-/// How long the heads-up counts down before an update applies in a window that is in front
-/// (update heads-up spec).
-pub const COUNTDOWN: Duration = Duration::from_secs(10);
-
-/// How long "Later" puts an update off.
+/// How long "Later" puts the toast away before it asks again (the bell keeps its dot).
 pub const LATER: Duration = Duration::from_secs(60 * 60);
 
-/// What the quiet window does now that an update may apply (`may_apply` holds), in the update
-/// heads-up spec's terms (Cyrus, 2026-11-16: "It starts without warning"): a window not in front
-/// updates at once, nobody watching it; one in front first counts down in a toast, which typing
-/// calls off (the quiet spell starts again) and "Later" puts off for `LATER`.
+/// What a window does about an update that is ready (update heads-up spec; Cyrus, 2026-11-16:
+/// "Leave it open until the user either clicks update or later. open the toast regardless of
+/// user activity"). A window not in front, quiet by the idle rule (`quiet`), updates by itself,
+/// nobody watching it; otherwise the toast shows, and stays, until the user answers it, unless a
+/// "Later" is not over yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HeadsUp {
-    Apply,
-    /// Show the toast, counting down from now.
-    Start,
-    /// Keep counting (or keep waiting out a "Later").
-    Wait,
-    /// The user typed during the countdown: the toast goes, the quiet spell starts again.
-    CallOff,
+pub enum UpdatePlan {
+    ApplyQuietly,
+    ShowToast,
+    /// A "Later" is running: no toast; the bell's dot stays.
+    Later,
 }
 
-/// `countdown`: when the toast started, if it shows. `later_until`: a "Later" not yet over.
-pub fn heads_up(in_front: bool, countdown: Option<Instant>, later_until: Option<Instant>, last_input: Instant, now: Instant) -> HeadsUp {
-    if later_until.is_some_and(|t| now < t) {
-        return HeadsUp::Wait;
+pub fn update_plan(in_front: bool, quiet: bool, later_until: Option<Instant>, now: Instant) -> UpdatePlan {
+    if !in_front && quiet {
+        UpdatePlan::ApplyQuietly
+    } else if later_until.is_some_and(|t| now < t) {
+        UpdatePlan::Later
+    } else {
+        UpdatePlan::ShowToast
     }
-    match countdown {
-        Some(since) if last_input > since => HeadsUp::CallOff,
-        Some(since) if now.saturating_duration_since(since) >= COUNTDOWN => HeadsUp::Apply,
-        Some(_) if !in_front => HeadsUp::Apply,
-        Some(_) => HeadsUp::Wait,
-        None if !in_front => HeadsUp::Apply,
-        None => HeadsUp::Start,
-    }
-}
-
-/// The whole seconds the toast says are left, never 0 while it shows.
-pub fn seconds_left(since: Instant, now: Instant) -> u64 {
-    COUNTDOWN.saturating_sub(now.saturating_duration_since(since)).as_secs_f64().ceil().max(1.0) as u64
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn a_window_in_front_counts_down_first_and_one_behind_updates_at_once() {
+    fn the_toast_shows_until_answered_and_a_window_behind_updates_quietly() {
         use super::*;
         let t0 = Instant::now();
-        let input = t0 - Duration::from_secs(40);
-        assert_eq!(heads_up(false, None, None, input, t0), HeadsUp::Apply, "nobody is looking at it");
-        assert_eq!(heads_up(true, None, None, input, t0), HeadsUp::Start, "a heads-up first");
-        assert_eq!(heads_up(true, Some(t0), None, input, t0 + Duration::from_secs(3)), HeadsUp::Wait);
-        assert_eq!(heads_up(true, Some(t0), None, input, t0 + COUNTDOWN), HeadsUp::Apply);
-        assert_eq!(heads_up(false, Some(t0), None, input, t0 + Duration::from_secs(2)), HeadsUp::Apply, "the user went to another app");
-        assert_eq!(heads_up(true, Some(t0), None, t0 + Duration::from_secs(1), t0 + Duration::from_secs(2)), HeadsUp::CallOff, "typing calls it off");
-        assert_eq!(heads_up(true, None, Some(t0 + LATER), input, t0 + Duration::from_secs(60)), HeadsUp::Wait, "Later holds");
-        assert_eq!(heads_up(false, None, Some(t0 + LATER), input, t0 + Duration::from_secs(60)), HeadsUp::Wait, "Later holds behind too");
-        assert_eq!(heads_up(true, None, Some(t0 + LATER), input, t0 + LATER), HeadsUp::Start, "after Later, the heads-up again");
+        assert_eq!(update_plan(false, true, None, t0), UpdatePlan::ApplyQuietly, "nobody is looking at it");
+        assert_eq!(update_plan(false, false, None, t0), UpdatePlan::ShowToast, "behind but busy: the toast waits there");
+        assert_eq!(update_plan(true, true, None, t0), UpdatePlan::ShowToast, "in front: never by itself");
+        assert_eq!(update_plan(true, false, None, t0), UpdatePlan::ShowToast, "whatever the user is doing");
+        assert_eq!(update_plan(true, true, Some(t0 + LATER), t0), UpdatePlan::Later);
+        assert_eq!(update_plan(true, true, Some(t0 + LATER), t0 + LATER), UpdatePlan::ShowToast, "after Later, it asks again");
+        assert_eq!(update_plan(false, true, Some(t0 + LATER), t0), UpdatePlan::ApplyQuietly, "away, Later or not");
     }
 
-    #[test]
-    fn the_toast_counts_whole_seconds_down_to_one() {
-        use super::*;
-        let t0 = Instant::now();
-        assert_eq!(seconds_left(t0, t0), 10);
-        assert_eq!(seconds_left(t0, t0 + Duration::from_millis(100)), 10);
-        assert_eq!(seconds_left(t0, t0 + Duration::from_millis(9_500)), 1);
-        assert_eq!(seconds_left(t0, t0 + COUNTDOWN), 1);
-    }
 
     use super::*;
 

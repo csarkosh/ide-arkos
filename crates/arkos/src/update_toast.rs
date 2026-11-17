@@ -1,13 +1,11 @@
-//! The update's heads-up (update heads-up spec): in a window in front, before an update applies
-//! by itself, a toast at the window's bottom right says a new version is ready and counts down,
-//! with "Now" and "Later". Typing calls it off (`idle::heads_up`); a window not in front updates
-//! with no toast, nobody watching it.
+//! The update's toast (update heads-up spec): as soon as an update is ready, a toast at the
+//! window's bottom right says so, with "Later" and "Update", and stays until one is clicked
+//! (`idle::update_plan`). "Later" puts it away for an hour; the bell keeps its dot and its
+//! "Update now" all the while.
 
-use crate::idle;
 use crate::motion;
 use crate::Root;
 use gpui::{div, prelude::*, px, ClickEvent, Context, Div, MouseDownEvent};
-use std::time::Instant;
 
 /// The toast's first line: the version when the daemon named one.
 pub fn title(version: Option<&str>) -> String {
@@ -18,14 +16,11 @@ pub fn title(version: Option<&str>) -> String {
 }
 
 /// The toast's second line.
-pub fn countdown_text(seconds: u64) -> String {
-    format!("Updating in {seconds} s")
-}
+pub const LINE: &str = "Your sessions keep running through it.";
 
 pub fn render(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     let ((), opacity) = root.update_toast.current(root.frame_now).map(|(v, o)| (*v, o))?;
     let live = root.update_toast.value().is_some();
-    let seconds = root.update_countdown.map_or(1, |since| idle::seconds_left(since, Instant::now()));
     let version = root.staged.as_ref().map(|s| s.version.clone());
     let style = root.effect_style();
     let c = &root.theme.chrome;
@@ -52,14 +47,14 @@ pub fn render(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
             .text_color(text)
             .when(live, |d| d.occlude().on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation()))
             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(title(version.as_deref())))
+            .child(div().text_color(dim).child(LINE))
             .child(
                 div()
                     .flex()
-                    .items_center()
+                    .justify_end()
                     .gap(px(8.0))
-                    .child(div().flex_1().text_color(dim).child(countdown_text(seconds)))
                     .child(button("update-toast-later", "Later").on_click(cx.listener(|root, _: &ClickEvent, _window, cx| root.update_toast_later(cx))))
-                    .child(button("update-toast-now", "Now").on_click(cx.listener(|root, _: &ClickEvent, _window, cx| root.update_toast_now(cx)))),
+                    .child(button("update-toast-now", "Update").on_click(cx.listener(|root, _: &ClickEvent, _window, cx| root.update_clicked(cx)))),
             ),
     )
 }
@@ -69,9 +64,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_toast_names_the_version_and_counts_down() {
+    fn the_toast_names_the_version() {
         assert_eq!(title(Some("0.8.44")), "Arkos IDE 0.8.44 is ready");
         assert_eq!(title(None), "A new version of Arkos IDE is ready");
-        assert_eq!(countdown_text(7), "Updating in 7 s");
     }
 }

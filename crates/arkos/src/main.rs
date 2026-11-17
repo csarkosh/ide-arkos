@@ -608,9 +608,12 @@ pub struct Root {
     /// fade under way: since when, and whether it comes in.
     pub veil: Option<update_veil::Veil>,
     pub veil_fade: Option<(Instant, bool)>,
-    /// The update heads-up (update heads-up spec): when its countdown started, if it shows; a
-    /// "Later" not yet over; and the toast's fade.
-    pub update_countdown: Option<Instant>,
+    /// The veil's progress: when the update began (the old window's note, for the new one),
+    /// whether this is the update's new window, and whether it is done.
+    pub veil_started: Option<Instant>,
+    pub veil_successor: bool,
+    pub veil_done: bool,
+    /// The update toast (update heads-up spec): a "Later" not yet over, and the toast's fade.
     pub update_later_until: Option<Instant>,
     pub update_toast: Transient<()>,
     /// Where the window is (display, frame), as last saved with the layout; a relaunch opens
@@ -995,7 +998,9 @@ impl Root {
             ns_window: None,
             veil: None,
             veil_fade: None,
-            update_countdown: None,
+            veil_started: None,
+            veil_successor: false,
+            veil_done: false,
             update_later_until: None,
             update_toast: Transient::Hidden,
             window_saved,
@@ -4283,6 +4288,20 @@ impl Root {
 
     /// The bell's "Update now" (or its update-ready row): apply the staged release, else update from disk.
     pub fn update_clicked(&mut self, cx: &mut Context<Self>) {
+        self.drop_update_toast(cx);
+        // A sandbox's preview (`ARKOS_UPDATE_PREVIEW`) relaunches as an update's last step does.
+        if update_preview_secs().is_some() {
+            // No release to install in a sandbox: the card shows the step for a moment instead.
+            self.updating = Some(UpdateStage::Applying);
+            self.veil_in(cx);
+            let root = cx.entity();
+            cx.spawn(async move |_, cx| {
+                cx.background_executor().timer(Duration::from_millis(900)).await;
+                let _ = root.update(cx, |root, cx| root.relaunch_now(cx));
+            })
+            .detach();
+            return;
+        }
         if self.sandbox {
             return;
         }
@@ -4343,7 +4362,7 @@ impl Root {
     /// Reads the staged release into `update_ready` (the bell's update-ready notice) when there is
     /// one, else what the launch path holds.
     pub fn refresh_update_badge(&mut self, cx: &mut Context<Self>) {
-        let ready = update_check::ready_text(self.staged.as_ref(), self.update_ready_on_disk.as_deref());
+        let ready = update_check::ready_text(self.staged.as_ref(), self.update_ready_on_disk.as_deref()).or_else(|| update_preview_secs().map(|_| "update ready: preview".to_string()));
         if ready != self.update_ready {
             self.update_ready = ready;
             // The Settings window's "Update now" line follows the badge.
@@ -4399,35 +4418,27 @@ impl Root {
                 // Anything open restarts the quiet spell, so closing it is not followed by an update.
                 root.last_input = idle::quiet_since(root.last_input, now, chrome);
                 let idle_after = preview.map_or(Duration::from_secs(root.config.update.idle_after_secs), Duration::from_secs);
-                if !idle::may_apply(now, root.last_input, idle_after, chrome, root.updating.is_some(), !root.sessions.is_offline()) {
-                    // Typing or a menu during the countdown calls it off; the quiet spell starts again.
+                if root.updating.is_some() {
                     root.drop_update_toast(cx);
                     return true;
                 }
-                // A preview waits for the window to be in front: the quiet update behind is unseen.
-                if preview.is_some() && !root.window_active && root.update_countdown.is_none() {
-                    return true;
-                }
-                match idle::heads_up(root.window_active, root.update_countdown, root.update_later_until, root.last_input, now) {
-                    idle::HeadsUp::Apply => {
+                let quiet = idle::may_apply(now, root.last_input, idle_after, chrome, false, !root.sessions.is_offline());
+                // A preview is always "in front": the quiet update behind is one nobody sees.
+                let in_front = root.window_active || preview.is_some();
+                match idle::update_plan(in_front, quiet, root.update_later_until, now) {
+                    idle::UpdatePlan::ApplyQuietly => {
                         root.auto_apply_timer = false;
                         root.drop_update_toast(cx);
                         root.run_update_action(action, cx);
                         return false;
                     }
-                    idle::HeadsUp::Start => {
-                        root.update_countdown = Some(now);
-                        root.update_later_until = None;
-                        root.update_toast.show((), now);
-                        cx.notify();
-                    }
-                    // The toast's seconds count down.
-                    idle::HeadsUp::Wait => {
-                        if root.update_countdown.is_some() {
+                    idle::UpdatePlan::ShowToast => {
+                        if root.update_toast.value().is_none() {
+                            root.update_toast.show((), now);
                             cx.notify();
                         }
                     }
-                    idle::HeadsUp::CallOff => root.drop_update_toast(cx),
+                    idle::UpdatePlan::Later => root.drop_update_toast(cx),
                 }
                 true
             });
@@ -4438,9 +4449,9 @@ impl Root {
         .detach();
     }
 
-    /// Takes the heads-up toast away, its countdown with it.
+    /// Takes the update toast away.
     fn drop_update_toast(&mut self, cx: &mut Context<Self>) {
-        if self.update_countdown.take().is_some() | self.update_toast.hide(Instant::now()) {
+        if self.update_toast.hide(Instant::now()) {
             cx.notify();
         }
     }
@@ -4455,15 +4466,8 @@ impl Root {
         }
     }
 
-    /// The toast's "Now": the update at once.
-    pub fn update_toast_now(&mut self, cx: &mut Context<Self>) {
-        let action = if update_preview_secs().is_some() { idle::IdleAction::Relaunch } else { idle::idle_action(self.staged.is_some() && self.update_error.is_none(), self.on_disk_newer_daemon()) };
-        self.drop_update_toast(cx);
-        self.auto_apply_timer = false;
-        self.run_update_action(action, cx);
-    }
-
-    /// The toast's "Later": the update waits an hour (`idle::LATER`), then asks again.
+    /// The toast's "Later": the toast goes for an hour (`idle::LATER`), then asks again; the
+    /// bell keeps its dot and its "Update now" meanwhile.
     pub fn update_toast_later(&mut self, cx: &mut Context<Self>) {
         self.update_later_until = Some(Instant::now() + idle::LATER);
         self.drop_update_toast(cx);
@@ -4597,11 +4601,59 @@ impl Root {
         if self.veil.is_none() {
             let Some(w) = self.ns_window.clone() else { return };
             self.veil = update_veil::Veil::over(&w, 0.0);
+            // The update's clock starts here, and the new window reads where from.
+            self.veil_started = Some(Instant::now());
+            let _ = std::fs::write(paths::app_support().join(update_veil::STARTED_FILE), sessions::now_ms().to_string());
+            self.run_veil_progress(cx);
         } else if !matches!(self.veil_fade, Some((_, false))) {
             // Up already, or on its way in: nothing to start again.
             return;
         }
         self.run_veil_fade(true, cx);
+    }
+
+    /// Where the update is, for the card: the old window installs, then starts the new one; the
+    /// new window restores its visible terminals, then is done.
+    fn veil_step(&self) -> update_veil::Step {
+        if self.veil_done {
+            return update_veil::Step::Done;
+        }
+        if self.veil_successor {
+            let total = self.visible_terminals();
+            let left = self.terminals_still_restoring().min(total);
+            return update_veil::Step::Restoring { done: total - left, total };
+        }
+        match self.updating {
+            Some(UpdateStage::Applying) => update_veil::Step::Installing,
+            _ => update_veil::Step::Starting,
+        }
+    }
+
+    /// The terminal tabs shown on the page in front (each pane's active tab).
+    fn visible_terminals(&self) -> usize {
+        self.tree.panes().into_iter().filter_map(|id| self.tree.pane(id)).filter(|p| matches!(p.tabs.get(p.active), Some(Tab::Terminal { .. }))).count()
+    }
+
+    /// Keeps the card's bar and line current, every 50 ms while the veil is up.
+    fn run_veil_progress(&mut self, cx: &mut Context<Self>) {
+        let root = cx.entity();
+        cx.spawn(async move |_, cx| loop {
+            let up = root
+                .update(cx, |root, _| {
+                    let Some(v) = &root.veil else { return false };
+                    let step = root.veil_step();
+                    let elapsed = root.veil_started.map_or(Duration::ZERO, |t| t.elapsed());
+                    let version = if root.veil_successor { None } else { root.staged.as_ref().map(|s| s.version.clone()) };
+                    v.set_progress(update_veil::fraction(step), &update_veil::status(step, version.as_deref(), elapsed));
+                    true
+                })
+                .unwrap_or(false);
+            if !up {
+                break;
+            }
+            cx.background_executor().timer(Duration::from_millis(50)).await;
+        })
+        .detach();
     }
 
     /// Takes the veil away, fading.
@@ -4657,7 +4709,14 @@ impl Root {
             let done = root
                 .update(cx, |root, cx| {
                     if root.terminals_still_restoring() == 0 || started.elapsed() >= update_veil::RESTORE_WAIT {
-                        root.veil_out(cx);
+                        root.veil_done = true;
+                        // "Done" is read before the card lifts.
+                        let lift = cx.entity();
+                        cx.spawn(async move |_, cx| {
+                            cx.background_executor().timer(update_veil::HOLD_AFTER_SWAP / 2).await;
+                            let _ = lift.update(cx, |root, cx| root.veil_out(cx));
+                        })
+                        .detach();
                         true
                     } else {
                         false
@@ -4840,8 +4899,11 @@ impl Root {
         cx.spawn(async move |_, cx| {
             cx.background_executor().timer(Duration::from_millis(20)).await;
             let _ = root.update(cx, |root, _| root.sessions.handoff_ready(from));
-            // The old window leaves from under the veil, then the veil lifts.
-            cx.background_executor().timer(update_veil::HOLD_AFTER_SWAP).await;
+            // The old window leaves from under the card, which shows the sessions restored, then
+            // done, then lifts.
+            cx.background_executor().timer(update_veil::HOLD_AFTER_SWAP / 2).await;
+            let _ = root.update(cx, |root, _| root.veil_done = true);
+            cx.background_executor().timer(update_veil::HOLD_AFTER_SWAP / 2).await;
             let _ = root.update(cx, |root, cx| root.veil_out(cx));
         })
         .detach();
@@ -6761,6 +6823,11 @@ fn open_project_window(
                 if let Some(w) = root.ns_window.clone() {
                     root.veil = update_veil::Veil::over(&w, 1.0);
                 }
+                // The new window's card goes on from the old one's: its clock from the note.
+                root.veil_successor = true;
+                let ago = std::fs::read_to_string(paths::app_support().join(update_veil::STARTED_FILE)).ok().and_then(|n| update_veil::started_ago(&n, sessions::now_ms()));
+                root.veil_started = Some(ago.and_then(|a| Instant::now().checked_sub(a)).unwrap_or_else(Instant::now));
+                root.run_veil_progress(cx);
                 if root.handoff_from.is_none() {
                     root.lift_veil_when_restored(cx);
                 }
@@ -6774,6 +6841,8 @@ fn open_project_window(
             }
             root.relaunch_after_for_checks(cx);
             if update_preview_secs().is_some() {
+                // The bell says an update is ready, as a staged release makes it.
+                root.refresh_update_badge(cx);
                 root.start_idle_timer(cx);
             }
             root.apply_recovery(true, cx);

@@ -32,6 +32,59 @@ pub const DIM: f64 = 0.22;
 
 pub const TITLE: &str = "Updating Arkos IDE";
 
+/// Where an update is, for the card's bar and its line (Cyrus, 2026-11-16: "I want actual
+/// progress indication with metrics visible and updating as the update runs"). The old window
+/// shows the first two, the new one the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    /// The daemon swaps in the new build.
+    Installing,
+    /// The new window is starting.
+    Starting,
+    /// The new window's visible terminals coming back, `done` of `total`.
+    Restoring { done: usize, total: usize },
+    Done,
+}
+
+/// How full the bar is at `step`: the install a fifth, the new window's start to two fifths,
+/// the sessions the rest, one by one.
+pub fn fraction(step: Step) -> f64 {
+    match step {
+        Step::Installing => 0.2,
+        Step::Starting => 0.4,
+        Step::Restoring { total: 0, .. } => 0.95,
+        Step::Restoring { done, total } => 0.45 + 0.5 * (done.min(total) as f64 / total as f64),
+        Step::Done => 1.0,
+    }
+}
+
+/// The card's line under the bar: the step, its count, and the seconds since the update began.
+pub fn status(step: Step, version: Option<&str>, elapsed: Duration) -> String {
+    let what = match (step, version) {
+        (Step::Installing, Some(v)) => format!("Installing {v}"),
+        (Step::Installing, None) => "Installing".to_string(),
+        (Step::Starting, _) => "Starting the new window".to_string(),
+        (Step::Restoring { done, total }, _) => format!("Restoring sessions {} of {total}", done.min(total)),
+        (Step::Done, _) => "Done".to_string(),
+    };
+    format!("{what} \u{b7} {:.1} s", elapsed.as_secs_f64())
+}
+
+/// The note the old window leaves for the new one, so the new card's clock goes on from when the
+/// update began: milliseconds since the epoch.
+pub const STARTED_FILE: &str = "update-started";
+
+/// How old a note may be and still be this update's.
+pub const STARTED_FRESH: Duration = Duration::from_secs(120);
+
+/// When the update began, from the note's text and the time now (both milliseconds since the
+/// epoch); `None` for a note that does not parse or is stale.
+pub fn started_ago(note: &str, now_ms: u64) -> Option<Duration> {
+    let at: u64 = note.trim().parse().ok()?;
+    let ago = Duration::from_millis(now_ms.checked_sub(at)?);
+    (ago <= STARTED_FRESH).then_some(ago)
+}
+
 /// The veil's opacity at `now` while it comes in from `since` (true) or goes (false).
 pub fn opacity(entering: bool, since: Instant, now: Instant) -> f32 {
     if entering {
@@ -61,13 +114,15 @@ mod mac {
     };
     use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
-    const CARD_W: f64 = 240.0;
-    const CARD_H: f64 = 64.0;
+    const CARD_W: f64 = 280.0;
+    const CARD_H: f64 = 86.0;
 
     /// The veil's views, over everything in the window's content view: the dim over the whole
     /// window, and the card in it. Dropping it takes it away.
     pub struct Veil {
         view: Retained<NSBox>,
+        bar: Retained<NSProgressIndicator>,
+        line: Retained<NSTextField>,
     }
 
     impl Veil {
@@ -110,23 +165,43 @@ mod mac {
             title.setTextColor(Some(&NSColor::labelColor()));
             title.sizeToFit();
             let t = title.frame().size;
-            let bar = NSProgressIndicator::initWithFrame(NSProgressIndicator::alloc(mtm), NSRect::new(NSPoint::new(24.0, 0.0), NSSize::new(CARD_W - 48.0, 6.0)));
+            // A bar that fills as the update goes, never an endless one, and a line under it with
+            // the step, its count and the seconds (`super::status`).
+            let bar = NSProgressIndicator::initWithFrame(NSProgressIndicator::alloc(mtm), NSRect::new(NSPoint::new(24.0, 0.0), NSSize::new(CARD_W - 48.0, 8.0)));
             bar.setStyle(NSProgressIndicatorStyle::Bar);
-            bar.setIndeterminate(true);
+            bar.setIndeterminate(false);
             bar.setControlSize(NSControlSize::Small);
-            // The title above the bar, whichever way the card counts y (a plain view: up).
+            bar.setMinValue(0.0);
+            bar.setMaxValue(1.0);
+            bar.setDoubleValue(0.0);
+            // SAFETY: the main thread; the system's monospaced digits keep the seconds from jiggling.
+            let small = unsafe { NSFont::monospacedDigitSystemFontOfSize_weight(11.0, objc2_app_kit::NSFontWeightRegular) };
+            let line = NSTextField::labelWithString(&NSString::from_str(" "), mtm);
+            line.setFont(Some(&small));
+            line.setTextColor(Some(&NSColor::secondaryLabelColor()));
+            line.setAlignment(objc2_app_kit::NSTextAlignment::Center);
+            line.sizeToFit();
+            let lh = line.frame().size.height.ceil();
+            // Top to bottom: the title, the bar, the line, whichever way the card counts y.
             let flipped = card.isFlipped();
-            let (title_y, bar_y) = if flipped { (14.0, CARD_H - 22.0) } else { (CARD_H - 14.0 - t.height.ceil(), 16.0) };
-            title.setFrame(NSRect::new(NSPoint::new((CARD_W - t.width.ceil()) / 2.0, title_y), NSSize::new(t.width.ceil(), t.height.ceil())));
+            let th = t.height.ceil();
+            let (title_y, bar_y, line_y) = if flipped { (12.0, 12.0 + th + 10.0, 12.0 + th + 10.0 + 8.0 + 8.0) } else { (CARD_H - 12.0 - th, CARD_H - 12.0 - th - 10.0 - 8.0, 12.0) };
+            title.setFrame(NSRect::new(NSPoint::new((CARD_W - t.width.ceil()) / 2.0, title_y), NSSize::new(t.width.ceil(), th)));
             bar.setFrameOrigin(NSPoint::new(24.0, bar_y));
+            line.setFrame(NSRect::new(NSPoint::new(12.0, line_y), NSSize::new(CARD_W - 24.0, lh)));
             card.addSubview(&title);
             card.addSubview(&bar);
-            // SAFETY: the main thread; starting the bar's own animation.
-            unsafe { bar.startAnimation(None) };
+            card.addSubview(&line);
             let into: &NSView = &dim;
             into.addSubview(&card);
             content.addSubview_positioned_relativeTo(&dim, NSWindowOrderingMode::Above, None);
-            Some(Veil { view: dim })
+            Some(Veil { view: dim, bar, line })
+        }
+
+        /// The bar's fill, 0 to 1, and the line under it.
+        pub fn set_progress(&self, fraction: f64, text: &str) {
+            self.bar.setDoubleValue(fraction.clamp(0.0, 1.0));
+            self.line.setStringValue(&NSString::from_str(text));
         }
 
         pub fn set_opacity(&self, opacity: f32) {
@@ -165,6 +240,37 @@ mod tests {
         let t0 = Instant::now();
         assert_eq!(opacity(true, t0, t0), 1.0);
         assert_eq!(opacity(false, t0, t0), 0.0);
+    }
+
+    #[test]
+    fn the_bar_fills_step_by_step_and_session_by_session() {
+        assert_eq!(fraction(Step::Installing), 0.2);
+        assert_eq!(fraction(Step::Starting), 0.4);
+        assert_eq!(fraction(Step::Restoring { done: 0, total: 4 }), 0.45);
+        assert_eq!(fraction(Step::Restoring { done: 2, total: 4 }), 0.7);
+        assert_eq!(fraction(Step::Restoring { done: 4, total: 4 }), 0.95);
+        assert_eq!(fraction(Step::Restoring { done: 0, total: 0 }), 0.95, "nothing to restore");
+        assert_eq!(fraction(Step::Done), 1.0);
+        let steps = [Step::Installing, Step::Starting, Step::Restoring { done: 0, total: 3 }, Step::Restoring { done: 3, total: 3 }, Step::Done];
+        assert!(steps.windows(2).all(|w| fraction(w[0]) < fraction(w[1])), "never goes back");
+    }
+
+    #[test]
+    fn the_line_says_the_step_its_count_and_the_seconds() {
+        let t = Duration::from_millis(1_430);
+        assert_eq!(status(Step::Installing, Some("0.8.44"), t), "Installing 0.8.44 \u{b7} 1.4 s");
+        assert_eq!(status(Step::Starting, None, t), "Starting the new window \u{b7} 1.4 s");
+        assert_eq!(status(Step::Restoring { done: 3, total: 7 }, None, t), "Restoring sessions 3 of 7 \u{b7} 1.4 s");
+        assert_eq!(status(Step::Done, None, Duration::from_secs(2)), "Done \u{b7} 2.0 s");
+    }
+
+    #[test]
+    fn the_new_window_s_clock_goes_on_from_the_old_one_s_note() {
+        assert_eq!(started_ago("1000", 2500), Some(Duration::from_millis(1500)));
+        assert_eq!(started_ago(" 1000\n", 1000), Some(Duration::ZERO));
+        assert_eq!(started_ago("1000", 1000 + 121_000), None, "stale");
+        assert_eq!(started_ago("soon", 2000), None);
+        assert_eq!(started_ago("3000", 2000), None, "a clock that went back");
     }
 
     #[test]
