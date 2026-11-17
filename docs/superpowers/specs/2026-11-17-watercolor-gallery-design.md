@@ -81,3 +81,12 @@ is solid, hiding the easel's mast and legs behind it, and casts the soft shadow 
 painting is as large as fits on it less a 5 point margin, centred, with its own faint shadow on the
 board and a strip of tape over each top corner. Its edges waver at most 0.8 points, a sheet cut by
 hand, and pool darker only within 3 points of them.
+
+## A gentler bloom
+
+Cyrus, 2026-11-17: the transition was "too big and noticeable"; it should "blend better and
+smoother into the next painting". The bloom takes 12 seconds, not 6. Each point of the board fades
+from the last painting to the next over half of it, starting later the farther it lies from one of
+the four pools, so a wide soft blend drifts out from them instead of a spreading edge; the darker
+wet front is gone, the paint of both thins by up to 18 per cent at the bloom's middle so they never
+stand at full strength together, and the tape cross-fades with the paintings it holds.

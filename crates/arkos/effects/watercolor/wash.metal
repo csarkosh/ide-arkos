@@ -230,7 +230,12 @@ float ink_tooth(Pen pen) {
 // painting spreads out from a few pools of pigment that grow and merge, a darker rim where its
 // wet front runs, while the last dries back to the paper.
 constant float GALLERY_HOLD = 50.0;
-constant float GALLERY_BLOOM = 6.0;
+// Twelve seconds (Cyrus, 2026-11-17: the six second bloom was "too big and noticeable"; it should
+// "blend better and smoother into the next painting").
+constant float GALLERY_BLOOM = 12.0;
+// How much the paint thins at the bloom's middle, so the two paintings never stand at full
+// strength together.
+constant float GALLERY_THIN = 0.18;
 constant int GALLERY_POOLS = 4;
 
 // Which painting shows at t, the next, and how far the bloom into it has come (0 to 1).
@@ -384,10 +389,11 @@ float bloom_at(float2 p, float4 area, float next, float bloom) {
         float2 seed = area.xy + area.zw * float2(hash1(next * 13.1 + float(j) * 3.7), hash1(next * 7.9 + float(j) * 5.3));
         reach = min(reach, length(p - seed));
     }
-    // Four pools leave no point much more than half the painting from one: the bloom reaches
-    // its last corner as it ends.
-    reach = reach / (0.55 * max(max(area.z, area.w), 1.0)) + (fbm(p * 0.03 + next) - 0.5) * 0.45;
-    return smoothstep(reach - 0.08, reach + 0.08, bloom * 1.3);
+    // Four pools leave no point much more than half the painting from one. Each point fades over
+    // half the bloom, starting later the farther it is from a pool: a wide, soft blend drifting out
+    // from them, not a front.
+    reach = saturate(reach / (0.55 * max(max(area.z, area.w), 1.0)) + (fbm(p * 0.03 + next) - 0.5) * 0.25);
+    return smoothstep(reach * 0.5, reach * 0.5 + 0.5, bloom);
 }
 
 // A painting laid at strength a: its own sheet of watercolour paper, a little lighter than the
@@ -566,21 +572,24 @@ float3 studio(constant ArkosInputs& u, texture2d_array<float> images, float2 p, 
         float4 area = float4(min(r0.xy, r1.xy), max(r0.xy + r0.zw, r1.xy + r1.zw) - min(r0.xy, r1.xy));
         reached = bloom_at(p, area, at.y, at.z);
         next_p = painting_at(images, p, next, r1, u.scale, gran, mix(paper, pig0, 0.4));
-        // The wet front runs darker where the bloom is still spreading.
-        float front = reached * (1.0 - reached) * 4.0 * (1.0 - at.z);
-        next_p.rgb *= 1.0 - 0.2 * front;
     }
-    col = painting_onto(u, col, now_p.rgb, now_p.a * (1.0 - reached) * show);
-    col = painting_onto(u, col, next_p.rgb, next_p.a * reached * show);
+    float thin = 1.0 - GALLERY_THIN * sin(3.14159 * at.z);
+    col = painting_onto(u, col, now_p.rgb, now_p.a * (1.0 - reached) * show * thin);
+    col = painting_onto(u, col, next_p.rgb, next_p.a * reached * show * thin);
     // Two strips of tape hold the painting's top corners to the board.
-    float4 held = at.z > 0.5 ? canvas_rect(st, next) : r0;
-    for (int c = 0; c < 2; c++) {
-        float2 corner = float2(c == 0 ? held.x : held.x + held.z, held.y);
+    // The tape cross-fades with the paintings it holds.
+    for (int c = 0; c < 4; c++) {
+        float4 held = c < 2 ? r0 : canvas_rect(st, next);
+        float weight = c < 2 ? 1.0 - at.z : at.z;
+        if (weight <= 0.0) {
+            continue;
+        }
+        float2 corner = float2(c % 2 == 0 ? held.x : held.x + held.z, held.y);
         float2 q = p - corner;
-        float ang = c == 0 ? 0.75 : -0.75;
+        float ang = c % 2 == 0 ? 0.75 : -0.75;
         float2 local = float2(q.x * cos(ang) + q.y * sin(ang), -q.x * sin(ang) + q.y * cos(ang));
         float tape = 1.0 - smoothstep(-0.4, 0.4, sd_box(local, float2(5.0, 1.8)));
-        col = mix(col, mix(paper, pig0, 0.3), tape * 0.75 * melt);
+        col = mix(col, mix(paper, pig0, 0.3), tape * 0.75 * melt * weight);
     }
     ink = max(ink, stroke(p, ledge_l, ledge_r, pen, 1.3));
 

@@ -1103,7 +1103,7 @@ Things only a person at the screen can check, in order of value:
   round it): window onto rooftops and a water tower, brick, floorboards, lamp, table, plant, and the
   easel with a painting (the Great Wave first) whose canvas hides the easel behind it; the lamp, drape,
   leaves, steam, clouds and dust move slowly and never pull the eye; in Peach Watercolor the room is
-  peach; within a minute the next painting blooms in from a few pools over about six seconds while the last fades back to
+  peach; within a minute the next painting fades in softly over about twelve seconds, no hard edge or dark front, while the last fades back to
   paper, and every painting in turn comes round; open enough folders to fill the sidebar and it fades
   out; Reduce Motion on, it holds the first painting
 - wash on other displays: with The Matrix or Tokyo Rain, drag the window to an external display

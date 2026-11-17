@@ -638,7 +638,8 @@ a side table with a palette, brushes and a steaming mug, a potted plant, and on 
 middle a backboard with a famous painting taped to it as a watercolour, toned to the theme. The lamp sways a little, the drape
 stirs, the leaves sway, the steam rises, clouds pass the window and dust drifts in its light, all
 slowly. The paintings come one at a time: each is held fifty seconds, then the next blooms in from a
-few pools of pigment over six while the last dries back to the paper. The eight are Hokusai's Great Wave,
+few places over twelve seconds, a soft blend with the paint a little thinner at its middle, while
+the last fades back to the board. The eight are Hokusai's Great Wave,
 Monet's Water Lilies, Van Gogh's Wheat Field with Cypresses and Irises, Hiroshige's Sudden Shower over
 Shin-Ohashi Bridge, Degas's Dance Class, Bruegel's Harvesters and Vermeer's Young Woman with a Water
 Pitcher, all in the public domain and released by their museums under CC0 (their sources are in

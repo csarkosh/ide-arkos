@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod tests {
     const GALLERY_HOLD: f32 = 50.0;
-    const GALLERY_BLOOM: f32 = 6.0;
+    const GALLERY_BLOOM: f32 = 12.0;
 
     /// Which painting shows at `t`, the next, and how far the bloom into it has come, as the
     /// wash's `gallery_at` works it out.
@@ -25,14 +25,14 @@ mod tests {
             assert_eq!(gallery_at(t, n), (0, 1, 0.0), "{t}");
         }
         // The bloom: under way, then the next painting whole.
-        let (shown, next, mid) = gallery_at(53.0, n);
+        let (shown, next, mid) = gallery_at(56.0, n);
         assert_eq!((shown, next), (0, 1));
         assert!(mid > 0.3 && mid < 0.7, "{mid}");
-        assert_eq!(gallery_at(56.0, n), (1, 2, 0.0), "the next one shows, held");
+        assert_eq!(gallery_at(62.0, n), (1, 2, 0.0), "the next one shows, held");
         // Through all eight in order, and the first again after the last.
-        let order: Vec<usize> = (0..9).map(|i| gallery_at(i as f32 * 56.0 + 1.0, n).0).collect();
+        let order: Vec<usize> = (0..9).map(|i| gallery_at(i as f32 * 62.0 + 1.0, n).0).collect();
         assert_eq!(order, [0, 1, 2, 3, 4, 5, 6, 7, 0]);
-        assert_eq!(gallery_at(7.0 * 56.0 + 53.0, n).1, 0, "the last blooms into the first");
+        assert_eq!(gallery_at(7.0 * 62.0 + 56.0, n).1, 0, "the last blooms into the first");
         // Under Reduce Motion the clock holds at zero: the first painting, still.
         assert_eq!(gallery_at(0.0, n), (0, 1, 0.0));
     }
@@ -42,18 +42,23 @@ mod tests {
         let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "watercolor").unwrap().wash;
         for line in [
             "constant float GALLERY_HOLD = 50.0;",
-            "constant float GALLERY_BLOOM = 6.0;",
+            "constant float GALLERY_BLOOM = 12.0;",
             "    float period = GALLERY_HOLD + GALLERY_BLOOM;",
             "    float cycle = floor(max(t, 0.0) / period);",
             "    float shown = fmod(cycle, float(n));",
             "    float next = fmod(cycle + 1.0, float(n));",
             "    float bloom = saturate((into - GALLERY_HOLD) / GALLERY_BLOOM);",
             "    return float3(shown, next, bloom * bloom * (3.0 - 2.0 * bloom));",
+            // A wide soft blend, each point over half the bloom, the paint thinning at its middle,
+            // and no darker front.
+            "    return smoothstep(reach * 0.5, reach * 0.5 + 0.5, bloom);",
+            "    float thin = 1.0 - GALLERY_THIN * sin(3.14159 * at.z);",
             // After the paper is kept readable, so the paintings keep their own darks.
             "    // The gallery, after the paper is kept readable: no text is over the space it hangs in.",
         ] {
             assert!(wash.contains(line), "wash.metal lacks {line}");
         }
+        assert!(!wash.contains("float front = "), "no wet front darkening the bloom");
         let readable = wash.find("    col = keep_readable(u, col);").unwrap();
         assert!(wash.find("if (ARKOS_IMAGE_COUNT > 0) {").unwrap() > readable);
     }
