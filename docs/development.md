@@ -1098,9 +1098,12 @@ Things only a person at the screen can check, in order of value:
   own menu is open; a click on the question mark opens Help with nothing marked and no ring on the
   icon, Down marks Keyboard Navigation, Enter opens it, and Escape instead closes the menu with
   the keys back in the pane
-- watercolor gallery: under Lavender Watercolor with room under the sidebar's rows, a painting (the
-  Great Wave first) hangs at the bottom of Pane 0 as a soft watercolour with ragged edges; within a
-  minute the next blooms in from a few pools over about six seconds while the last fades back to
+- watercolor gallery: under Lavender Watercolor with room under the sidebar's rows, a painter's loft
+  fills the bottom of Pane 0 in the theme's colours, its edges melting into the sidebar (no frame
+  round it): window onto rooftops and a water tower, brick, floorboards, lamp, table, plant, and the
+  easel with a painting (the Great Wave first) whose canvas hides the easel behind it; the lamp, drape,
+  leaves, steam, clouds and dust move slowly and never pull the eye; in Peach Watercolor the room is
+  peach; within a minute the next painting blooms in from a few pools over about six seconds while the last fades back to
   paper, and every painting in turn comes round; open enough folders to fill the sidebar and it fades
   out; Reduce Motion on, it holds the first painting
 - wash on other displays: with The Matrix or Tokyo Rain, drag the window to an external display

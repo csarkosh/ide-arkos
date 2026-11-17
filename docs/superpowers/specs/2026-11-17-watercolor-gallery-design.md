@@ -44,3 +44,30 @@ declares the array never reads an unbound texture. The preamble gains `ARKOS_IMA
   they reach it.
 - Cost: only the space's pixels near the painting sample the images; benched at 4.0 ms a frame
   against 4.3 for Watercolor without the gallery on the same loaded machine (within its noise).
+
+## The studio
+
+Cyrus, 2026-11-17, after seeing the gallery: it "should blend better into the theme's colors", it
+"feels a little too basic and still"; "a scene like a painter's private art studio with the painting
+as the main center piece", "soft movements that adds liveliness to the scene without being
+distracting", and "a painter's private West Village loft in NYC".
+
+- The scene fills the space under the rows, at most 1.25 times as tall as it is wide, at the space's
+  bottom; it fades in from 120 points tall to 170. Its edges melt into the sidebar's paper, so it has
+  no frame. Everything is a wash of the theme's pigments or a natural colour taken toward them (wood,
+  terracotta, leaves), with the pen's lines lighter than the panes'.
+- The room: a steel factory window, three panes across and four down, onto brownstone rooftops with
+  cornices, a water tower and a fire escape's rail, the sky's wash left bare where clouds pass; a
+  sheer drape at its right; plaster with a ragged patch of exposed brick; wide floorboards with their
+  seams and staggered joints; a pendant lamp with a warm glow; a side table with a palette dabbed in
+  the theme's four pigments, a jar of brushes and a mug; a terracotta pot with a broad-leaved plant.
+- The painting stands on the easel in the middle (its canvas at most half the scene wide and 0.4 of
+  it tall, resting on the ledge at 0.32 of its height), toned a quarter of the way toward the theme's
+  first pigment on the paper, on its own sheet a little lighter than the page, which hides the easel's
+  mast and legs behind it, with a soft shadow on the wall.
+- What moves, each slowly (the tests hold every period at five seconds or more): the lamp sways
+  2 degrees on its cord every 9 seconds, the drape's hem stirs every 8, the leaves sway every 7, the
+  steam curls up every 5, the light through the window breathes every 13 with nine motes of dust
+  drifting down it, and the clouds take 150 seconds to pass.
+- Cost: each group of the pen's lines is tested only near where it lies; benched within the loaded
+  machine's noise of Watercolor without the gallery (about 0.2 to 0.5 ms).

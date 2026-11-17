@@ -232,12 +232,6 @@ float ink_tooth(Pen pen) {
 constant float GALLERY_HOLD = 50.0;
 constant float GALLERY_BLOOM = 6.0;
 constant int GALLERY_POOLS = 4;
-// The painting's margin in the space, how tall it may be against its width, and the least room
-// under the rows it needs (it fades in over GALLERY_FADE more).
-constant float GALLERY_MARGIN = 14.0;
-constant float GALLERY_TALL = 1.35;
-constant float GALLERY_MIN_H = 90.0;
-constant float GALLERY_FADE = 40.0;
 
 // Which painting shows at t, the next, and how far the bloom into it has come (0 to 1).
 float3 gallery_at(float t, int n) {
@@ -250,20 +244,88 @@ float3 gallery_at(float t, int n) {
     return float3(shown, next, bloom * bloom * (3.0 - 2.0 * bloom));
 }
 
-// Painting i fitted in the space under the rows, `foot`, at its bottom, centred across: its
-// origin in xy, its size in zw.
-float4 gallery_rect(float4 foot, int i) {
+// The painter's studio the gallery hangs in (Cyrus, 2026-11-17: "a scene like a painter's private
+// art studio with the painting as the main center piece", "a painter's private West Village loft
+// in NYC", with "soft movements that adds liveliness to the scene without being distracting"),
+// drawn in the space under the sidebar's rows in the theme's own pigments and ink, its edges
+// melting into the sidebar's paper: a steel factory window onto brownstone rooftops, a water tower
+// and a fire escape's rail, with clouds passing; a sheer drape; exposed brick where the plaster
+// has come away; wide floorboards; the easel in the middle with the painting on it; a side table
+// with a palette dabbed in the theme's pigments, a jar of brushes and a steaming mug; a potted
+// plant; a pendant lamp on its cord. What moves, each slowly: the lamp sways on its cord, the drape
+// stirs, the plant's leaves sway, the mug's steam rises, the light through the window breathes
+// with dust drifting in it, and the clouds pass.
+constant float STUDIO_TALL = 1.25;
+constant float STUDIO_MIN_H = 120.0;
+constant float STUDIO_FADE = 50.0;
+// How far a painting is toned toward the theme's colours.
+constant float STUDIO_TONE = 0.25;
+// The soft motions: seconds a cycle, and how far.
+constant float LAMP_SWAY_S = 9.0;
+constant float LAMP_SWAY = 0.035;
+constant float DRAPE_SWAY_S = 8.0;
+constant float LEAF_SWAY_S = 7.0;
+constant float STEAM_RISE_S = 5.0;
+constant float BEAM_BREATH_S = 13.0;
+constant float CLOUD_PASS_S = 150.0;
+constant int MOTES = 9;
+// The canvas on the easel: its centre across, how wide and tall it may be, and where its foot
+// rests on the easel's ledge, as shares of the scene.
+constant float CANVAS_X = 0.58;
+constant float CANVAS_W = 0.5;
+constant float CANVAS_H = 0.4;
+constant float CANVAS_FOOT = 0.32;
+constant float FLOOR_Y = 0.17;
+
+// The scene's frame: its bottom left in points, its width and height.
+struct Studio {
+    float2 o;
+    float w;
+    float h;
+};
+
+Studio studio_in(float4 foot) {
+    Studio st;
+    st.w = foot.z - 8.0;
+    st.h = min(foot.w - 6.0, st.w * STUDIO_TALL);
+    st.o = float2(foot.x + 4.0, foot.y + foot.w - 4.0);
+    return st;
+}
+
+// A point of the scene, from its share across and up, and back.
+float2 sp(Studio st, float2 n) {
+    return float2(st.o.x + n.x * st.w, st.o.y - n.y * st.h);
+}
+float2 sn(Studio st, float2 p) {
+    return float2((p.x - st.o.x) / st.w, (st.o.y - p.y) / st.h);
+}
+
+float wc_seg(float2 p, float2 a, float2 b) {
+    float2 pa = p - a;
+    float2 ba = b - a;
+    float h = saturate(dot(pa, ba) / max(dot(ba, ba), 1e-4));
+    return length(pa - ba * h);
+}
+
+// A pen stroke from a to b, `w` points wide, wobbling as the pen does.
+float stroke(float2 p, float2 a, float2 b, Pen pen, float w) {
+    float d = wc_seg(p + float2(pen.wob, -pen.wob) * 0.3, a, b);
+    return 1.0 - smoothstep(w - 0.3, w + 0.5, d);
+}
+
+// Painting i on the easel: its origin in xy, its size in zw, in points.
+float4 canvas_rect(Studio st, int i) {
     float2 sz = max(ARKOS_IMAGE_SIZE[i], float2(1.0));
-    float2 box = max(foot.zw - 2.0 * GALLERY_MARGIN, float2(1.0));
-    box.y = min(box.y, box.x * GALLERY_TALL);
+    float2 box = float2(st.w * CANVAS_W, st.h * CANVAS_H);
     float2 wh = sz * min(box.x / sz.x, box.y / sz.y);
-    return float4(foot.x + (foot.z - wh.x) * 0.5, foot.y + foot.w - GALLERY_MARGIN - wh.y, wh);
+    float2 foot_pt = sp(st, float2(CANVAS_X, CANVAS_FOOT));
+    return float4(foot_pt.x - wh.x * 0.5, foot_pt.y - wh.y, wh);
 }
 
 // Painting i at p, as a watercolour of it: its colours softened, pooled darker where they meet,
 // with the paper's grain through them, and its edge left ragged as a wash's. The colour in rgb,
 // how much of the paper it covers in a.
-float4 painting_at(texture2d_array<float> images, float2 p, int i, float4 r, float px, float gran) {
+float4 painting_at(texture2d_array<float> images, float2 p, int i, float4 r, float px, float gran, float3 tone) {
     constexpr sampler s(filter::linear, mip_filter::linear, address::clamp_to_edge);
     float2 hb = r.zw * 0.5;
     // Well off the painting, the paper alone: the noise and the samples are spent on it only.
@@ -289,6 +351,11 @@ float4 painting_at(texture2d_array<float> images, float2 p, int i, float4 r, flo
     c = mix(c, float3(1.0), 0.14);
     c = mix(c, floor(c * 7.0 + 0.5) / 7.0, 0.35);
     c *= (1.0 - 0.32 * meet) * (0.92 + 0.16 * gran);
+    // Toned toward the theme's own colours (Cyrus, 2026-11-17: Pane 0 "should blend better into
+    // the theme's colors"), its lights and darks kept.
+    float3 lum_w = float3(0.299, 0.587, 0.114);
+    float3 toned = saturate(tone * (dot(c, lum_w) / max(dot(tone, lum_w), 0.05)));
+    c = mix(c, toned, STUDIO_TONE);
     float cover = 1.0 - smoothstep(-1.5, 1.5, d);
     // The edge pools darker, as a wash dries at its rim.
     float rim = smoothstep(-6.0, 0.0, d) * cover;
@@ -309,13 +376,288 @@ float bloom_at(float2 p, float4 area, float next, float bloom) {
     return smoothstep(reach - 0.08, reach + 0.08, bloom * 1.3);
 }
 
-// A painting laid on the paper at strength a, as the theme's mode has it: multiplied into light
-// paper as a wash is; on dark paper glazed over it.
+// A painting laid at strength a: its own sheet of watercolour paper, a little lighter than the
+// page, covering what is behind it (the easel's mast), its washes on it; on dark paper the sheet
+// glows less.
 float3 painting_onto(constant ArkosInputs& u, float3 col, float3 c, float a) {
-    if (u.dark > 0.5) {
-        return mix(col, c, a * 0.85);
+    float3 paper = u.colors[ARKOS_WINDOW_BG].rgb;
+    float3 sheet = u.dark > 0.5 ? mix(paper, float3(1.0), 0.75) * 0.9 : mix(paper, float3(1.0), 0.5);
+    return mix(col, sheet * c, a);
+}
+
+// The studio at p (see `Studio`): the room, then the painting on the easel, then what stands
+// before it, and the pen's lines over all of it.
+float3 studio(constant ArkosInputs& u, texture2d_array<float> images, float2 p, float4 foot, float t, float gran, float bleed, Pen pen, float3 col, float k) {
+    Studio st = studio_in(foot);
+    float show = smoothstep(STUDIO_MIN_H, STUDIO_MIN_H + STUDIO_FADE, st.h) * k;
+    float2 n = sn(st, p);
+    if (show <= 0.0 || n.x < -0.06 || n.x > 1.06 || n.y < -0.03 || n.y > 1.1) {
+        return col;
     }
-    return col * mix(float3(1.0), c, a);
+    float tau = 6.2831853;
+    float3 pig0 = pigment(u, 0);
+    float3 pig1 = pigment(u, 1);
+    float3 pig2 = pigment(u, 2);
+    float3 pig3 = pigment(u, 3);
+    float3 paper = u.colors[ARKOS_WINDOW_BG].rgb;
+    float3 warm = u.dark > 0.5 ? mix(paper, float3(1.0, 0.86, 0.62), 0.35) : float3(1.0, 0.97, 0.9);
+    // Wood (the floor, the water tower) and leaves, each a natural colour taken toward the
+    // theme's own.
+    float3 wood = mix(float3(0.76, 0.6, 0.44), pig1, 0.3);
+    float3 leaf_c = mix(float3(0.36, 0.6, 0.38), pig2, 0.22);
+    // The room's edges melt into the sidebar's paper: no frame round it.
+    float melt = smoothstep(-0.03, 0.09, n.x) * (1.0 - smoothstep(0.91, 1.03, n.x)) * (1.0 - smoothstep(0.86, 1.05, n.y)) * show;
+    float floor_y = FLOOR_Y + (bleed - 0.5) * 0.015;
+    float ink = 0.0;
+
+    // The window's place, and inside it.
+    float2 w0 = float2(0.05, 0.42);
+    float2 w1 = float2(0.4, 0.86);
+    bool in_window = n.x > w0.x && n.x < w1.x && n.y > w0.y && n.y < w1.y;
+
+    // The wall: plaster in a light wash, and a ragged patch of brick where it has come away.
+    if (n.y > floor_y && !in_window) {
+        col = wash_onto(u, col, pig2, 0.1 * melt * (0.8 + 0.4 * gran));
+        float patch = smoothstep(0.0, 0.1, 0.3 - length((n - float2(0.8, 0.66)) * float2(1.0, 0.85)) + (fbm(p * 0.05) - 0.5) * 0.2);
+        if (patch > 0.0) {
+            float2 b = float2(n.x * st.w / 9.0, n.y * st.h / 4.0);
+            float row = floor(b.y);
+            float bx = b.x + 0.5 * fmod(row, 2.0);
+            float mortar = max(1.0 - smoothstep(0.0, 0.14, fract(b.y)), 1.0 - smoothstep(0.0, 0.07, fract(bx)));
+            float tone = 0.7 + 0.6 * hash1(floor(bx) * 7.1 + row * 13.3);
+            col = wash_onto(u, col, pig1, 0.24 * patch * melt * tone * (1.0 - 0.75 * mortar));
+        }
+    }
+    if (in_window) {
+        float2 wn = (n - w0) / (w1 - w0);
+        // The sky, the paper left bare where the clouds pass.
+        float cloud = smoothstep(0.5, 0.7, fbm(float2(wn.x * 2.2 + t / CLOUD_PASS_S * 2.0, wn.y * 5.0) + 4.0));
+        col = wash_onto(u, col, pig2, (0.16 - 0.12 * cloud) * melt * (0.6 + 0.4 * wn.y));
+        // Brownstone rooftops across the street, their cornices, and a water tower on one.
+        float bcol = floor(wn.x * 5.0);
+        float roof = 0.2 + 0.16 * hash1(bcol * 3.7 + 1.0);
+        float tower_x = (wn.x - 0.66) / 0.12;
+        float tank = step(abs(tower_x), 1.0) * step(roof + 0.12, wn.y) * step(wn.y, roof + 0.27);
+        float cone = step(roof + 0.27, wn.y) * step(abs(tower_x), 1.0 - (wn.y - roof - 0.27) / 0.08);
+        float legs = step(roof, wn.y) * step(wn.y, roof + 0.12) * step(0.85, abs(tower_x)) * step(abs(tower_x), 1.0);
+        roof = bcol == 3.0 ? 0.24 : roof;
+        if (wn.y < roof) {
+            col = wash_onto(u, col, pig0, 0.3 * melt * (0.8 + 0.3 * gran));
+        } else if (wn.y < roof + 0.025) {
+            col = wash_onto(u, col, pig0, 0.4 * melt);
+        }
+        if (tank + cone + legs > 0.0) {
+            col = wash_onto(u, col, wood, 0.45 * melt);
+        }
+        // The fire escape's rail outside, low across the window.
+        float rail = 1.0 - smoothstep(0.0, 0.012, abs(wn.y - 0.14));
+        float bars = (1.0 - smoothstep(0.0, 0.02, abs(fract(wn.x * 9.0) - 0.5))) * step(wn.y, 0.14);
+        ink = max(ink, 0.45 * max(rail, bars * 0.8));
+    }
+    // The window's steel frame: its outline, three panes across and four down, and its sill.
+    // Each group of lines below is drawn only near where it lies.
+    if (n.x > w0.x - 0.05 && n.x < w1.x + 0.05 && n.y > w0.y - 0.05 && n.y < w1.y + 0.03) {
+        float2 a = sp(st, w0);
+        float2 b = sp(st, w1);
+        ink = max(ink, stroke(p, a, float2(b.x, a.y), pen, 1.0));
+        ink = max(ink, stroke(p, float2(a.x, b.y), b, pen, 1.0));
+        ink = max(ink, stroke(p, a, float2(a.x, b.y), pen, 1.0));
+        ink = max(ink, stroke(p, float2(b.x, a.y), b, pen, 1.0));
+        for (int c = 1; c < 3; c++) {
+            float x = mix(a.x, b.x, float(c) / 3.0);
+            ink = max(ink, stroke(p, float2(x, a.y), float2(x, b.y), pen, 0.6));
+        }
+        for (int r = 1; r < 4; r++) {
+            float y = mix(a.y, b.y, float(r) / 4.0);
+            ink = max(ink, stroke(p, float2(a.x, y), float2(b.x, y), pen, 0.6));
+        }
+        ink = max(ink, stroke(p, a + float2(-3.0, 2.0), float2(b.x + 3.0, a.y + 2.0), pen, 0.9));
+    }
+    // A sheer drape hung at the window's right, stirring at its hem.
+    {
+        float sway = sin(t * tau / DRAPE_SWAY_S + n.y * 9.0) * 0.012 * saturate((w1.y - n.y) / 0.4);
+        float left = w1.x - 0.03 + sway;
+        float right = w1.x + 0.05 + sway * 1.4;
+        if (n.y > w0.y - 0.06 && n.y < w1.y + 0.02 && n.x > left && n.x < right) {
+            float folds = 0.75 + 0.25 * sin((n.x - left) / (right - left) * 18.0 + sway * 40.0);
+            col = wash_onto(u, col, pig0, 0.13 * folds * melt);
+        }
+    }
+    // The light through the window, falling across the room to the floor: it breathes, and dust
+    // drifts in it.
+    float2 beam_o = (w0 + w1) * 0.5;
+    float2 beam_d = normalize(float2(0.62, -0.78));
+    float2 rel = n - beam_o;
+    float along = dot(rel, beam_d);
+    float across = dot(rel, float2(-beam_d.y, beam_d.x));
+    float beam = (1.0 - smoothstep(0.1, 0.16, abs(across))) * smoothstep(0.0, 0.1, along) * (1.0 - smoothstep(0.5, 0.75, along));
+    float breath = 0.75 + 0.25 * sin(t * tau / BEAM_BREATH_S);
+    col = mix(col, warm, beam * 0.14 * breath * melt);
+
+    // The floor: wide boards in a warm wash, their seams, and the skirting where it meets the wall.
+    if (n.y < floor_y) {
+        col = wash_onto(u, col, wood, 0.26 * melt * (0.8 + 0.4 * gran));
+        // Two seams along the boards, and their butt joints staggered.
+        float y_pt = n.y * st.h;
+        float rows = floor_y * st.h / 3.0;
+        float seam = 1.0 - smoothstep(0.0, 0.9, abs(y_pt - rows * floor(y_pt / rows + 0.5)));
+        float board = floor(y_pt / rows);
+        float joint = smoothstep(0.486, 0.5, abs(fract(n.x * 2.5 + board * 0.37) - 0.5));
+        ink = max(ink, 0.25 * max(seam, joint * 0.7));
+    }
+    ink = max(ink, stroke(p, sp(st, float2(-0.02, floor_y)), sp(st, float2(1.02, floor_y)), pen, 0.9));
+
+    // The easel and the painting on it.
+    float3 at = gallery_at(t, ARKOS_IMAGE_COUNT);
+    int shown = int(at.x);
+    int next = int(at.y);
+    float4 r0 = canvas_rect(st, shown);
+    float2 top = float2(r0.x + r0.z * 0.5, r0.y - 8.0);
+    float2 ledge_l = float2(r0.x - 4.0, r0.y + r0.w + 1.5);
+    float2 ledge_r = float2(r0.x + r0.z + 4.0, r0.y + r0.w + 1.5);
+    float2 foot_l = sp(st, float2(CANVAS_X - 0.17, floor_y - 0.06));
+    float2 foot_r = sp(st, float2(CANVAS_X + 0.17, floor_y - 0.06));
+    float2 foot_b = sp(st, float2(CANVAS_X + 0.04, floor_y + 0.02));
+    // A soft shadow the canvas casts on the wall behind it.
+    float shade = 1.0 - smoothstep(0.0, 6.0, sd_box(p - (r0.xy + r0.zw * 0.5 + float2(4.0, 3.0)), r0.zw * 0.5));
+    col = wash_onto(u, col, pig0, 0.12 * shade * melt);
+    ink = max(ink, stroke(p, top, foot_b, pen, 0.9));
+    ink = max(ink, stroke(p, float2(top.x - 3.0, top.y), foot_l, pen, 1.0));
+    ink = max(ink, stroke(p, float2(top.x + 3.0, top.y), foot_r, pen, 1.0));
+    ink = max(ink, stroke(p, top + float2(-5.0, 0.0), top + float2(5.0, 0.0), pen, 1.0));
+    // The room's lines go down first, so the canvas covers the easel's mast and legs behind it.
+    float3 ink_c = u.colors[ARKOS_TERMINAL_FG].rgb;
+    col = mix(col, ink_c, saturate(ink) * 0.62 * ink_tooth(pen) * melt);
+    ink = 0.0;
+    float4 now_p = painting_at(images, p, shown, r0, u.scale, gran, mix(paper, pig0, 0.4));
+    float reached = 0.0;
+    float4 next_p = float4(0.0);
+    if (at.z > 0.0) {
+        float4 r1 = canvas_rect(st, next);
+        float4 area = float4(min(r0.xy, r1.xy), max(r0.xy + r0.zw, r1.xy + r1.zw) - min(r0.xy, r1.xy));
+        reached = bloom_at(p, area, at.y, at.z);
+        next_p = painting_at(images, p, next, r1, u.scale, gran, mix(paper, pig0, 0.4));
+        // The wet front runs darker where the bloom is still spreading.
+        float front = reached * (1.0 - reached) * 4.0 * (1.0 - at.z);
+        next_p.rgb *= 1.0 - 0.2 * front;
+    }
+    col = painting_onto(u, col, now_p.rgb, now_p.a * (1.0 - reached) * show);
+    col = painting_onto(u, col, next_p.rgb, next_p.a * reached * show);
+    ink = max(ink, stroke(p, ledge_l, ledge_r, pen, 1.3));
+
+    // The side table: its top and legs, a palette dabbed in the theme's pigments, a jar of
+    // brushes, a mug with its steam.
+    float table_y = 0.27;
+    if (n.x < 0.34 && n.y < 0.52) {
+    ink = max(ink, stroke(p, sp(st, float2(0.02, table_y)), sp(st, float2(0.3, table_y)), pen, 1.1));
+    ink = max(ink, stroke(p, sp(st, float2(0.05, table_y)), sp(st, float2(0.05, -0.02)), pen, 0.8));
+    ink = max(ink, stroke(p, sp(st, float2(0.27, table_y)), sp(st, float2(0.27, -0.02)), pen, 0.8));
+    {
+        float2 pc = sp(st, float2(0.12, table_y)) + float2(0.0, -2.5);
+        float2 pr = float2(0.07 * st.w, 3.2);
+        float pal = length((p - pc) / pr);
+        if (pal < 1.0) {
+            col = wash_onto(u, col, pig3, 0.22 * melt);
+            for (int d = 0; d < 4; d++) {
+                float2 dc = pc + float2((float(d) - 1.5) * pr.x * 0.42, (d % 2 == 0 ? -0.8 : 0.8));
+                float dab = 1.0 - smoothstep(1.0, 2.0, length(p - dc));
+                col = wash_onto(u, col, pigment(u, d), 0.75 * dab * melt);
+            }
+        }
+        ink = max(ink, 0.7 * (1.0 - smoothstep(0.0, 1.0, abs(pal - 1.0) * pr.y)));
+        // The jar, and three brushes standing in it.
+        float2 j0 = sp(st, float2(0.19, table_y));
+        float2 j1 = sp(st, float2(0.25, table_y + 0.07));
+        if (p.x > j0.x && p.x < j1.x && p.y < j0.y && p.y > j1.y) {
+            col = wash_onto(u, col, pig2, 0.22 * melt);
+        }
+        ink = max(ink, stroke(p, float2(j0.x, j1.y), float2(j0.x, j0.y), pen, 0.7));
+        ink = max(ink, stroke(p, float2(j1.x, j1.y), float2(j1.x, j0.y), pen, 0.7));
+        for (int b = 0; b < 3; b++) {
+            float2 base = float2(mix(j0.x, j1.x, 0.3 + 0.2 * float(b)), j1.y + 2.0);
+            float2 tip = base + float2((float(b) - 1.0) * 0.03 * st.w, -0.13 * st.h);
+            ink = max(ink, stroke(p, base, tip, pen, 0.55));
+            float bristle = 1.0 - smoothstep(0.8, 1.8, length(p - tip));
+            col = wash_onto(u, col, pigment(u, b + 1), 0.7 * bristle * melt);
+        }
+        // The mug, and its steam rising in two soft curls.
+        float2 m0 = sp(st, float2(0.06, table_y));
+        float2 m1 = sp(st, float2(0.1, table_y + 0.045));
+        if (p.x > m0.x && p.x < m1.x && p.y < m0.y && p.y > m1.y) {
+            col = wash_onto(u, col, pig1, 0.28 * melt);
+        }
+        ink = max(ink, stroke(p, float2(m1.x, mix(m0.y, m1.y, 0.3)), float2(m1.x + 2.5, mix(m0.y, m1.y, 0.55)), pen, 0.6));
+        float rise = (n.y - (table_y + 0.05)) / 0.13;
+        if (rise > 0.0 && rise < 1.0) {
+            for (int c = 0; c < 2; c++) {
+                float x = (m0.x + m1.x) * 0.5 + (float(c) - 0.5) * 3.0 + sin(rise * 7.0 - t * tau / STEAM_RISE_S + float(c) * 2.0) * 2.2 * rise;
+                float curl = (1.0 - smoothstep(0.3, 1.2, abs(p.x - x))) * sin(rise * 3.14159) * (1.0 - rise);
+                ink = max(ink, 0.3 * curl);
+            }
+        }
+    }
+    }
+
+    // The plant on the floor at the right: its pot, and its broad leaves swaying a little.
+    if (n.x > 0.74 && n.y < 0.5) {
+        float2 pot0 = sp(st, float2(0.84, floor_y - 0.1));
+        float2 pot1 = sp(st, float2(0.96, floor_y + 0.04));
+        if (p.x > pot0.x && p.x < pot1.x && p.y < pot0.y && p.y > pot1.y) {
+            col = wash_onto(u, col, mix(float3(0.74, 0.46, 0.36), pig1, 0.3), 0.42 * melt);
+        }
+        ink = max(ink, stroke(p, float2(pot0.x, pot1.y), float2(pot1.x, pot1.y), pen, 0.8));
+        float2 stem = sp(st, float2(0.9, floor_y + 0.04));
+        for (int l = 0; l < 6; l++) {
+            float fl = float(l);
+            float ang = -1.1 + fl * 0.45 + sin(t * tau / LEAF_SWAY_S + fl * 1.3) * 0.06;
+            float len = (0.1 + 0.05 * hash1(fl * 3.1)) * st.h;
+            float2 dir = float2(sin(ang), -cos(ang));
+            float2 tip = stem + dir * len;
+            float2 mid = (stem + tip) * 0.5 + dir * len * 0.15;
+            float2 q = p - mid;
+            float2 local = float2(dot(q, float2(-dir.y, dir.x)), dot(q, dir));
+            float leaf = length(local / float2(len * 0.2, len * 0.42));
+            if (leaf < 1.0) {
+                col = wash_onto(u, col, leaf_c, 0.5 * (1.0 - leaf * 0.4) * melt);
+            }
+            ink = max(ink, 0.5 * stroke(p, stem, tip, pen, 0.45));
+        }
+    }
+
+    // The pendant lamp on its cord, swaying a little, and its warm glow.
+    if (n.x > 0.5 && n.x < 0.95 && n.y > 0.55) {
+        float sway = LAMP_SWAY * sin(t * tau / LAMP_SWAY_S);
+        float2 hang = sp(st, float2(0.72, 1.04));
+        float cord = 0.2 * st.h;
+        float2 bulb = hang + float2(sin(sway), cos(sway)) * cord;
+        ink = max(ink, stroke(p, hang, bulb, pen, 0.45));
+        float2 down = normalize(bulb - hang);
+        float2 side = float2(-down.y, down.x);
+        float2 s0 = bulb - side * 3.0;
+        float2 s1 = bulb + side * 3.0;
+        float2 s2 = bulb + down * 7.0 - side * 8.0;
+        float2 s3 = bulb + down * 7.0 + side * 8.0;
+        ink = max(ink, stroke(p, s0, s2, pen, 0.8));
+        ink = max(ink, stroke(p, s1, s3, pen, 0.8));
+        ink = max(ink, stroke(p, s2, s3, pen, 0.8));
+        float glow = exp(-dot(p - (bulb + down * 9.0), p - (bulb + down * 9.0)) / (2.0 * 14.0 * 14.0));
+        col = mix(col, warm, glow * 0.35 * melt);
+        col = wash_onto(u, col, pig3, (1.0 - smoothstep(0.0, 1.0, wc_seg(p, (s0 + s1) * 0.5, (s2 + s3) * 0.5) - 2.0)) * 0.25 * melt);
+    }
+
+    // Dust drifting in the light, each mote slowly down the beam and swaying across it.
+    for (int m = 0; m < (beam > 0.0 ? MOTES : 0); m++) {
+        float fm = float(m);
+        float a = fract(hash1(fm * 5.3) + t * 0.004 * (0.6 + hash1(fm * 2.9)));
+        float c = (hash1(fm * 8.7) - 0.5) * 0.2 + sin(t * 0.25 + fm) * 0.015;
+        float2 mn = beam_o + beam_d * (0.1 + a * 0.55) + float2(-beam_d.y, beam_d.x) * c;
+        float mote = 1.0 - smoothstep(0.4, 1.3, length(p - sp(st, mn)));
+        float twinkle = 0.55 + 0.45 * sin(t * 0.7 + fm * 2.3);
+        col = mix(col, warm, mote * twinkle * 0.6 * melt * smoothstep(0.0, 0.15, a) * (1.0 - smoothstep(0.8, 1.0, a)));
+    }
+
+    // The pen over what stands before the canvas, lighter than the panes' own lines.
+    return mix(col, ink_c, saturate(ink) * 0.62 * ink_tooth(pen) * melt);
 }
 
 fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u [[buffer(0)]], texture2d_array<float> images [[texture(0)]]) {
@@ -399,28 +741,7 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             if (int(blk.kind) != ARKOS_SIDEBAR_FOOT_BLOCK || p.x < foot.x || p.x > foot.x + foot.z || p.y < foot.y || p.y > foot.y + foot.w) {
                 continue;
             }
-            float show = smoothstep(GALLERY_MIN_H, GALLERY_MIN_H + GALLERY_FADE, foot.w) * k;
-            if (show <= 0.0) {
-                break;
-            }
-            float3 at = gallery_at(t, ARKOS_IMAGE_COUNT);
-            int shown = int(at.x);
-            int next = int(at.y);
-            float4 r0 = gallery_rect(foot, shown);
-            float4 now_p = painting_at(images, p, shown, r0, u.scale, gran);
-            float reached = 0.0;
-            float4 next_p = float4(0.0);
-            if (at.z > 0.0) {
-                float4 r1 = gallery_rect(foot, next);
-                float4 area = float4(min(r0.xy, r1.xy), max(r0.xy + r0.zw, r1.xy + r1.zw) - min(r0.xy, r1.xy));
-                reached = bloom_at(p, area, at.y, at.z);
-                next_p = painting_at(images, p, next, r1, u.scale, gran);
-                // The wet front runs darker where the bloom is still spreading.
-                float front = reached * (1.0 - reached) * 4.0 * (1.0 - at.z);
-                next_p.rgb *= 1.0 - 0.2 * front;
-            }
-            col = painting_onto(u, col, now_p.rgb, now_p.a * (1.0 - reached) * show);
-            col = painting_onto(u, col, next_p.rgb, next_p.a * reached * show);
+            col = studio(u, images, p, foot, t, gran, bleed, pen, col, k);
             break;
         }
     }

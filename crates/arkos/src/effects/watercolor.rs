@@ -57,4 +57,62 @@ mod tests {
         let readable = wash.find("    col = keep_readable(u, col);").unwrap();
         assert!(wash.find("if (ARKOS_IMAGE_COUNT > 0) {").unwrap() > readable);
     }
+
+    /// A shader constant's value, read from the wash's text.
+    fn constant(wash: &str, name: &str) -> f32 {
+        let line = wash.lines().find(|l| l.starts_with(&format!("constant float {name} = "))).unwrap_or_else(|| panic!("no {name}"));
+        line.rsplit("= ").next().unwrap().trim_end_matches(';').parse().unwrap()
+    }
+
+    fn wash() -> &'static str {
+        crate::effects::BUILTIN.iter().find(|b| b.name == "watercolor").unwrap().wash
+    }
+
+    #[test]
+    fn the_studio_moves_softly_every_motion_slow_and_small() {
+        // Cyrus, 2026-11-17: "soft movements that adds liveliness to the scene without being
+        // distracting": nothing in the studio cycles faster than every five seconds.
+        let w = wash();
+        for name in ["LAMP_SWAY_S", "DRAPE_SWAY_S", "LEAF_SWAY_S", "STEAM_RISE_S", "BEAM_BREATH_S", "CLOUD_PASS_S"] {
+            assert!(constant(w, name) >= 5.0, "{name} is {}", constant(w, name));
+        }
+        assert!(constant(w, "LAMP_SWAY") <= 0.05, "the lamp swings a few degrees at most");
+        for motion in ["t * tau / LAMP_SWAY_S", "t * tau / DRAPE_SWAY_S", "t * tau / LEAF_SWAY_S", "t * tau / STEAM_RISE_S", "t * tau / BEAM_BREATH_S", "t / CLOUD_PASS_S"] {
+            assert!(w.contains(motion), "the studio's {motion} is not used");
+        }
+    }
+
+    /// Painting i's canvas on the easel, as the wash's `canvas_rect` places it in a sidebar foot
+    /// `foot` (x, y, w, h): its origin and size in points.
+    fn canvas_rect(foot: [f32; 4], size: (f32, f32)) -> [f32; 4] {
+        let w = wash();
+        let (sw, sh) = (foot[2] - 8.0, (foot[3] - 6.0).min((foot[2] - 8.0) * constant(w, "STUDIO_TALL")));
+        let (ox, oy) = (foot[0] + 4.0, foot[1] + foot[3] - 4.0);
+        let (bw, bh) = (sw * constant(w, "CANVAS_W"), sh * constant(w, "CANVAS_H"));
+        let k = (bw / size.0).min(bh / size.1);
+        let (cw, ch) = (size.0 * k, size.1 * k);
+        let (fx, fy) = (ox + constant(w, "CANVAS_X") * sw, oy - constant(w, "CANVAS_FOOT") * sh);
+        [fx - cw * 0.5, fy - ch, cw, ch]
+    }
+
+    #[test]
+    fn the_painting_is_the_studio_s_centrepiece_on_its_easel_above_the_floor() {
+        let w = wash();
+        let effect = crate::effects::manifest::load("watercolor", std::path::Path::new("/nonexistent")).unwrap();
+        let sizes: Vec<(f32, f32)> = effect.images.iter().map(|b| crate::effects::images::dimensions(b).map(|(a, b)| (a as f32, b as f32)).unwrap()).collect();
+        for foot in [[0.0f32, 300.0, 240.0, 500.0], [8.0, 420.0, 200.0, 180.0], [0.0, 100.0, 320.0, 700.0]] {
+            let (sw, sh) = (foot[2] - 8.0, (foot[3] - 6.0).min((foot[2] - 8.0) * constant(w, "STUDIO_TALL")));
+            let floor = foot[1] + foot[3] - 4.0 - constant(w, "FLOOR_Y") * sh;
+            for &size in &sizes {
+                let r = canvas_rect(foot, size);
+                assert!(r[0] >= foot[0] && r[0] + r[2] <= foot[0] + foot[2] && r[1] >= foot[1], "{foot:?} {size:?}: {r:?} outside the space");
+                assert!(r[1] + r[3] < floor, "{foot:?} {size:?}: the canvas reaches the floor");
+                // The centrepiece: wide or tall, it fills its share of the scene one way.
+                assert!(r[2] >= 0.99 * sw * constant(w, "CANVAS_W") || r[3] >= 0.99 * sh * constant(w, "CANVAS_H"), "{foot:?} {size:?}: {r:?}");
+            }
+        }
+        assert!(w.contains("float3 tone = ") || w.contains("float3 tone)"), "the painting is toned toward the theme");
+        assert!(constant(w, "STUDIO_TONE") > 0.0 && constant(w, "STUDIO_TONE") <= 0.35, "toned, not repainted");
+    }
+
 }
