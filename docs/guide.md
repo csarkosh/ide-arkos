@@ -875,9 +875,9 @@ window, as Keybindings (Cmd+/) does.
     Dark, Light), the dark and the light preset lists side by side, "Add preset…" and "Show
     presets folder". Each preset reads by its title (Plain Navy, The Matrix, Tokyo Rain…),
     and a group is one row with its choice on the right: Watercolor (Lavender, the default, or
-    Peach) and Material (Solar, the default, Bright or Lavender). A click on the row picks the
-    choice shown; a click on the choice opens a small menu of the members, the one in force
-    checked, and a click outside it closes it. "Add preset…" takes a theme's `.toml` file (anything else is refused), names
+    Peach) and Material (Solar, the default, Bright or Lavender). The whole row is a select: a click
+    on it opens a small menu of the members, the one in force checked; a click on one puts it in
+    force, and a click outside the menu closes it. "Add preset…" takes a theme's `.toml` file (anything else is refused), names
     the copy after the file's own `name`, shows the error under the button for a bad file, and
     asks "Replace the existing {name}?" before overwriting a theme file or shadowing a built-in
     of that name. A new preset is set as the dark or light one by the mode in force. A

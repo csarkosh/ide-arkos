@@ -1103,10 +1103,10 @@ Things only a person at the screen can check, in order of value:
   keys back to the pane; the ring never shifts the pills
 - Settings, Appearance, Presets: every preset reads by its title (Plain Navy, Enter The
   Matrix); the light list has one Watercolor row showing "Watercolor Lavender ▾" and one
-  Material row showing "Material Solar ▾" when neither is in force; a click on the row puts that
-  member in force with its check on the row; a click on the choice ("Lavender ▾") opens a small card of
-  the members floating over the rows below, the one in force checked; a click on one puts it in
-  force and closes the card, a click elsewhere closes it; the palette's "Theme: Enter The
+  Material row showing "Material Solar ▾" when neither is in force; a click anywhere on the row
+  opens a small card of the members floating over the rows below, the one in force checked; a
+  click on one puts it in force (the row's check and choice follow) and closes the card, a click
+  elsewhere closes it; the palette's "Theme: Enter The
   Matrix" is found by typing "matrix"
 - runic world (Tokyo Rain, The Matrix): each pane in a cut-corner neon frame in a 16 point
   gap, the focused one in the focus colour; a light runs round a working pane's frame; a waiting

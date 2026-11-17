@@ -453,6 +453,9 @@ pub struct SettingsWindow {
     theme_shown: std::collections::BTreeMap<String, theme::Shown>,
     /// The preset group whose members are listed open under its row, and in which list.
     open_group: Option<(theme::Appearance, String)>,
+    /// When a click outside it last closed a group's menu: a click on the group's own row closes
+    /// it that way first, and must not open it again.
+    group_closed_at: Option<std::time::Instant>,
     /// The effects folder and the built-ins, as `effects::manifest::list` reads them.
     effects: Vec<(String, effects::manifest::Source)>,
     /// Every theme that loads with its fonts (`theme::fonts`), for the custom look's Font list.
@@ -551,6 +554,7 @@ pub fn open(cx: &mut App, over: Option<Retained<NSWindow>>, shown: Shown, theme:
                 themes: theme::kinds(&paths::themes_dir()),
                 theme_shown: theme::shown(&paths::themes_dir()),
                 open_group: None,
+                group_closed_at: None,
                 effects: effects::manifest::list(&effects::effects_dir()),
                 theme_fonts: theme::fonts(&paths::themes_dir()),
                 families: cx.text_system().all_font_names().into_iter().collect(),
@@ -992,39 +996,34 @@ impl SettingsWindow {
                         list = list.child(row);
                     }
                     PresetRow::Group { name: group, members, pick } => {
-                        // One row for the group, as any preset's: a click picks the member its
-                        // choice shows. The choice on its right, quiet text with a caret, opens a
-                        // small menu of the members floating over the list.
+                        // One row for the group, the whole row a select: its choice on the right
+                        // (quiet text with a caret), and a click anywhere on it opens a small menu
+                        // of the members floating over the list, where a click picks one.
                         let is_current = members.iter().any(|(ix, _)| &self.themes[*ix].0 == current);
                         let pick_name = members.iter().find(|(ix, _)| *ix == pick).map(|(_, t)| member_name(t, &group)).unwrap_or_default();
                         let open = self.open_group.as_ref().is_some_and(|(s, g)| *s == slot && *g == group);
                         let toggle_group = group.clone();
                         let choice = div()
-                            .id((list_id, 10_000 + pick))
                             .ml_auto()
                             .flex()
                             .items_center()
                             .gap(px(4.0))
                             .px(px(6.0))
-                            .rounded(px(4.0))
                             .text_color(c.dim)
                             .child(pick_name)
-                            .child(div().text_size(px(9.0)).child("\u{25be}"))
-                            .when(enabled, |d| {
-                                d.cursor_pointer().hover(move |s| s.text_color(c.text)).on_mouse_down(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(move |w, _, _, cx| {
-                                        cx.stop_propagation();
-                                        let here = (slot, toggle_group.clone());
-                                        w.open_group = if w.open_group.as_ref() == Some(&here) { None } else { Some(here) };
-                                        cx.notify();
-                                    }),
-                                )
-                            });
+                            .child(div().text_size(px(9.0)).child("\u{25be}"));
                         let mut row = list_row((list_id, 20_000 + pick), group.clone(), is_current, enabled, c).relative().child(choice);
-                        if enabled && !is_current {
-                            let name = self.themes[pick].0.clone();
-                            row = row.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&["theme", key], name.as_str())], cx)));
+                        if enabled {
+                            row = row.cursor_pointer().hover(move |s| s.bg(c.pill)).on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |w, _, _, cx| {
+                                    cx.stop_propagation();
+                                    let here = (slot, toggle_group.clone());
+                                    let just_closed = w.group_closed_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(100));
+                                    w.open_group = if w.open_group.as_ref() == Some(&here) || just_closed { None } else { Some(here) };
+                                    cx.notify();
+                                }),
+                            );
                         }
                         if open {
                             // The menu: a card under the choice, drawn above the rows after it,
@@ -1045,6 +1044,7 @@ impl SettingsWindow {
                                 .flex_col()
                                 .on_mouse_down_out(cx.listener(|w, _, _, cx| {
                                     w.open_group = None;
+                                    w.group_closed_at = Some(std::time::Instant::now());
                                     cx.notify();
                                 }));
                             for (ix, title) in members {
