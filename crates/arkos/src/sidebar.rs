@@ -203,9 +203,20 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
     let c = &theme.chrome;
     let width = root.sidebar.width;
     let family = root.ui_family();
+    // A group's heading, ringed while the keyboard is on it (always a border, clear otherwise,
+    // so the ring moves nothing).
+    let group_ring = root.header_ring;
+    let ring_c = c.focus_ring.hsla();
     let header = |id: &'static str, title: &str, open: bool| -> Stateful<Div> {
+        let ringed = match id {
+            "explorer-header" => group_ring == Some(Group::Explorer),
+            _ => group_ring == Some(Group::Worktrees),
+        };
         div()
             .id(id)
+            .rounded(px(4.0))
+            .border_1()
+            .border_color(if ringed { ring_c } else { gpui::transparent_black() })
             .h(px(ROW_H))
             .flex_none()
             .pl(px(10.0 + style.sidebar_pad))
@@ -423,6 +434,15 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .font_family(family)
         .text_size(px(style.ui(13.0)))
         .text_color(c.text.hsla())
+        // The group headings take the keys here while the ring is on one (`Root::group_key_down`).
+        .track_focus(&root.header_focus)
+        // Only while the column itself has the keys: a key the switcher, the tree or the
+        // worktrees handled also bubbles up here, and must not move the ring a second time.
+        .on_key_down(cx.listener(|root, ev: &KeyDownEvent, window, cx| {
+            if root.header_focus.is_focused(window) {
+                root.group_key_down(&ev.keystroke, cx);
+            }
+        }))
         .children(switch)
         .when(sessions_h > 0.0 || !inbox, |d| d.child(sessions))
         .when(files_view, |d| d.child(explorer).child(worktrees))
@@ -1978,6 +1998,11 @@ impl Root {
         let rows = self.worktrees.rows();
         let sel = self.worktrees.selected.clone();
         match ks.key.as_str() {
+            // Up from the first row reaches the Worktrees heading.
+            "up" if rows.first().is_none_or(|r| sel.as_deref() == Some(row_path(r).as_path())) => {
+                self.focus_group(Group::Worktrees, cx);
+                return;
+            }
             "down" | "up" => {
                 let order: Vec<PathBuf> = rows.iter().map(row_path).collect();
                 let order: Vec<&Path> = order.iter().map(PathBuf::as_path).collect();
@@ -2131,12 +2156,17 @@ impl Root {
         let rows = self.explorer.rows();
         let selected = self.explorer.selected.clone().and_then(|s| rows.iter().find(|r| r.path == s).cloned());
         match ks.key.as_str() {
-            "down" => self.explorer.select_next(),
-            // Up from the first row reaches the Sessions/Files switcher.
+            // Up from the first row reaches the Explorer heading, Down from the last the
+            // Worktrees heading.
             "up" if rows.first().is_none_or(|r| self.explorer.selected.as_ref() == Some(&r.path)) => {
-                self.focus_switcher(cx);
+                self.focus_group(Group::Explorer, cx);
                 return;
             }
+            "down" if rows.last().is_none_or(|r| self.explorer.selected.as_ref() == Some(&r.path)) => {
+                self.focus_group(Group::Worktrees, cx);
+                return;
+            }
+            "down" => self.explorer.select_next(),
             "up" => self.explorer.select_prev(),
             "right" => match selected {
                 Some(r) if r.is_dir && !r.expanded => {
@@ -2233,13 +2263,88 @@ impl Root {
     }
 }
 
+/// A place in the sidebar the keys can be, for Cmd+0 to return to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Spot {
+    /// The session list's filter, with its ring on a row.
+    Sessions,
+    Switcher,
+    Group(Group),
+    Tree,
+    Worktrees,
+}
+
+/// Where the sidebar has the keys now, if it does.
+pub fn spot_now(filter: bool, switcher: bool, heading: Option<Group>, tree: bool, worktrees: bool) -> Option<Spot> {
+    if filter {
+        Some(Spot::Sessions)
+    } else if switcher {
+        Some(Spot::Switcher)
+    } else if let Some(g) = heading {
+        Some(Spot::Group(g))
+    } else if tree {
+        Some(Spot::Tree)
+    } else if worktrees {
+        Some(Spot::Worktrees)
+    } else {
+        None
+    }
+}
+
+/// Where Cmd+0 puts the keys: back where they last were, when that is in the tab now shown (the
+/// switcher is in both); else the tab's first stop: the session list, or the Explorer heading.
+pub fn spot_for(last: Option<Spot>, files: bool) -> Spot {
+    match last {
+        Some(Spot::Switcher) => Spot::Switcher,
+        Some(Spot::Sessions) if !files => Spot::Sessions,
+        Some(s @ (Spot::Group(_) | Spot::Tree | Spot::Worktrees)) if files => s,
+        _ if files => Spot::Group(Group::Explorer),
+        _ => Spot::Sessions,
+    }
+}
+
+/// The Files view's two groups, whose headings the keyboard stops on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    Explorer,
+    Worktrees,
+}
+
+/// What a key does on a group's heading (Cyrus, 2026-11-17: "a way to collapse the Explorer and
+/// Worktrees groups"): Left folds the group, Right opens it, Enter or Space flips it, Up and Down
+/// go on to what is above and below, Escape back to the pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupKey {
+    Fold,
+    Open,
+    Flip,
+    Up,
+    Down,
+    Leave,
+    Pass,
+}
+
+pub fn group_key(key: &str) -> GroupKey {
+    match key {
+        "left" => GroupKey::Fold,
+        "right" => GroupKey::Open,
+        "enter" | "space" => GroupKey::Flip,
+        "up" => GroupKey::Up,
+        "down" => GroupKey::Down,
+        "escape" => GroupKey::Leave,
+        _ => GroupKey::Pass,
+    }
+}
+
 /// What a key does while the Sessions/Files switcher has the keyboard (Chrome keys spec, section
-/// 2): Left shows the sessions, Right the files, Down or Enter goes into the list shown, Escape
-/// gives the keys back to the pane.
+/// 2): Left shows the sessions, Right the files, Down or Enter goes into the list shown, Up on to
+/// the title bar's bell and doctor, Escape gives the keys back to the pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SwitcherKey {
     Show { files: bool },
     Enter,
+    /// Up: on to the title bar's icons.
+    Up,
     Leave,
     Pass,
 }
@@ -2249,6 +2354,7 @@ pub fn switcher_key(key: &str) -> SwitcherKey {
         "left" => SwitcherKey::Show { files: false },
         "right" => SwitcherKey::Show { files: true },
         "down" | "enter" => SwitcherKey::Enter,
+        "up" => SwitcherKey::Up,
         "escape" => SwitcherKey::Leave,
         _ => SwitcherKey::Pass,
     }
@@ -2257,6 +2363,35 @@ pub fn switcher_key(key: &str) -> SwitcherKey {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn cmd_0_goes_back_where_the_keys_were_in_the_tab_shown() {
+        use super::{spot_for, spot_now, Group, Spot};
+        assert_eq!(spot_for(None, false), Spot::Sessions, "the first time, on Sessions");
+        assert_eq!(spot_for(None, true), Spot::Group(Group::Explorer), "the first time, on Files");
+        assert_eq!(spot_for(Some(Spot::Tree), true), Spot::Tree, "the files, where it was");
+        assert_eq!(spot_for(Some(Spot::Worktrees), true), Spot::Worktrees);
+        assert_eq!(spot_for(Some(Spot::Group(Group::Worktrees)), true), Spot::Group(Group::Worktrees));
+        assert_eq!(spot_for(Some(Spot::Switcher), true), Spot::Switcher);
+        assert_eq!(spot_for(Some(Spot::Tree), false), Spot::Sessions, "the tab was switched by the mouse since");
+        assert_eq!(spot_for(Some(Spot::Sessions), true), Spot::Group(Group::Explorer));
+        assert_eq!(spot_now(false, false, Some(Group::Worktrees), false, false), Some(Spot::Group(Group::Worktrees)));
+        assert_eq!(spot_now(false, false, None, true, false), Some(Spot::Tree));
+        assert_eq!(spot_now(false, false, None, false, false), None, "the keys are elsewhere");
+    }
+
+    #[test]
+    fn a_group_heading_folds_left_opens_right_and_flips_on_enter() {
+        use super::{group_key, GroupKey};
+        assert_eq!(group_key("left"), GroupKey::Fold);
+        assert_eq!(group_key("right"), GroupKey::Open);
+        assert_eq!(group_key("enter"), GroupKey::Flip);
+        assert_eq!(group_key("space"), GroupKey::Flip);
+        assert_eq!(group_key("up"), GroupKey::Up);
+        assert_eq!(group_key("down"), GroupKey::Down);
+        assert_eq!(group_key("escape"), GroupKey::Leave);
+        assert_eq!(group_key("a"), GroupKey::Pass);
+    }
+
+    #[test]
     fn the_switcher_takes_left_and_right_and_goes_down_into_its_list() {
         use super::{switcher_key, SwitcherKey};
         assert_eq!(switcher_key("left"), SwitcherKey::Show { files: false });
@@ -2264,6 +2399,7 @@ mod tests {
         assert_eq!(switcher_key("down"), SwitcherKey::Enter);
         assert_eq!(switcher_key("enter"), SwitcherKey::Enter);
         assert_eq!(switcher_key("escape"), SwitcherKey::Leave);
+        assert_eq!(switcher_key("up"), SwitcherKey::Up, "on to the title bar's icons");
         assert_eq!(switcher_key("a"), SwitcherKey::Pass);
     }
 

@@ -1084,6 +1084,15 @@ Things only a person at the screen can check, in order of value:
   ("shown after 0.5s … off screen") and the desktop in front does not change. A sampler of the
   window list (`CGWindowListCopyWindowInfo` every millisecond, alpha and owner) shows an opaque
   window at every sample; `screencapture` needs Screen Recording, which the sampler does not
+- title bar keys: Cmd+0, Up past the switcher rings the bell; Right rings the wrench; Enter opens
+  the doctor's menu with a ring on its first button, Down moves it, Enter presses it, Escape
+  closes the menu and the ring stays on the wrench; Down goes back to the switcher; hovering the
+  bell and the wrench shows a tooltip naming its menu and what is in it
+- Files headings: on Files, Down from the switcher rings EXPLORER; Left folds it, Down rings
+  WORKTREES, Left folds it, Right opens it, Up goes back; Down from EXPLORER (open) goes into the
+  tree; the ring never shifts the headings
+- Cmd+0 on Files: leave the keys on a file, click a pane, press Cmd+0: the sidebar stays on
+  Files with the same file selected and the keys there; on Sessions it comes back to the ringed row
 - Sessions/Files switcher: Cmd+0, then Up from the first session rings "Sessions"; Right shows
   the files with the ring on "Files", Left goes back; Down on Files puts the keys in the tree on
   its first row, and Up from there rings the switcher again; Escape on the switcher gives the

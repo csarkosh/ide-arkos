@@ -149,6 +149,79 @@ pub struct Right {
     pub open: Popover,
     pub hover: Popover,
     pub breath: f32,
+    /// The icon the keyboard's ring is on (Chrome keys spec, section 2), or `Closed`.
+    pub ring: Popover,
+}
+
+/// What a key does while the title bar's icons have the keyboard: with no menu open, Left and
+/// Right move the ring between the bell and the doctor, Enter or Space opens the ringed one's
+/// menu, Down goes back to the Sessions/Files switcher, Escape back to the pane; with its menu
+/// open, Up and Down move between the menu's buttons and Enter or Space presses one (Escape
+/// closes the menu, as for every menu).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarKey {
+    Ring(Popover),
+    Open,
+    Mark(isize),
+    Press,
+    Down,
+    Leave,
+    Pass,
+}
+
+pub fn bar_key(key: &str, menu_open: bool) -> BarKey {
+    match (key, menu_open) {
+        ("up", true) => BarKey::Mark(-1),
+        ("down", true) => BarKey::Mark(1),
+        ("enter" | "space", true) => BarKey::Press,
+        ("left", false) => BarKey::Ring(Popover::Bell),
+        ("right", false) => BarKey::Ring(Popover::Doctor),
+        ("enter" | "space", false) => BarKey::Open,
+        ("down", false) => BarKey::Down,
+        ("escape", false) => BarKey::Leave,
+        _ => BarKey::Pass,
+    }
+}
+
+/// What each icon's tooltip says: its menu's name and what is in it.
+pub fn icon_tip(which: Popover) -> (&'static str, &'static str) {
+    match which {
+        Popover::Doctor => ("Doctor", "Checks what Arkos needs from Claude Code and macOS (smooth scrolling, its theme, the title hook, start at login), with a fix for each."),
+        _ => ("Notifications", "Updates, settings errors and what Arkos set up for you. A dot means something new, or an update waiting."),
+    }
+}
+
+/// A tooltip card: a title and a line under it, a set width so a wrapped line stays in its box.
+pub struct Tip {
+    pub title: SharedString,
+    pub text: SharedString,
+    pub fg: gpui::Hsla,
+    pub dim: gpui::Hsla,
+    pub bg: gpui::Hsla,
+    pub border: gpui::Hsla,
+    pub family: SharedString,
+    pub size: f32,
+}
+
+impl gpui::Render for Tip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        div()
+            .w(px(240.0))
+            .px(px(10.0))
+            .py(px(6.0))
+            .rounded(px(6.0))
+            .bg(self.bg)
+            .border_1()
+            .border_color(self.border)
+            .text_color(self.fg)
+            .font_family(self.family.clone())
+            .text_size(px(self.size))
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .child(div().font_weight(FontWeight::BOLD).child(self.title.clone()))
+            .child(div().text_color(self.dim).child(self.text.clone()))
+    }
 }
 
 pub type IconClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
@@ -178,8 +251,10 @@ pub fn dot_halo(breath: f32) -> (f32, f32) {
 /// One icon: a square target holding the 16 px drawing, lit while hovered or open, with a dot
 /// at its top right when there is news. The dot breathes as the focused pane's glow does: a
 /// halo swells around it and it lightens towards the peak, away from the bar's colour.
-fn icon_button(id: &'static str, icon: Icon, dot: bool, breath: f32, lit: bool, c: &crate::theme::Chrome, (on_click, on_hover): (IconClick, IconHover)) -> gpui::Stateful<Div> {
-    let color = if lit { c.text.hsla() } else { c.text_dim.hsla() };
+#[allow(clippy::too_many_arguments)]
+fn icon_button(id: &'static str, icon: Icon, dot: bool, breath: f32, lit: bool, ringed: bool, tip: (&'static str, &'static str), c: &crate::theme::Chrome, family: SharedString, (on_click, on_hover): (IconClick, IconHover)) -> gpui::Stateful<Div> {
+    let color = if lit || ringed { c.text.hsla() } else { c.text_dim.hsla() };
+    let (fg, dim, bg, border) = (c.text.hsla(), c.text_dim.hsla(), c.banner.hsla(), c.border.hsla());
     div()
         .id(id)
         .size(px(ICON_TARGET))
@@ -188,6 +263,14 @@ fn icon_button(id: &'static str, icon: Icon, dot: bool, breath: f32, lit: bool, 
         .justify_center()
         .cursor_pointer()
         .relative()
+        // The keyboard's ring: always a border, clear unless ringed, so it never moves the icon.
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(if ringed { c.focus_ring.hsla() } else { gpui::transparent_black() })
+        .tooltip(move |_window, cx| {
+            let tip = Tip { title: tip.0.into(), text: tip.1.into(), fg, dim, bg, border, family: family.clone(), size: 12.0 };
+            gpui::AnyView::from(cx.new(|_| tip))
+        })
         // The bar's window drag must not start from a press on an icon.
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(on_click)
@@ -295,7 +378,7 @@ pub fn title_bar(project: &Path, sandbox: bool, right: Right, fullscreen: bool, 
         .gap(px(10.0))
         .bg(c.title_bar.alpha(style.chrome_alpha))
         .text_color(c.text.hsla())
-        .font_family(bar_font)
+        .font_family(bar_font.clone())
         .text_size(px(style.ui(13.0)))
         // The words take only their own width (the path truncating when the bar is short), and
         // an empty stretch of at least `TITLE_GROUPS_GAP` keeps them apart from the icons.
@@ -318,8 +401,8 @@ pub fn title_bar(project: &Path, sandbox: bool, right: Right, fullscreen: bool, 
                 .flex()
                 .items_center()
                 .gap(px(ICON_GAP))
-                .child(icon_button("bell", Icon::Bell, right.bell_dot, right.breath, right.open == Popover::Bell || right.hover == Popover::Bell, c, on_bell))
-                .child(icon_button("doctor", Icon::Doctor, right.doctor_dot, right.breath, right.open == Popover::Doctor || right.hover == Popover::Doctor, c, on_doctor)),
+                .child(icon_button("bell", Icon::Bell, right.bell_dot, right.breath, right.open == Popover::Bell || right.hover == Popover::Bell, right.ring == Popover::Bell, icon_tip(Popover::Bell), c, bar_font.clone(), on_bell))
+                .child(icon_button("doctor", Icon::Doctor, right.doctor_dot, right.breath, right.open == Popover::Doctor || right.hover == Popover::Doctor, right.ring == Popover::Doctor, icon_tip(Popover::Doctor), c, bar_font.clone(), on_doctor)),
             crate::effects::blocks::TITLE_ICONS_KEY,
         ))
 }
@@ -545,6 +628,18 @@ mod tests {
 
     #[test]
     fn opening_one_popover_closes_the_other() {
+        assert_eq!(bar_key("left", false), BarKey::Ring(Popover::Bell));
+        assert_eq!(bar_key("right", false), BarKey::Ring(Popover::Doctor));
+        assert_eq!(bar_key("enter", false), BarKey::Open);
+        assert_eq!(bar_key("space", false), BarKey::Open);
+        assert_eq!(bar_key("down", false), BarKey::Down, "back to the switcher");
+        assert_eq!(bar_key("escape", false), BarKey::Leave);
+        assert_eq!(bar_key("down", true), BarKey::Mark(1), "a menu open: its buttons");
+        assert_eq!(bar_key("up", true), BarKey::Mark(-1));
+        assert_eq!(bar_key("enter", true), BarKey::Press);
+        assert_eq!(bar_key("left", true), BarKey::Pass);
+        assert!(icon_tip(Popover::Bell).1.contains("update"), "the bell's tooltip says what it holds");
+        assert!(icon_tip(Popover::Doctor).1.contains("fix"));
         assert_eq!(Popover::Closed.toggled(Popover::Bell), Popover::Bell);
         assert_eq!(Popover::Bell.toggled(Popover::Doctor), Popover::Doctor);
         assert_eq!(Popover::Doctor.toggled(Popover::Doctor), Popover::Closed);

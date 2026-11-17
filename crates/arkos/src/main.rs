@@ -374,6 +374,16 @@ pub struct Root {
     /// The Sessions/Files switcher has the keys (reached by Up from the top of either list).
     pub switcher_focused: bool,
     pub switcher_focus: FocusHandle,
+    /// The title bar icon the keyboard's ring is on (reached by Up from the switcher), and the
+    /// button of its open menu the keys would press.
+    pub bar_ring: Option<chrome::Popover>,
+    pub bar_focus: FocusHandle,
+    /// The Files view's group heading the keyboard's ring is on.
+    pub header_ring: Option<sidebar::Group>,
+    pub header_focus: FocusHandle,
+    /// Where in the sidebar the keys last were, for Cmd+0 to go back to.
+    pub sidebar_spot: Option<sidebar::Spot>,
+    pub popover_mark: usize,
     pub session_filter_focused: bool,
     /// The session list's keyboard cursor (Chrome keys spec, section 2): the row Enter opens.
     pub session_cursor: Option<sessions_list::RowKey>,
@@ -710,6 +720,14 @@ fn daemon_args(config: &config::Config, sandbox: bool) -> Vec<String> {
     args
 }
 
+/// A button of the bell's or the doctor's menu, for the keyboard (`Root::popover_buttons`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PopoverButton {
+    Notice(notices::Action),
+    Doctor(doctor_panel::CheckId),
+    CopyReport,
+}
+
 /// `ARKOS_UPDATE_PREVIEW=<secs>`, for trying the update's look in a sandbox (update heads-up
 /// spec): the window behaves as if a release were staged, with `<secs>` as the quiet spell, then
 /// relaunches through the daemon as an update does. A window an update started (a relaunch or a
@@ -902,6 +920,12 @@ impl Root {
             session_filter_focus: cx.focus_handle(),
             switcher_focused: false,
             switcher_focus: cx.focus_handle(),
+            bar_ring: None,
+            bar_focus: cx.focus_handle(),
+            header_ring: None,
+            header_focus: cx.focus_handle(),
+            sidebar_spot: None,
+            popover_mark: 0,
             session_filter_focused: false,
             session_cursor: None,
             dock_badge: 0,
@@ -1513,6 +1537,13 @@ impl Root {
         let card = if self.effect_style().menu_edges { card.child(chrome::menu_report(0x15, opacity, cx)) } else { card };
         let c = &self.theme.chrome;
         let (text_c, dim_c) = (c.text.hsla(), c.text_dim.hsla());
+        // The button the keyboard would press, ringed while the title bar has the keys; every
+        // button carries a clear border otherwise, so the ring moves nothing.
+        let ring = c.focus_ring.hsla();
+        let keyed = self.bar_ring.is_some();
+        let mark = self.popover_mark;
+        let ringed = move |d: gpui::Stateful<gpui::Div>, i: usize| d.px(px(4.0)).rounded(px(4.0)).border_1().border_color(if keyed && i == mark { ring } else { gpui::transparent_black() });
+        let mut button_i = 0usize;
         if which != chrome::Popover::Bell {
             let red = self.theme.terminal.red.hsla();
             let mut card = card;
@@ -1537,9 +1568,10 @@ impl Root {
                             .child(div().text_color(state_c).child(state_text)),
                     );
                 if let Some(label) = check.button.filter(|_| self.doctor_busy != Some(id)) {
+                    let at = button_i;
+                    button_i += 1;
                     row = row.child(
-                        div()
-                            .id(("doctor-action", i))
+                        ringed(div().id(("doctor-action", i)), at)
                             .flex_none()
                             .text_color(text_c)
                             .cursor_pointer()
@@ -1555,8 +1587,7 @@ impl Root {
             }
             return Some(card.child(
                 div().flex().flex_row().px(px(10.0)).py(px(4.0)).child(
-                    div()
-                        .id("doctor-copy-report")
+                    ringed(div().id("doctor-copy-report"), button_i)
                         .flex_none()
                         .text_color(text_c)
                         .cursor_pointer()
@@ -1593,9 +1624,10 @@ impl Root {
                     notices::Action::OpenConfig => "Open config",
                     notices::Action::OpenTheme => "Open theme",
                 };
+                let at = button_i;
+                button_i += 1;
                 row = row.child(
-                    div()
-                        .id(("notice-action", i))
+                    ringed(div().id(("notice-action", i)), at)
                         .flex_none()
                         .text_color(text_c)
                         .cursor_pointer()
@@ -2241,6 +2273,8 @@ impl Root {
         self.wt_focused = false;
         self.session_filter_focused = false;
         self.switcher_focused = false;
+        self.bar_ring = None;
+        self.header_ring = None;
         if self.tree.pane(pane).is_none() {
             return;
         }
@@ -2344,6 +2378,8 @@ impl Root {
                 let target = self.session_cursor.filter(|c| rows.contains(c)).or_else(|| rows.first().copied());
                 self.session_filter_focused = false;
                 self.switcher_focused = false;
+                self.bar_ring = None;
+                self.header_ring = None;
                 self.session_filter.clear();
                 match target {
                     Some(sessions_list::RowKey::Ended(i)) => self.resume_ended(i, cx),
@@ -2356,6 +2392,8 @@ impl Root {
                 if self.session_filter.text.is_empty() {
                     self.session_filter_focused = false;
                     self.switcher_focused = false;
+                    self.bar_ring = None;
+                    self.header_ring = None;
                 } else {
                     self.session_filter.clear();
                 }
@@ -2378,7 +2416,152 @@ impl Root {
         self.session_filter_focused = false;
         self.sidebar_focused = false;
         self.wt_focused = false;
+        self.bar_ring = None;
+        self.header_ring = None;
         self.switcher_focused = true;
+        cx.notify();
+    }
+
+    /// A group heading of the Files view takes the keys (Chrome keys spec, section 2).
+    pub fn focus_group(&mut self, group: sidebar::Group, cx: &mut Context<Self>) {
+        self.session_filter_focused = false;
+        self.switcher_focused = false;
+        self.sidebar_focused = false;
+        self.wt_focused = false;
+        self.bar_ring = None;
+        self.header_ring = Some(group);
+        cx.notify();
+    }
+
+    /// A key on a group heading (`sidebar::group_key`): fold, open or flip the group, or go on to
+    /// what is above and below it: the switcher, the files, the worktrees.
+    pub fn group_key_down(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
+        let Some(group) = self.header_ring else { return };
+        let m = &ks.modifiers;
+        if m.platform || m.control || m.alt || m.shift {
+            return;
+        }
+        let open = match group {
+            sidebar::Group::Explorer => self.sidebar.explorer_open,
+            sidebar::Group::Worktrees => self.sidebar.worktrees_open,
+        };
+        let set_open = |root: &mut Self, want: bool, cx: &mut Context<Self>| {
+            match group {
+                sidebar::Group::Explorer => root.sidebar.explorer_open = want,
+                sidebar::Group::Worktrees => root.sidebar.worktrees_open = want,
+            }
+            if !want && group == sidebar::Group::Explorer {
+                root.new_file.hide(Instant::now());
+            }
+            root.save(cx);
+        };
+        let tree_rows = self.explorer.rows();
+        let wt_rows = self.worktrees.rows();
+        match (sidebar::group_key(&ks.key), group) {
+            (sidebar::GroupKey::Fold, _) => set_open(self, false, cx),
+            (sidebar::GroupKey::Open, _) => set_open(self, true, cx),
+            (sidebar::GroupKey::Flip, _) => set_open(self, !open, cx),
+            (sidebar::GroupKey::Up, sidebar::Group::Explorer) => {
+                self.focus_switcher(cx);
+                return;
+            }
+            (sidebar::GroupKey::Up, sidebar::Group::Worktrees) => {
+                if self.sidebar.explorer_open && !tree_rows.is_empty() {
+                    // Into the files from the bottom.
+                    self.explorer.selected = tree_rows.last().map(|r| r.path.clone());
+                    self.header_ring = None;
+                    self.sidebar_focused = true;
+                } else {
+                    self.header_ring = Some(sidebar::Group::Explorer);
+                }
+            }
+            (sidebar::GroupKey::Down, sidebar::Group::Explorer) => {
+                if open && !tree_rows.is_empty() {
+                    if !self.explorer.selected.as_ref().is_some_and(|s| tree_rows.iter().any(|r| &r.path == s)) {
+                        self.explorer.selected = tree_rows.first().map(|r| r.path.clone());
+                    }
+                    self.header_ring = None;
+                    self.sidebar_focused = true;
+                } else {
+                    self.header_ring = Some(sidebar::Group::Worktrees);
+                }
+            }
+            (sidebar::GroupKey::Down, sidebar::Group::Worktrees) => {
+                if open && !wt_rows.is_empty() {
+                    if self.worktrees.selected.is_none() {
+                        self.worktrees.selected = wt_rows.first().map(sidebar::row_path);
+                    }
+                    self.header_ring = None;
+                    self.wt_focused = true;
+                }
+            }
+            (sidebar::GroupKey::Leave, _) => self.header_ring = None,
+            (sidebar::GroupKey::Pass, _) => return,
+        }
+        cx.notify();
+    }
+
+    /// The title bar's icons take the keys, the ring on the bell (Chrome keys spec, section 2).
+    pub fn focus_bar(&mut self, cx: &mut Context<Self>) {
+        self.session_filter_focused = false;
+        self.switcher_focused = false;
+        self.sidebar_focused = false;
+        self.wt_focused = false;
+        self.header_ring = None;
+        self.bar_ring = Some(chrome::Popover::Bell);
+        cx.notify();
+    }
+
+    /// The open menu's buttons, in the order the keys step through them.
+    fn popover_buttons(&self) -> Vec<PopoverButton> {
+        match self.popover.value() {
+            Some(chrome::Popover::Bell) => self.notices.items().iter().filter_map(|n| n.action).map(PopoverButton::Notice).collect(),
+            Some(chrome::Popover::Doctor) => self
+                .doctor_states
+                .iter()
+                .filter(|c| c.button.is_some() && self.doctor_busy != Some(c.id))
+                .map(|c| PopoverButton::Doctor(c.id))
+                .chain(std::iter::once(PopoverButton::CopyReport))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// A key while the title bar's icons have the keyboard (`chrome::bar_key`).
+    pub fn bar_key_down(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
+        let Some(ring) = self.bar_ring else { return };
+        let m = &ks.modifiers;
+        if m.platform || m.control || m.alt || m.shift {
+            return;
+        }
+        let open = self.popover.value().is_some();
+        match chrome::bar_key(&ks.key, open) {
+            chrome::BarKey::Ring(which) => self.bar_ring = Some(which),
+            chrome::BarKey::Open => {
+                self.toggle_popover(ring, cx);
+                self.popover_mark = 0;
+            }
+            chrome::BarKey::Mark(delta) => {
+                let n = self.popover_buttons().len();
+                if n > 0 {
+                    self.popover_mark = (self.popover_mark as isize + delta).clamp(0, n as isize - 1) as usize;
+                }
+            }
+            chrome::BarKey::Press => {
+                let Some(button) = self.popover_buttons().get(self.popover_mark).copied() else { return };
+                match button {
+                    PopoverButton::Notice(action) => {
+                        self.run_notice_action(action, cx);
+                        self.close_popovers(Instant::now());
+                    }
+                    PopoverButton::Doctor(id) => self.doctor_action(id, cx),
+                    PopoverButton::CopyReport => self.copy_doctor_report(cx),
+                }
+            }
+            chrome::BarKey::Down => self.focus_switcher(cx),
+            chrome::BarKey::Leave => self.bar_ring = None,
+            chrome::BarKey::Pass => return,
+        }
         cx.notify();
     }
 
@@ -2392,20 +2575,19 @@ impl Root {
         match sidebar::switcher_key(&ks.key) {
             sidebar::SwitcherKey::Show { files } => self.sidebar.inbox_files = files,
             sidebar::SwitcherKey::Enter if self.sidebar.inbox_files => {
-                self.switcher_focused = false;
-                if !self.sidebar.explorer_open {
-                    self.sidebar.explorer_open = true;
-                    self.save(cx);
-                }
-                if self.explorer.selected.is_none() {
-                    self.explorer.select_next();
-                }
-                self.sidebar_focused = true;
+                self.focus_group(sidebar::Group::Explorer, cx);
+                return;
             }
             sidebar::SwitcherKey::Enter => {
                 self.switcher_focused = false;
+                self.bar_ring = None;
+                self.header_ring = None;
                 self.session_filter_focused = true;
                 self.session_cursor = self.shown_session_rows().first().copied();
+            }
+            sidebar::SwitcherKey::Up => {
+                self.focus_bar(cx);
+                return;
             }
             sidebar::SwitcherKey::Leave => self.switcher_focused = false,
             sidebar::SwitcherKey::Pass => return,
@@ -2429,14 +2611,40 @@ impl Root {
             self.grids.clear();
             self.save(cx);
         }
-        self.sidebar.inbox_files = false;
+        // Cmd+0 moves the keys, nothing else (Cyrus, 2026-11-17: "Cmd+0 is just meant to change
+        // focus; not reset the pane's state"): the tab shown stays, and the ring goes back where
+        // it last was in it, else to the tab's first stop.
+        let spot = sidebar::spot_for(self.sidebar_spot, self.sidebar.inbox_files);
         self.sidebar_focused = false;
         self.wt_focused = false;
-        self.session_filter_focused = true;
+        self.session_filter_focused = false;
         self.switcher_focused = false;
-        let rows = self.shown_session_rows();
-        let shown = sessions_list::RowKey::Live(self.tree.page);
-        self.session_cursor = if rows.contains(&shown) { Some(shown) } else { rows.first().copied() };
+        self.bar_ring = None;
+        self.header_ring = None;
+        match spot {
+            sidebar::Spot::Sessions => {
+                self.session_filter_focused = true;
+                let rows = self.shown_session_rows();
+                // The ring stays on its row while that row is listed; else the session shown.
+                if !self.session_cursor.is_some_and(|c| rows.contains(&c)) {
+                    let shown = sessions_list::RowKey::Live(self.tree.page);
+                    self.session_cursor = if rows.contains(&shown) { Some(shown) } else { rows.first().copied() };
+                }
+            }
+            sidebar::Spot::Switcher => self.switcher_focused = true,
+            sidebar::Spot::Group(g) => self.header_ring = Some(g),
+            sidebar::Spot::Tree => {
+                self.sidebar.explorer_open = true;
+                if self.explorer.selected.is_none() {
+                    self.explorer.select_next();
+                }
+                self.sidebar_focused = true;
+            }
+            sidebar::Spot::Worktrees => {
+                self.sidebar.worktrees_open = true;
+                self.wt_focused = true;
+            }
+        }
         cx.notify();
     }
 
@@ -2772,6 +2980,8 @@ impl Root {
         self.wt_focused = false;
         self.session_filter_focused = false;
         self.switcher_focused = false;
+        self.bar_ring = None;
+        self.header_ring = None;
         self.tree.activate(pane, idx);
         self.acknowledge_focused(cx);
         if let Some(h) = self.bar_scroll.get(&pane) {
@@ -3657,6 +3867,8 @@ impl Root {
         self.wt_focused = false;
         self.session_filter_focused = false;
         self.switcher_focused = false;
+        self.bar_ring = None;
+        self.header_ring = None;
         cx.notify();
     }
 
@@ -3785,6 +3997,8 @@ impl Root {
             self.wt_focused = false;
             self.session_filter_focused = false;
             self.switcher_focused = false;
+            self.bar_ring = None;
+            self.header_ring = None;
             cx.notify();
         }
         match cmd {
@@ -3998,6 +4212,8 @@ impl Root {
                     self.wt_focused = false;
                     self.session_filter_focused = false;
                     self.switcher_focused = false;
+                    self.bar_ring = None;
+                    self.header_ring = None;
                 }
                 // The panes change width: measurements taken before are stale, as on a resize.
                 self.grids.clear();
@@ -4020,6 +4236,8 @@ impl Root {
                 self.wt_focused = false;
                 self.session_filter_focused = false;
                 self.switcher_focused = false;
+                self.bar_ring = None;
+                self.header_ring = None;
                 cx.notify();
             }
             NextCallingSession => self.next_calling_session(cx),
@@ -5477,6 +5695,8 @@ impl Root {
             self.wt_focused = false;
             self.session_filter_focused = false;
             self.switcher_focused = false;
+            self.bar_ring = None;
+            self.header_ring = None;
             self.tree.focus(pane);
         }
     }
@@ -5918,6 +6138,10 @@ impl Render for Root {
         // URL prompt (over the focused pane, until Enter or Escape), the worktree list (Ctrl+Shift+G) and the file tree (Shift+Cmd+E)
         // while they hold the keys. An open prompt holds them only while the list does, so a
         // click on a pane takes them back without losing what was typed.
+        // Where the sidebar has the keys now, kept for Cmd+0 to come back to.
+        if let Some(spot) = sidebar::spot_now(self.session_filter_focused, self.switcher_focused, self.header_ring, self.sidebar_focused, self.wt_focused) {
+            self.sidebar_spot = Some(spot);
+        }
         let wanted = if let Some(f) = self.palette.value().and_then(|p| p.focus.clone()) {
             Some(f)
         } else if self.url_prompt.value().is_some() {
@@ -5926,6 +6150,10 @@ impl Render for Root {
             Some(self.tab_rename_focus.clone())
         } else if self.remind_picker.value().is_some() {
             Some(self.remind_focus.clone())
+        } else if self.bar_ring.is_some() {
+            Some(self.bar_focus.clone())
+        } else if self.header_ring.is_some() {
+            Some(self.header_focus.clone())
         } else if self.switcher_focused {
             Some(self.switcher_focus.clone())
         } else if self.session_filter_focused {
@@ -5975,7 +6203,7 @@ impl Render for Root {
         }
         // The dots breathe with the focused pane's glow, on its clock; a window not in front rests.
         let breath = if self.window_active { self.breath.glow(now, crate::motion::reduce_motion()) } else { 0.0 };
-        let right = chrome::Right { bell_dot: self.notices.dot(), doctor_dot: self.doctor_needs_fix() > 0, open: self.popover.value().copied().unwrap_or_default(), hover: self.icon_hover, breath };
+        let right = chrome::Right { bell_dot: self.notices.dot(), doctor_dot: self.doctor_needs_fix() > 0, open: self.popover.value().copied().unwrap_or_default(), hover: self.icon_hover, breath, ring: self.bar_ring.unwrap_or_default() };
         let hover = |which: chrome::Popover| {
             Box::new(cx.listener(move |root, on: &bool, _, cx| {
                 let next = if *on { which } else { chrome::Popover::Closed };
@@ -5997,7 +6225,11 @@ impl Render for Root {
             (Box::new(cx.listener(|root, _, _, cx| root.toggle_bell(cx))), hover(chrome::Popover::Bell)),
             (Box::new(cx.listener(|root, _, _, cx| root.toggle_doctor(cx))), hover(chrome::Popover::Doctor)),
             self.effect.is_some().then(|| cx.weak_entity()),
-        );
+        )
+        // The icons take the keys when the keyboard's ring is on them (Chrome keys spec).
+        .track_focus(&self.bar_focus)
+        .key_context("TitleBar")
+        .on_key_down(cx.listener(|root, ev: &KeyDownEvent, _window, cx| root.bar_key_down(&ev.keystroke, cx)));
         let family = self.ui_family();
         let root_div = div()
             .relative()

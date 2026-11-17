@@ -41,6 +41,19 @@ shows the sessions, Right the files; Down or Enter goes into the list shown (the
 ring on the first row, or the file tree on its first row); Escape gives the keys back to the
 pane. "Focus file tree" and "Focus worktrees" show the Files view too, which they did not.
 
+On Files, the Explorer and Worktrees headings are stops too (Cyrus, 2026-11-17: "a way to
+collapse the Explorer and Worktrees groups"): Left folds the group, Right opens it, Enter or
+Space flips it; Up and Down go switcher, Explorer heading, its files, Worktrees heading, its
+worktrees, and back. Up from the switcher rings the title bar's bell (Cyrus: "how can I reach
+the notifications and wrench icon buttons"): Left and Right move between the bell and the
+doctor, Enter or Space opens its menu, where Up and Down move a ring over its buttons and Enter
+presses one, Escape closes it; Down goes back to the switcher. Both icons have tooltips saying
+what their menus hold.
+
+Cmd+0 only moves the keys (Cyrus, 2026-11-17: "Cmd+0 is just meant to change focus; not reset
+the pane's state"): the tab shown stays, and the keys go back to where they last were in it (a
+session row, the switcher, a heading, the files, the worktrees), else the tab's first stop.
+
 ## 3. In the "+" menu
 
 Opened by Cmd+T or a click, the menu takes Up, Down, Enter and Escape: the first row is marked,

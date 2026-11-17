@@ -39,8 +39,16 @@ session you are on.
 
 Up from the top of the list reaches the Sessions/Files switcher at the top of the sidebar.
 There, Left and Right switch between your sessions and your files, and Down or Enter goes into
-the list shown. In the files, Up and Down move, Right and Left open and close a folder, Enter
-opens a file and Space previews it; Up from the top comes back to the switcher.
+the list shown. In the files, the Explorer and Worktrees headings are stops: Left folds the
+group, Right opens it, Enter flips it. In the file tree, Up and Down move, Right and Left open
+and close a folder, Enter opens a file and Space previews it.
+
+Up from the switcher reaches the bell and the wrench in the title bar: Left and Right move
+between them, Enter opens the menu (Up, Down and Enter press its buttons, Escape closes it), and
+Down comes back.
+
+{sessions} only moves the keys to the sidebar: whichever tab and row you left it on, it comes
+back to.
 
 Without opening the list, {next_session} and {prev_session} go to the next and previous session
 in the list's order.
