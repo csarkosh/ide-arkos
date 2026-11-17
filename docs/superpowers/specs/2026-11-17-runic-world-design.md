@@ -30,7 +30,9 @@ down into the skyline (Cyrus, 2026-11-17: "make the clouds continue to 50% heigh
 under the names, the far and near skyline with sparse lit windows (a few warm, a few
 flickering), Tokyo Tower in orange lattice with a red beacon, the Skytree pale with its decks,
 slanting rain falling at 90 to 140 points a second; once a 9 second cycle, from the second on, a bolt of lightning made of a chain of
-runes strikes a rooftop and lights the clouds. `code`: towers of falling code, their roofs lit, a
+runes strikes a rooftop and lights the clouds: softly (Cyrus, 2026-11-17: "not as jarring"), rising
+over 0.15 s to 0.7 and fading over the rest of 1.2 s, no flicker, the bolt pale in the rain's colour
+and the sky glowing toward it rather than flashing white. `code`: towers of falling code, their roofs lit, a
 phone booth on the street whose light rings twice every three seconds, and once a 26 second cycle,
 from the second on, a black cat with a green rim and lit eyes crosses the street, then crosses it
 again the same way while a glitch line sweeps the scene.

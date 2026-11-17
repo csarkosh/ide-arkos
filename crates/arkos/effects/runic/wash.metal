@@ -529,7 +529,11 @@ constant float CLOUD_SPEED_MAX = 11.0;
 constant float CLOUD_FOOT = 0.42;
 // Lightning: one bolt a cycle at most, lasting this long; none in the first cycle.
 constant float BOLT_CYCLE = 9.0;
-constant float BOLT_FOR = 0.45;
+constant float BOLT_FOR = 1.2;
+// The bolt comes up over BOLT_RISE and fades out over the rest of BOLT_FOR, at most BOLT_PEAK:
+// soft, never a hard flicker (Cyrus, 2026-11-17: "softened so it is not as jarring").
+constant float BOLT_RISE = 0.15;
+constant float BOLT_PEAK = 0.7;
 // The black cat: a pass across the street, then the same pass again, once a cycle.
 constant float CAT_CYCLE = 26.0;
 constant float CAT_PASS = 4.0;
@@ -739,7 +743,7 @@ float3 tab_lamp(constant ArkosInputs& u, float2 p, float4 r, float t, float seed
     return mix(tab, mix(green, float3(1.0), 0.2), on);
 }
 
-// The bolt's envelope at t, 0 to 1 (two flickers and a fade), and its slot's key; 0 in the first
+// The bolt's envelope at t, 0 to BOLT_PEAK (a soft rise and a long fade), and its slot's key; 0 in the first
 // cycle and between strikes.
 float bolt_env(float t, thread uint& key) {
     float slot = floor(t / BOLT_CYCLE);
@@ -748,7 +752,8 @@ float bolt_env(float t, thread uint& key) {
     if (slot < 1.0 || at < 0.0 || at >= BOLT_FOR) {
         return 0.0;
     }
-    return at < 0.06 ? 1.0 : (at < 0.12 ? 0.25 : (at < 0.22 ? 0.9 : 1.0 - (at - 0.22) / (BOLT_FOR - 0.22)));
+    float fall = 1.0 - smoothstep(BOLT_RISE, BOLT_FOR, at);
+    return BOLT_PEAK * smoothstep(0.0, BOLT_RISE, at) * fall * fall;
 }
 
 // One layer of clouds at p: `count` soft ragged clouds from seed, each of its own size and height
@@ -810,11 +815,12 @@ float3 city_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
     // The sky: what is under it (sb), lit low by the city's glow.
     float glow = saturate(q.y / sz.y);
     float3 col = mix(sb, mix(sb, green, 0.14), glow * glow);
-    // A bolt: its envelope this frame (two flickers), its slot's key and its path. The clouds
-    // over the city are drawn over the whole sidebar's lower half (`storm_clouds`).
+    // A bolt: its envelope this frame (a soft rise and a long fade), its slot's key and its path.
+    // The clouds over the city are drawn over the whole sidebar's lower half (`storm_clouds`). The
+    // sky glows a little toward the rain's colour while it lasts, never flashes white.
     uint key = 0u;
     float env = bolt_env(t, key);
-    col = mix(col, mix(col, white_c, 0.35), env * 0.35 * (1.0 - glow));
+    col = mix(col, mix(col, mix(green, white_c, 0.3), 0.3), env * 0.25 * (1.0 - glow));
     // The bolt, from the clouds to a rooftop, its path drawn in runes.
     if (env > 0.0) {
         float x0 = sz.x * (0.18 + 0.64 * hash01(key + 9u));
@@ -825,16 +831,16 @@ float3 city_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
             float d = abs(q.x - bx);
             // The bolt is a chain of runes: 5 by 7 bits of 1.2 points, a rune every 9 points
             // down its path, each with its own pattern, over a thin bright core and a glow.
-            float s = 0.45 * (1.0 - smoothstep(0.3, 1.0, d)) + 0.6 * pow(max(0.0, 1.0 - d / 9.0), 2.0);
+            float s = 0.4 * (1.0 - smoothstep(0.3, 1.0, d)) + 0.35 * pow(max(0.0, 1.0 - d / 9.0), 2.0);
             float2 g = float2((q.x - bx + 3.0) / 1.2, fract(q.y / 9.0) * 9.0 / 1.2);
             float runes = 0.0;
             if (g.x >= 0.0 && g.x < 5.0 && g.y >= 0.5 && g.y < 7.5) {
                 float2 b = floor(g - float2(0.0, 0.5));
                 float2 f = fract(g - float2(0.0, 0.5));
                 bool lit = hash2(float2(floor(q.y / 9.0) * 13.0 + b.x, b.y * 7.0 + float(key % 211u))) < 0.5;
-                runes = lit && max(abs(f.x - 0.5), abs(f.y - 0.5)) < 0.42 ? 1.3 : 0.0;
+                runes = lit && max(abs(f.x - 0.5), abs(f.y - 0.5)) < 0.42 ? 0.9 : 0.0;
             }
-            col = light_on(col, mix(green, white_c, 0.7), (s + runes) * env, u.dark);
+            col = light_on(col, mix(green, white_c, 0.35), (s + runes) * env, u.dark);
         }
     }
     // The far skyline, then the landmarks among it, then the near skyline.

@@ -655,7 +655,8 @@ with a few lit windows. The
 title bar is a strip of storm clouds, its words and icons on plates, and a chevron marks the
 sidebar's selected row. At the sidebar's foot, below the names, stands the theme's scene:
 Tokyo Rain's is Tokyo at night in the rain (Tokyo Tower in orange lattice, the Skytree, lit
-windows, storm clouds, and now and then a bolt of lightning made of runes that lights the sky);
+windows, storm clouds, and now and then a soft bolt of lightning made of runes that glows up, lights
+the clouds and fades over a second);
 The Matrix's is a city of falling code, a phone booth whose light rings, and now and then
 a black cat that crosses the street, and a moment later crosses it again the same way. Material
 and Lavender Material come with `material`: the
