@@ -576,7 +576,9 @@ Motion), Cmd+R reloads, Cmd+[ and Cmd+] go back and forward, Cmd+=
 and Cmd+- zoom the page through Safari's steps and Cmd+0 resets it, Cmd+Shift+O opens the page in
 your default browser. A click in the page gives the page the keyboard, as a click in a terminal
 gives the terminal; Arkos's own shortcuts (Cmd+1 to 9, Cmd+W, Cmd+T, Cmd+B, Cmd+Shift+P and the
-rest) still work, and a click on the bar, the tab bar or another pane takes the keys back. The
+rest) still work, and a click on the bar, the tab bar or another pane takes the keys back. While
+the page has the keyboard, Cmd+C, Cmd+X, Cmd+V, Cmd+A, Cmd+Z and Shift+Cmd+Z copy, cut, paste,
+select all, undo and redo in it, as in a browser. The
 trackpad's two-finger swipe goes back and forward. Right-click, Inspect Element opens WebKit's
 Web Inspector as its own window.
 

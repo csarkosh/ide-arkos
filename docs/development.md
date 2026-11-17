@@ -1075,6 +1075,9 @@ Things only a person at the screen can check, in order of value:
   ("shown after 0.5s … off screen") and the desktop in front does not change. A sampler of the
   window list (`CGWindowListCopyWindowInfo` every millisecond, alpha and owner) shows an opaque
   window at every sample; `screencapture` needs Screen Recording, which the sampler does not
+- a web tab: select text on the page and press Cmd+C: no beep, and the text is on the
+  clipboard; Cmd+V into a field of the page pastes, Cmd+A selects the page, Cmd+X cuts from a
+  field (2026-11-16: these beeped and did nothing before, since Arkos has no Edit menu)
 - the tab bar's "+": a click opens Claude, Codex and Shell under it (Shell showing Ctrl+Shift+`),
   inside the window for a pane at the left edge; a second click, a click elsewhere or Escape
   closes it; Claude opens a tab whose shell starts `claude`, Codex one that starts `codex` (or

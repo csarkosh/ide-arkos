@@ -70,6 +70,26 @@ pub fn keys_return(holder: KeysHolder, cmd: bool, chord: &str) -> bool {
     }
 }
 
+/// The editing command a page's own Cmd chord stands for: Copy, Cut, Paste, Select All, Undo
+/// and Redo, as an app's Edit menu sends them. Arkos has no Edit menu, so a page given the bare
+/// key handed it back unhandled and macOS beeped (Cyrus, 2026-11-16: Cmd+C on a selection in a
+/// web tab beeped and copied nothing); the key monitor sends the command itself. `None` for a
+/// chord with Option or Control, or one that is not an editing command.
+pub fn page_edit(chord: &str, shift: bool, option: bool, control: bool) -> Option<&'static str> {
+    if option || control {
+        return None;
+    }
+    match (chord, shift) {
+        ("c", false) => Some("copy:"),
+        ("x", false) => Some("cut:"),
+        ("v", false) => Some("paste:"),
+        ("a", false) => Some("selectAll:"),
+        ("z", false) => Some("undo:"),
+        ("z", true) => Some("redo:"),
+        _ => None,
+    }
+}
+
 /// The title of the project window, which the Dock and Mission Control show; a sandbox
 /// instance says so, so its windows are told apart from the real IDE's.
 pub fn window_title(sandbox: bool) -> String {
@@ -81,7 +101,7 @@ pub use mac::*;
 
 #[cfg(target_os = "macos")]
 mod mac {
-    use super::{centred_on, keys_return, Frame, KeysHolder};
+    use super::{centred_on, keys_return, page_edit, Frame, KeysHolder};
     use objc2::rc::Retained;
     use objc2::runtime::AnyObject;
     use objc2::{MainThreadMarker, Message};
@@ -177,10 +197,17 @@ mod mac {
             let ev: &NSEvent = unsafe { event.as_ref() };
             let holder = keys_holder(&window, &view);
             if holder != KeysHolder::Gpui {
-                let cmd = ev.modifierFlags().contains(NSEventModifierFlags::Command);
+                let flags = ev.modifierFlags();
+                let cmd = flags.contains(NSEventModifierFlags::Command);
                 let chord = ev.charactersIgnoringModifiers().map(|s| s.to_string().to_ascii_lowercase()).unwrap_or_default();
                 if keys_return(holder, cmd, &chord) {
                     window.makeFirstResponder(Some(&view));
+                } else if holder == KeysHolder::Page && cmd {
+                    let edit = page_edit(&chord, flags.contains(NSEventModifierFlags::Shift), flags.contains(NSEventModifierFlags::Option), flags.contains(NSEventModifierFlags::Control));
+                    if edit.is_some_and(send_page_edit) {
+                        // Done: the key itself would go back unhandled and beep.
+                        return std::ptr::null_mut();
+                    }
                 }
             }
             event.as_ptr()
@@ -188,6 +215,33 @@ mod mac {
         // SAFETY: a local monitor on the main thread; the block is retained by AppKit through the
         // token and by `RcBlock` until both are gone.
         unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &block) }
+    }
+
+    /// Sends an editing command (`page_edit`) to the page that has the keyboard, as an Edit
+    /// menu's item would: only when a view inside the web view takes it, so a command the page
+    /// cannot do (an undo with nothing of its own to undo) is not done by the window instead.
+    /// True when it was sent.
+    fn send_page_edit(action: &str) -> bool {
+        let Some(mtm) = MainThreadMarker::new() else { return false };
+        let Ok(name) = std::ffi::CString::new(action) else { return false };
+        let sel = objc2::runtime::Sel::register(&name);
+        let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+        // SAFETY: the main thread; a nil target asks AppKit for the first responder in the key
+        // window's chain that answers `sel`, as a menu item with no target does.
+        let target = unsafe { app.targetForAction_to_from(sel, None, None) };
+        let in_page = target.as_deref().and_then(|t| t.downcast_ref::<NSView>()).is_some_and(|v| {
+            let mut up = Some(v.retain());
+            while let Some(v) = up {
+                if v.downcast_ref::<WKWebView>().is_some() {
+                    return true;
+                }
+                // SAFETY: a live view's superview, read on the main thread.
+                up = unsafe { v.superview() };
+            }
+            false
+        });
+        // SAFETY: as above; the command goes to that same responder.
+        in_page && unsafe { app.sendAction_to_from(sel, None, None) }
     }
 
     /// Gives `view` the keyboard: what a web view took on a click comes back to gpui. Also what
@@ -271,6 +325,23 @@ mod tests {
         assert!(keys_return(KeysHolder::Page, true, "w"));
         assert!(keys_return(KeysHolder::Page, true, "1"));
         assert!(keys_return(KeysHolder::Page, true, "b"));
+    }
+
+    #[test]
+    fn a_page_s_editing_chords_are_its_edit_commands() {
+        assert_eq!(page_edit("c", false, false, false), Some("copy:"));
+        assert_eq!(page_edit("x", false, false, false), Some("cut:"));
+        assert_eq!(page_edit("v", false, false, false), Some("paste:"));
+        assert_eq!(page_edit("a", false, false, false), Some("selectAll:"));
+        assert_eq!(page_edit("z", false, false, false), Some("undo:"));
+        assert_eq!(page_edit("z", true, false, false), Some("redo:"), "Shift+Cmd+Z");
+        assert_eq!(page_edit("c", true, false, false), None, "Shift+Cmd+C is no editing command");
+        assert_eq!(page_edit("v", false, true, false), None, "Option+Cmd+V is left to the page");
+        assert_eq!(page_edit("c", false, false, true), None);
+        assert_eq!(page_edit("w", false, false, false), None, "Arkos's own chords take the keys back instead");
+        for chord in PAGE_CHORDS {
+            assert!(page_edit(chord, false, false, false).is_some(), "every chord a page keeps is an edit: {chord}");
+        }
     }
 
     #[test]
