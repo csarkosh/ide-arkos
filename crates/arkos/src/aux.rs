@@ -209,6 +209,18 @@ pub fn open_disclosure(cx: &mut App) {
     }
 }
 
+/// The Help menu's "Keyboard Navigation" outside the project window: the page written with the
+/// keys in force and opened in the default app for Markdown. The project window's own handler
+/// opens it in a viewer tab instead.
+pub fn open_keyboard_guide(cx: &mut App) {
+    crate::telemetry::help(crate::telemetry::Help::Keyboard);
+    let overrides = keybindings_state(cx).map(|(o, _, _)| o).unwrap_or_default();
+    match crate::keyboard_guide::write_page(&paths::help_dir(), &overrides) {
+        Ok(path) => cx.open_with_system(&path),
+        Err(e) => eprintln!("arkos: cannot write the keyboard page: {e}"),
+    }
+}
+
 /// Runs `f` on the project window's Root and brings that window forward; false when there is no
 /// project window to run it in.
 fn in_project_window(cx: &mut App, f: impl FnOnce(&mut Root, &mut gpui::Context<Root>)) -> bool {

@@ -141,6 +141,7 @@ values! {
         Documentation => "documentation",
         About => "about",
         Telemetry => "telemetry",
+        Keyboard => "keyboard",
     }
 }
 values! {

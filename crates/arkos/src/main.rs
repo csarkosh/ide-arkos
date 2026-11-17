@@ -48,6 +48,7 @@ mod launch_link;
 mod link_menu;
 mod new_tab_menu;
 mod update_veil;
+mod keyboard_guide;
 mod icons;
 mod image_zoom;
 mod md_links;
@@ -3046,6 +3047,20 @@ impl Root {
         about::Details::gather(self.installed, daemon)
     }
 
+    /// The Help menu's "Keyboard Navigation" in the project window: the page, with the keys in
+    /// force, opened pinned in the focused pane, rendered. A page that cannot be written is a
+    /// notice.
+    fn open_keyboard_guide(&mut self, cx: &mut Context<Self>) {
+        telemetry::help(telemetry::Help::Keyboard);
+        match keyboard_guide::write_page(&paths::help_dir(), &self.config.keybindings) {
+            Ok(path) => {
+                let _via = telemetry::opened_via(telemetry::Opened::Click);
+                self.open_viewer(&path, true, cx);
+            }
+            Err(e) => self.show_notice(format!("cannot write the keyboard page: {e}"), cx),
+        }
+    }
+
     /// The Help menu's "What Arkos Sends" in the project window: writes the disclosure page into
     /// the telemetry folder and opens it pinned in the focused pane, as a link to a file would.
     /// A page that cannot be written is a notice.
@@ -5921,7 +5936,9 @@ impl Render for Root {
                 self.schedule_blink(at, cx);
             }
         }
-        let root_div = root_div.on_action(cx.listener(|root: &mut Root, _: &keymap::WhatArkosSends, _window, cx| root.open_disclosure(cx)));
+        let root_div = root_div
+            .on_action(cx.listener(|root: &mut Root, _: &keymap::WhatArkosSends, _window, cx| root.open_disclosure(cx)))
+            .on_action(cx.listener(|root: &mut Root, _: &keymap::KeyboardNavigation, _window, cx| root.open_keyboard_guide(cx)));
         keymap::attach(root_div, cx)
     }
 }
@@ -5978,6 +5995,7 @@ fn menus() -> Vec<Menu> {
         Menu {
             name: "Help".into(),
             items: vec![
+                MenuItem::action("Keyboard Navigation", keymap::KeyboardNavigation),
                 MenuItem::action("Keybindings", keymap::Keybindings),
                 MenuItem::action("Documentation", keymap::Documentation),
                 MenuItem::action("What Arkos Sends", keymap::WhatArkosSends),
@@ -6190,6 +6208,7 @@ fn main() {
         cx.on_action(|_: &keymap::Keybindings, cx| aux::open_keybindings(cx));
         cx.on_action(|_: &keymap::Documentation, cx| aux::open_documentation(cx));
         cx.on_action(|_: &keymap::WhatArkosSends, cx| aux::open_disclosure(cx));
+        cx.on_action(|_: &keymap::KeyboardNavigation, cx| aux::open_keyboard_guide(cx));
         // Closing the launch chooser quits, the failure window's red button too; "Try again"
         // closes the failure window as its connect starts, which is no reason to quit.
         let closing = launch.clone();
@@ -6780,7 +6799,7 @@ mod tests {
         assert_menu(
             &menus[1],
             "Help",
-            &[Some(("Keybindings", &keymap::Keybindings)), Some(("Documentation", &keymap::Documentation)), Some(("What Arkos Sends", &keymap::WhatArkosSends))],
+            &[Some(("Keyboard Navigation", &keymap::KeyboardNavigation)), Some(("Keybindings", &keymap::Keybindings)), Some(("Documentation", &keymap::Documentation)), Some(("What Arkos Sends", &keymap::WhatArkosSends))],
         );
     }
 

@@ -27,9 +27,9 @@ actions!(
         VideoPlayPause, VideoBack, VideoForward, VideoBackFine, VideoForwardFine, VideoStepBack, VideoStepForward,
         VideoStart, VideoLoop, VideoMute, VideoReload,
         PageBack, PageForward, ReloadPage, FocusAddress, OpenInBrowser, ZoomReset,
-        // The Help menu's "What Arkos Sends" has no key and no palette entry, so it is handled
-        // outside `Command`.
-        WhatArkosSends
+        // The Help menu's "What Arkos Sends" and "Keyboard Navigation" have no key and no palette
+        // entry, so they are handled outside `Command`.
+        WhatArkosSends, KeyboardNavigation
     ]
 );
 

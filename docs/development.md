@@ -1080,6 +1080,10 @@ Things only a person at the screen can check, in order of value:
   ("shown after 0.5s … off screen") and the desktop in front does not change. A sampler of the
   window list (`CGWindowListCopyWindowInfo` every millisecond, alpha and owner) shows an opaque
   window at every sample; `screencapture` needs Screen Recording, which the sampler does not
+- Help, Keyboard Navigation: a rendered page opens in a tab of the focused pane, its keys the
+  defaults (Cmd+0, Cmd+1 to Cmd+8, Cmd+9, Shift+Cmd+P, Cmd+T, Ctrl+Tab, Option+Cmd+Down); with
+  `"focus sessions" = "cmd-shift-s"` in the config it says Shift+Cmd+S; from the chooser it opens
+  in the default Markdown app
 - Chrome keys: Cmd+0 opens the sidebar on Sessions with a ring on the session shown, every
   group open while it has the keys (Quiet and Done fold back after), Up and Down move the ring, typing narrows the list, Enter opens the ringed
   session and the keys go to its pane, Escape clears the filter and then gives the keys back;

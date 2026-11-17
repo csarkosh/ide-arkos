@@ -178,7 +178,7 @@ outcome = ["ready", "failed"]
 scheme = ["http", "https", "file"]
 
 [events.help]
-what = ["keybindings", "documentation", "about", "telemetry"]
+what = ["keybindings", "documentation", "about", "telemetry", "keyboard"]
 
 # A terminal moved the colour a program sent so its text stays readable: on a light or a dark
 # theme, on the terminal's paper or on a band. Never the program, the colour or the text.

@@ -19,6 +19,11 @@ pub fn recent_file() -> PathBuf {
     app_support().join("recent.json")
 }
 
+/// Where Help pages Arkos writes for itself go (`keyboard_guide`).
+pub fn help_dir() -> PathBuf {
+    app_support().join("help")
+}
+
 /// The Claude Code config folders seen in use besides the default one (`claude_folders.rs`).
 pub fn claude_folders_file() -> PathBuf {
     app_support().join("claude-folders")

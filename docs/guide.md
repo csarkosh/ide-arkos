@@ -819,7 +819,10 @@ Notes:
 ## Menu, About, Settings and Keybindings
 
 The menu bar has two menus. "Arkos IDE" holds About Arkos IDE, a line, New Window, Settings, Quit;
-"Help" holds Keybindings, Documentation and What Arkos Sends. They work from the chooser, the
+"Help" holds Keyboard Navigation, Keybindings, Documentation and What Arkos Sends. Keyboard
+Navigation is a short page on getting around with the keys (the session list, panes, tabs, the
+palette), written with the keys in force, so a key you rebound reads as you bound it; it opens
+in a tab beside you, or from the chooser in your Markdown app. They work from the chooser, the
 project window, About, Settings and Keybindings alike. Each Arkos process has its own About,
 Settings and Keybindings windows, so two open projects mean two of each. Closing the project
 window closes them and quits the app. New Window from any of the three goes to the project window,
