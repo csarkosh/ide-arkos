@@ -30,7 +30,7 @@ pub const RAIN_ALPHA: f32 = 0.22;
 pub const TAB_RAIN: f32 = 0.4;
 /// How much more rain the pane bodies carry, as a share of `RAIN_ALPHA` laid again over them, so
 /// the rain shows through a terminal's paper.
-pub const PANE_RAIN: f32 = 1.5;
+pub const PANE_RAIN: f32 = 0.4;
 /// How far a stream's head rune leans from the green toward white.
 pub const RAIN_HEAD: f32 = 0.35;
 
@@ -125,7 +125,7 @@ mod tests {
             ("constant float RUNE_CHANGE = 0.5;", RUNE_CHANGE),
             ("constant float RAIN_ALPHA = 0.22;", RAIN_ALPHA),
             ("constant float TAB_RAIN = 0.4;", TAB_RAIN),
-            ("constant float PANE_RAIN = 1.5;", PANE_RAIN),
+            ("constant float PANE_RAIN = 0.4;", PANE_RAIN),
             ("constant float RAIN_HEAD = 0.35;", RAIN_HEAD),
         ] {
             assert!(wash.contains(line), "wash.metal lacks {line}");
@@ -189,8 +189,8 @@ mod tests {
             "col = mix(col, r.rgb, r.a * RAIN_ALPHA * TAB_RAIN * tab * k);",
             "kind == ARKOS_TAB_BAR_BLOCK ? 0.0 : 0.42",
             // The pane bodies: a stronger second layer, so the rain shows through the paper.
-            "constant float PANE_RAIN = 1.5;",
-            "col = mix(col, r.rgb, r.a * RAIN_ALPHA * PANE_RAIN * pane * k);",
+            "constant float PANE_RAIN = 0.4;",
+            "col = mix(col, green, r.a * RAIN_ALPHA * PANE_RAIN * pane * k);",
         ] {
             assert!(wash.contains(line), "wash.metal lacks {line}");
         }

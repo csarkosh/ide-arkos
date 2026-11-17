@@ -38,8 +38,10 @@ constant float RAIN_ALPHA = 0.22;
 // How much more rain the tab strips carry, as a share of RAIN_ALPHA laid again over them.
 constant float TAB_RAIN = 0.4;
 // How much more rain the pane bodies carry, as a share of RAIN_ALPHA laid again over them: a
-// terminal's paper covers the wash (paper_alpha), so without it the rain all but vanishes there.
-constant float PANE_RAIN = 1.5;
+// terminal's paper covers the wash (paper_alpha), so without it the rain all but vanishes there;
+// a little, so it stays a quiet ground behind the text (Cyrus, 2026-11-17: "blend it better
+// into the background so it's more subtle").
+constant float PANE_RAIN = 0.4;
 // The head's extra brightness: how far its rune leans from the green toward white.
 constant float RAIN_HEAD = 0.35;
 // A rune's bit, in points: its 5 by 7 bits make a shape 10 by 14 points, centred in its cell.
@@ -848,7 +850,7 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     // The tab strips carry the rain more strongly: TAB_RAIN more of it, laid over the first.
     col = mix(col, r.rgb, r.a * RAIN_ALPHA * TAB_RAIN * tab * k);
     // The pane bodies carry it more strongly still: PANE_RAIN more, under the panes' paper.
-    col = mix(col, r.rgb, r.a * RAIN_ALPHA * PANE_RAIN * pane * k);
+    col = mix(col, green, r.a * RAIN_ALPHA * PANE_RAIN * pane * k);
     col = mix(col, green, lift * k);
 
     // The world (see above): the sidebar's scene, frame and chevron; the title bar's clouds and
