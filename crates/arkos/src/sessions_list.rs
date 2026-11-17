@@ -698,14 +698,14 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
                         // ellipsis rather than be clipped.
                         .child(div().w(px((width - pad - 26.0).max(0.0))).line_height(px(style.ui(15.0))).overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(style.ui(11.0))).text_color(line_color).child(e.line)),
                 )
-                // A click shows the session and keeps the keys in the list, as Enter does: the
-                // Cmd+0 pane is focused, not the session's pane.
+                // A click shows the session and hands it the keys (Cyrus, 2026-11-17: "when i mouse
+                // click open a session in Pane 0 ... my focus should change to Pane 1"): the
+                // session's pane is focused, as `show_row` picks it. Enter keeps them in the list.
                 .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
                     match key {
                         RowKey::Live(page) => root.show_row(page, cx),
                         RowKey::Ended(i) => root.resume_ended(i, cx),
                     }
-                    root.keys_to_session_list();
                     cx.notify();
                 }))
                 .on_mouse_down(
@@ -893,6 +893,18 @@ pub fn render_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_click_on_a_session_hands_the_keys_to_its_pane_and_enter_keeps_them_in_the_list() {
+        let list = include_str!("sessions_list.rs");
+        let click = &list[list.find("// A click shows the session and hands it the keys").unwrap()..];
+        let click = &click[..click.find("}))").unwrap()];
+        assert!(click.contains("root.show_row(page, cx)") && !click.contains("keys_to_session_list"), "a click leaves the keys in the session's pane");
+        let main = include_str!("main.rs");
+        let press = &main[main.find("sessions_list::ListKey::Press => {").unwrap()..];
+        let press = &press[..press.find("sessions_list::ListKey::Leave").unwrap()];
+        assert!(press.contains("self.keys_to_session_list();"), "Enter keeps the keys in the list");
+    }
 
     #[test]
     fn the_session_list_takes_its_own_keys_and_typing_does_nothing() {

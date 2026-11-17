@@ -38,8 +38,8 @@ The groups' headings (Needs you, Working, Quiet, Done) are stops too: Left folds
 session, it first steps up to the group's heading), Right opens it, and Enter folds or opens it,
 as the Files tab's folders do.
 3. To type in the session shown, press Escape (it hands the keys to the session), or click in
-   its pane. A click on a session in the list shows it as
-   Enter does, the keys staying in the list.
+   its pane. A click on a session in the list shows it and hands it the keys; Enter keeps them
+   in the list.
 
 Up from the top of the list reaches the Sessions/Files switcher at the top of the sidebar.
 There, Left and Right switch between your sessions and your files, and Down or Enter goes into

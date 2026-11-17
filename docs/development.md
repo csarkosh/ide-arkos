@@ -529,6 +529,9 @@ Things only a person at the screen can check, in order of value:
   file is not among them; `arkos open` run in B's shell while A is shown changes nothing on
   screen and the file is on B's page when B is chosen; `arkos panes` from B lists B's page;
   End on A closes its tabs with it; after a relaunch each session still has its own
+- session list clicks: after Cmd+0, a click on a group heading folds or opens it with the keys
+  left in Pane 0; a click on a session shows it and Pane 0's frame goes dark as the keys go to its
+  pane; "+ New session" sits a little clear of the Sessions/Files switcher
 - session list keys: Pane 0 has no filter field; Cmd+0 gives the list the keys, typing does
   nothing, Up and Down move the ring, Enter shows the ringed session with the keys left in the
   list, Escape gives them to the pane shown

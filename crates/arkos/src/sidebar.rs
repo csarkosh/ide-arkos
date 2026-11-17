@@ -24,6 +24,9 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
 
+/// The space between the Sessions/Files switcher and "+ New session" under it, in points.
+pub const NEW_SESSION_GAP: f32 = 8.0;
+
 pub const MIN_W: f32 = 160.0;
 pub const MAX_W: f32 = 600.0;
 /// The resize handle at the column's right edge, with its invisible hit area.
@@ -337,7 +340,8 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
             .hover(move |s| s.bg(hover))
             .child("+ New session")
             .on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| root.new_session(cx)));
-        div().flex_none().flex().pl(px(8.0 + style.sidebar_pad)).pb(px(4.0)).child(button)
+        // Clear of the Sessions/Files switcher above it (Cyrus, 2026-11-17: "some margin between").
+        div().flex_none().flex().pl(px(8.0 + style.sidebar_pad)).pt(px(NEW_SESSION_GAP)).pb(px(4.0)).child(button)
     });
     if inbox && !files_view {
         // No Worktrees section to say where it starts.
