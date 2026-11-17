@@ -14,8 +14,8 @@ from you: needing your input → still at work → quiet or done.
   their conversations after a restart, a shutdown or a macOS update.
 - **Customizable:** ten distinct themes, some of them animated, and layouts you arrange by drag
   and drop: split a session, move any pane or tab, and start more Claude Code sessions in it.
-- **All in one place:** a file browser, web pages and an editor for the documents Claude writes
-  sit beside your sessions.
+- **Keyboard first:** the keys you know from Chrome. Cmd+0 jumps to your sessions, Cmd+1 to 9
+  to a pane, Ctrl+Tab through the tabs, and Cmd+T opens a new Claude or Codex tab.
 - **Reminders:** for a session you need to come back to tomorrow, or check on once a day,
   schedule it for any date and time down to the minute, once or every day, weekday or week; it
   waits under Scheduled and comes back as unread when it is due.
