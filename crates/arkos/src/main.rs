@@ -7321,6 +7321,8 @@ mod tests {
         edited.appearance = None;
         edited.font = theme::ThemeFont::default(); // the blend takes the target's fonts, and navy names none
         edited.effect = navy.effect.clone(); // and its effect: the edited file keeps navy's space
+        // And how it is shown, as the blend takes the target's.
+        (edited.title, edited.group, edited.group_default) = (navy.title.clone(), navy.group.clone(), navy.group_default);
         let light = Arc::new(edited);
         // The screen at the start of that fade: navy's colours under the edited theme's name.
         let shown = Arc::new(theme::blend(&navy, &light, 0.0));

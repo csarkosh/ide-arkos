@@ -8,6 +8,8 @@
 # system fonts stand in. With its `material` effect the panes float as rounded cards on the
 # frame, the tabs carry an underline and the selected row a pill.
 name = "material"
+title = "Material Bright"
+group = "Material"
 appearance = "light"
 
 [effect]

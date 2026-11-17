@@ -216,6 +216,50 @@ pub fn slot_rows(themes: &[(String, theme::Source, Option<theme::Appearance>)], 
         .collect()
 }
 
+/// A row of a preset list: one theme (its index in the list and its label), or a group of them
+/// shown as one row with a choice of its members (each member's index and title), and the member
+/// a click on the row picks: the current one when it is in the group, else the group's default,
+/// else its first.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PresetRow {
+    One { ix: usize, label: String },
+    Group { name: String, members: Vec<(usize, String)>, pick: usize },
+}
+
+/// `slot_rows` as a person reads them: each theme by its title, and the members of a group folded
+/// into one row where its first member stood (Watercolor: Watercolor Lavender and Watercolor
+/// Peach; Material: Material Bright, Material Solar and Material Lavender). A theme of the other
+/// kind listed because it is current stays a row of its own, and so does a broken file.
+pub fn preset_list(themes: &[(String, theme::Source, Option<theme::Appearance>)], shown: &std::collections::BTreeMap<String, theme::Shown>, slot: theme::Appearance, current: &str) -> Vec<PresetRow> {
+    let title = |name: &str| shown.get(name).map_or_else(|| theme::title_case(name), |s| s.title.clone());
+    let mut out: Vec<PresetRow> = Vec::new();
+    for (ix, _) in slot_rows(themes, slot, current) {
+        let (name, source, kind) = &themes[ix];
+        let label = match (source, kind) {
+            (theme::Source::Invalid(_), _) | (_, None) => format!("{} (invalid)", title(name)),
+            (_, Some(k)) if *k != slot => format!("{} (a {} theme)", title(name), k.word()),
+            _ => title(name),
+        };
+        let group = shown.get(name).and_then(|s| s.group.clone()).filter(|_| *kind == Some(slot) && !matches!(source, theme::Source::Invalid(_)));
+        let Some(group) = group else {
+            out.push(PresetRow::One { ix, label });
+            continue;
+        };
+        let is_default = shown.get(name).is_some_and(|s| s.group_default);
+        match out.iter_mut().find(|r| matches!(r, PresetRow::Group { name: g, .. } if *g == group)) {
+            Some(PresetRow::Group { members, pick, .. }) => {
+                members.push((ix, label));
+                let pick_is_current = themes[*pick].0 == current;
+                if name == current || (is_default && !pick_is_current) {
+                    *pick = ix;
+                }
+            }
+            _ => out.push(PresetRow::Group { name: group, members: vec![(ix, label)], pick: ix }),
+        }
+    }
+    out
+}
+
 /// One row of a list: its label, the value a click writes (`None`: not clickable), and whether
 /// it is the choice in force.
 #[derive(Debug, Clone, PartialEq)]
@@ -228,7 +272,8 @@ pub struct Row {
 /// The custom look's Color list: every theme, the dark ones first, each saying which it is; a
 /// file that does not load is marked and not clickable; a colour named that is not installed is
 /// listed first, so the list always shows what is in force.
-pub fn color_rows(themes: &[(String, theme::Source, Option<theme::Appearance>)], current: &str) -> Vec<Row> {
+pub fn color_rows(themes: &[(String, theme::Source, Option<theme::Appearance>)], shown: &std::collections::BTreeMap<String, theme::Shown>, current: &str) -> Vec<Row> {
+    let title = |name: &str| shown.get(name).map_or_else(|| theme::title_case(name), |s| s.title.clone());
     let mut rows = Vec::new();
     if !themes.iter().any(|(name, _, _)| name == current) {
         rows.push(Row { label: format!("{current} (not installed)"), value: None, current: true });
@@ -237,8 +282,8 @@ pub fn color_rows(themes: &[(String, theme::Source, Option<theme::Appearance>)],
         for (name, source, kind) in themes {
             let broken = matches!(source, theme::Source::Invalid(_)) || kind.is_none();
             match (slot, broken) {
-                (None, true) => rows.push(Row { label: format!("{name} (invalid)"), value: None, current: name == current }),
-                (Some(k), false) if *kind == Some(k) => rows.push(Row { label: format!("{name} ({})", k.word()), value: Some(name.clone()), current: name == current }),
+                (None, true) => rows.push(Row { label: format!("{} (invalid)", title(name)), value: None, current: name == current }),
+                (Some(k), false) if *kind == Some(k) => rows.push(Row { label: format!("{} ({})", title(name), k.word()), value: Some(name.clone()), current: name == current }),
                 _ => {}
             }
         }
@@ -398,6 +443,10 @@ pub struct SettingsWindow {
     shown: Shown,
     section: Section,
     themes: Vec<(String, theme::Source, Option<theme::Appearance>)>,
+    /// How each theme is shown: its title and its group (`theme::shown`).
+    theme_shown: std::collections::BTreeMap<String, theme::Shown>,
+    /// The preset group whose members are listed open under its row, and in which list.
+    open_group: Option<(theme::Appearance, String)>,
     /// The effects folder and the built-ins, as `effects::manifest::list` reads them.
     effects: Vec<(String, effects::manifest::Source)>,
     /// Every theme that loads with its fonts (`theme::fonts`), for the custom look's Font list.
@@ -494,6 +543,8 @@ pub fn open(cx: &mut App, over: Option<Retained<NSWindow>>, shown: Shown, theme:
                 shown,
                 section: Section::Appearance,
                 themes: theme::kinds(&paths::themes_dir()),
+                theme_shown: theme::shown(&paths::themes_dir()),
+                open_group: None,
                 effects: effects::manifest::list(&effects::effects_dir()),
                 theme_fonts: theme::fonts(&paths::themes_dir()),
                 families: cx.text_system().all_font_names().into_iter().collect(),
@@ -657,6 +708,7 @@ impl SettingsWindow {
         self.shown = shown;
         self.privacy.forget();
         self.themes = theme::kinds(&paths::themes_dir());
+        self.theme_shown = theme::shown(&paths::themes_dir());
         self.theme_fonts = theme::fonts(&paths::themes_dir());
         self.effects = effects::manifest::list(&effects::effects_dir());
         cx.notify();
@@ -719,6 +771,7 @@ impl SettingsWindow {
         match copied {
             Ok(name) => {
                 self.themes = theme::kinds(&paths::themes_dir());
+                self.theme_shown = theme::shown(&paths::themes_dir());
                 self.theme_fonts = theme::fonts(&paths::themes_dir());
                 self.effects = effects::manifest::list(&effects::effects_dir());
                 let edits = match adding {
@@ -911,22 +964,74 @@ impl SettingsWindow {
             if let Some(missing) = not_installed(current, &names) {
                 list = list.child(list_row((list_id, usize::MAX), missing, true, enabled, c));
             }
-            for (ix, label) in slot_rows(&self.themes, slot, current) {
-                let id = (list_id, ix);
-                let (name, source, kind) = &self.themes[ix];
-                let row = match (source, kind) {
-                    (theme::Source::Invalid(_), _) | (_, None) => list_row(id, label, false, false, c),
-                    _ => {
-                        let is_current = name == current;
-                        let mut row = list_row(id, label, is_current, enabled, c);
+            for entry in preset_list(&self.themes, &self.theme_shown, slot, current) {
+                match entry {
+                    PresetRow::One { ix, label } => {
+                        let id = (list_id, ix);
+                        let (name, source, kind) = &self.themes[ix];
+                        let row = match (source, kind) {
+                            (theme::Source::Invalid(_), _) | (_, None) => list_row(id, label, false, false, c),
+                            _ => {
+                                let is_current = name == current;
+                                let mut row = list_row(id, label, is_current, enabled, c);
+                                if enabled && !is_current {
+                                    let name = name.clone();
+                                    row = row.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&["theme", key], name.as_str())], cx)));
+                                }
+                                row
+                            }
+                        };
+                        list = list.child(row);
+                    }
+                    PresetRow::Group { name: group, members, pick } => {
+                        // One row for the group: a click picks its chosen member; the choice on
+                        // its right opens the members under it.
+                        let is_current = members.iter().any(|(ix, _)| &self.themes[*ix].0 == current);
+                        let pick_title = members.iter().find(|(ix, _)| *ix == pick).map(|(_, t)| t.clone()).unwrap_or_default();
+                        let open = self.open_group.as_ref().is_some_and(|(s, g)| *s == slot && *g == group);
+                        let toggle_group = group.clone();
+                        let select = div()
+                            .id((list_id, 10_000 + pick))
+                            .ml_auto()
+                            .px(px(6.0))
+                            .rounded(px(4.0))
+                            .border_1()
+                            .border_color(c.dim)
+                            .text_color(if enabled { c.text } else { c.dim })
+                            .child(format!("{pick_title} \u{25be}"))
+                            .when(enabled, |d| {
+                                d.cursor_pointer().on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(move |w, _, _, cx| {
+                                        cx.stop_propagation();
+                                        let here = (slot, toggle_group.clone());
+                                        w.open_group = if w.open_group.as_ref() == Some(&here) { None } else { Some(here) };
+                                        cx.notify();
+                                    }),
+                                )
+                            });
+                        let mut row = list_row((list_id, 20_000 + pick), group.clone(), is_current, enabled, c).child(select);
                         if enabled && !is_current {
-                            let name = name.clone();
+                            let name = self.themes[pick].0.clone();
                             row = row.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&["theme", key], name.as_str())], cx)));
                         }
-                        row
+                        list = list.child(row);
+                        if open {
+                            for (ix, title) in members {
+                                let name = self.themes[ix].0.clone();
+                                let member_current = &name == current;
+                                let mut sub = list_row((list_id, 30_000 + ix), title, member_current, enabled, c).pl(px(26.0));
+                                if enabled && !member_current {
+                                    sub = sub.on_click(cx.listener(move |w, _, _, cx| {
+                                        w.open_group = None;
+                                        w.change(vec![edit(&["theme", key], name.as_str())], cx);
+                                    }));
+                                }
+                                list = list.child(sub);
+                            }
+                        }
                     }
-                };
-                list = list.child(row);
+                }
             }
             columns = columns.child(list);
         }
@@ -961,7 +1066,7 @@ impl SettingsWindow {
         // own, the preset the mode picks. A new colour pins the fonts on screen the first time.
         let (shown, plain_font) = (self.theme.name.clone(), self.theme.font.is_default());
         let pinned = cfg.clone();
-        let color = self.rows_list("Color", "custom-color", color_rows(&self.themes, cfg.custom.color.as_deref().unwrap_or(&self.theme.name)), enabled, c, cx, move |value| {
+        let color = self.rows_list("Color", "custom-color", color_rows(&self.themes, &self.theme_shown, cfg.custom.color.as_deref().unwrap_or(&self.theme.name)), enabled, c, cx, move |value| {
             color_edits(&pinned, value, &shown, plain_font).into_iter().map(|(keys, value)| edit(&keys, value.as_str())).collect()
         });
         let font_rows = font_rows(&self.theme_fonts, cfg.custom.font.as_deref(), &self.theme.font, &cfg.font.family, &|f| self.families.contains(f));
@@ -1304,6 +1409,32 @@ mod tests {
     }
 
     #[test]
+    fn presets_show_their_titles_and_a_group_folds_into_one_row_picking_its_current_or_default() {
+        use theme::{Appearance::*, Source, Shown};
+        let themes = vec![
+            ("navy".to_string(), Source::BuiltIn, Some(Dark)),
+            ("peach-watercolor".to_string(), Source::BuiltIn, Some(Light)),
+            ("lavender-watercolor".to_string(), Source::BuiltIn, Some(Light)),
+            ("my-paper".to_string(), Source::File, Some(Light)),
+        ];
+        let shown: std::collections::BTreeMap<String, Shown> = [
+            ("navy", Shown { title: "Plain Navy".into(), group: None, group_default: false }),
+            ("peach-watercolor", Shown { title: "Watercolor Peach".into(), group: Some("Watercolor".into()), group_default: false }),
+            ("lavender-watercolor", Shown { title: "Watercolor Lavender".into(), group: Some("Watercolor".into()), group_default: true }),
+            ("my-paper", Shown { title: "My Paper".into(), group: None, group_default: false }),
+        ]
+        .into_iter()
+        .map(|(n, s)| (n.to_string(), s))
+        .collect();
+        let group = |pick: usize| PresetRow::Group { name: "Watercolor".into(), members: vec![(1, "Watercolor Peach".into()), (2, "Watercolor Lavender".into())], pick };
+        assert_eq!(preset_list(&themes, &shown, Light, "my-paper"), vec![group(2), PresetRow::One { ix: 3, label: "My Paper".into() }], "the group's default, Lavender, is its pick");
+        assert_eq!(preset_list(&themes, &shown, Light, "peach-watercolor")[0], group(1), "the current member is the pick");
+        assert_eq!(preset_list(&themes, &shown, Dark, "navy"), vec![PresetRow::One { ix: 0, label: "Plain Navy".into() }]);
+        assert_eq!(preset_list(&themes, &shown, Light, "navy")[0], PresetRow::One { ix: 0, label: "Plain Navy (a dark theme)".into() });
+        assert_eq!(theme::title_case("my-dark-theme"), "My Dark Theme", "a user's theme without a title reads in capitalised words");
+    }
+
+    #[test]
     fn page_width_edit_writes_the_viewer_key() {
         let (keys, value) = page_width_edit(PageWidth::Letter);
         assert_eq!(keys, vec!["viewer".to_string(), "page_width".to_string()]);
@@ -1353,11 +1484,11 @@ mod tests {
         ];
         let row = |label: &str, value: Option<&str>, current: bool| Row { label: label.to_string(), value: value.map(str::to_string), current };
         assert_eq!(
-            color_rows(&themes, "tokyo-rain"),
-            vec![row("navy (dark)", Some("navy"), false), row("tokyo-rain (dark)", Some("tokyo-rain"), true), row("arabia-solar (light)", Some("arabia-solar"), false), row("broken (invalid)", None, false)]
+            color_rows(&themes, &theme::shown(std::path::Path::new("/nonexistent")), "tokyo-rain"),
+            vec![row("Plain Navy (dark)", Some("navy"), false), row("Tokyo Rain (dark)", Some("tokyo-rain"), true), row("Arabia Solar (light)", Some("arabia-solar"), false), row("Broken (invalid)", None, false)]
         );
         // A colour that is not installed is still shown as the one in force.
-        assert_eq!(color_rows(&themes, "gone")[0], row("gone (not installed)", None, true));
+        assert_eq!(color_rows(&themes, &theme::shown(std::path::Path::new("/nonexistent")), "gone")[0], row("gone (not installed)", None, true));
         let listed = vec![
             ("watercolor".to_string(), Source::BuiltIn),
             ("overworld".to_string(), Source::BuiltIn),

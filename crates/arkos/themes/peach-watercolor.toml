@@ -4,6 +4,8 @@
 # ANSI colours are deepened so each clears 4.5:1 on the cream. It was `peach-light`, and for
 # 0.8.11 `peach-material` (with the material effect); both names still load it.
 name = "peach-watercolor"
+title = "Watercolor Peach"
+group = "Watercolor"
 appearance = "light"
 
 [effect]

@@ -1,6 +1,6 @@
 # Themes
 
-A theme is one TOML file with a `name` and five tables: `chrome`, `terminal`, `semantic`, `tree` and `viewer`, plus an optional `font` table. Every colour key is required and every value is a `#rrggbb` colour; an unknown or missing key is an error. Arkos ships ten themes built in (`navy`, `timo-purple`, `peach-watercolor`, `lavender-watercolor`, `lavender-material`, `matrix`, `tokyo-rain`, `composition-notebook`, `material`, `arabia-solar`; `peach-light` and `peach-material` (0.8.11) are old names of `peach-watercolor`, and `lavender-light` of `lavender-watercolor`; they still load them); the files in `crates/arkos/themes/` are complete examples to copy.
+A theme is one TOML file with a `name` and five tables: `chrome`, `terminal`, `semantic`, `tree` and `viewer`, plus an optional `font` table. Every colour key is required and every value is a `#rrggbb` colour; an unknown or missing key is an error. Arkos ships eleven themes built in (`navy`, `timo-purple`, `peach-watercolor`, `lavender-watercolor`, `lavender-material`, `matrix`, `tokyo-rain`, `composition-notebook`, `material`, `arabia-solar`, `material-solar`, shown as Plain Navy, Timo Purple, Watercolor Peach, Watercolor Lavender, Material Lavender, Enter The Matrix, Tokyo Rain, Composition Notebook, Material Bright, Arabia Solar and Material Solar; `peach-light` and `peach-material` (0.8.11) are old names of `peach-watercolor`, and `lavender-light` of `lavender-watercolor`; they still load them); the files in `crates/arkos/themes/` are complete examples to copy.
 
 ## Contrast rules
 
@@ -15,6 +15,16 @@ Black is a background colour on a dark theme and a text colour on a light one, s
 ## name
 
 The theme's own name, a bare file stem: no slashes, not `.` or `..`, not starting with a dot. It is the name used in `[theme] dark` and `[theme] light` in `config.toml`, and the file is stored as `<name>.toml`.
+
+## title, group and group_default
+
+Optional: how Settings and the palette show the theme. `title` is the name a person reads
+("Plain Navy" for `navy`); without one the name is shown in capitalised words (`my-paper` is "My
+Paper"). `group` puts the theme in a group Settings lists as one row with a choice of its
+members: Watercolor (Watercolor Lavender and Watercolor Peach) and Material (Material Solar,
+Material Bright and Material Lavender). `group_default = true` marks the member a click on the
+group's row picks when none of the group is in force: Watercolor Lavender and Material Solar.
+The config and `arkos theme use` keep using the `name`.
 
 ## appearance
 
@@ -117,7 +127,7 @@ Optional. A shader effect drawn under the window's text.
 
 | Key | What it sets |
 | --- | --- |
-| `name` | The effect the theme was designed with; as a preset it draws with this one; the custom look (Settings, Appearance, or `arkos effect use`) puts any effect over its colours. `peach-watercolor` and `lavender-watercolor` set `watercolor`, `matrix` and `tokyo-rain` set `runic`, `composition-notebook` sets `notebook`, `timo-purple` and `arabia-solar` set `overworld`, and `material`, `peach-watercolor` and `lavender-material` set `material`; `navy`, the default, sets none and draws plain. |
+| `name` | The effect the theme was designed with; as a preset it draws with this one; the custom look (Settings, Appearance, or `arkos effect use`) puts any effect over its colours. `peach-watercolor` and `lavender-watercolor` set `watercolor`, `matrix` and `tokyo-rain` set `runic`, `composition-notebook` sets `notebook`, `timo-purple` and `arabia-solar` set `overworld`, and `material`, `material-solar` and `lavender-material` set `material`; `navy`, the default, sets none and draws plain. |
 
 ## Adding a theme
 

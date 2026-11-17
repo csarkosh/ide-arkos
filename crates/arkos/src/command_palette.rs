@@ -79,7 +79,7 @@ pub fn items(cfg: &Config, themes: &[(String, Option<crate::theme::Appearance>)]
             Some(k) => format!("{} theme, {when}", k.word()),
             None => when.to_string(),
         };
-        out.push(Item { label: format!("Theme: {name}"), detail, command: Command::SetTheme(name.clone()) });
+        out.push(Item { label: format!("Theme: {}", crate::theme::title_of(name, themes_dir)), detail, command: Command::SetTheme(name.clone()) });
     }
     out.push(Item { label: "Reload config".into(), detail: String::new(), command: Command::ReloadConfig });
     out.push(Item { label: "Extract built-in themes".into(), detail: format!("to {}", themes_dir.display()), command: Command::ExtractThemes });
@@ -270,10 +270,10 @@ mod tests {
         assert_eq!(preset.command, Command::TextPreset("comfortable".into()));
         let compact = items.iter().find(|i| i.label == "Text preset: compact").unwrap();
         assert_eq!(compact.detail, "14 px, line height 1.3, below the research's comfort floor");
-        let theme = items.iter().find(|i| i.label == "Theme: peach-watercolor").unwrap();
+        let theme = items.iter().find(|i| i.label == "Theme: Watercolor Peach").unwrap();
         assert_eq!(theme.detail, "light theme, until the config reloads; set [theme] in config.toml to keep");
         assert_eq!(theme.command, Command::SetTheme("peach-watercolor".into()));
-        assert_eq!(items.iter().find(|i| i.label == "Theme: navy").unwrap().detail, "dark theme, current");
+        assert_eq!(items.iter().find(|i| i.label == "Theme: Plain Navy").unwrap().detail, "dark theme, current");
         assert!(items.iter().any(|i| i.command == Command::ReloadConfig));
         let extract = items.iter().find(|i| i.command == Command::ExtractThemes).unwrap();
         assert_eq!(extract.detail, "to /u/.config/arkos/themes");

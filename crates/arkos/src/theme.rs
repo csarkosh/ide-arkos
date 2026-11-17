@@ -9,6 +9,17 @@ use std::path::{Path, PathBuf};
 #[serde(deny_unknown_fields)]
 pub struct Theme {
     pub name: String,
+    /// Optional: the name a person reads (Settings, the palette): "Plain Navy" for `navy`.
+    /// Absent, the name in capitalised words (`title_case`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Optional: the group Settings shows the theme under, one row with a choice of its members
+    /// ("Watercolor": Watercolor Lavender and Watercolor Peach).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Whether the theme is its group's member a click on the group's row picks.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub group_default: bool,
     /// Whether this is a dark or a light theme, which decides the `[theme]` slot Settings lists
     /// it under. Every built-in says; a file from before 0.7.20 may not, and is then classed by
     /// its window background (`kind`).
@@ -217,7 +228,7 @@ pub struct ViewerColors {
 }
 
 /// The embedded themes: (name, file text). Extracted verbatim by `extract`.
-pub const BUILTIN: [(&str, &str); 10] = [
+pub const BUILTIN: [(&str, &str); 11] = [
     ("navy", include_str!("../themes/navy.toml")),
     ("timo-purple", include_str!("../themes/timo-purple.toml")),
     ("peach-watercolor", include_str!("../themes/peach-watercolor.toml")),
@@ -228,6 +239,7 @@ pub const BUILTIN: [(&str, &str); 10] = [
     ("composition-notebook", include_str!("../themes/composition-notebook.toml")),
     ("material", include_str!("../themes/material.toml")),
     ("arabia-solar", include_str!("../themes/arabia-solar.toml")),
+    ("material-solar", include_str!("../themes/material-solar.toml")),
 ];
 
 /// The luminance a glyph shader sees: the sRGB dot product `0.2126 r + 0.7152 g + 0.0722 b` of
@@ -380,6 +392,50 @@ pub fn list(dir: &Path) -> Vec<(String, Source)> {
     stems.sort();
     out.extend(stems.into_iter().filter_map(|n| from_file(&n).map(|s| (n, s))));
     out
+}
+
+/// A theme id in capitalised words, the way a person reads it: `my-dark-theme` is "My Dark
+/// Theme". A theme file's `title` says otherwise.
+pub fn title_case(name: &str) -> String {
+    name.split(['-', '_', ' '])
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut c = w.chars();
+            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// How Settings and the palette show a theme: its title (its own, else its id in capitalised
+/// words), and the group it sits in with whether it is that group's default.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Shown {
+    pub title: String,
+    pub group: Option<String>,
+    pub group_default: bool,
+}
+
+/// `Shown` for every theme `list` gives: from the theme when it loads, else from its id.
+pub fn shown(dir: &Path) -> std::collections::BTreeMap<String, Shown> {
+    list(dir)
+        .into_iter()
+        .map(|(name, _)| {
+            let t = load(&name, dir).ok();
+            let s = Shown {
+                title: t.as_ref().and_then(|t| t.title.clone()).unwrap_or_else(|| title_case(&name)),
+                group: t.as_ref().and_then(|t| t.group.clone()),
+                group_default: t.as_ref().is_some_and(|t| t.group_default),
+            };
+            (name, s)
+        })
+        .collect()
+}
+
+/// A theme's title by id, for a list without `shown`'s map: its own, else its id in capitalised
+/// words.
+pub fn title_of(name: &str, dir: &Path) -> String {
+    load(name, dir).ok().and_then(|t| t.title).unwrap_or_else(|| title_case(name))
 }
 
 /// `list` with each theme's appearance: dark or light, or none for a file that does not load.
@@ -592,7 +648,7 @@ const fn ink(key: &'static str, meaning: &'static str, contrast_with: &'static s
 const ANSI_BG: &str = "terminal.background";
 
 const SCHEMA: &[TableDoc] = &[
-    TableDoc { name: "", keys: &[surface("name", "The theme's own name, a bare file stem; stored as <name>.toml and named in [theme] dark or light"), surface("appearance", "dark or light: which [theme] slot Settings lists it under; it must agree with chrome.window_bg (optional, else read from it)")] },
+    TableDoc { name: "", keys: &[surface("name", "The theme's own name, a bare file stem; stored as <name>.toml and named in [theme] dark or light"), surface("appearance", "dark or light: which [theme] slot Settings lists it under; it must agree with chrome.window_bg (optional, else read from it)"), surface("title", "Optional: the name Settings and the palette show (\"Plain Navy\"); absent, the name in capitalised words"), surface("group", "Optional: a group Settings lists the theme under, one row with a choice of its members (\"Watercolor\")"), surface("group_default", "Optional, true or false: whether the theme is the member a click on its group's row picks")] },
     TableDoc {
         name: "chrome",
         keys: &[
@@ -749,6 +805,9 @@ pub fn blend(from: &Theme, to: &Theme, t: f32) -> Theme {
     let (a, b) = (from, to);
     Theme {
         name: to.name.clone(),
+        title: to.title.clone(),
+        group: to.group.clone(),
+        group_default: to.group_default,
         chrome: blend_fields!(Chrome, a.chrome, b.chrome, t;
             window_bg, title_bar, status_bar, sidebar, tab_bar, tab_active, tab_inactive, border,
             split_handle, split_handle_hover, focus_ring, text, text_dim, banner),
@@ -927,7 +986,7 @@ mod tests {
         assert_eq!(m.chrome.window_bg, Rgb { r: 0, g: 0, b: 0 });
         assert_eq!(m.terminal.background, Rgb { r: 0, g: 0, b: 0 });
         assert_eq!(m.recommended_effect(), Some("runic"));
-        assert_eq!(BUILTIN.len(), 10);
+        assert_eq!(BUILTIN.len(), 11);
     }
 
     #[test]
@@ -1108,7 +1167,7 @@ mod tests {
         assert_eq!(load("navy", dir.path()).unwrap().chrome.window_bg, rgb(0x000000));
         std::fs::write(dir.path().join("mine.toml"), BUILTIN[1].1.replace("name = \"timo-purple\"", "name = \"mine\"")).unwrap();
         assert_eq!(load("mine", dir.path()).unwrap().name, "mine");
-        assert_eq!(names(dir.path()), vec!["arabia-solar".to_string(), "composition-notebook".to_string(), "lavender-material".to_string(), "lavender-watercolor".to_string(), "material".to_string(), "matrix".to_string(), "mine".to_string(), "navy".to_string(), "peach-watercolor".to_string(), "timo-purple".to_string(), "tokyo-rain".to_string()]);
+        assert_eq!(names(dir.path()), vec!["arabia-solar".to_string(), "composition-notebook".to_string(), "lavender-material".to_string(), "lavender-watercolor".to_string(), "material".to_string(), "material-solar".to_string(), "matrix".to_string(), "mine".to_string(), "navy".to_string(), "peach-watercolor".to_string(), "timo-purple".to_string(), "tokyo-rain".to_string()]);
         let e = load("nope", dir.path()).unwrap_err();
         assert!(e.contains("nope") && e.contains(&dir.path().display().to_string()), "{e}");
         assert!(load("../navy", dir.path()).is_err());
@@ -1123,7 +1182,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("themes");
         let wrote = extract(&sub).unwrap();
-        assert_eq!(wrote.len(), 10);
+        assert_eq!(wrote.len(), 11);
         assert_eq!(std::fs::read_to_string(sub.join("navy.toml")).unwrap(), BUILTIN[0].1);
         std::fs::write(sub.join("navy.toml"), "edited").unwrap();
         assert!(extract(&sub).unwrap().is_empty(), "nothing to write the second time");
@@ -1156,6 +1215,31 @@ mod tests {
     }
 
     #[test]
+    fn material_solar_is_composition_notebook_s_colours_in_material_s_dress() {
+        let (m, n) = (builtin("material-solar").unwrap(), builtin("composition-notebook").unwrap());
+        assert_eq!((&m.chrome, &m.terminal, &m.semantic, &m.tree, &m.viewer), (&n.chrome, &n.terminal, &n.semantic, &n.tree, &n.viewer), "every colour is the notebook's");
+        assert_eq!(m.recommended_effect(), Some("material"));
+        assert_eq!(m.font, builtin("material").unwrap().font, "Material's fonts");
+        assert_eq!((m.title.as_deref(), m.group.as_deref(), m.group_default), (Some("Material Solar"), Some("Material"), true));
+    }
+
+    #[test]
+    fn the_built_ins_read_as_cyrus_named_them_and_the_two_groups_each_have_one_default() {
+        let title = |n: &str| builtin(n).unwrap().title.unwrap_or_else(|| title_case(n));
+        assert_eq!(title("navy"), "Plain Navy");
+        assert_eq!(title("matrix"), "Enter The Matrix");
+        assert_eq!(title("lavender-watercolor"), "Watercolor Lavender");
+        assert_eq!(title("peach-watercolor"), "Watercolor Peach");
+        assert_eq!(title("material"), "Material Bright");
+        assert_eq!(title("lavender-material"), "Material Lavender");
+        assert_eq!(title("tokyo-rain"), "Tokyo Rain", "the rest in capitalised words");
+        for (group, default) in [("Watercolor", "lavender-watercolor"), ("Material", "material-solar")] {
+            let defaults: Vec<&str> = BUILTIN.iter().map(|(n, _)| *n).filter(|n| builtin(n).unwrap().group.as_deref() == Some(group) && builtin(n).unwrap().group_default).collect();
+            assert_eq!(defaults, [default], "{group}");
+        }
+    }
+
+    #[test]
     fn timo_purple_recommends_the_overworld_effect() {
         assert_eq!(builtin("timo-purple").unwrap().recommended_effect(), Some("overworld"));
     }
@@ -1176,7 +1260,7 @@ mod tests {
         // every built-in through `contrast_pairs`.
         let t = builtin("timo-purple").expect("ships");
         assert_eq!(t.name, "timo-purple");
-        assert_eq!(BUILTIN.len(), 10);
+        assert_eq!(BUILTIN.len(), 11);
         assert_eq!(t.chrome.focus_ring, t.terminal.cyan, "the accent is the cyan");
         assert_eq!(t.terminal.cursor, t.terminal.cyan);
     }
@@ -1198,8 +1282,9 @@ mod tests {
         assert_eq!(l[7], ("composition-notebook".into(), Source::BuiltIn));
         assert_eq!(l[8], ("material".into(), Source::BuiltIn));
         assert_eq!(l[9], ("arabia-solar".into(), Source::BuiltIn));
-        assert!(matches!(&l[10], (n, Source::Invalid(e)) if n == "broken" && !e.is_empty()));
-        assert_eq!(l[11], ("mine".into(), Source::File));
+        assert_eq!(l[10], ("material-solar".into(), Source::BuiltIn));
+        assert!(matches!(&l[11], (n, Source::Invalid(e)) if n == "broken" && !e.is_empty()));
+        assert_eq!(l[12], ("mine".into(), Source::File));
         assert_eq!(validate_file(&dir.path().join("mine.toml")), Ok("mine".into()));
         assert!(validate_file(&dir.path().join("broken.toml")).is_err());
         assert!(validate_file(&dir.path().join("none.toml")).is_err());
@@ -1216,8 +1301,9 @@ mod tests {
         assert_eq!(lines[7], "composition-notebook (built in, light)");
         assert_eq!(lines[8], "material (built in, light)");
         assert_eq!(lines[9], "arabia-solar (built in, light)");
-        assert!(lines[10].starts_with("broken (file, invalid: "));
-        assert_eq!(lines[11], "mine (file, dark)");
+        assert_eq!(lines[10], "material-solar (built in, light)");
+        assert!(lines[11].starts_with("broken (file, invalid: "));
+        assert_eq!(lines[12], "mine (file, dark)");
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["validate".into(), dir.path().join("mine.toml").display().to_string()], dir.path(), &mut out, &mut err), 0);
         assert_eq!(std::str::from_utf8(&out).unwrap(), "ok: mine\n");
@@ -1233,7 +1319,8 @@ mod tests {
         assert_eq!(v[2]["appearance"], "light");
         assert_eq!((v[7]["name"].as_str(), v[8]["name"].as_str(), v[8]["appearance"].as_str()), (Some("composition-notebook"), Some("material"), Some("light")));
         assert_eq!((v[9]["name"].as_str(), v[9]["appearance"].as_str()), (Some("arabia-solar"), Some("light")));
-        assert_eq!((v[10]["source"].as_str(), v[10]["error"].is_string(), v[10].get("appearance")), (Some("invalid"), true, None));
+        assert_eq!((v[10]["name"].as_str(), v[10]["appearance"].as_str()), (Some("material-solar"), Some("light")));
+        assert_eq!((v[11]["source"].as_str(), v[11]["error"].is_string(), v[11].get("appearance")), (Some("invalid"), true, None));
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["validate".into(), dir.path().join("broken.toml").display().to_string(), "--json".into()], dir.path(), &mut out, &mut err), 1);
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();

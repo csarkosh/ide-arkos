@@ -1101,6 +1101,12 @@ Things only a person at the screen can check, in order of value:
   the files with the ring on "Files", Left goes back; Down on Files puts the keys in the tree on
   its first row, and Up from there rings the switcher again; Escape on the switcher gives the
   keys back to the pane; the ring never shifts the pills
+- Settings, Appearance, Presets: every preset reads by its title (Plain Navy, Enter The
+  Matrix); the light list has one Watercolor row showing "Watercolor Lavender ▾" and one
+  Material row showing "Material Solar ▾" when neither is in force; a click on the row puts that
+  member in force with its check on the row; a click on the choice opens the members indented
+  under it and a click on one puts it in force and folds them; the palette's "Theme: Enter The
+  Matrix" is found by typing "matrix"
 - Help, Keyboard Navigation: a rendered page opens in a tab of the focused pane, its keys the
   defaults (Cmd+0, Cmd+1 to Cmd+8, Cmd+9, Shift+Cmd+P, Cmd+T, Ctrl+Tab, Option+Cmd+Down); with
   `"focus sessions" = "cmd-shift-s"` in the config it says Shift+Cmd+S; from the chooser it opens

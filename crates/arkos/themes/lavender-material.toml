@@ -3,6 +3,8 @@
 # effect: the panes as near-white cards on a lavender frame, the active tab underlined in purple
 # and the selected row a lilac pill.
 name = "lavender-material"
+title = "Material Lavender"
+group = "Material"
 appearance = "light"
 
 [effect]
