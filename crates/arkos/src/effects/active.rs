@@ -214,7 +214,7 @@ pub fn latest_scroll(instants: impl IntoIterator<Item = Option<Instant>>) -> Opt
 /// binder's width left of it, the window's bars, the sidebar's divider and the end of its names when laid out, the panes and those whose Claude session
 /// works, the shapes laid out inside them and the highlights' strokes.
 pub fn scene<'a>(content: Rect, binder: f32, divider_y: Option<f32>, sidebar_end: Option<f32>, panes: &'a [(PaneId, Rect)], busy: &'a [PaneId], shapes: &'a [Shape], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
-    Scene { content, title_bar_h: crate::chrome::TITLE_BAR_H, tab_bar_h: crate::pane_view::TAB_BAR_H, binder, gap: 0.0, divider_y, sidebar_end, panes, busy, focus: &[], waiting: &[], shapes, strokes }
+    Scene { content, title_bar_h: crate::chrome::TITLE_BAR_H, tab_bar_h: crate::pane_view::TAB_BAR_H, binder, gap: 0.0, divider_y, sidebar_end, panes, busy, focus: &[], sidebar_focus: 0.0, waiting: &[], shapes, strokes }
 }
 
 /// Whether the GPU's time per frame is worth a line in the window log: the first reading, then

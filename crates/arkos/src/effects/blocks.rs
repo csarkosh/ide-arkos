@@ -66,7 +66,8 @@ pub struct Block {
     /// A rows block's row height in points; 0 for every other kind.
     pub pitch: f32,
     /// A pane's focus fade, 0 to 1, on its tab bar and body: 1 on the focused pane, moving as
-    /// the app's own focus glow does when the focus changes. 0 for every other kind.
+    /// the app's own focus glow does when the focus changes; the sidebar's own while it has the
+    /// keys. 0 for every other kind.
     pub focus: f32,
     /// 1 for a pane's tab bar and body while the pane's active tab is a terminal whose Claude
     /// session waits for the user, else 0.
@@ -193,6 +194,9 @@ pub struct Scene<'a> {
     pub busy: &'a [PaneId],
     /// Each pane's focus fade, 0 to 1; a pane not listed has none.
     pub focus: &'a [(PaneId, f32)],
+    /// The sidebar's focus fade, 0 to 1: 1 while it (the Cmd+0 pane) has the keys, so an effect
+    /// that frames it lights its frame as a focused pane's.
+    pub sidebar_focus: f32,
     /// The panes whose active tab is a terminal whose Claude session waits for the user.
     pub waiting: &'a [PaneId],
     pub shapes: &'a [Shape],
@@ -229,7 +233,7 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
             ordinal: 0.0,
             busy: 0.0,
             pitch: 0.0,
-            focus: 0.0,
+            focus: scene.sidebar_focus.clamp(0.0, 1.0),
             waiting: 0.0,
         });
         // The line between Explorer and Worktrees: a block with no height.
@@ -388,7 +392,7 @@ mod tests {
     }
 
     fn scene<'a>(content: Rect, divider_y: Option<f32>, panes: &'a [(PaneId, Rect)], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
-        Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, gap: 0.0, divider_y, sidebar_end: None, panes, busy: &[], focus: &[], waiting: &[], shapes: &[], strokes }
+        Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, gap: 0.0, divider_y, sidebar_end: None, panes, busy: &[], focus: &[], sidebar_focus: 0.0, waiting: &[], shapes: &[], strokes }
     }
 
     /// The content area starting at `x`, under the title bar and down to y 800.
@@ -546,6 +550,9 @@ mod tests {
             assert_eq!(b.focus, match pane { Some(240.0) => 0.75, Some(_) => 0.2, None => 0.0 }, "{:?} at {:?}", b.kind, b.rect);
             assert_eq!(b.waiting, if pane == Some(720.0) { 1.0 } else { 0.0 }, "{:?} at {:?}", b.kind, b.rect);
         }
+        // The sidebar carries its own focus, while it has the keys.
+        let lit = Scene { sidebar_focus: 0.6, ..scene(rect(240.0, 38.0, 960.0, 562.0), Some(400.0), &panes, &strokes) };
+        assert_eq!(blocks(&lit, true).iter().find(|b| b.kind == Kind::Sidebar).map(|b| b.focus), Some(0.6));
         // A pane the scene says nothing of has no focus and does not wait; menus never do.
         assert!(blocks(&scene(rect(240.0, 38.0, 960.0, 562.0), None, &panes, &strokes), true).iter().all(|b| b.focus == 0.0 && b.waiting == 0.0));
         let menu = MenuShape { key: 3, rect: rect(10.0, 10.0, 100.0, 60.0), opacity: 1.0 };
@@ -567,7 +574,7 @@ mod tests {
         assert_eq!((out[1].value, out[1].ordinal), (0.6, HighlightState::Hovered as u32 as f32));
         // The same stroke gives the same block in the wash and in the backdrop.
         let panes = [];
-        let in_wash = blocks(&Scene { content: rect(0.0, 0.0, 800.0, 600.0), title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, gap: 0.0, divider_y: None, sidebar_end: None, panes: &panes, busy: &[], focus: &[], waiting: &[], shapes: &[], strokes: &[(inside, 0.6)] }, true);
+        let in_wash = blocks(&Scene { content: rect(0.0, 0.0, 800.0, 600.0), title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, gap: 0.0, divider_y: None, sidebar_end: None, panes: &panes, busy: &[], focus: &[], sidebar_focus: 0.0, waiting: &[], shapes: &[], strokes: &[(inside, 0.6)] }, true);
         assert_eq!(in_wash.last(), out.last());
     }
 

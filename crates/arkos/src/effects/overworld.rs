@@ -598,6 +598,24 @@ mod tests {
     }
 
     #[test]
+    fn on_the_gpu_the_sidebar_s_frame_is_lit_in_the_focus_colour_while_it_has_the_keys() {
+        if !gpu() {
+            return;
+        }
+        let theme = crate::theme::builtin("timo-purple").unwrap();
+        let focus = theme.chrome.focus_ring;
+        // The sidebar's left frame, half way down: its outer and inner lines.
+        let edge = Rect { x: 0.0, y: TOP + 120.0, w: 6.0 * ART_PX, h: 20.0 };
+        let unlit = window(0.0, false, false);
+        let mut lit = unlit.clone();
+        for b in lit.iter_mut().filter(|b| b.kind == crate::effects::blocks::Kind::Sidebar) {
+            b.focus = 1.0;
+        }
+        assert!(pixels(&render(&theme, 0.0, &lit), edge).contains(&focus), "lit while the sidebar has the keys");
+        assert!(!pixels(&render(&theme, 0.0, &unlit), edge).contains(&focus), "the frame's own colour otherwise");
+    }
+
+    #[test]
     fn on_the_gpu_each_pane_is_framed_in_the_gap_and_the_focused_one_in_the_focus_colour() {
         if !gpu() {
             return;

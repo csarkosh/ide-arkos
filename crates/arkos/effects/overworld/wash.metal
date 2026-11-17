@@ -849,15 +849,22 @@ int2 inner_ring(float2 p, float4 r) {
 
 // The frame inside r at p over `under`: the outer line with its corners left to the ground, the
 // inner one with its corners in the outer line's colour. `under` where p is inside the frame.
-float3 boxed(constant ArkosInputs& u, float2 p, float4 r, float3 under) {
+// boxed, its outer line turned towards the focus colour by focus (0 to 1): the sidebar's frame
+// while it has the keys, as a focused pane's frame is.
+float3 boxed_lit(constant ArkosInputs& u, float2 p, float4 r, float3 under, float focus) {
     int2 ring = inner_ring(p, r);
     if (ring.x >= FRAME_PX || ring.x < 0) {
         return under;
     }
+    float3 line = mix(frame_line(u), u.colors[ARKOS_FOCUS_RING].rgb, saturate(focus));
     if (ring.x == 0) {
-        return ring.y == 1 ? ground(u, p) : frame_line(u);
+        return ring.y == 1 ? ground(u, p) : line;
     }
-    return ring.y == 1 ? frame_line(u) : frame_dark(u);
+    return ring.y == 1 ? line : frame_dark(u);
+}
+
+float3 boxed(constant ArkosInputs& u, float2 p, float4 r, float3 under) {
+    return boxed_lit(u, p, r, under, 0.0);
 }
 
 // A colour's relative luminance, as WCAG has it.
@@ -1144,9 +1151,9 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
         } else if (kind == ARKOS_SIDEBAR_BLOCK) {
             float3 sb = u.colors[ARKOS_SIDEBAR].rgb;
             col = sb;
-            // Its frame, inside its edges.
+            // Its frame, inside its edges, lit in the focus colour while it has the keys.
             if (inner_ring(p, r).x < FRAME_PX) {
-                col = mix(sb, boxed(u, p, r, sb), k);
+                col = mix(sb, boxed_lit(u, p, r, sb, u.blocks[i].focus), k);
                 continue;
             }
             // The scene on the frame's foot, under an open sky; softened where the names lie.
