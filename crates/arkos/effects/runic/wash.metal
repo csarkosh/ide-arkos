@@ -560,6 +560,15 @@ constant float Z_NEAR = 0.7;
 constant float Z_FAR = 30.0;
 // The tallest tower, in camera heights.
 constant float TOWER_MAX = 4.8;
+// City life (Cyrus, 2026-11-17: "some city life added between the buildings"): every
+// CROSS_EVERY-th row is a cross street with no towers, ROAD_CARS cars a lane on the road (one
+// lane coming on, one going away, their speeds over the floor's) and CROSS_CARS on each cross
+// street, lit windows on the towers' faces near enough to show them, and DRONES lights drifting
+// over the roofs.
+constant int CROSS_EVERY = 4;
+constant int ROAD_CARS = 5;
+constant int CROSS_CARS = 2;
+constant int DRONES = 3;
 
 float hash2(float2 c) {
     uint ux = uint(int(c.x) + 1048576);
@@ -950,6 +959,11 @@ float3 code_rain(float2 p, float top, float bottom, float t, float3 green, float
     return mix(col, green, on * trail * 0.3 * fade);
 }
 
+// A car's light at screen point s, r points across, at p: a soft round glow.
+float car_light(float2 p, float2 s, float r) {
+    return 1.0 - smoothstep(r * 0.5, r * 1.6, length(p - s));
+}
+
 // A line's light at a phase (lines at whole numbers), drawn about a pixel wide whatever the
 // phase's rate across the screen: `fwidth` keeps far lines fine and near ones crisp.
 float grid_line(float phase) {
@@ -999,6 +1013,31 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
     // The horizon's line, and its glow either side.
     float hd = abs(q.y - yh);
     col = light_on(col, green, (1.0 - smoothstep(0.0, 1.2, hd)) * 0.6 + exp(-hd / 4.0) * 0.18, u.dark);
+    // The road's traffic: one lane coming on (headlights), one going away (tail lights), each car
+    // its own speed over the floor's, two lights a car on the road's surface.
+    float3 head_c = mix(green, white_c, 0.6);
+    float3 tail_c = mix(u.colors[ARKOS_ANSI + 1].rgb, green, 0.15);
+    float floor_v = GRID_SPEED * GRID_Z;
+    // Only near the road at p's depth (its lights sit just above the floor) can a car light p.
+    float road_z = q.y > yh ? f * 0.92 / (q.y - yh) : Z_FAR;
+    bool by_road = q.y > yh && abs(q.x - cx) < 0.6 * f / road_z + 4.0;
+    for (int lane = 0; lane < (by_road ? 2 : 0); lane++) {
+        for (int j = 0; j < ROAD_CARS; j++) {
+            float h = hash2(float2(float(j), float(lane) * 13.0 + 31.0));
+            float v = 1.4 + 1.6 * hash2(float2(float(j), float(lane) * 13.0 + 32.0));
+            float span = Z_FAR - Z_NEAR;
+            // Coming on: the car's speed and the floor's; going away: the car's less the floor's.
+            float z = lane == 0 ? Z_FAR - fract(h + t * (v + floor_v) / span) * span : Z_NEAR + fract(h + t * max(v - floor_v, 0.3) / span) * span;
+            float lx = (lane == 0 ? 0.32 : -0.32) * GRID_X;
+            float r = clamp(0.05 * f / z, 0.6, 3.0);
+            float seen = (1.0 - smoothstep(Z_FAR * 0.55, Z_FAR, z)) * smoothstep(Z_NEAR, Z_NEAR + 0.6, z);
+            float y = yh + f * (1.0 - 0.08) / z;
+            float gap = 0.12 * f / z;
+            float x = cx + lx * f / z;
+            float l = max(car_light(q, float2(x - gap, y), r), car_light(q, float2(x + gap, y), r));
+            col = light_on(col, lane == 0 ? head_c : tail_c, l * seen * 0.9, u.dark);
+        }
+    }
     // The city, farthest row first so nearer towers hide farther ones: each cell's tower stands
     // on the floor, which comes on at GRID_SPEED rows a second, so the camera has come `run` into
     // it; a row m stands at depth m * GRID_Z - run.
@@ -1012,6 +1051,28 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
         int m = far_row - r;
         float zc = float(m) * GRID_Z - run;
         if (zc - GRID_Z > reach || zc + GRID_Z < Z_NEAR) {
+            continue;
+        }
+        // A cross street: no towers on this row, and its cars crossing between the blocks.
+        if (((m % CROSS_EVERY) + CROSS_EVERY) % CROSS_EVERY == 0) {
+            float zs = zc + 0.5 * GRID_Z;
+            if (zs < Z_NEAR || zs > Z_FAR) {
+                continue;
+            }
+            float seen = (1.0 - smoothstep(Z_FAR * 0.55, Z_FAR, zs)) * smoothstep(Z_NEAR, Z_NEAR + 0.6, zs);
+            float half_w = float(ROAD_CELLS + LANES) * GRID_X;
+            float r2 = clamp(0.05 * f / zs, 0.6, 3.0);
+            float y = yh + f * (1.0 - 0.08) / zs;
+            for (int j = 0; j < (abs(q.y - y) < r2 * 2.0 ? CROSS_CARS : 0); j++) {
+                float h = hash2(float2(float(m), float(j) + 41.0));
+                float dir = j % 2 == 0 ? 1.0 : -1.0;
+                float wx = (fract(h + dir * t * (0.25 + 0.2 * hash2(float2(float(m), float(j) + 43.0)))) - 0.5) * 2.0 * half_w;
+                // Its headlight leads, its tail light follows.
+                float2 front = float2(cx + (wx + dir * 0.14) * f / zs, y);
+                float2 back = float2(cx + (wx - dir * 0.14) * f / zs, y);
+                col = light_on(col, head_c, car_light(q, front, r2) * seen * 0.9, u.dark);
+                col = light_on(col, tail_c, car_light(q, back, r2) * seen * 0.9, u.dark);
+            }
             continue;
         }
         // Only the lane p lies in at this row's depth and its two neighbours can cover it (a
@@ -1057,6 +1118,17 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
                 float edge = min(min(abs(q.x - x0), abs(q.x - x1)), abs(q.y - top));
                 float floors = grid_line((base - q.y) / (f * 0.5 / zf));
                 float s = (1.0 - smoothstep(0.0, 1.0, edge)) * 0.8 + (inside ? floors * 0.3 : 0.0);
+                // Lit windows on the face, where a window is a few points wide: a few in each
+                // tower, some switching on and off now and then.
+                if (inside && 0.2 * f / zf > 3.0) {
+                    float2 w = float2((q.x - x0) / (x1 - x0) * tw / 0.2, (base - q.y) / (base - top) * th / 0.25);
+                    float2 wc = floor(w);
+                    float2 wf = fract(w);
+                    float lit = hash2(wc + cell * 13.0 + floor(t * 0.15 + hash2(wc + cell) * 3.0) * 0.37);
+                    if (wf.x > 0.25 && wf.x < 0.75 && wf.y > 0.3 && wf.y < 0.75 && lit < 0.2) {
+                        col = light_on(col, mix(green, white_c, 0.35), 0.5 * seen, u.dark);
+                    }
+                }
                 if (!inside) {
                     // The top's back edge and the edges running back to it, and the back's
                     // upright on the side away from the road.
@@ -1068,6 +1140,14 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
                 col = light_on(col, mix(green, white_c, 0.15), s * seen, u.dark);
             }
         }
+    }
+    // Drones drifting over the roofs, each blinking.
+    for (int i = 0; i < DRONES; i++) {
+        float fi = float(i);
+        float3 w = float3(sin(t * 0.21 + fi * 2.1) * 3.5, 2.6 + 0.6 * sin(t * 0.5 + fi), 7.0 + 4.0 * sin(t * 0.13 + fi * 1.7));
+        float2 sp = float2(cx + w.x * f / w.z, yh + f * (1.0 - w.y) / w.z);
+        float blink = fract(t * 0.9 + fi * 0.37) < 0.5 ? 1.0 : 0.35;
+        col = light_on(col, i == 1 ? tail_c : head_c, car_light(q, sp, 1.2) * blink * 0.9, u.dark);
     }
     // The code falling to the floor: a stream of bits from the sky to where it lands.
     for (int i = 0; i < HZ_DROPS; i++) {

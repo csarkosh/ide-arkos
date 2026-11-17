@@ -661,7 +661,9 @@ windows, storm clouds, and now and then a soft bolt of lightning made of runes t
 the clouds and fades over a second);
 The Matrix's is a digital horizon: a floor of grid lines running toward a line of light, a dense
 city of wireframe towers on both sides of an open road coming toward you with the floor and past
-you, code raining behind it from half the sidebar's height, and now and then a stream of code
+you, alive with traffic (headlights coming on down the road and tail lights going away, cars
+crossing on the cross streets between the blocks), lit windows in the near towers and drones
+blinking over the roofs, code raining behind it from half the sidebar's height, and now and then a stream of code
 falling to the road and rippling where it lands. Material
 and Lavender Material come with `material`: the
 title bar, sidebar and status bar are one pale frame with a search bar round the title, each pane

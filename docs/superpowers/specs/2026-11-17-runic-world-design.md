@@ -45,7 +45,13 @@ either side of a road one cell wide each side of the middle, rows out to 30 came
 stand still on the floor, so they come on with it (the camera has run `t * GRID_SPEED * GRID_Z`
 into the city) and pass, fading up out of the horizon far off; drawn farthest row first, each
 face hiding what is behind it, its back edges drawn so it reads as a box. The code lands on the
-road, and its ripple rides the floor. The sky's rain runs from half the sidebar's height (or the
+road, and its ripple rides the floor. City life ("some city life added between the buildings"):
+every fourth row is a cross street with no towers, two cars crossing it each way between the
+blocks (headlight leading, tail light following); five cars a lane on the road, one lane coming
+on at the car's speed and the floor's (headlights), one going away at the car's less the floor's
+(tail lights); lit windows, about one in five, on the faces of towers near enough for a window to
+be three points wide, some switching on and off every few seconds; three drones blinking as they
+drift over the roofs. The sky's rain runs from half the sidebar's height (or the
 scene's top) down to the horizon ("the runic rain in the background of the graphic to have its
 height increased to half the pane size"), softened under the names.
 
