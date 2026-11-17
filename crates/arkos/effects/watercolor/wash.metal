@@ -116,20 +116,30 @@ float3 keep_readable(constant ArkosInputs& u, float3 col) {
 // colour.
 constant int PANE_PIGMENTS[4] = {0, 1, 3, 2};
 
-// The focused pane (Cyrus, 2026-11-17: "it's not obvious which pane is currently selected"):
-// its tab bar and body washed deeper and the others paler, its ink a little heavier and the
-// others' lighter, and a ragged brush band of its own pigment painted FOCUS_BAND points wide just
-// inside its edges, at FOCUS_HALO, as a watercolour border (the panes meet edge to edge, so a
-// bleed outward would land on a neighbour). All follow the app's focus glow as it fades between
-// panes; the sidebar takes the band too when it has the keys.
-constant float BAR_IDLE = 0.24;
-constant float BAR_FOCUS = 0.62;
-constant float BODY_IDLE = 0.05;
-constant float BODY_FOCUS = 0.17;
+// The focused pane (Cyrus, 2026-11-17: "it's not obvious which pane is currently selected", and
+// then: "I also don't like that it darkens. The watercolor theme is supposed to be bright and happy
+// and soft"). Nothing darkens: the focused pane keeps the theme's own look and gains a luminous
+// band of its pigment, lifted to a bright pastel, FOCUS_BAND points wide just inside its edges at
+// FOCUS_GLOW (the panes meet edge to edge, so nothing spills onto a neighbour); the other panes
+// recede by going lighter, under a veil of light paper at IDLE_VEIL with their ink at INK_IDLE.
+// All follow the app's focus glow as it fades between panes; the sidebar takes the band when it
+// has the keys.
 constant float INK_IDLE = 0.55;
-constant float FOCUS_WEIGHT = 0.7;
-constant float FOCUS_BAND = 7.0;
-constant float FOCUS_HALO = 0.42;
+constant float IDLE_VEIL = 0.38;
+constant float FOCUS_BAND = 12.0;
+constant float FOCUS_GLOW = 0.9;
+// How strong the band's hue is, and how much it lifts the paper under it.
+constant float FOCUS_HUE = 1.5;
+constant float FOCUS_LIFT = 0.08;
+
+// The focus band's colour over `col`: the pigment's hue (its colour less its grey) laid on at
+// col's own lightness, a little lifted, so the band adds colour and never shade.
+float3 pastel_over(float3 col, float3 pig) {
+    float3 lum_w = float3(0.299, 0.587, 0.114);
+    float3 c = bright(pig);
+    float3 hue = (c - float3(dot(c, lum_w))) * FOCUS_HUE;
+    return saturate(col + hue + FOCUS_LIFT);
+}
 
 // A highlight's strength at full fade, by its ordinal: hovered, selected, both.
 constant float HIGHLIGHT_STRENGTH[3] = {0.2, 0.3, 0.36};
@@ -143,8 +153,8 @@ float strength_of(ArkosBlock b, thread int& tint) {
     if (kind == ARKOS_TITLE_BAR_BLOCK) { return 0.46; }
     // The sidebar a light wash, so the Explorer's names read on near-white paper.
     if (kind == ARKOS_SIDEBAR_BLOCK) { tint = 2; return 0.12; }
-    if (kind == ARKOS_TAB_BAR_BLOCK) { tint = PANE_PIGMENTS[ordinal % 4]; return mix(BAR_IDLE, BAR_FOCUS, saturate(b.focus)); }
-    if (kind == ARKOS_PANE_BODY_BLOCK) { tint = PANE_PIGMENTS[ordinal % 4]; return mix(BODY_IDLE, BODY_FOCUS, saturate(b.focus)); }
+    if (kind == ARKOS_TAB_BAR_BLOCK) { tint = PANE_PIGMENTS[ordinal % 4]; return 0.56; }
+    if (kind == ARKOS_PANE_BODY_BLOCK) { tint = PANE_PIGMENTS[ordinal % 4]; return 0.14; }
     // A menu's backdrop: a pane body's light wash, in the first pigment.
     if (kind == ARKOS_MENU_BLOCK) { return 0.14; }
     // A table: a light wash over its body and an apricot band over its header, as a ruled
@@ -228,11 +238,11 @@ float ink_for_block(float2 p, ArkosBlock blk, Pen pen) {
     if (edges & ARKOS_EDGE_RIGHT) { dmin = min(dmin, ink_v(p, x1, y0, y1, pen.wob, over)); }
     if (edges & ARKOS_EDGE_BOTTOM) { dmin = min(dmin, ink_h(p, y1, x0, x1, pen.wob, over)); }
     if (edges & ARKOS_EDGE_LEFT) { dmin = min(dmin, ink_v(p, x0, y0, y1, pen.wob, over)); }
-    // A pane's ink: heavier round the focused one, lighter round the others.
+    // A pane's ink: as ever round the focused one, lighter round the others.
     int kind = int(blk.kind);
     bool pane = kind == ARKOS_TAB_BAR_BLOCK || kind == ARKOS_PANE_BODY_BLOCK;
     float focus = pane ? saturate(blk.focus) : 1.0;
-    float weight = pen.weight + (pane ? FOCUS_WEIGHT * focus : 0.0);
+    float weight = pen.weight;
     float core = 1.0 - smoothstep(weight - 0.3, weight + 0.3, dmin);
     float halo = (1.0 - smoothstep(weight, weight + 2.2, dmin)) * 0.22;
     return max(core, halo) * pen.gap * (pane ? mix(INK_IDLE, 1.0, focus) : 1.0);
@@ -910,28 +920,43 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
                 col = wash_onto(u, col, pigment(u, tint), clamp(a, 0.0, 0.85));
             }
         }
-        // The focused pane's brush band just inside its edges: round its tab bar and body
-        // together (the body follows its bar among the blocks), and round the sidebar when it
-        // has the keys.
-        int bk = int(blk.kind);
-        if (blk.focus > 0.0 && (bk == ARKOS_TAB_BAR_BLOCK || bk == ARKOS_SIDEBAR_BLOCK)) {
-            float4 cr = r;
-            if (bk == ARKOS_TAB_BAR_BLOCK && i + 1 < nb && int(u.blocks[i + 1].kind) == ARKOS_PANE_BODY_BLOCK) {
-                cr.w = u.blocks[i + 1].rect.y + u.blocks[i + 1].rect.w - r.y;
-            }
-            float2 chb = cr.zw * 0.5;
-            float in_d = -sd_box(p - (cr.xy + chb), chb);
-            if (in_d > 0.0 && in_d < FOCUS_BAND + 6.0) {
-                float reach = in_d + (bleed - 0.5) * 6.0 + (fray - 0.5) * 2.5;
-                // Darkest at the edge, its inner side ragged as a brush stroke's, pooling a little.
-                float bloom = (1.0 - smoothstep(FOCUS_BAND * 0.45, FOCUS_BAND, reach)) * (0.85 + 0.3 * smoothstep(FOCUS_BAND * 0.6, FOCUS_BAND * 0.9, reach)) * saturate(blk.focus) * k;
-                int ftint;
-                strength_of(blk, ftint);
-                col = wash_onto(u, col, pigment(u, ftint), FOCUS_HALO * bloom * (0.75 + 0.5 * gran));
-            }
-        }
         // Strokes add up where they cross, so the corners pool darker.
         inked += ink_for_block(p, blk, pen);
+    }
+    // Which pane is focused, over every pane's washes: the others veiled lighter, the focused one's
+    // pastel band just inside its edges (round its tab bar and body together, the body following
+    // its bar among the blocks), and the sidebar's band when it has the keys.
+    float3 paper_c = u.colors[ARKOS_WINDOW_BG].rgb;
+    float3 veil_c = u.dark > 0.5 ? paper_c : mix(paper_c, float3(1.0), 0.6);
+    for (int i = 0; i < nb; i++) {
+        ArkosBlock blk = u.blocks[i];
+        int bk = int(blk.kind);
+        bool bar = bk == ARKOS_TAB_BAR_BLOCK;
+        if (!bar && bk != ARKOS_SIDEBAR_BLOCK) {
+            continue;
+        }
+        float4 cr = blk.rect;
+        if (bar && i + 1 < nb && int(u.blocks[i + 1].kind) == ARKOS_PANE_BODY_BLOCK) {
+            cr.w = u.blocks[i + 1].rect.y + u.blocks[i + 1].rect.w - cr.y;
+        }
+        float2 chb = cr.zw * 0.5;
+        float in_d = -sd_box(p - (cr.xy + chb), chb);
+        if (in_d <= 0.0) {
+            continue;
+        }
+        float f = saturate(blk.focus);
+        if (bar) {
+            col = mix(col, veil_c, IDLE_VEIL * (1.0 - f) * k);
+        }
+        if (f > 0.0 && in_d < FOCUS_BAND + 6.0) {
+            float reach = in_d + (bleed - 0.5) * 7.0 + (fray - 0.5) * 2.5;
+            // Full at the edge, its inner side ragged and soft as a brush stroke's.
+            float band = (1.0 - smoothstep(FOCUS_BAND * 0.35, FOCUS_BAND, reach)) * f * k;
+            int ftint;
+            strength_of(blk, ftint);
+            float3 glow = u.dark > 0.5 ? mix(col, bright(pigment(u, ftint)), 0.5) : pastel_over(col, pigment(u, ftint));
+            col = mix(col, glow, FOCUS_GLOW * band * (0.85 + 0.3 * gran));
+        }
     }
     // The text over the paper stays readable whatever the theme's colours did to it; the ink
     // lines, which carry no text, are drawn over that as they are.

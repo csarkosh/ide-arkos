@@ -371,9 +371,10 @@ mod tests {
     }
 
     #[test]
-    fn under_watercolor_the_focused_pane_is_washed_deeper_with_a_brush_band_inside_its_edges() {
-        // Cyrus, 2026-11-17: "it's not obvious which pane is currently selected", as Overworld's
-        // and Runic's are. Two panes side by side, a tab bar over a body each, one focused in turn.
+    fn under_watercolor_the_focused_pane_lights_up_and_the_others_go_lighter_never_darker() {
+        // Cyrus, 2026-11-17: "it's not obvious which pane is currently selected", then "I also
+        // don't like that it darkens. The watercolor theme is supposed to be bright and happy and
+        // soft". Two panes side by side, a tab bar over a body each, one focused in turn.
         if Device::system_default().is_none() {
             return;
         }
@@ -385,30 +386,43 @@ mod tests {
             let body = Block { rect: Rect { x, y: 44.0, w: 80.0, h: 96.0 }, kind: Kind::PaneBody, edges: all, seed: 7.0 + ordinal, value: 1.0, ordinal, busy: 0.0, pitch: 0.0, focus, waiting: 0.0 };
             [bar, body]
         };
-        // How much darker than the bare paper a region is, summed: more pigment, more darkness.
-        let ink = |f: &[Rgb], x0: u32, x1: u32, y0: u32, y1: u32| -> f32 {
-            let mut sum = 0.0;
+        let region = |f: &[Rgb], x0: u32, x1: u32, y0: u32, y1: u32| -> (f32, f32) {
+            // Mean lightness and mean colourfulness (how far from grey).
+            let (mut light, mut chroma, mut n) = (0.0, 0.0, 0.0);
             for y in y0..y1 {
                 for x in x0..x1 {
                     let c = f[(y * W + x) as usize];
-                    sum += 765.0 - (c.r as f32 + c.g as f32 + c.b as f32);
+                    let (r, g, b) = (c.r as f32, c.g as f32, c.b as f32);
+                    light += (r + g + b) / 3.0;
+                    chroma += r.max(g).max(b) - r.min(g).min(b);
+                    n += 1.0;
                 }
             }
-            sum
+            (light / n, chroma / n)
         };
-        for left_focused in [true, false] {
-            let (fl, fr) = if left_focused { (1.0, 0.0) } else { (0.0, 1.0) };
+        // A band just inside each pane's sides, below its tab bar, and its middle.
+        let band = |f: &[Rgb], x: u32| {
+            let (l1, c1) = region(f, x + 3, x + 8, 52, 132);
+            let (l2, c2) = region(f, x + 72, x + 77, 52, 132);
+            ((l1 + l2) / 2.0, (c1 + c2) / 2.0)
+        };
+        let middle = |f: &[Rgb], x: u32| region(f, x + 25, x + 55, 70, 110).0;
+        let frame = |fl: f32, fr: f32| {
             let blocks: Vec<Block> = pane(24.0, 0.0, fl).into_iter().chain(pane(136.0, 1.0, fr)).collect();
-            let f = render_frame(&wc.wash, &theme, (W, H), 2.0, &blocks);
-            // The tab bars, inside their ink.
-            let (bar_l, bar_r) = (ink(&f, 30, 98, 24, 40), ink(&f, 142, 210, 24, 40));
-            // A band just inside each pane's sides, below its tab bar.
-            let (out_l, out_r) = (ink(&f, 26, 30, 50, 130) + ink(&f, 98, 102, 50, 130), ink(&f, 138, 142, 50, 130) + ink(&f, 210, 214, 50, 130));
-            let ((bar_on, bar_off), (out_on, out_off)) = if left_focused { ((bar_l, bar_r), (out_l, out_r)) } else { ((bar_r, bar_l), (out_r, out_l)) };
-            // The paper is kept readable under the bars' text, which holds how deep a bar can go.
-            assert!(bar_on > bar_off * 1.2, "the focused tab bar {bar_on:.0} is not deeper than the other {bar_off:.0} (left focused: {left_focused})");
-            assert!(out_on > out_off * 1.3, "the focused pane's band inside its edges {out_on:.0} is no deeper than the other's {out_off:.0} (left focused: {left_focused})");
+            render_frame(&wc.wash, &theme, (W, H), 2.0, &blocks)
+        };
+        let (left_on, right_on) = (frame(1.0, 0.0), frame(0.0, 1.0));
+        for (on, off, x) in [(&left_on, &right_on, 24u32), (&right_on, &left_on, 136u32)] {
+            let ((band_light, band_chroma), (_, idle_chroma)) = (band(on, x), band(off, x));
+            // Obvious: the focused pane's band is far more colourful than the same place idle.
+            assert!(band_chroma > idle_chroma * 1.6, "pane at {x}: focused band chroma {band_chroma:.1} against idle {idle_chroma:.1}");
+            // Bright: the band is no darker than the pane's own middle (within the wash's own
+            // pooling at a pane's edge, under 2 per cent), and going idle only lifts a pane: its
+            // middle is lighter idle than focused.
+            assert!(band_light >= middle(on, x) - 4.0, "pane at {x}: the band {band_light:.1} darker than the pane {:.1}", middle(on, x));
+            assert!(middle(off, x) > middle(on, x) + 3.0, "pane at {x}: idle {:.1} is not lighter than focused {:.1}", middle(off, x), middle(on, x));
         }
+        assert!(!wc.wash.contains("FOCUS_WEIGHT"), "the focused pane's ink is never heavier");
     }
 
     #[test]

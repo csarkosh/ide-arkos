@@ -630,9 +630,9 @@ Player". Audio still opens in QuickTime Player, and a `.webm` is shown in Finder
 An effect is a shader that paints the project window: a wash under every surface, and
 optionally the text itself. Peach Watercolor and Lavender Watercolor come with `watercolor`: washes that hug each block with
 a ragged rim, ink outlines with a slow wobble, bubbles drifting behind, the Explorer's selected
-and hovered rows and the hovered tab as fading strokes of pigment, the focused pane washed deeper in its
-own pigment with a ragged brush band painted just inside its edges and its ink a little heavier while
-the other panes pale (Pane 0 takes the band when it has the keys), glyphs and emoji written in ink, UI
+and hovered rows and the hovered tab as fading strokes of pigment, the focused pane lit by a bright,
+soft band of its own pigment just inside its edges while the other panes recede lighter under a veil
+of paper, nothing ever darker (Pane 0 takes the band when it has the keys), glyphs and emoji written in ink, UI
 text two points larger, and in the empty space under the sidebar's rows a painter's loft in the West
 Village, washed in the theme's own colours and melting into the sidebar's paper: a steel factory
 window onto brownstone rooftops and a water tower, exposed brick, wide floorboards, a pendant lamp,
