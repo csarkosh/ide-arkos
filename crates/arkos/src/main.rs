@@ -48,6 +48,7 @@ mod launch_link;
 mod link_menu;
 mod new_tab_menu;
 mod update_veil;
+mod update_toast;
 mod keyboard_guide;
 mod icons;
 mod image_zoom;
@@ -607,6 +608,11 @@ pub struct Root {
     /// fade under way: since when, and whether it comes in.
     pub veil: Option<update_veil::Veil>,
     pub veil_fade: Option<(Instant, bool)>,
+    /// The update heads-up (update heads-up spec): when its countdown started, if it shows; a
+    /// "Later" not yet over; and the toast's fade.
+    pub update_countdown: Option<Instant>,
+    pub update_later_until: Option<Instant>,
+    pub update_toast: Transient<()>,
     /// Where the window is (display, frame), as last saved with the layout; a relaunch opens
     /// it there.
     pub window_saved: Option<workspace::WindowSaved>,
@@ -699,6 +705,16 @@ fn daemon_args(config: &config::Config, sandbox: bool) -> Vec<String> {
         args.push("--no-recover".to_string());
     }
     args
+}
+
+/// `ARKOS_UPDATE_PREVIEW=<secs>`, for trying the update's look in a sandbox (update heads-up
+/// spec): the window behaves as if a release were staged, with `<secs>` as the quiet spell, then
+/// relaunches through the daemon as an update does. A window an update started (a relaunch or a
+/// handoff's successor) ignores it, so the preview runs once.
+fn update_preview_secs() -> Option<u64> {
+    let secs = std::env::var("ARKOS_UPDATE_PREVIEW").ok()?.trim().parse::<u64>().ok()?;
+    let started_by_update = !should_activate(std::env::var("ARKOS_RELAUNCH").ok().as_deref()) || std::env::var_os("ARKOS_HANDOFF").is_some();
+    (!started_by_update).then_some(secs)
 }
 
 /// Whether the new window takes focus: not when the daemon started it (`ARKOS_RELAUNCH` set by
@@ -979,6 +995,9 @@ impl Root {
             ns_window: None,
             veil: None,
             veil_fade: None,
+            update_countdown: None,
+            update_later_until: None,
+            update_toast: Transient::Hidden,
             window_saved,
             details_open,
             folds,
@@ -1634,6 +1653,7 @@ impl Root {
             || self.new_file.animating(now)
             || self.link_menu.animating(now)
             || self.new_tab_menu.animating(now)
+            || self.update_toast.animating(now)
             || self.md_menu.animating(now)
             || self.image_zoom.animating(now)
             || self.outline_anim.values().any(|t| t.animating(now))
@@ -1672,6 +1692,7 @@ impl Root {
         self.new_file.settle(now);
         self.link_menu.settle(now);
         self.new_tab_menu.settle(now);
+        self.update_toast.settle(now);
         self.md_menu.settle(now);
         self.image_zoom.settle(now);
         // A zoom is drawn only over its tab in front; anywhere else it ends at once.
@@ -4358,7 +4379,7 @@ impl Root {
     /// once. Stops when there is nothing to do or `[update] auto` is off (as it is in a sandbox);
     /// one at a time.
     pub fn start_idle_timer(&mut self, cx: &mut Context<Self>) {
-        if self.auto_apply_timer || self.sandbox {
+        if self.auto_apply_timer || (self.sandbox && update_preview_secs().is_none()) {
             return;
         }
         self.auto_apply_timer = true;
@@ -4366,24 +4387,47 @@ impl Root {
             cx.background_executor().timer(IDLE_TICK).await;
             let more = root.update(cx, |root, cx| {
                 // A failed update waits for "Retry update" or a newly staged release.
-                let action = idle::idle_action(root.staged.is_some() && root.update_error.is_none(), root.on_disk_newer_daemon());
-                if action == idle::IdleAction::Nothing || !root.config.update.auto {
+                let preview = update_preview_secs();
+                let action = if preview.is_some() { idle::IdleAction::Relaunch } else { idle::idle_action(root.staged.is_some() && root.update_error.is_none(), root.on_disk_newer_daemon()) };
+                if action == idle::IdleAction::Nothing || (!root.config.update.auto && preview.is_none()) {
                     root.auto_apply_timer = false;
+                    root.drop_update_toast(cx);
                     return false;
                 }
                 let now = Instant::now();
                 let chrome = root.chrome_state(cx);
                 // Anything open restarts the quiet spell, so closing it is not followed by an update.
                 root.last_input = idle::quiet_since(root.last_input, now, chrome);
-                let idle_after = Duration::from_secs(root.config.update.idle_after_secs);
-                if idle::may_apply(now, root.last_input, idle_after, chrome, root.updating.is_some(), !root.sessions.is_offline()) {
-                    root.auto_apply_timer = false;
-                    match action {
-                        idle::IdleAction::Apply => root.apply_staged(cx),
-                        idle::IdleAction::Relaunch => root.relaunch_now(cx),
-                        idle::IdleAction::Nothing => {}
+                let idle_after = preview.map_or(Duration::from_secs(root.config.update.idle_after_secs), Duration::from_secs);
+                if !idle::may_apply(now, root.last_input, idle_after, chrome, root.updating.is_some(), !root.sessions.is_offline()) {
+                    // Typing or a menu during the countdown calls it off; the quiet spell starts again.
+                    root.drop_update_toast(cx);
+                    return true;
+                }
+                // A preview waits for the window to be in front: the quiet update behind is unseen.
+                if preview.is_some() && !root.window_active && root.update_countdown.is_none() {
+                    return true;
+                }
+                match idle::heads_up(root.window_active, root.update_countdown, root.update_later_until, root.last_input, now) {
+                    idle::HeadsUp::Apply => {
+                        root.auto_apply_timer = false;
+                        root.drop_update_toast(cx);
+                        root.run_update_action(action, cx);
+                        return false;
                     }
-                    return false;
+                    idle::HeadsUp::Start => {
+                        root.update_countdown = Some(now);
+                        root.update_later_until = None;
+                        root.update_toast.show((), now);
+                        cx.notify();
+                    }
+                    // The toast's seconds count down.
+                    idle::HeadsUp::Wait => {
+                        if root.update_countdown.is_some() {
+                            cx.notify();
+                        }
+                    }
+                    idle::HeadsUp::CallOff => root.drop_update_toast(cx),
                 }
                 true
             });
@@ -4392,6 +4436,37 @@ impl Root {
             }
         })
         .detach();
+    }
+
+    /// Takes the heads-up toast away, its countdown with it.
+    fn drop_update_toast(&mut self, cx: &mut Context<Self>) {
+        if self.update_countdown.take().is_some() | self.update_toast.hide(Instant::now()) {
+            cx.notify();
+        }
+    }
+
+    /// Runs what the idle rule chose: the staged release applied, or this window relaunched
+    /// from the new build another window applied (always the relaunch in a preview).
+    fn run_update_action(&mut self, action: idle::IdleAction, cx: &mut Context<Self>) {
+        match action {
+            idle::IdleAction::Apply => self.apply_staged(cx),
+            idle::IdleAction::Relaunch => self.relaunch_now(cx),
+            idle::IdleAction::Nothing => {}
+        }
+    }
+
+    /// The toast's "Now": the update at once.
+    pub fn update_toast_now(&mut self, cx: &mut Context<Self>) {
+        let action = if update_preview_secs().is_some() { idle::IdleAction::Relaunch } else { idle::idle_action(self.staged.is_some() && self.update_error.is_none(), self.on_disk_newer_daemon()) };
+        self.drop_update_toast(cx);
+        self.auto_apply_timer = false;
+        self.run_update_action(action, cx);
+    }
+
+    /// The toast's "Later": the update waits an hour (`idle::LATER`), then asks again.
+    pub fn update_toast_later(&mut self, cx: &mut Context<Self>) {
+        self.update_later_until = Some(Instant::now() + idle::LATER);
+        self.drop_update_toast(cx);
     }
 
     /// Asks the daemon what the requested check left, shortly: every `POLL_EVERY_MS` for a daemon
@@ -4440,6 +4515,8 @@ impl Root {
         }
         let version = s.version.clone();
         self.updating = Some(UpdateStage::Applying);
+        // The card comes in at once and stays through the daemon's swap and the window's.
+        self.veil_in(cx);
         self.show_notice(format!("updating to {version}; sessions stay"), cx);
         self.sessions.apply_update(version);
     }
@@ -4502,7 +4579,7 @@ impl Root {
         self.veil_in(cx);
         let root = cx.entity();
         cx.spawn(async move |_, cx| {
-            cx.background_executor().timer(update_veil::ENTER).await;
+            cx.background_executor().timer(update_veil::ENTER + update_veil::READ_HOLD).await;
             let _ = root.update(cx, |root, cx| {
                 let (full_screen, minimized) = root.ns_window.as_ref().map_or((false, false), |w| (handoff::mac::is_full_screen(w), w.isMiniaturized()));
                 if handoff::can_hand_off(root.daemon_protocol_max, full_screen, minimized) {
@@ -4520,6 +4597,9 @@ impl Root {
         if self.veil.is_none() {
             let Some(w) = self.ns_window.clone() else { return };
             self.veil = update_veil::Veil::over(&w, 0.0);
+        } else if !matches!(self.veil_fade, Some((_, false))) {
+            // Up already, or on its way in: nothing to start again.
+            return;
         }
         self.run_veil_fade(true, cx);
     }
@@ -4887,12 +4967,14 @@ impl Root {
         // under way waits on: its successor may still be drawn, and `handoff::OLD_WAIT` ends it.
         if self.updating == Some(UpdateStage::Relaunching) && self.handing_off.is_none() {
             self.updating = None;
+            self.veil_out(cx);
             self.show_notice("update interrupted: arkosd disconnected before relaunching this window; try again".into(), cx);
         }
         // The apply went unanswered; the reconnect's `UpdateStatus` says what is staged and the
         // idle rule decides again. `connected` never relaunches for it.
         if self.updating == Some(UpdateStage::Applying) {
             self.updating = None;
+            self.veil_out(cx);
             self.show_notice("update interrupted; checking again".into(), cx);
         }
         // An error the daemon sent before hanging up (a protocol mismatch) says why; keep it.
@@ -4963,12 +5045,14 @@ impl Root {
             Outcome::ApplyFailed(e) if e.contains(ANOTHER_APPLY) => {
                 eprintln!("arkos: apply refused: {e}");
                 self.updating = None;
+                self.veil_out(cx);
                 self.show_notice("another window is applying the update".into(), cx);
             }
             Outcome::ApplyFailed(e) => {
                 eprintln!("arkos: update failed: {e}");
                 telemetry::update(telemetry::UpdateStep::Failed);
                 self.updating = None;
+                self.veil_out(cx);
                 // The daemon reports this failure as its `last_error` in these words: shown once.
                 self.update_error_noticed = Some(format!("update failed: {e}"));
                 self.update_error = Some(e.clone());
@@ -5053,6 +5137,7 @@ impl Root {
                 eprintln!("arkos: update failed: {e}");
                 telemetry::update(telemetry::UpdateStep::Failed);
                 self.updating = None;
+                self.veil_out(cx);
                 self.show_notice(format!("update failed: {e}"), cx);
             }
             Outcome::RelaunchAccepted => {
@@ -5982,6 +6067,7 @@ impl Render for Root {
             .children(sidebar::render_context_menu(self, cx))
             .children(link_menu::render_link_menu(self, cx))
             .children(new_tab_menu::render_new_tab_menu(self, cx))
+            .children(update_toast::render(self, cx))
             .children(md_menu::render_md_menu(self, cx))
             .children(outline_rail::render_hover(self, cx))
             .children(slash_menu::render_slash_menu(self, cx))
@@ -6687,6 +6773,9 @@ fn open_project_window(
                 root.watch_handoff(cx);
             }
             root.relaunch_after_for_checks(cx);
+            if update_preview_secs().is_some() {
+                root.start_idle_timer(cx);
+            }
             root.apply_recovery(true, cx);
             root.load_pending_dirs(cx);
             root.refresh_status(cx);
