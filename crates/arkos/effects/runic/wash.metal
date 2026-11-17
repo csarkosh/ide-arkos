@@ -564,10 +564,13 @@ constant float TOWER_MAX = 4.8;
 // over the roofs.
 constant int CROSS_EVERY = 4;
 // Twenty-four a lane, so the road is as busy as the cross streets (Cyrus, 2026-11-17: "not enough
-// vehicles moving vertically"); queued up to QUEUE_CARS deep behind a stop line, QUEUE_GAP apart.
+// vehicles moving vertically"), queued QUEUE_GAP apart behind each stop line (Cyrus, 2026-11-17:
+// cars must "not drive through each other or completely overlap each other when stopped at a
+// light"): each car has its own place in one block's queue, and the queue moves off on the green
+// as a platoon, each car QUEUE_START after the one ahead at the same pace, so no two ever close up.
 constant int ROAD_CARS = 24;
-constant float QUEUE_CARS = 4.0;
 constant float QUEUE_GAP = 0.3;
+constant float QUEUE_START = 0.25;
 constant int CROSS_CARS = 2;
 constant int DRONES = 3;
 // The city's laws (Cyrus, 2026-11-17: traffic and people "should follow traffic and pedestrian
@@ -1060,18 +1063,19 @@ float wrap_view(float z) {
 // every intersection it crossed while it was green. `dir` is +1 going away, -1 coming on.
 float road_car_at(float dir, float2 key, float t) {
     float block = float(CROSS_EVERY) * GRID_Z;
-    // Its place in the queue at the line: the first at it, the others a car's length behind; only
-    // the first goes two blocks on a green, so none behind it is still crossing when it turns.
-    float queue = floor(hash2(key + 4.0) * QUEUE_CARS) * QUEUE_GAP;
-    float n = (hash2(key) < 0.5 || queue > 0.0) ? 1.0 : 2.0;
-    float dur = n == 1.0 ? mix(7.0, 11.0, hash2(key + 1.0)) : mix(7.0, 10.0, hash2(key + 1.0));
-    float delta = 0.4 * hash2(key + 2.0);
-    float j0 = floor(hash2(key + 3.0) * 8.0);
+    // Its block among the city's WRAP_BLOCKS and its place in that block's queue, for good: the
+    // lane's cars fill every block's queue alike, the first at the line, the others a car's length
+    // apart behind it.
+    float b = fmod(key.x, WRAP_BLOCKS);
+    float place = floor(key.x / WRAP_BLOCKS);
     float k = floor(t / SIG_CYCLE);
-    float x = saturate((t - k * SIG_CYCLE - delta) / dur);
-    float j = j0 + dir * k * n;
-    float stop_line = (dir > 0.0 ? j * block - STOP_BACK : j * block + GRID_Z + STOP_BACK) - dir * queue;
-    return stop_line + dir * n * block * x * x * (3.0 - 2.0 * x);
+    // The platoon's pace this green, the same for every car in it; each car moves off a moment
+    // after the one ahead, so the gaps only open while they go and close back to the queue's.
+    float dur = mix(6.5, 8.5, hash2(float2(b * 7.0 + key.y, k)));
+    float x = saturate((t - k * SIG_CYCLE - place * QUEUE_START) / dur);
+    float j = b + dir * k;
+    float stop_line = (dir > 0.0 ? j * block - STOP_BACK : j * block + GRID_Z + STOP_BACK) - dir * place * QUEUE_GAP;
+    return stop_line + dir * block * x * x * (3.0 - 2.0 * x);
 }
 
 float grid_line(float phase);

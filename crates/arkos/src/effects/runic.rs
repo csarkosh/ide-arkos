@@ -432,19 +432,40 @@ mod tests {
         crate::effects::hash::hash01(ux.wrapping_mul(73_856_093) ^ uy.wrapping_mul(19_349_663))
     }
 
+    const WRAP_BLOCKS: f32 = 4.0;
+    const QUEUE_GAP: f32 = 0.3;
+    const QUEUE_START: f32 = 0.25;
+
     fn road_car_at(dir: f32, key: (f32, f32), t: f32) -> f32 {
         let block = CROSS_EVERY * GRID_Z;
-        let h = |d: f32| hash2(key.0 + d, key.1 + d);
-        let queue = (h(4.0) * 4.0).floor() * 0.3;
-        let n = if h(0.0) < 0.5 || queue > 0.0 { 1.0 } else { 2.0 };
-        let dur = if n == 1.0 { 7.0 + 4.0 * h(1.0) } else { 7.0 + 3.0 * h(1.0) };
-        let delta = 0.4 * h(2.0);
-        let j0 = (h(3.0) * 8.0).floor();
+        let b = key.0 % WRAP_BLOCKS;
+        let place = (key.0 / WRAP_BLOCKS).floor();
         let k = (t / SIG_CYCLE).floor();
-        let x = ((t - k * SIG_CYCLE - delta) / dur).clamp(0.0, 1.0);
-        let j = j0 + dir * k * n;
-        let stop_line = (if dir > 0.0 { j * block - STOP_BACK } else { j * block + GRID_Z + STOP_BACK }) - dir * queue;
-        stop_line + dir * n * block * x * x * (3.0 - 2.0 * x)
+        let dur = 6.5 + 2.0 * hash2(b * 7.0 + key.1, k);
+        let x = ((t - k * SIG_CYCLE - place * QUEUE_START) / dur).clamp(0.0, 1.0);
+        let j = b + dir * k;
+        let stop_line = (if dir > 0.0 { j * block - STOP_BACK } else { j * block + GRID_Z + STOP_BACK }) - dir * place * QUEUE_GAP;
+        stop_line + dir * block * x * x * (3.0 - 2.0 * x)
+    }
+
+    #[test]
+    fn no_two_cars_in_a_lane_ever_come_within_a_car_s_length_moving_or_stopped() {
+        // Cyrus, 2026-11-17: the cars must "not drive through each other or completely overlap
+        // each other when stopped at a light". The city repeats every WRAP_BLOCKS blocks, so two
+        // cars are as close as their places are, wrapped.
+        let span = WRAP_BLOCKS * CROSS_EVERY * GRID_Z;
+        let car = 0.25;
+        for (lane, dir) in [(0.0f32, -1.0f32), (1.0, 1.0)] {
+            let keys: Vec<(f32, f32)> = (0..24).map(|j| (j as f32, lane * 13.0 + 31.0)).collect();
+            let mut t = 0.0f32;
+            while t < 240.0 {
+                let mut at: Vec<f32> = keys.iter().map(|k| road_car_at(dir, *k, t).rem_euclid(span)).collect();
+                at.sort_by(f32::total_cmp);
+                let closest = at.windows(2).map(|w| w[1] - w[0]).chain([at[0] + span - at[at.len() - 1]]).fold(f32::MAX, f32::min);
+                assert!(closest >= car, "lane {lane} at {t}: two cars {closest} apart");
+                t += 0.05;
+            }
+        }
     }
 
     fn road_bike_at(dir: f32, key: (f32, f32), t: f32) -> f32 {
@@ -471,15 +492,16 @@ mod tests {
             "constant float STOP_BACK = 0.4;",
             "constant float WALK_AT = 0.18;",
             "constant float WALK_W = 0.24;",
-            "    float dur = n == 1.0 ? mix(7.0, 11.0, hash2(key + 1.0)) : mix(7.0, 10.0, hash2(key + 1.0));",
-            "    float delta = 0.4 * hash2(key + 2.0);",
-            "    float j0 = floor(hash2(key + 3.0) * 8.0);",
-            "    float queue = floor(hash2(key + 4.0) * QUEUE_CARS) * QUEUE_GAP;",
-            "    float n = (hash2(key) < 0.5 || queue > 0.0) ? 1.0 : 2.0;",
-            "    float stop_line = (dir > 0.0 ? j * block - STOP_BACK : j * block + GRID_Z + STOP_BACK) - dir * queue;",
-            "    return stop_line + dir * n * block * x * x * (3.0 - 2.0 * x);",
-            "constant float QUEUE_CARS = 4.0;",
+            "    float b = fmod(key.x, WRAP_BLOCKS);",
+            "    float place = floor(key.x / WRAP_BLOCKS);",
+            "    float dur = mix(6.5, 8.5, hash2(float2(b * 7.0 + key.y, k)));",
+            "    float x = saturate((t - k * SIG_CYCLE - place * QUEUE_START) / dur);",
+            "    float j = b + dir * k;",
+            "    float stop_line = (dir > 0.0 ? j * block - STOP_BACK : j * block + GRID_Z + STOP_BACK) - dir * place * QUEUE_GAP;",
+            "    return stop_line + dir * block * x * x * (3.0 - 2.0 * x);",
+            "constant float WRAP_BLOCKS = 4.0;",
             "constant float QUEUE_GAP = 0.3;",
+            "constant float QUEUE_START = 0.25;",
             "constant int ROAD_CARS = 24;",
             "            float z = wrap_view(road_car_at(dir, float2(float(j), float(lane) * 13.0 + 31.0), t) - run);",
             "    float dur = mix(8.5, 11.5, hash2(key + 1.0));",

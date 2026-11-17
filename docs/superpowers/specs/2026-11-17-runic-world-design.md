@@ -141,6 +141,16 @@ queued up to four deep behind a stop line a car's length (0.3) apart; only the f
 goes two blocks on a green, so none behind it is still crossing when the light turns (the law
 test, mirroring them, caught the first try at that).
 
+Cyrus, 2026-11-17, later: the cars must "not drive through each other or completely overlap each
+other when stopped at a light". Each car drew its block, its place in the queue and its pace at
+random, so two often shared a place, a faster one ran through a slower one ahead, and with the city
+repeating every four blocks a car eight blocks on stood where another did. Now every car has its own
+block of the four and its own place in that block's queue, six deep, 0.3 apart; each green the
+queue goes one block on as a platoon at one pace (6.5 to 8.5 seconds, drawn for the block and the
+cycle), each car 0.25 seconds after the one ahead, so the gaps only open while it goes and close back
+to the queue's at the next line. A test mirrors the cars and finds no two in a lane ever within a
+car's length (0.25), moving or stopped, besides the law test.
+
 ## Cyclists
 
 Cyrus, 2026-11-17: "include cyclists on the street traffic too". Three each way ride the road's
