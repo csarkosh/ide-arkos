@@ -40,6 +40,10 @@ state = ["waiting"]
 [events.palette]
 command = [
     "focus_pane",
+    "focus_last_pane",
+    "focus_sessions",
+    "cycle_session",
+    "new_tab_menu",
     "focus_dir",
     "split",
     "toggle_maximize",

@@ -369,6 +369,8 @@ pub struct Root {
     pub session_filter: line_edit::LineEdit,
     pub session_filter_focus: FocusHandle,
     pub session_filter_focused: bool,
+    /// The session list's keyboard cursor (Chrome keys spec, section 2): the row Enter opens.
+    pub session_cursor: Option<sessions_list::RowKey>,
     /// Each session's reminder, by its page (sessions hold grids spec, section 4). Saved with
     /// the workspace.
     pub reminders: HashMap<tree::PageKey, reminder::Reminder>,
@@ -871,6 +873,7 @@ impl Root {
             session_filter: line_edit::LineEdit::new(),
             session_filter_focus: cx.focus_handle(),
             session_filter_focused: false,
+            session_cursor: None,
             dock_badge: 0,
             held: None,
             session_submenu: None,
@@ -2285,23 +2288,80 @@ impl Root {
             return;
         }
         match self.session_filter.handle(ks) {
+            edit @ (line_edit::Edit::Up | line_edit::Edit::Down) => {
+                let delta = if matches!(edit, line_edit::Edit::Up) { -1 } else { 1 };
+                let rows = self.shown_session_rows();
+                self.session_cursor = sessions_list::cursor_step(&rows, self.session_cursor, delta);
+                cx.notify();
+            }
             line_edit::Edit::Submit | line_edit::Edit::SubmitBack => {
-                let found = sessions_list::matching(sessions_list::entries(self, sessions::now_ms()), &self.session_filter.text);
-                let first = sessions_list::grouped(found).into_iter().flat_map(|(_, rows)| rows).next();
+                let rows = self.shown_session_rows();
+                let target = self.session_cursor.filter(|c| rows.contains(c)).or_else(|| rows.first().copied());
                 self.session_filter_focused = false;
-                match first.map(|e| (e.ended, e.session)) {
-                    Some((Some(i), _)) => self.resume_ended(i, cx),
-                    Some((None, session)) => self.show_session(session, cx),
+                self.session_filter.clear();
+                match target {
+                    Some(sessions_list::RowKey::Ended(i)) => self.resume_ended(i, cx),
+                    Some(sessions_list::RowKey::Live(page)) => self.show_row(page, cx),
                     None => cx.notify(),
                 }
             }
+            // Escape clears what was typed; on an empty filter it gives the keys back.
             line_edit::Edit::Cancel => {
-                self.session_filter.clear();
-                self.session_filter_focused = false;
+                if self.session_filter.text.is_empty() {
+                    self.session_filter_focused = false;
+                } else {
+                    self.session_filter.clear();
+                }
                 cx.notify();
             }
-            line_edit::Edit::Changed => cx.notify(),
+            line_edit::Edit::Changed => {
+                // A narrower list: the cursor goes to its first row unless its row is still there.
+                let rows = self.shown_session_rows();
+                if !self.session_cursor.is_some_and(|c| rows.contains(&c)) {
+                    self.session_cursor = rows.first().copied();
+                }
+                cx.notify();
+            }
             _ => {}
+        }
+    }
+
+    /// The rows the session list shows now, in order, for the keyboard's cursor.
+    fn shown_session_rows(&self) -> Vec<sessions_list::RowKey> {
+        let query = &self.session_filter.text;
+        let groups = sessions_list::grouped(sessions_list::matching(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held), query));
+        // Every group is open while the list has the keys (Chrome keys spec, section 2).
+        sessions_list::shown_rows(&groups, &self.sessions_folded, true)
+    }
+
+    /// Cmd+0 (Chrome keys spec, section 2): the sidebar open on its session list, the keys in
+    /// its filter, the cursor on the session shown.
+    fn focus_sessions(&mut self, cx: &mut Context<Self>) {
+        if self.sidebar.collapsed {
+            self.sidebar.set_collapsed(false, Instant::now());
+            self.grids.clear();
+            self.save(cx);
+        }
+        self.sidebar.inbox_files = false;
+        self.sidebar_focused = false;
+        self.wt_focused = false;
+        self.session_filter_focused = true;
+        let rows = self.shown_session_rows();
+        let shown = sessions_list::RowKey::Live(self.tree.page);
+        self.session_cursor = if rows.contains(&shown) { Some(shown) } else { rows.first().copied() };
+        cx.notify();
+    }
+
+    /// Cmd+Option+Down and Up: the next or previous session in the list's order, a folded
+    /// group's included, wrapping.
+    fn cycle_session(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let rows = sessions_list::shown_rows(
+            &sessions_list::grouped(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held)),
+            &self.sessions_folded,
+            true,
+        );
+        if let Some(page) = sessions_list::cycle_session(&rows, self.tree.page, delta) {
+            self.show_row(page, cx);
         }
     }
 
@@ -3234,6 +3294,45 @@ impl Root {
         self.focus_pane(pane, cx);
     }
 
+    /// Cmd+T (Chrome keys spec, section 3): the focused pane's "+" menu, at its "+", its first
+    /// row marked for the keys.
+    fn open_new_tab_menu_at_focused(&mut self, cx: &mut Context<Self>) {
+        let pane = self.tree.focused;
+        let Some((_, r)) = self.tree.layout(self.content).panes.into_iter().find(|(p, _)| *p == pane) else { return };
+        let at = gpui::point(px(r.x + r.w - 14.0), px(r.y + pane_view::TAB_BAR_H / 2.0 - 6.0));
+        if self.new_tab_menu.value().is_some_and(|m| m.pane == pane) {
+            return;
+        }
+        self.toggle_new_tab_menu(pane, at, cx);
+    }
+
+    /// A key while the "+" menu is open (Chrome keys spec, section 3); true when the menu took it.
+    fn new_tab_menu_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
+        let Some(menu) = self.new_tab_menu.value() else { return false };
+        let m = &ks.modifiers;
+        if m.platform || m.control || m.alt || m.shift {
+            return false;
+        }
+        let pane = menu.pane;
+        match new_tab_menu::menu_key(&ks.key, menu.mark) {
+            new_tab_menu::MenuKey::Mark(i) => {
+                if let Some(m) = self.new_tab_menu.value_mut() {
+                    m.mark = i;
+                }
+            }
+            new_tab_menu::MenuKey::Open(kind) => {
+                self.new_tab_menu.hide(Instant::now());
+                self.new_tab_of(pane, kind, cx);
+            }
+            new_tab_menu::MenuKey::Close => {
+                self.new_tab_menu.hide(Instant::now());
+            }
+            new_tab_menu::MenuKey::Pass => return false,
+        }
+        cx.notify();
+        true
+    }
+
     /// Opens or closes a pane's "+" menu, from a press at `at` on its "+".
     pub fn toggle_new_tab_menu(&mut self, pane: PaneId, at: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
         let now = Instant::now();
@@ -3246,7 +3345,7 @@ impl Root {
             self.link_menu.hide(now);
             self.md_menu.hide(now);
             self.close_popovers(now);
-            self.new_tab_menu.show(new_tab_menu::NewTabMenu { pane, at }, now);
+            self.new_tab_menu.show(new_tab_menu::NewTabMenu { pane, at, mark: 0 }, now);
         }
         cx.notify();
     }
@@ -3589,6 +3688,14 @@ impl Root {
                     self.focus_pane(p, cx);
                 }
             }
+            FocusLastPane => {
+                if let Some(p) = self.tree.panes().last().copied() {
+                    self.focus_pane(p, cx);
+                }
+            }
+            FocusSessions => self.focus_sessions(cx),
+            CycleSession(delta) => self.cycle_session(delta, cx),
+            NewTabMenu => self.open_new_tab_menu_at_focused(cx),
             FocusDir(side) => {
                 if let Some(p) = self.tree.neighbor(focused, side, self.content) {
                     self.focus_pane(p, cx);
@@ -5652,7 +5759,7 @@ impl Render for Root {
             // frame would otherwise read the page as just clicked and undo the press's focus.
             .capture_any_mouse_down(cx.listener(|root, _ev: &MouseDownEvent, _window, _cx| root.keys_back_to_arkos()))
             .capture_key_down(cx.listener(|root, ev: &KeyDownEvent, _window, cx| {
-                if root.escape_closes_menu(&ev.keystroke, cx) {
+                if root.new_tab_menu_key(&ev.keystroke, cx) || root.escape_closes_menu(&ev.keystroke, cx) {
                     cx.stop_propagation();
                 }
             }))

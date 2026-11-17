@@ -624,6 +624,10 @@ pub fn command_name(command: &Command) -> &'static str {
     use Command::*;
     match command {
         FocusPane(_) => "focus_pane",
+        FocusLastPane => "focus_last_pane",
+        FocusSessions => "focus_sessions",
+        CycleSession(_) => "cycle_session",
+        NewTabMenu => "new_tab_menu",
         FocusDir(_) => "focus_dir",
         Split(_) => "split",
         ToggleMaximize => "toggle_maximize",

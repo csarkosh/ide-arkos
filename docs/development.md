@@ -1075,6 +1075,13 @@ Things only a person at the screen can check, in order of value:
   ("shown after 0.5s … off screen") and the desktop in front does not change. A sampler of the
   window list (`CGWindowListCopyWindowInfo` every millisecond, alpha and owner) shows an opaque
   window at every sample; `screencapture` needs Screen Recording, which the sampler does not
+- Chrome keys: Cmd+0 opens the sidebar on Sessions with a ring on the session shown, every
+  group open while it has the keys (Quiet and Done fold back after), Up and Down move the ring, typing narrows the list, Enter opens the ringed
+  session and the keys go to its pane, Escape clears the filter and then gives the keys back;
+  Cmd+9 is the last pane; Ctrl+Tab and Ctrl+Shift+Tab step the tabs, also in a terminal running
+  Claude Code; Option+Cmd+Down and Up go through the sessions as listed, wrapping; Cmd+T opens
+  the focused pane's "+" menu with Claude ringed, and Down, Enter opens Codex; Cmd+0 in a web tab
+  and in a markdown tab reaches the list too
 - a web tab: select text on the page and press Cmd+C: no beep, and the text is on the
   clipboard; Cmd+V into a field of the page pastes, Cmd+A selects the page, Cmd+X cuts from a
   field (2026-11-16: these beeped and did nothing before, since Arkos has no Edit menu)

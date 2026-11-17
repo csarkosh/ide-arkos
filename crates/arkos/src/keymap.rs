@@ -11,7 +11,8 @@ use std::collections::BTreeMap;
 actions!(
     arkos,
     [
-        FocusPane1, FocusPane2, FocusPane3, FocusPane4, FocusPane5, FocusPane6, FocusPane7, FocusPane8, FocusPane9,
+        FocusPane1, FocusPane2, FocusPane3, FocusPane4, FocusPane5, FocusPane6, FocusPane7, FocusPane8, FocusPane9, FocusLastPane, FocusSessions,
+        NextSession, PrevSession, NewTabMenu,
         FocusLeft, FocusRight, FocusUp, FocusDown,
         SplitRight, SplitDown, ToggleMaximize,
         MoveTabToPrevPane, MoveTabToNextPane,
@@ -36,6 +37,14 @@ actions!(
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     FocusPane(usize),
+    /// The last pane of the session shown, as Chrome's Cmd+9 is its last tab.
+    FocusLastPane,
+    /// The session list: the sidebar open on Sessions, the keys in its filter (Chrome keys spec).
+    FocusSessions,
+    /// The next (+1) or previous (-1) session in the list, as it is listed, wrapping.
+    CycleSession(isize),
+    /// The focused pane's "+" menu: Claude, Codex, Shell.
+    NewTabMenu,
     FocusDir(Side),
     Split(Side),
     ToggleMaximize,
@@ -233,17 +242,23 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec { name: "clear to start", keys: "cmd-k", context: Some("Terminal"), section: Section::Terminal },
     row(Section::Panes, "focus pane 1", "cmd-1"), row(Section::Panes, "focus pane 2", "cmd-2"), row(Section::Panes, "focus pane 3", "cmd-3"),
     row(Section::Panes, "focus pane 4", "cmd-4"), row(Section::Panes, "focus pane 5", "cmd-5"), row(Section::Panes, "focus pane 6", "cmd-6"),
-    row(Section::Panes, "focus pane 7", "cmd-7"), row(Section::Panes, "focus pane 8", "cmd-8"), row(Section::Panes, "focus pane 9", "cmd-9"),
-    row(Section::Panes, "focus left", "cmd-k cmd-left"), row(Section::Panes, "focus right", "cmd-k cmd-right"),
-    row(Section::Panes, "focus up", "cmd-k cmd-up"), row(Section::Panes, "focus down", "cmd-k cmd-down"),
-    row(Section::Panes, "split right", "cmd-\\"), row(Section::Panes, "split down", "cmd-k cmd-\\"),
-    row(Section::Panes, "maximize pane", "cmd-k cmd-m"),
-    row(Section::Tabs, "move tab to previous pane", "ctrl-cmd-left"), row(Section::Tabs, "move tab to next pane", "ctrl-cmd-right"),
+    row(Section::Panes, "focus pane 7", "cmd-7"), row(Section::Panes, "focus pane 8", "cmd-8"), row(Section::Panes, "focus pane 9", ""),
+    // Chrome's keys (Chrome keys spec): Cmd+9 the last pane, Cmd+0 the session list.
+    row(Section::Panes, "focus last pane", "cmd-9"),
+    row(Section::Sidebar, "focus sessions", "cmd-0"),
+    row(Section::Sidebar, "next session", "alt-cmd-down"), row(Section::Sidebar, "previous session", "alt-cmd-up"),
+    row(Section::Panes, "focus left", ""), row(Section::Panes, "focus right", ""),
+    row(Section::Panes, "focus up", ""), row(Section::Panes, "focus down", ""),
+    row(Section::Panes, "split right", "cmd-\\"), row(Section::Panes, "split down", ""),
+    row(Section::Panes, "maximize pane", ""),
+    row(Section::Tabs, "move tab to previous pane", ""), row(Section::Tabs, "move tab to next pane", ""),
     row(Section::Tabs, "next tab", "alt-cmd-right"), row(Section::Tabs, "previous tab", "alt-cmd-left"),
     row(Section::Tabs, "next tab alt", "cmd-shift-]"), row(Section::Tabs, "previous tab alt", "cmd-shift-["),
-    row(Section::Tabs, "most recently used tab", "ctrl-tab"),
-    row(Section::Tabs, "close tab", "cmd-w"), row(Section::Tabs, "reopen closed tab", "cmd-shift-t"), row(Section::Tabs, "close all in pane", "cmd-k w"),
-    row(Section::Tabs, "move tab left", "cmd-k cmd-shift-left"), row(Section::Tabs, "move tab right", "cmd-k cmd-shift-right"),
+    row(Section::Tabs, "next tab ctrl", "ctrl-tab"), row(Section::Tabs, "previous tab ctrl", "ctrl-shift-tab"),
+    row(Section::Tabs, "most recently used tab", ""),
+    row(Section::Tabs, "new tab", "cmd-t"),
+    row(Section::Tabs, "close tab", "cmd-w"), row(Section::Tabs, "reopen closed tab", "cmd-shift-t"), row(Section::Tabs, "close all in pane", ""),
+    row(Section::Tabs, "move tab left", ""), row(Section::Tabs, "move tab right", ""),
     row(Section::Tabs, "new terminal tab", "ctrl-shift-`"),
     row(Section::Terminal, "font bigger", "cmd-="), row(Section::Terminal, "font smaller", "cmd--"),
     // Before "open config" on purpose: gpui ranks bindings at the same depth later-first, so a
@@ -266,18 +281,18 @@ pub const ACTIONS: &[ActionSpec] = &[
     row(Section::Maintenance, "install claude code hooks", ""),
     row(Section::Maintenance, "install agent guide", ""),
     row(Section::Sidebar, "toggle sidebar", "cmd-b"),
-    row(Section::Sidebar, "focus file tree", "cmd-shift-e"),
+    row(Section::Sidebar, "focus file tree", ""),
     row(Section::Sidebar, "show ignored files", ""),
-    row(Section::Sidebar, "focus worktrees", "ctrl-shift-g"),
-    row(Section::Sidebar, "next session that needs you", "cmd-shift-u"),
+    row(Section::Sidebar, "focus worktrees", ""),
+    row(Section::Sidebar, "next session that needs you", ""),
     ActionSpec { name: "toggle inline diff", keys: "cmd-shift-d", context: Some("Viewer"), section: Section::Markdown },
     ActionSpec { name: "toggle markdown view", keys: "cmd-shift-m", context: Some("Viewer"), section: Section::Markdown },
     ActionSpec { name: "save file", keys: "cmd-s", context: Some("Viewer"), section: Section::Markdown },
     // A markdown document only, so Cmd+B still toggles the sidebar from a code viewer.
     ActionSpec { name: "bold", keys: "cmd-b", context: Some("Markdown"), section: Section::Markdown },
     ActionSpec { name: "italic", keys: "cmd-i", context: Some("Markdown"), section: Section::Markdown },
-    ActionSpec { name: "fold all", keys: "cmd-k cmd-0", context: Some("Markdown"), section: Section::Markdown },
-    ActionSpec { name: "unfold all", keys: "cmd-k cmd-j", context: Some("Markdown"), section: Section::Markdown },
+    ActionSpec { name: "fold all", keys: "", context: Some("Markdown"), section: Section::Markdown },
+    ActionSpec { name: "unfold all", keys: "", context: Some("Markdown"), section: Section::Markdown },
     // Either view of a markdown document has an outline; another viewer ignores it.
     ActionSpec { name: "toggle outline", keys: "alt-cmd-o", context: Some("Viewer"), section: Section::Markdown },
     ActionSpec { name: "toggle presentation mode", keys: "alt-cmd-p", context: Some("Markdown"), section: Section::Markdown },
@@ -293,7 +308,8 @@ pub const ACTIONS: &[ActionSpec] = &[
     browser("reload page", "cmd-r"),
     browser("focus address", "cmd-l"),
     browser("open in browser", "cmd-shift-o"),
-    browser("zoom reset", "cmd-0"),
+    // No key: Cmd+0 is the session list in a web tab too (Chrome keys spec).
+    browser("zoom reset", ""),
     // The video keys (spec 3.4) act only in a focused video tab: a terminal never sees this map.
     // "video start alt" is Home's second key, 0, as "next tab alt" is Cmd+Shift+].
     video("video play pause", "space"),
@@ -363,6 +379,13 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "focus pane 7" => KeyBinding::new(keys, FocusPane7, context),
         "focus pane 8" => KeyBinding::new(keys, FocusPane8, context),
         "focus pane 9" => KeyBinding::new(keys, FocusPane9, context),
+        "focus last pane" => KeyBinding::new(keys, FocusLastPane, context),
+        "focus sessions" => KeyBinding::new(keys, FocusSessions, context),
+        "next session" => KeyBinding::new(keys, NextSession, context),
+        "previous session" => KeyBinding::new(keys, PrevSession, context),
+        "new tab" => KeyBinding::new(keys, NewTabMenu, context),
+        "next tab ctrl" => KeyBinding::new(keys, NextTab, context),
+        "previous tab ctrl" => KeyBinding::new(keys, PrevTab, context),
         "focus left" => KeyBinding::new(keys, FocusLeft, context),
         "focus right" => KeyBinding::new(keys, FocusRight, context),
         "focus up" => KeyBinding::new(keys, FocusUp, context),
@@ -650,11 +673,12 @@ pub struct KeyRow {
 
 /// Every action with its keys in force under `overrides`, grouped by section in display order (a
 /// section with no rows is left out), in `ACTIONS` order within a section, each labelled as the
-/// palette labels it (`label_for`). The nine "focus pane N" rows read as one row while every one
-/// of them keeps its default; the Markdown section lists the viewer's actions, then
+/// palette labels it (`label_for`). The eight "focus pane N" rows bound by default read as one
+/// row while every one of them keeps its default (Cmd+9 is the last pane, its own row); the
+/// Markdown section lists the viewer's actions, then
 /// `MARKDOWN_KEYS`.
 pub fn grouped(overrides: &BTreeMap<String, String>) -> Vec<(Section, Vec<KeyRow>)> {
-    let focus_pane = |a: &ActionSpec| a.name.starts_with("focus pane ");
+    let focus_pane = |a: &ActionSpec| a.name.starts_with("focus pane ") && a.name != "focus pane 9";
     let collapse = ACTIONS.iter().filter(|a| focus_pane(a)).all(|a| keys_for(a.name, overrides).as_deref() == Some(a.keys));
     Section::ALL
         .iter()
@@ -662,10 +686,10 @@ pub fn grouped(overrides: &BTreeMap<String, String>) -> Vec<(Section, Vec<KeyRow
             let mut rows = Vec::new();
             for a in ACTIONS.iter().filter(|a| a.section == section) {
                 if collapse && focus_pane(a) {
-                    // The first of the nine stands for them all; the rest add nothing.
+                    // The first of the eight stands for them all; the rest add nothing.
                     if a.name == "focus pane 1" {
-                        let keys = format!("{} to {}", pretty_keys("cmd-1"), pretty_keys("cmd-9"));
-                        rows.push(KeyRow { label: "Focus pane 1 to 9".to_string(), keys: Some(keys) });
+                        let keys = format!("{} to {}", pretty_keys("cmd-1"), pretty_keys("cmd-8"));
+                        rows.push(KeyRow { label: "Focus pane 1 to 8".to_string(), keys: Some(keys) });
                     }
                     continue;
                 }
@@ -704,8 +728,13 @@ pub fn command_for(name: &str) -> Option<Command> {
         "maximize pane" => Command::ToggleMaximize,
         "move tab to previous pane" => Command::MoveTabToPane(-1),
         "move tab to next pane" => Command::MoveTabToPane(1),
-        "next tab" | "next tab alt" => Command::CycleTab(1),
-        "previous tab" | "previous tab alt" => Command::CycleTab(-1),
+        "next tab" | "next tab alt" | "next tab ctrl" => Command::CycleTab(1),
+        "previous tab" | "previous tab alt" | "previous tab ctrl" => Command::CycleTab(-1),
+        "focus last pane" => Command::FocusLastPane,
+        "focus sessions" => Command::FocusSessions,
+        "next session" => Command::CycleSession(1),
+        "previous session" => Command::CycleSession(-1),
+        "new tab" => Command::NewTabMenu,
         "most recently used tab" => Command::MruTab,
         "close tab" => Command::CloseTab,
         "reopen closed tab" => Command::ReopenClosedTab,
@@ -802,6 +831,8 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         ToggleMaximize => Command::ToggleMaximize,
         MoveTabToPrevPane => Command::MoveTabToPane(-1), MoveTabToNextPane => Command::MoveTabToPane(1),
         NextTab => Command::CycleTab(1), PrevTab => Command::CycleTab(-1),
+        FocusLastPane => Command::FocusLastPane, FocusSessions => Command::FocusSessions,
+        NextSession => Command::CycleSession(1), PrevSession => Command::CycleSession(-1), NewTabMenu => Command::NewTabMenu,
         NextTabAlt => Command::CycleTab(1), PrevTabAlt => Command::CycleTab(-1),
         MruTab => Command::MruTab,
         CloseTab => Command::CloseTab, ReopenClosedTab => Command::ReopenClosedTab, CloseAllInPane => Command::CloseAllInPane,
@@ -843,17 +874,21 @@ mod tests {
         ("cmd-k", "clear to start", "ClearToStart"),
         ("cmd-1", "focus pane 1", "FocusPane1"), ("cmd-2", "focus pane 2", "FocusPane2"), ("cmd-3", "focus pane 3", "FocusPane3"),
         ("cmd-4", "focus pane 4", "FocusPane4"), ("cmd-5", "focus pane 5", "FocusPane5"), ("cmd-6", "focus pane 6", "FocusPane6"),
-        ("cmd-7", "focus pane 7", "FocusPane7"), ("cmd-8", "focus pane 8", "FocusPane8"), ("cmd-9", "focus pane 9", "FocusPane9"),
-        ("cmd-k cmd-left", "focus left", "FocusLeft"), ("cmd-k cmd-right", "focus right", "FocusRight"),
-        ("cmd-k cmd-up", "focus up", "FocusUp"), ("cmd-k cmd-down", "focus down", "FocusDown"),
-        ("cmd-\\", "split right", "SplitRight"), ("cmd-k cmd-\\", "split down", "SplitDown"),
-        ("cmd-k cmd-m", "maximize pane", "ToggleMaximize"),
-        ("ctrl-cmd-left", "move tab to previous pane", "MoveTabToPrevPane"), ("ctrl-cmd-right", "move tab to next pane", "MoveTabToNextPane"),
+        ("cmd-7", "focus pane 7", "FocusPane7"), ("cmd-8", "focus pane 8", "FocusPane8"), ("", "focus pane 9", "FocusPane9"),
+        ("cmd-9", "focus last pane", "FocusLastPane"), ("cmd-0", "focus sessions", "FocusSessions"),
+        ("alt-cmd-down", "next session", "NextSession"), ("alt-cmd-up", "previous session", "PrevSession"),
+        ("", "focus left", "FocusLeft"), ("", "focus right", "FocusRight"),
+        ("", "focus up", "FocusUp"), ("", "focus down", "FocusDown"),
+        ("cmd-\\", "split right", "SplitRight"), ("", "split down", "SplitDown"),
+        ("", "maximize pane", "ToggleMaximize"),
+        ("", "move tab to previous pane", "MoveTabToPrevPane"), ("", "move tab to next pane", "MoveTabToNextPane"),
         ("alt-cmd-right", "next tab", "NextTab"), ("alt-cmd-left", "previous tab", "PrevTab"),
         ("cmd-shift-]", "next tab alt", "NextTabAlt"), ("cmd-shift-[", "previous tab alt", "PrevTabAlt"),
-        ("ctrl-tab", "most recently used tab", "MruTab"),
-        ("cmd-w", "close tab", "CloseTab"), ("cmd-shift-t", "reopen closed tab", "ReopenClosedTab"), ("cmd-k w", "close all in pane", "CloseAllInPane"),
-        ("cmd-k cmd-shift-left", "move tab left", "MoveTabLeft"), ("cmd-k cmd-shift-right", "move tab right", "MoveTabRight"),
+        ("ctrl-tab", "next tab ctrl", "NextTab"), ("ctrl-shift-tab", "previous tab ctrl", "PrevTab"),
+        ("", "most recently used tab", "MruTab"),
+        ("cmd-t", "new tab", "NewTabMenu"),
+        ("cmd-w", "close tab", "CloseTab"), ("cmd-shift-t", "reopen closed tab", "ReopenClosedTab"), ("", "close all in pane", "CloseAllInPane"),
+        ("", "move tab left", "MoveTabLeft"), ("", "move tab right", "MoveTabRight"),
         ("ctrl-shift-`", "new terminal tab", "NewTerminal"),
         ("cmd-=", "font bigger", "FontBigger"), ("cmd--", "font smaller", "FontSmaller"),
         ("", "about", "About"),
@@ -873,17 +908,17 @@ mod tests {
         ("", "install claude code hooks", "InstallHooks"),
         ("", "install agent guide", "InstallAgentGuide"),
         ("cmd-b", "toggle sidebar", "ToggleSidebar"),
-        ("cmd-shift-e", "focus file tree", "FocusFileTree"),
+        ("", "focus file tree", "FocusFileTree"),
         ("", "show ignored files", "ShowIgnoredFiles"),
-        ("ctrl-shift-g", "focus worktrees", "FocusWorktrees"),
-        ("cmd-shift-u", "next session that needs you", "NextCallingSession"),
+        ("", "focus worktrees", "FocusWorktrees"),
+        ("", "next session that needs you", "NextCallingSession"),
         ("cmd-shift-d", "toggle inline diff", "ToggleInlineDiff"),
         ("cmd-shift-m", "toggle markdown view", "ToggleMarkdownView"),
         ("cmd-s", "save file", "SaveFile"),
         ("cmd-b", "bold", "Bold"),
         ("cmd-i", "italic", "Italic"),
-        ("cmd-k cmd-0", "fold all", "FoldAll"),
-        ("cmd-k cmd-j", "unfold all", "UnfoldAll"),
+        ("", "fold all", "FoldAll"),
+        ("", "unfold all", "UnfoldAll"),
         ("alt-cmd-o", "toggle outline", "ToggleOutline"),
         ("alt-cmd-p", "toggle presentation mode", "TogglePresentation"),
         ("alt-cmd-]", "next sheet", "NextSheet"),
@@ -899,7 +934,7 @@ mod tests {
         ("home", "video start", "VideoStart"), ("0", "video start alt", "VideoStart"),
         ("l", "video loop", "VideoLoop"), ("m", "video mute", "VideoMute"), ("r", "video reload", "VideoReload"),
         ("cmd-[", "page back", "PageBack"), ("cmd-]", "page forward", "PageForward"), ("cmd-r", "reload page", "ReloadPage"),
-        ("cmd-l", "focus address", "FocusAddress"), ("cmd-shift-o", "open in browser", "OpenInBrowser"), ("cmd-0", "zoom reset", "ZoomReset"),
+        ("cmd-l", "focus address", "FocusAddress"), ("cmd-shift-o", "open in browser", "OpenInBrowser"), ("", "zoom reset", "ZoomReset"),
         ("cmd-q", "quit", "Quit"),
     ];
 
@@ -1000,7 +1035,8 @@ mod tests {
         o.insert("font bigger".to_string(), "".to_string());
         assert!(validate(&o).is_empty());
         let b = bindings_for(&o);
-        assert_eq!(b.len(), ACTIONS.len() - 14, "an empty string unbinds, and about, documentation, open config, update now, check for updates, notifications, doctor, retry update, start at login, install hooks, install agent guide, show ignored files and open file in pane have no default keys");
+        let unbound = ACTIONS.iter().filter(|a| a.keys.is_empty()).count();
+        assert_eq!(b.len(), ACTIONS.len() - unbound - 1, "an empty string unbinds, and an action with no default key has no binding");
         let split = b.iter().find(|kb| kb.action().name() == "arkos::SplitRight").unwrap();
         assert_eq!(keys_of(split), "cmd-d");
         assert!(!b.iter().any(|kb| kb.action().name() == "arkos::FontBigger"));
@@ -1009,7 +1045,7 @@ mod tests {
         assert_eq!(keys_for("font smaller", &o).as_deref(), Some("cmd--"));
         assert_eq!(keys_for("no such action", &o), None);
         assert_eq!(keys_for("update now", &BTreeMap::new()), None, "unbound by default");
-        assert_eq!(bindings().len(), ACTIONS.len() - 13, "only about, documentation, open config, update now, check for updates, notifications, doctor, retry update, start at login, install hooks, install agent guide, show ignored files and open file in pane are unbound by default");
+        assert_eq!(bindings().len(), ACTIONS.iter().filter(|a| !a.keys.is_empty()).count(), "every action with a default key, and none without");
         assert_eq!(command_for("new browser tab"), Some(Command::NewBrowserTab));
         assert_eq!(command_for("dock a chrome window"), None, "a retired action is no command");
         assert_eq!(command_for("notifications"), Some(Command::Notifications));
@@ -1105,12 +1141,13 @@ mod tests {
                 if *section == Section::Markdown && MARKDOWN_KEYS.iter().any(|(label, _)| *label == row.label) {
                     continue;
                 }
-                seen += if row.label == "Focus pane 1 to 9" { 9 } else { 1 };
+                seen += if row.label == "Focus pane 1 to 8" { 8 } else { 1 };
             }
         }
         assert_eq!(seen, ACTIONS.len(), "every action once; the nine focus rows through the collapsed row");
         let panes = &g.iter().find(|(s, _)| *s == Section::Panes).unwrap().1;
-        assert_eq!(panes[0], KeyRow { label: "Focus pane 1 to 9".into(), keys: Some("Cmd+1 to Cmd+9".into()) });
+        assert_eq!(panes[0], KeyRow { label: "Focus pane 1 to 8".into(), keys: Some("Cmd+1 to Cmd+8".into()) });
+        assert!(panes.iter().any(|r| r.label == "Focus last pane" && r.keys.as_deref() == Some("Cmd+9")), "Chrome's Cmd+9");
         let window = &g.iter().find(|(s, _)| *s == Section::Window).unwrap().1;
         assert!(window.iter().any(|r| r.label == "Keybindings" && r.keys.as_deref() == Some("Cmd+/")));
         assert!(window.iter().any(|r| r.label == "Documentation" && r.keys.is_none()));

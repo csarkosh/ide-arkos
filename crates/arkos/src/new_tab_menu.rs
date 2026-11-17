@@ -12,10 +12,37 @@ use std::time::Instant;
 /// The menu's width, in points: wide enough for "Shell" and its shortcut.
 pub const WIDTH: f32 = 180.0;
 
-/// The open menu: the pane whose "+" opened it, and where the press was, in window pixels.
+/// The open menu: the pane whose "+" opened it, where the press was, in window pixels, and the
+/// row the keys act on (Chrome keys spec, section 3).
 pub struct NewTabMenu {
     pub pane: PaneId,
     pub at: Point<Pixels>,
+    pub mark: usize,
+}
+
+/// What a key does while the menu is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuKey {
+    /// The mark moves to this row.
+    Mark(usize),
+    /// The row is opened.
+    Open(NewTab),
+    Close,
+    /// Not the menu's: the key goes on as if the menu were not there.
+    Pass,
+}
+
+/// A plain key on the open menu with `mark` on a row: Up and Down move the mark (stopping at
+/// either end), Enter opens the marked row, Escape closes the menu.
+pub fn menu_key(key: &str, mark: usize) -> MenuKey {
+    let last = NewTab::ALL.len() - 1;
+    match key {
+        "up" => MenuKey::Mark(mark.saturating_sub(1)),
+        "down" => MenuKey::Mark((mark + 1).min(last)),
+        "enter" => MenuKey::Open(NewTab::ALL[mark.min(last)]),
+        "escape" => MenuKey::Close,
+        _ => MenuKey::Pass,
+    }
 }
 
 /// What a row opens.
@@ -89,12 +116,21 @@ pub fn render_new_tab_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Di
     for (i, kind) in NewTab::ALL.into_iter().enumerate() {
         let keys = if kind == NewTab::Shell { shell_keys.clone() } else { String::new() };
         let row = div().id(("new-tab-row", i)).px(px(10.0)).py(px(4.0)).flex().justify_between().child(kind.label()).child(div().text_color(dim).child(keys));
+        // The marked row (the keys') is lit as a hovered one is, and the mouse moves the mark.
+        let marked = live && menu.mark == i;
         m = m.child(row.when(live, |row| {
             let key = crate::effects::blocks::menu_row_key(0x17, i);
-            crate::chrome::menu_row_hover(row.cursor_pointer(), key, hovered == Some(key), effect_rows, hover, cx).on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
-                root.new_tab_menu.hide(Instant::now());
-                root.new_tab_of(pane, kind, cx);
-            }))
+            crate::chrome::menu_row_hover(row.cursor_pointer(), key, marked || hovered == Some(key), effect_rows, hover, cx)
+                .on_hover(cx.listener(move |root, over: &bool, _window, cx| {
+                    if let (true, Some(m)) = (*over, root.new_tab_menu.value_mut()) {
+                        m.mark = i;
+                        cx.notify();
+                    }
+                }))
+                .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
+                    root.new_tab_menu.hide(Instant::now());
+                    root.new_tab_of(pane, kind, cx);
+                }))
         }));
     }
     Some(m)
@@ -115,6 +151,17 @@ mod tests {
         assert_eq!(NewTab::Claude.input().as_deref(), Some(&b"claude\r"[..]));
         assert_eq!(NewTab::Codex.input().as_deref(), Some(&b"codex\r"[..]));
         assert_eq!(NewTab::Shell.input(), None, "the plain terminal tab of before");
+    }
+
+    #[test]
+    fn the_arrows_move_the_mark_enter_opens_it_and_escape_closes() {
+        assert_eq!(menu_key("down", 0), MenuKey::Mark(1));
+        assert_eq!(menu_key("down", 2), MenuKey::Mark(2), "stops at Shell");
+        assert_eq!(menu_key("up", 0), MenuKey::Mark(0), "stops at Claude");
+        assert_eq!(menu_key("enter", 0), MenuKey::Open(NewTab::Claude), "Cmd+T then Enter: a Claude tab");
+        assert_eq!(menu_key("enter", 1), MenuKey::Open(NewTab::Codex));
+        assert_eq!(menu_key("escape", 1), MenuKey::Close);
+        assert_eq!(menu_key("a", 0), MenuKey::Pass);
     }
 
     #[test]

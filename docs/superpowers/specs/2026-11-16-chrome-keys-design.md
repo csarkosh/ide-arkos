@@ -1,0 +1,61 @@
+# Keys you already know: a Chrome-style key map
+
+Cyrus, 2026-11-16: "I'm not a fan of the hotkey approach. I prefer something similar to Chrome's
+keyboard navigation. I like the `Cmd+{0-N}` hotkey for quickly selecting panels. But I don't
+really use the other's because it's too much to memorize. I prefer efficient keyboard
+navigation so there's less to remember."
+
+His choices, the same day: the Chrome map below with Cmd+0 for the session list; today's other
+navigation defaults dropped from the default keymap (still in the palette and bindable in
+`config.toml`); Cmd+T opens the tab bar's "+" menu.
+
+## 1. The map
+
+| Keys | What it does |
+| --- | --- |
+| Cmd+0 | the session list: the sidebar opens on Sessions if it is not, and the keys go to its filter |
+| Cmd+1 to Cmd+8 | pane 1 to 8 of the session shown |
+| Cmd+9 | the last pane, as Chrome's Cmd+9 is the last tab |
+| Ctrl+Tab, Ctrl+Shift+Tab | next and previous tab in the focused pane |
+| Cmd+Option+Right, Left | the same (Chrome's other pair; Cmd+Shift+] and [ also stay) |
+| Cmd+Option+Down, Up | next and previous session in the list's order, folded groups included |
+| Cmd+T | the focused pane's "+" menu: Claude, Codex, Shell |
+| Cmd+W, Cmd+Shift+T | close the tab, bring the last closed one back |
+| Cmd+L, Cmd+F | a web tab's address field, find |
+| Cmd+Shift+P | the command palette: everything else |
+
+## 2. In the session list (Cmd+0)
+
+The filter field has the keys, and one row is marked as the cursor (the session shown, else the
+first row). While the list has the keys every group is open, as a typed filter opens them
+(Quiet and Done are folded at first, and most sessions are Quiet most of the time; found on
+screen, 2026-11-16). Typing narrows the list; Up and Down move the cursor through the rows;
+Enter opens the cursor's session and gives the keys to its
+pane (a closed one is resumed); Escape clears the filter, and on an empty filter goes back to the
+pane. A click anywhere else takes the keys as before.
+
+## 3. In the "+" menu
+
+Opened by Cmd+T or a click, the menu takes Up, Down, Enter and Escape: the first row is marked,
+the arrows move the mark, Enter opens that row, Escape closes the menu. The mouse works as
+before and moves the mark with it.
+
+## 4. Dropped from the defaults
+
+No default keys (the palette and the config still have every one): focus left, right, up and
+down; split down; maximize pane; close all in pane; move tab left and right; move tab to the
+previous and next pane; most recently used tab (Ctrl+Tab is the next tab now); focus file tree;
+focus worktrees; next session that needs you; fold all and unfold all; focus pane 9 (Cmd+9 is
+the last pane); a web tab's zoom reset (Cmd+0 is the session list in a web tab too). Cmd+K alone
+stays Terminal.app's clear, which no chord delays any more.
+
+Kept as they were: split right (Cmd+\\), the sidebar (Cmd+B), new window, open folder, settings,
+keybindings, the font size, the markdown, video, browser and workbook keys, save, copy as shown,
+and the new terminal tab (Ctrl+Shift+\`).
+
+## 5. What is tested
+
+Headless: the default table (every row's keys), the commands the new names run, the rows a
+cursor moves through and where it lands at either end, the next and previous session in list
+order with wrapping, and the menu's mark. On screen (a person): the cursor row's look, and each
+key in a terminal, a markdown tab and a web tab.

@@ -283,7 +283,9 @@ mod tests {
         let sidebar = items.iter().find(|i| i.label == "Toggle sidebar").unwrap();
         assert_eq!((sidebar.detail.as_str(), &sidebar.command), ("Cmd+B", &Command::ToggleSidebar));
         let tree = items.iter().find(|i| i.label == "Focus file tree").unwrap();
-        assert_eq!((tree.detail.as_str(), &tree.command), ("Shift+Cmd+E", &Command::FocusFileTree));
+        assert_eq!((tree.detail.as_str(), &tree.command), ("", &Command::FocusFileTree), "no key by default since the Chrome keys");
+        let sessions = items.iter().find(|i| i.label == "Focus sessions").unwrap();
+        assert_eq!((sessions.detail.as_str(), &sessions.command), ("Cmd+0", &Command::FocusSessions));
         let open = items.iter().find(|i| i.label == "Open folder\u{2026}").unwrap();
         assert_eq!((open.detail.as_str(), &open.command), ("Cmd+O", &Command::OpenFolder));
         let about = items.iter().find(|i| i.label == "About Arkos IDE").unwrap();

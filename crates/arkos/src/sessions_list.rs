@@ -281,6 +281,46 @@ pub fn is_folded(folded: &Folded, kind: Attention, filtering: bool) -> bool {
     !filtering && folded.contains(&kind)
 }
 
+/// The key of `e`'s row: its page, or its place in the kept list for a closed session.
+pub fn row_key(e: &Entry) -> RowKey {
+    match e.ended {
+        Some(i) => RowKey::Ended(i),
+        None => RowKey::Live(e.page),
+    }
+}
+
+/// The rows the list shows, in order: every group's rows but a folded group's (Chrome keys spec,
+/// section 2: what the keyboard's cursor moves through).
+pub fn shown_rows(groups: &[(Attention, Vec<Entry>)], folded: &Folded, filtering: bool) -> Vec<RowKey> {
+    groups.iter().filter(|(kind, _)| !is_folded(folded, *kind, filtering)).flat_map(|(_, rows)| rows.iter().map(row_key)).collect()
+}
+
+/// Where the keyboard's cursor goes from `at` by `delta` rows: it stops at either end, and from a
+/// row no longer shown (or none) it starts on the first.
+pub fn cursor_step(rows: &[RowKey], at: Option<RowKey>, delta: isize) -> Option<RowKey> {
+    let i = at.and_then(|a| rows.iter().position(|r| *r == a));
+    let next = match i {
+        Some(i) => (i as isize + delta).clamp(0, rows.len() as isize - 1) as usize,
+        None => 0,
+    };
+    rows.get(next).copied()
+}
+
+/// The session after (or before, with -1) `current` among the live ones listed, wrapping; the
+/// first when `current` is not among them (Cmd+Option+Down and Up).
+pub fn cycle_session(rows: &[RowKey], current: PageKey, delta: isize) -> Option<PageKey> {
+    let live: Vec<PageKey> = rows.iter().filter_map(|r| if let RowKey::Live(p) = r { Some(*p) } else { None }).collect();
+    let n = live.len() as isize;
+    if n == 0 {
+        return None;
+    }
+    let next = match live.iter().position(|p| *p == current) {
+        Some(i) => (i as isize + delta).rem_euclid(n),
+        None => 0,
+    };
+    Some(live[next as usize])
+}
+
 /// What a row's right-click menu does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowAction {
@@ -472,6 +512,9 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
     let shown = root.tree.page;
     let breath = root.breath.alpha(root.frame_now, motion::reduce_motion());
     let (selected_bg, hover_bg, dim) = (c.tab_active.hsla(), c.tab_inactive.hsla(), c.text_dim.hsla());
+    // The keyboard's cursor (Cmd+0), drawn as a ring while the filter has the keys.
+    let cursor = root.session_cursor.filter(|_| root.session_filter_focused);
+    let ring = c.focus_ring.hsla();
 
     let pad = 10.0 + style.sidebar_pad;
     let mut list = div().id("session-rows").flex_1().min_h_0().overflow_y_scroll().flex().flex_col();
@@ -479,7 +522,9 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
         list = list.child(div().px(px(pad)).py(px(8.0)).text_size(px(style.ui(12.0))).text_color(dim).child("No session matches."));
     }
     for (kind, rows) in groups {
-        let folded = is_folded(&root.sessions_folded, kind, filtering);
+        // While the list has the keys (Cmd+0) every group is open, as a typed filter opens them,
+        // so the ring reaches a Quiet or Done session too.
+        let folded = is_folded(&root.sessions_folded, kind, filtering || root.session_filter_focused);
         let heading = div()
             .id(("session-group", kind as usize))
             .h(px(GROUP_H))
@@ -546,6 +591,7 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
                 .flex()
                 .gap(px(6.0))
                 .when(is_selected && !highlights, |d| d.bg(selected_bg))
+                .when(cursor == Some(key), |d| d.child(div().absolute().inset_0().rounded(px(4.0)).border_1().border_color(ring)))
                 .when(!highlights, |d| d.hover(move |s| s.bg(hover_bg)))
                 .when(highlights, |d| {
                     let w_hover = weak.clone();
@@ -949,6 +995,33 @@ mod tests {
         assert!(Attention::ALL.iter().all(|k| !is_folded(&folded, *k, true)), "a filter shows what it finds");
         // Saved by the sections' names.
         assert_eq!(serde_json::to_string(&Attention::NeedsYou).unwrap(), "\"needs_you\"");
+    }
+
+    #[test]
+    fn the_keyboard_cursor_moves_through_the_rows_shown_and_stops_at_either_end() {
+        let groups = grouped(vec![entry(1, Attention::NeedsYou, 9), entry(2, Attention::Working, 8), entry(3, Attention::Quiet, 7), entry(4, Attention::Working, 6)]);
+        let folded: Folded = [Attention::Quiet].into_iter().collect();
+        let rows = shown_rows(&groups, &folded, false);
+        assert!(!rows.contains(&RowKey::Live(3)), "a folded group's rows are skipped");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(shown_rows(&groups, &folded, true).len(), 4, "a filter shows every row it finds");
+        assert_eq!(cursor_step(&rows, None, 1), Some(rows[0]), "from nowhere, the first row");
+        assert_eq!(cursor_step(&rows, Some(RowKey::Live(3)), 1), Some(rows[0]), "from a row gone, the first row");
+        assert_eq!(cursor_step(&rows, Some(rows[0]), 1), Some(rows[1]));
+        assert_eq!(cursor_step(&rows, Some(rows[0]), -1), Some(rows[0]), "stops at the top");
+        assert_eq!(cursor_step(&rows, Some(rows[2]), 1), Some(rows[2]), "stops at the bottom");
+        assert_eq!(cursor_step(&[], None, 1), None);
+    }
+
+    #[test]
+    fn the_next_and_previous_session_follow_the_list_and_wrap() {
+        let rows = [RowKey::Live(4), RowKey::Live(2), RowKey::Ended(0), RowKey::Live(7)];
+        assert_eq!(cycle_session(&rows, 4, 1), Some(2));
+        assert_eq!(cycle_session(&rows, 2, 1), Some(7), "a closed session is no stop");
+        assert_eq!(cycle_session(&rows, 7, 1), Some(4), "wraps to the top");
+        assert_eq!(cycle_session(&rows, 4, -1), Some(7), "and to the bottom");
+        assert_eq!(cycle_session(&rows, 9, 1), Some(4), "from a page not listed, the first");
+        assert_eq!(cycle_session(&[RowKey::Ended(1)], 1, 1), None);
     }
 
     #[test]

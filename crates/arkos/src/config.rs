@@ -758,7 +758,9 @@ option_as_meta = true
 [keybindings]
 # Action name = keystrokes, in gpui syntax: modifiers cmd, ctrl, alt and shift joined with "-"
 # before the key, as in "cmd-shift-p"; chords are separated by a space, as in "cmd-k cmd-m".
-# An empty string "" unbinds an action. The defaults are VS Code's for the editor area:
+# An empty string "" unbinds an action. The defaults are Chrome's keys where Chrome has one
+# (Cmd+0 the session list, Cmd+1 to 9 the panes, Ctrl+Tab the tabs, Cmd+T a new tab); an action
+# written "" here has no key until you give it one, and the command palette runs every action:
 # "clear to start" = "cmd-k"
 # "focus pane 1" = "cmd-1"
 # "focus pane 2" = "cmd-2"
@@ -768,26 +770,33 @@ option_as_meta = true
 # "focus pane 6" = "cmd-6"
 # "focus pane 7" = "cmd-7"
 # "focus pane 8" = "cmd-8"
-# "focus pane 9" = "cmd-9"
-# "focus left" = "cmd-k cmd-left"
-# "focus right" = "cmd-k cmd-right"
-# "focus up" = "cmd-k cmd-up"
-# "focus down" = "cmd-k cmd-down"
+# "focus pane 9" = ""
+# "focus last pane" = "cmd-9"
+# "focus sessions" = "cmd-0"
+# "next session" = "alt-cmd-down"
+# "previous session" = "alt-cmd-up"
+# "focus left" = ""
+# "focus right" = ""
+# "focus up" = ""
+# "focus down" = ""
 # "split right" = "cmd-\\"
-# "split down" = "cmd-k cmd-\\"
-# "maximize pane" = "cmd-k cmd-m"
-# "move tab to previous pane" = "ctrl-cmd-left"
-# "move tab to next pane" = "ctrl-cmd-right"
+# "split down" = ""
+# "maximize pane" = ""
+# "move tab to previous pane" = ""
+# "move tab to next pane" = ""
 # "next tab" = "alt-cmd-right"
 # "previous tab" = "alt-cmd-left"
 # "next tab alt" = "cmd-shift-]"
 # "previous tab alt" = "cmd-shift-["
-# "most recently used tab" = "ctrl-tab"
+# "next tab ctrl" = "ctrl-tab"
+# "previous tab ctrl" = "ctrl-shift-tab"
+# "most recently used tab" = ""
+# "new tab" = "cmd-t"
 # "close tab" = "cmd-w"
 # "reopen closed tab" = "cmd-shift-t"
-# "close all in pane" = "cmd-k w"
-# "move tab left" = "cmd-k cmd-shift-left"
-# "move tab right" = "cmd-k cmd-shift-right"
+# "close all in pane" = ""
+# "move tab left" = ""
+# "move tab right" = ""
 # "new terminal tab" = "ctrl-shift-`"
 # "font bigger" = "cmd-="
 # "font smaller" = "cmd--"
@@ -808,17 +817,17 @@ option_as_meta = true
 # "install claude code hooks" = ""
 # "install agent guide" = ""
 # "toggle sidebar" = "cmd-b"
-# "focus file tree" = "cmd-shift-e"
+# "focus file tree" = ""
 # "show ignored files" = ""
-# "focus worktrees" = "ctrl-shift-g"
-# "next session that needs you" = "cmd-shift-u"
+# "focus worktrees" = ""
+# "next session that needs you" = ""
 # "toggle inline diff" = "cmd-shift-d"
 # "toggle markdown view" = "cmd-shift-m"
 # "save file" = "cmd-s"
 # "bold" = "cmd-b"
 # "italic" = "cmd-i"
-# "fold all" = "cmd-k cmd-0"
-# "unfold all" = "cmd-k cmd-j"
+# "fold all" = ""
+# "unfold all" = ""
 # "toggle outline" = "alt-cmd-o"
 # "toggle presentation mode" = "alt-cmd-p"
 # "next sheet" = "alt-cmd-]"
@@ -846,7 +855,7 @@ option_as_meta = true
 # "reload page" = "cmd-r"
 # "focus address" = "cmd-l"
 # "open in browser" = "cmd-shift-o"
-# "zoom reset" = "cmd-0"
+# "zoom reset" = ""
 # "quit" = "cmd-q"
 
 [sidebar]
@@ -1203,7 +1212,7 @@ pub(crate) mod tests {
         use crate::keymap::Command::*;
         use crate::tree::Side;
         let all = vec![
-            FocusPane(1), FocusDir(Side::Left), Split(Side::Right), ToggleMaximize, MoveTabToPane(1), CycleTab(1), MruTab, CloseTab,
+            FocusPane(1), FocusLastPane, FocusSessions, CycleSession(1), NewTabMenu, FocusDir(Side::Left), Split(Side::Right), ToggleMaximize, MoveTabToPane(1), CycleTab(1), MruTab, CloseTab,
             ReopenClosedTab, CloseAllInPane, MoveTabWithin(1), NewTerminal, ClearToStart, FontDelta(1.0), About, OpenSettings, Keybindings,
             Documentation, OpenConfig, TextPreset(String::new()), ReloadConfig, ExtractThemes, CommandPalette, SetTheme(String::new()), Find,
             CopyAsShown, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks, InstallAgentGuide,
@@ -1215,7 +1224,7 @@ pub(crate) mod tests {
         // and then the test below asks for it in `telemetry/events.toml`.
         for c in &all {
             match c {
-                FocusPane(_) | FocusDir(_) | Split(_) | ToggleMaximize | MoveTabToPane(_) | CycleTab(_) | MruTab | CloseTab | ReopenClosedTab
+                FocusPane(_) | FocusLastPane | FocusSessions | CycleSession(_) | NewTabMenu | FocusDir(_) | Split(_) | ToggleMaximize | MoveTabToPane(_) | CycleTab(_) | MruTab | CloseTab | ReopenClosedTab
                 | CloseAllInPane | MoveTabWithin(_) | NewTerminal | ClearToStart | FontDelta(_) | About | OpenSettings | Keybindings
                 | Documentation | OpenConfig | TextPreset(_) | ReloadConfig | ExtractThemes | CommandPalette | SetTheme(_) | Find | CopyAsShown
                 | UpdateNow | CheckForUpdates | Notifications | Doctor | RetryUpdate | StartAtLogin | InstallHooks | InstallAgentGuide

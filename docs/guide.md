@@ -38,8 +38,8 @@ session", or one resumed) is New until something happens in it, and one left unt
 minutes moves to Quiet. A click on a group's heading folds it or opens it; Quiet (not
 finished, nothing happening) and Done start folded, the window remembers what you leave
 folded, and typing in the filter opens them all while it finds. A click on a row shows its
-session, on the pane that needs you when one does, else as you left it, and Shift+Cmd+U
-("next session that needs you") goes to the first that is your move: a blocked one, then an
+session, on the pane that needs you when one does, else as you left it, and "Next session that
+needs you" in the palette (no key unless you give it one) goes to the first that is your move: a blocked one, then an
 unread one, then an unanswered one. A row you click stays where it was until you choose
 another session, so an unread one stays under Unread (marked read) rather than moving from
 under the pointer. Right click a row for "Move to", which lists every section but the one the
@@ -192,7 +192,7 @@ folder, close first without saving, and a notice says it went. New File opens a 
 will go (under the folder, or beside the file): type the name, with `/` for folders on the way,
 and Enter makes the file, selects it and opens it for editing with the keys in the pane; Escape
 or a click anywhere else closes the row; a name that exists, or is no name, is said in a notice
-and the row stays. Drag a file onto a terminal to paste its path. Shift+Cmd+E puts the keyboard in the tree: arrows move and expand, Enter opens, Space
+and the row stays. Drag a file onto a terminal to paste its path. "Focus file tree" in the palette puts the keyboard in the tree: arrows move and expand, Enter opens, Space
 previews, Escape goes back to the pane.
 
 Under the Explorer, Worktrees lists the side worktrees of every git repository under the open
@@ -214,7 +214,7 @@ last change, or five seconds into a run of changes; never on a timer. Expand a
 worktree with changes for its changed files in the status colours. Click a changed file to read
 it in the viewer. Right click a worktree: Open
 terminal here, Remove worktree (refused while it has changes), Remove worktree, force.
-Ctrl+Shift+G puts the keyboard in the list. Claude can read the same list with `arkos
+"Focus worktrees" in the palette puts the keyboard in the list. Claude can read the same list with `arkos
 worktrees`. The tree's rows carry git status in the theme's pastels (added, modified,
 untracked) and a folder with changes inside carries a dot. While open, the section takes the sidebar's height below the Explorer, a third of it at least.
 
@@ -351,8 +351,7 @@ a table is just a slash.
 
 Hover a heading and a chevron shows in the margin to its left: a click folds the heading, hiding
 everything under it up to the next heading of its level or higher (a folded heading ends with
-"…" and keeps its chevron). Fold All and Unfold All are in the palette, and Cmd+K Cmd+0 and Cmd+K
-Cmd+J in a markdown document. Folds are the view's, never the file's: they are kept per file in the
+"…" and keeps its chevron). Fold All and Unfold All are in the palette. Folds are the view's, never the file's: they are kept per file in the
 workspace, survive a relaunch, and the caret never stands in a folded section (Up and Down step
 over it; landing in one unfolds it). Hover any block and a six-dot handle shows in the margin:
 drag it to move the block (a paragraph, a heading, a whole list or table), with a line showing
@@ -573,7 +572,8 @@ Escape puts the page's address back; inside it the keys are a browser's: a first
 whole address, a later one places the cursor, Option and the arrows move by word, Shift extends,
 Option+Delete and Option+Backspace remove a word, and the cursor blinks, steady under Reduce
 Motion), Cmd+R reloads, Cmd+[ and Cmd+] go back and forward, Cmd+=
-and Cmd+- zoom the page through Safari's steps and Cmd+0 resets it, Cmd+Shift+O opens the page in
+and Cmd+- zoom the page through Safari's steps and "Zoom reset" in the palette resets it (Cmd+0
+is the session list here too), Cmd+Shift+O opens the page in
 your default browser. A click in the page gives the page the keyboard, as a click in a terminal
 gives the terminal; Arkos's own shortcuts (Cmd+1 to 9, Cmd+W, Cmd+T, Cmd+B, Cmd+Shift+P and the
 rest) still work, and a click on the bar, the tab bar or another pane takes the keys back. While
@@ -686,38 +686,22 @@ reports what it costs the GPU.
 
 ## Keyboard
 
-The VS Code map, in a terminal-friendly form.
+Chrome's keys, so there is little to learn: numbers for places, Tab for tabs, arrows for the
+session list, and the command palette (Shift+Cmd+P) for everything else.
 
 | Keys | Action |
 | --- | --- |
-| Cmd+1 | focus pane 1 |
-| Cmd+2 | focus pane 2 |
-| Cmd+3 | focus pane 3 |
-| Cmd+4 | focus pane 4 |
-| Cmd+5 | focus pane 5 |
-| Cmd+6 | focus pane 6 |
-| Cmd+7 | focus pane 7 |
-| Cmd+8 | focus pane 8 |
-| Cmd+9 | focus pane 9 |
-| Cmd+K then Cmd+Left | focus left |
-| Cmd+K then Cmd+Right | focus right |
-| Cmd+K then Cmd+Up | focus up |
-| Cmd+K then Cmd+Down | focus down |
-| Cmd+\ | split right |
-| Cmd+K then Cmd+\ | split down |
-| Cmd+K then Cmd+M | maximize pane |
-| Ctrl+Cmd+Left | move tab to previous pane |
-| Ctrl+Cmd+Right | move tab to next pane |
-| Option+Cmd+Right | next tab |
-| Option+Cmd+Left | previous tab |
-| Shift+Cmd+] | next tab |
-| Shift+Cmd+[ | previous tab |
-| Ctrl+Tab | most recently used tab |
+| Cmd+0 | the session list: the sidebar opens on Sessions and the keys go to its filter; type to narrow it, Up and Down move the ring through the rows, Enter opens the ringed session (a closed one is resumed), Escape clears what you typed and then goes back to the pane |
+| Cmd+1 to Cmd+8 | focus pane 1 to 8 of the session shown |
+| Cmd+9 | focus the last pane |
+| Ctrl+Tab, Ctrl+Shift+Tab | next and previous tab in the focused pane |
+| Option+Cmd+Right, Option+Cmd+Left | next and previous tab |
+| Shift+Cmd+], Shift+Cmd+[ | next and previous tab |
+| Option+Cmd+Down, Option+Cmd+Up | next and previous session, in the list's order |
+| Cmd+T | new tab: the focused pane's "+" menu, Claude, Codex or Shell (Up, Down, Enter, Escape) |
 | Cmd+W | close tab |
 | Shift+Cmd+T | reopen closed tab |
-| Cmd+K then W | close all in pane |
-| Cmd+K then Shift+Cmd+Left | move tab left |
-| Cmd+K then Shift+Cmd+Right | move tab right |
+| Cmd+\ | split right |
 | Ctrl+Shift+` | new terminal tab |
 | Cmd+Shift+B | new browser tab: asks for an address and opens it in a web tab (see Browser pane for the tab's own keys: Cmd+L, Cmd+R, Cmd+[ and ], Cmd+Shift+O, zoom) |
 | Cmd+K | clear to start: history and screen go, the prompt line moves to the top, as in Terminal.app |
@@ -729,9 +713,6 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+V | paste |
 | Cmd+B | toggle the sidebar (in a markdown document: bold) |
 | Cmd+I | in a markdown document: italic |
-| Shift+Cmd+E | focus the file tree |
-| Ctrl+Shift+G | focus the worktree list |
-| Shift+Cmd+U | next session that needs you: a blocked one, then an unread one, then an unanswered one |
 | Shift+Cmd+D | inline diff in the viewer |
 | Shift+Cmd+M | toggle markdown view: rendered or raw (a CSV: grid or raw) |
 | Cmd+Option+], Cmd+Option+[ | in a workbook: next sheet, previous sheet |
@@ -750,7 +731,6 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+click | in a markdown file: open a link, or an image, poster, video or audio; a plain click on a revealed link's address opens it too |
 | Enter | in a rendered markdown paragraph or heading: a new paragraph; in a quote: a new quoted paragraph; in a list: the next item; on an empty item, end the list or move a nested item out a level |
 | Shift+Enter | in a rendered markdown paragraph or item: a line break; in a quote: out of the quote; on a code block's last line: out of the block |
-| Cmd+K Cmd+0, Cmd+K Cmd+J | in a markdown document: fold all headings, unfold them all |
 | Alt+Cmd+P | in a markdown document: presentation mode on or off |
 | Option+Cmd+O | in a markdown document: the outline open or closed (Up, Down, Enter and Escape while it lies over the text) |
 | / | in a rendered markdown document, at a line's start or after a space: the slash menu (Up, Down, Enter or Tab, Right and Left for a submenu, Escape) |
@@ -767,7 +747,7 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+N | new window: the project chooser in its own window (also the menu's "New Window"); the folder chosen opens in a new window; a config file that still says `"open recent"` keeps working |
 | Cmd+, | settings |
 | Cmd+/ | keybindings: the Keybindings window (also Help, Keybindings) |
-| (unbound) | about, documentation, open config |
+| (unbound) | about, documentation, open config, and in the palette: focus left, right, up and down, split down, maximize pane, move tab to the previous or next pane, move tab left or right, close all in pane, most recently used tab, focus file tree, focus worktrees, next session that needs you, fold all, unfold all, a web tab's zoom reset; give any of them a key under `[keybindings]` |
 | Shift+Cmd+P | command palette |
 
 Notes:
@@ -776,7 +756,7 @@ Notes:
   chords fire at once. Cmd+K alone does nothing in a busy or empty pane.
 - Pane numbers are structural reading order: rows top to bottom, left to right within a row,
   computed as if every split were at half, so dragging a handle never renumbers a pane.
-- Cmd+W (and the tab's ×, and Cmd+K then W) keeps a closed terminal's shell alive for a
+- Cmd+W (and the tab's ×, and "Close all in pane") keeps a closed terminal's shell alive for a
   minute: Shift+Cmd+T within that minute brings the same shell back, history and all, in the
   pane it was closed from. After the minute the shell ends, and Shift+Cmd+T opens a new one.
   The daemon keeps that minute, so a window that crashes or is killed within it still has the

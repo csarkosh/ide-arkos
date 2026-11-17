@@ -17,7 +17,7 @@ pub const DRIFT: f32 = 0.06;
 
 /// The four things a person wants next from an empty pane.
 pub const BINDINGS: &[(&str, &str)] = &[
-    ("Ctrl+Shift+`", "new terminal here"),
+    ("Cmd+T", "new tab here"),
     ("Cmd+\\", "split right"),
     ("Cmd+1 to Cmd+9", "focus a pane"),
     ("Cmd+W", "close this pane"),
