@@ -634,7 +634,7 @@ text two points larger, and in the empty space under the sidebar's rows a painte
 Village, washed in the theme's own colours and melting into the sidebar's paper: a steel factory
 window onto brownstone rooftops and a water tower, exposed brick, wide floorboards, a pendant lamp,
 a side table with a palette, brushes and a steaming mug, a potted plant, and on the easel in the
-middle a famous painting as a watercolour, toned to the theme. The lamp sways a little, the drape
+middle a backboard with a famous painting taped to it as a watercolour, toned to the theme. The lamp sways a little, the drape
 stirs, the leaves sway, the steam rises, clouds pass the window and dust drifts in its light, all
 slowly. The paintings come one at a time: each is held fifty seconds, then the next blooms in from a
 few pools of pigment over six while the last dries back to the paper. The eight are Hokusai's Great Wave,

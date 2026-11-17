@@ -71,3 +71,13 @@ distracting", and "a painter's private West Village loft in NYC".
   drifting down it, and the clouds take 150 seconds to pass.
 - Cost: each group of the pen's lines is tested only near where it lies; benched within the loaded
   machine's noise of Watercolor without the gallery (about 0.2 to 0.5 ms).
+
+## The backboard
+
+Cyrus, 2026-11-17: "Add a backboard to support the painting. Make the painting's edges straighter."
+The easel holds a board of light wood, its grain running across, one size for every painting (half
+the scene wide, 0.4 of it tall, its foot on the ledge), so nothing jumps when the next blooms in; it
+is solid, hiding the easel's mast and legs behind it, and casts the soft shadow on the wall. Each
+painting is as large as fits on it less a 5 point margin, centred, with its own faint shadow on the
+board and a strip of tape over each top corner. Its edges waver at most 0.8 points, a sheet cut by
+hand, and pool darker only within 3 points of them.

@@ -276,6 +276,10 @@ constant float CANVAS_W = 0.5;
 constant float CANVAS_H = 0.4;
 constant float CANVAS_FOOT = 0.32;
 constant float FLOOR_Y = 0.17;
+// The board's margin round the painting, in points.
+constant float BOARD_PAD = 5.0;
+// How far a painting's edge wavers from straight, in points: a sheet cut by hand.
+constant float PAINTING_WAVER = 0.8;
 
 // The scene's frame: its bottom left in points, its width and height.
 struct Studio {
@@ -314,12 +318,22 @@ float stroke(float2 p, float2 a, float2 b, Pen pen, float w) {
 }
 
 // Painting i on the easel: its origin in xy, its size in zw, in points.
-float4 canvas_rect(Studio st, int i) {
-    float2 sz = max(ARKOS_IMAGE_SIZE[i], float2(1.0));
-    float2 box = float2(st.w * CANVAS_W, st.h * CANVAS_H);
-    float2 wh = sz * min(box.x / sz.x, box.y / sz.y);
+// The backboard on the easel (Cyrus, 2026-11-17: "Add a backboard to support the painting"): one
+// size for every painting, so nothing jumps when the next blooms in, its foot on the easel's
+// ledge at CANVAS_FOOT: its origin in xy, its size in zw.
+float4 board_rect(Studio st) {
+    float2 wh = float2(st.w * CANVAS_W, st.h * CANVAS_H);
     float2 foot_pt = sp(st, float2(CANVAS_X, CANVAS_FOOT));
     return float4(foot_pt.x - wh.x * 0.5, foot_pt.y - wh.y, wh);
+}
+
+// Painting i taped to the board: as large as fits inside it less BOARD_PAD round, centred on it.
+float4 canvas_rect(Studio st, int i) {
+    float2 sz = max(ARKOS_IMAGE_SIZE[i], float2(1.0));
+    float4 b = board_rect(st);
+    float2 box = max(b.zw - 2.0 * BOARD_PAD, float2(1.0));
+    float2 wh = sz * min(box.x / sz.x, box.y / sz.y);
+    return float4(b.xy + (b.zw - wh) * 0.5, wh);
 }
 
 // Painting i at p, as a watercolour of it: its colours softened, pooled darker where they meet,
@@ -333,7 +347,7 @@ float4 painting_at(texture2d_array<float> images, float2 p, int i, float4 r, flo
     if (box > 6.0) {
         return float4(0.0);
     }
-    float d = box + (vnoise(p * 0.11 + float(i) * 7.3) - 0.5) * 7.0;
+    float d = box + (vnoise(p * 0.11 + float(i) * 7.3) - 0.5) * 2.0 * PAINTING_WAVER;
     if (d > 2.0) {
         return float4(0.0);
     }
@@ -356,9 +370,9 @@ float4 painting_at(texture2d_array<float> images, float2 p, int i, float4 r, flo
     float3 lum_w = float3(0.299, 0.587, 0.114);
     float3 toned = saturate(tone * (dot(c, lum_w) / max(dot(tone, lum_w), 0.05)));
     c = mix(c, toned, STUDIO_TONE);
-    float cover = 1.0 - smoothstep(-1.5, 1.5, d);
-    // The edge pools darker, as a wash dries at its rim.
-    float rim = smoothstep(-6.0, 0.0, d) * cover;
+    float cover = 1.0 - smoothstep(-0.6, 0.6, d);
+    // The edge pools a little darker, as a wash dries at its rim.
+    float rim = smoothstep(-3.0, 0.0, d) * cover;
     return float4(c * (1.0 - 0.18 * rim), cover);
 }
 
@@ -512,23 +526,38 @@ float3 studio(constant ArkosInputs& u, texture2d_array<float> images, float2 p, 
     int shown = int(at.x);
     int next = int(at.y);
     float4 r0 = canvas_rect(st, shown);
-    float2 top = float2(r0.x + r0.z * 0.5, r0.y - 8.0);
-    float2 ledge_l = float2(r0.x - 4.0, r0.y + r0.w + 1.5);
-    float2 ledge_r = float2(r0.x + r0.z + 4.0, r0.y + r0.w + 1.5);
+    float4 bd = board_rect(st);
+    float2 top = float2(bd.x + bd.z * 0.5, bd.y - 8.0);
+    float2 ledge_l = float2(bd.x - 4.0, bd.y + bd.w + 1.5);
+    float2 ledge_r = float2(bd.x + bd.z + 4.0, bd.y + bd.w + 1.5);
     float2 foot_l = sp(st, float2(CANVAS_X - 0.17, floor_y - 0.06));
     float2 foot_r = sp(st, float2(CANVAS_X + 0.17, floor_y - 0.06));
     float2 foot_b = sp(st, float2(CANVAS_X + 0.04, floor_y + 0.02));
-    // A soft shadow the canvas casts on the wall behind it.
-    float shade = 1.0 - smoothstep(0.0, 6.0, sd_box(p - (r0.xy + r0.zw * 0.5 + float2(4.0, 3.0)), r0.zw * 0.5));
+    // A soft shadow the board casts on the wall behind it.
+    float shade = 1.0 - smoothstep(0.0, 6.0, sd_box(p - (bd.xy + bd.zw * 0.5 + float2(4.0, 3.0)), bd.zw * 0.5));
     col = wash_onto(u, col, pig0, 0.12 * shade * melt);
     ink = max(ink, stroke(p, top, foot_b, pen, 0.9));
     ink = max(ink, stroke(p, float2(top.x - 3.0, top.y), foot_l, pen, 1.0));
     ink = max(ink, stroke(p, float2(top.x + 3.0, top.y), foot_r, pen, 1.0));
     ink = max(ink, stroke(p, top + float2(-5.0, 0.0), top + float2(5.0, 0.0), pen, 1.0));
-    // The room's lines go down first, so the canvas covers the easel's mast and legs behind it.
+    // The room's lines go down first, so the board covers the easel's mast and legs behind it.
     float3 ink_c = u.colors[ARKOS_TERMINAL_FG].rgb;
     col = mix(col, ink_c, saturate(ink) * 0.62 * ink_tooth(pen) * melt);
     ink = 0.0;
+    // The backboard: light wood with its grain running across, outlined, and the painting's own
+    // faint shadow on it.
+    float on_board = 1.0 - smoothstep(-0.5, 0.5, sd_box(p - (bd.xy + bd.zw * 0.5), bd.zw * 0.5));
+    if (on_board > 0.0) {
+        float grain = vnoise(float2(p.x * 0.04, p.y * 0.6)) * 0.12;
+        // Solid: the easel's mast and legs behind it do not show through.
+        float3 board_c = mix(paper, wood, 0.42 + grain);
+        col = mix(col, u.dark > 0.5 ? board_c : board_c * mix(float3(1.0), bright(pig2), 0.06), on_board);
+        float sheet_shade = 1.0 - smoothstep(0.0, 3.0, sd_box(p - (r0.xy + r0.zw * 0.5 + float2(1.5, 1.5)), r0.zw * 0.5));
+        col = wash_onto(u, col, wood, 0.3 * sheet_shade * on_board * melt);
+    }
+    ink = max(ink, stroke(p, bd.xy, float2(bd.x + bd.z, bd.y), pen, 0.8));
+    ink = max(ink, stroke(p, bd.xy, float2(bd.x, bd.y + bd.w), pen, 0.8));
+    ink = max(ink, stroke(p, float2(bd.x + bd.z, bd.y), bd.xy + bd.zw, pen, 0.8));
     float4 now_p = painting_at(images, p, shown, r0, u.scale, gran, mix(paper, pig0, 0.4));
     float reached = 0.0;
     float4 next_p = float4(0.0);
@@ -543,6 +572,16 @@ float3 studio(constant ArkosInputs& u, texture2d_array<float> images, float2 p, 
     }
     col = painting_onto(u, col, now_p.rgb, now_p.a * (1.0 - reached) * show);
     col = painting_onto(u, col, next_p.rgb, next_p.a * reached * show);
+    // Two strips of tape hold the painting's top corners to the board.
+    float4 held = at.z > 0.5 ? canvas_rect(st, next) : r0;
+    for (int c = 0; c < 2; c++) {
+        float2 corner = float2(c == 0 ? held.x : held.x + held.z, held.y);
+        float2 q = p - corner;
+        float ang = c == 0 ? 0.75 : -0.75;
+        float2 local = float2(q.x * cos(ang) + q.y * sin(ang), -q.x * sin(ang) + q.y * cos(ang));
+        float tape = 1.0 - smoothstep(-0.4, 0.4, sd_box(local, float2(5.0, 1.8)));
+        col = mix(col, mix(paper, pig0, 0.3), tape * 0.75 * melt);
+    }
     ink = max(ink, stroke(p, ledge_l, ledge_r, pen, 1.3));
 
     // The side table: its top and legs, a palette dabbed in the theme's pigments, a jar of

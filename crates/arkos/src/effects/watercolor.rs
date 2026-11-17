@@ -82,17 +82,25 @@ mod tests {
         }
     }
 
-    /// Painting i's canvas on the easel, as the wash's `canvas_rect` places it in a sidebar foot
-    /// `foot` (x, y, w, h): its origin and size in points.
-    fn canvas_rect(foot: [f32; 4], size: (f32, f32)) -> [f32; 4] {
+    /// The easel's backboard, as the wash's `board_rect` places it in a sidebar foot `foot`
+    /// (x, y, w, h): its origin and size in points.
+    fn board_rect(foot: [f32; 4]) -> [f32; 4] {
         let w = wash();
         let (sw, sh) = (foot[2] - 8.0, (foot[3] - 6.0).min((foot[2] - 8.0) * constant(w, "STUDIO_TALL")));
         let (ox, oy) = (foot[0] + 4.0, foot[1] + foot[3] - 4.0);
         let (bw, bh) = (sw * constant(w, "CANVAS_W"), sh * constant(w, "CANVAS_H"));
+        let (fx, fy) = (ox + constant(w, "CANVAS_X") * sw, oy - constant(w, "CANVAS_FOOT") * sh);
+        [fx - bw * 0.5, fy - bh, bw, bh]
+    }
+
+    /// Painting i on the board, as the wash's `canvas_rect` places it.
+    fn canvas_rect(foot: [f32; 4], size: (f32, f32)) -> [f32; 4] {
+        let pad = constant(wash(), "BOARD_PAD");
+        let b = board_rect(foot);
+        let (bw, bh) = (b[2] - 2.0 * pad, b[3] - 2.0 * pad);
         let k = (bw / size.0).min(bh / size.1);
         let (cw, ch) = (size.0 * k, size.1 * k);
-        let (fx, fy) = (ox + constant(w, "CANVAS_X") * sw, oy - constant(w, "CANVAS_FOOT") * sh);
-        [fx - cw * 0.5, fy - ch, cw, ch]
+        [b[0] + (b[2] - cw) * 0.5, b[1] + (b[3] - ch) * 0.5, cw, ch]
     }
 
     #[test]
@@ -103,16 +111,23 @@ mod tests {
         for foot in [[0.0f32, 300.0, 240.0, 500.0], [8.0, 420.0, 200.0, 180.0], [0.0, 100.0, 320.0, 700.0]] {
             let (sw, sh) = (foot[2] - 8.0, (foot[3] - 6.0).min((foot[2] - 8.0) * constant(w, "STUDIO_TALL")));
             let floor = foot[1] + foot[3] - 4.0 - constant(w, "FLOOR_Y") * sh;
+            let b = board_rect(foot);
+            assert!(b[0] >= foot[0] && b[0] + b[2] <= foot[0] + foot[2] && b[1] >= foot[1], "{foot:?}: the board {b:?} outside the space");
+            assert!(b[1] + b[3] < floor, "{foot:?}: the board reaches the floor");
+            let pad = constant(w, "BOARD_PAD");
             for &size in &sizes {
                 let r = canvas_rect(foot, size);
-                assert!(r[0] >= foot[0] && r[0] + r[2] <= foot[0] + foot[2] && r[1] >= foot[1], "{foot:?} {size:?}: {r:?} outside the space");
-                assert!(r[1] + r[3] < floor, "{foot:?} {size:?}: the canvas reaches the floor");
-                // The centrepiece: wide or tall, it fills its share of the scene one way.
-                assert!(r[2] >= 0.99 * sw * constant(w, "CANVAS_W") || r[3] >= 0.99 * sh * constant(w, "CANVAS_H"), "{foot:?} {size:?}: {r:?}");
+                // On the board, a margin of it all round.
+                assert!(r[0] >= b[0] + pad - 0.01 && r[0] + r[2] <= b[0] + b[2] - pad + 0.01 && r[1] >= b[1] + pad - 0.01 && r[1] + r[3] <= b[1] + b[3] - pad + 0.01, "{foot:?} {size:?}: {r:?} off the board {b:?}");
+                // The centrepiece: wide or tall, it fills the board one way.
+                assert!(r[2] >= 0.99 * (b[2] - 2.0 * pad) || r[3] >= 0.99 * (b[3] - 2.0 * pad), "{foot:?} {size:?}: {r:?}");
             }
+            let _ = (sw, sh);
         }
         assert!(w.contains("float3 tone = ") || w.contains("float3 tone)"), "the painting is toned toward the theme");
         assert!(constant(w, "STUDIO_TONE") > 0.0 && constant(w, "STUDIO_TONE") <= 0.35, "toned, not repainted");
+        // Its edges near straight (Cyrus, 2026-11-17: "Make the painting's edges straighter").
+        assert!(constant(w, "PAINTING_WAVER") <= 1.0, "a sheet cut by hand, not torn");
     }
 
 }
