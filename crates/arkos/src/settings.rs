@@ -75,6 +75,67 @@ fn claim_fixed_pitch_check() -> bool {
     FIXED_PITCH.get().is_none() && !FIXED_PITCH_STARTED.swap(true, Ordering::SeqCst)
 }
 
+/// The corners of a pill and of a list row, and how far outside a control the keyboard's ring
+/// is drawn.
+const PILL_ROUND: f32 = 10.0;
+const ROW_ROUND: f32 = 4.0;
+const RING_OUT: f32 = 2.0;
+
+/// What a control does when the keys press it.
+type KeyAct = Rc<dyn Fn(&mut SettingsWindow, &mut Window, &mut Context<SettingsWindow>)>;
+
+/// Where the Settings window's keys are: the sections' column, or the section's controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Zone {
+    #[default]
+    Sections,
+    Controls,
+}
+
+/// The keys' place: the zone, the control ringed in the controls, and whether the ring shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Keys {
+    pub zone: Zone,
+    pub at: usize,
+    pub shown: bool,
+}
+
+/// What a key does in the Settings window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsKey {
+    /// The keys move: their new place, and the section shown.
+    Move(Keys, usize),
+    /// Press the control at this place.
+    Press(usize),
+    Close,
+    Pass,
+}
+
+/// A key in the Settings window, as the IDE's keys go (Cyrus, 2026-11-17: "re-using existing
+/// navigation rules"): in the sections' column Up and Down show the section before or after (as
+/// the sidebar's switcher shows Sessions or Files), Right, Enter or Space go into its controls,
+/// Escape closes the window; in the controls Up and Down move the ring through them (stopping at
+/// either end), Enter or Space press the one ringed, Left or Escape go back to the column. The
+/// first key that would move shows the ring where the keys are, and moves nothing.
+pub fn settings_key(key: &str, keys: Keys, section: usize, sections: usize, stops: usize) -> SettingsKey {
+    let moves = matches!(key, "up" | "down" | "left" | "right" | "enter" | "space");
+    if !keys.shown && moves {
+        return SettingsKey::Move(Keys { shown: true, ..keys }, section);
+    }
+    let at = keys.at.min(stops.saturating_sub(1));
+    match (keys.zone, key) {
+        (Zone::Sections, "up") => SettingsKey::Move(keys, section.saturating_sub(1)),
+        (Zone::Sections, "down") => SettingsKey::Move(keys, (section + 1).min(sections - 1)),
+        (Zone::Sections, "right" | "enter" | "space") if stops > 0 => SettingsKey::Move(Keys { zone: Zone::Controls, at: 0, shown: true }, section),
+        (Zone::Sections, "escape") => SettingsKey::Close,
+        (Zone::Controls, "up") => SettingsKey::Move(Keys { at: at.saturating_sub(1), ..keys }, section),
+        (Zone::Controls, "down") => SettingsKey::Move(Keys { at: (at + 1).min(stops.saturating_sub(1)), ..keys }, section),
+        (Zone::Controls, "enter" | "space") if stops > 0 => SettingsKey::Press(at),
+        (Zone::Controls, "left" | "escape") => SettingsKey::Move(Keys { zone: Zone::Sections, ..keys }, section),
+        _ => SettingsKey::Pass,
+    }
+}
+
 /// The sections of the left column, in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
@@ -576,6 +637,17 @@ pub struct SettingsWindow {
     /// The file picker is up.
     picking: bool,
     focus: FocusHandle,
+    /// Where the keys are (Cyrus, 2026-11-17: the Settings window "must support keyboard
+    /// navigation"): the sections' column or the section's controls, which control, and whether
+    /// the ring shows yet (from the first key that moves it).
+    keys: Keys,
+    /// The section's controls the keys can reach, in the order they are drawn, each with what a
+    /// press does: collected afresh by every render (`act`).
+    stops: std::cell::RefCell<Vec<KeyAct>>,
+    /// The controls' scroll, so the ringed control is kept in view.
+    scroll: gpui::ScrollHandle,
+    /// Set by a key that moves the ring; the ringed control scrolls itself into view once.
+    follow: Rc<std::cell::Cell<bool>>,
     theme: Theme,
     on_change: OnChange,
     on_update: OnUpdate,
@@ -669,6 +741,10 @@ pub fn open(cx: &mut App, over: Option<Retained<NSWindow>>, shown: Shown, theme:
                 pending_replace: None,
                 picking: false,
                 focus: cx.focus_handle(),
+                keys: Keys::default(),
+                stops: Default::default(),
+                scroll: gpui::ScrollHandle::new(),
+                follow: Rc::new(std::cell::Cell::new(false)),
                 theme,
                 on_change,
                 on_update,
@@ -690,8 +766,14 @@ pub fn open(cx: &mut App, over: Option<Retained<NSWindow>>, shown: Shown, theme:
 /// Moves a window that has just opened (Settings or Keybindings) to the centre of the IDE window
 /// `over`. It has not drawn yet, so it is first seen there.
 pub fn centre_over(window: &Window, over: Option<&NSWindow>) {
-    if let (Some(over), Some(own)) = (over, crate::screen::ns_window_of(window)) {
+    let Some(own) = crate::screen::ns_window_of(window) else { return };
+    if let Some(over) = over {
         crate::screen::centre_on(&own, over);
+    }
+    // The screenshot shoot floats the IDE window (ARKOS_WINDOW_LEVEL=floating); a window opened
+    // over it floats too, or it would open hidden behind it.
+    if std::env::var_os("ARKOS_WINDOW_LEVEL").is_some_and(|v| v == "floating") {
+        own.setLevel(objc2_app_kit::NSFloatingWindowLevel);
     }
 }
 
@@ -940,6 +1022,21 @@ pub fn open_config_in_editor(cx: &App) {
         .detach();
 }
 
+/// Scrolls `scroll` so a control at `b` (drawn at its scrolled place) shows whole in it.
+fn keep_in_view(scroll: &gpui::ScrollHandle, b: gpui::Bounds<gpui::Pixels>, window: &mut Window) {
+    let view = scroll.bounds();
+    let mut offset = scroll.offset();
+    if b.top() < view.top() {
+        offset.y += view.top() - b.top();
+    } else if b.bottom() > view.bottom() {
+        offset.y -= b.bottom() - view.bottom();
+    } else {
+        return;
+    }
+    scroll.set_offset(offset);
+    window.refresh();
+}
+
 /// A pill button, drawn like the terminal's "jump to bottom" pill. A selected one is outlined in
 /// the accent colour; a disabled one is dimmed and the caller attaches no click handler.
 pub fn pill(id: impl Into<ElementId>, label: impl Into<SharedString>, selected: bool, enabled: bool, c: Colors) -> Stateful<gpui::Div> {
@@ -948,7 +1045,7 @@ pub fn pill(id: impl Into<ElementId>, label: impl Into<SharedString>, selected: 
         .flex_none()
         .px(px(10.0))
         .py(px(3.0))
-        .rounded(px(10.0))
+        .rounded(px(PILL_ROUND))
         .border_1()
         .text_size(px(12.0))
         .text_color(if enabled { c.text } else { c.dim })
@@ -969,7 +1066,7 @@ fn list_row(id: impl Into<ElementId>, label: impl Into<SharedString>, current: b
         .gap(px(6.0))
         .px(px(6.0))
         .py(px(2.0))
-        .rounded(px(4.0))
+        .rounded(px(ROW_ROUND))
         .text_color(if enabled { c.text } else { c.dim })
         .child(div().w(px(14.0)).flex_none().child(if current { "✓" } else { "" }))
         .child(label.into());
@@ -981,19 +1078,6 @@ fn list_row(id: impl Into<ElementId>, label: impl Into<SharedString>, current: b
 }
 
 /// A control's label above it.
-/// A pill that shows `dir` in Finder, making it first when it is not there yet.
-fn folder_pill(id: &'static str, label: &'static str, dir: PathBuf, enabled: bool, c: Colors) -> Stateful<gpui::Div> {
-    let mut p = pill(id, label, false, enabled, c);
-    if enabled {
-        p = p.on_click(move |_, _, cx| {
-            if let Err(e) = std::fs::create_dir_all(&dir) {
-                eprintln!("arkos: cannot create {}: {e}", dir.display());
-            }
-            cx.reveal_path(&dir);
-        });
-    }
-    p
-}
 
 fn heading(text: &'static str, c: Colors) -> gpui::Div {
     div().pt(px(6.0)).text_color(c.dim).text_size(px(12.0)).child(text)
@@ -1005,6 +1089,107 @@ fn number(v: f64) -> String {
 }
 
 impl SettingsWindow {
+    /// `el` as a control the keys reach: a click runs `f`, and so does Enter on it when ringed.
+    fn act(&self, el: Stateful<gpui::Div>, cx: &mut Context<Self>, f: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static) -> Stateful<gpui::Div> {
+        self.act_shaped(el, PILL_ROUND, cx, f)
+    }
+
+    /// `act` for a list row, its ring following the row's corners.
+    fn act_row(&self, el: Stateful<gpui::Div>, cx: &mut Context<Self>, f: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static) -> Stateful<gpui::Div> {
+        self.act_shaped(el, ROW_ROUND, cx, f)
+    }
+
+    fn act_shaped(&self, el: Stateful<gpui::Div>, round: f32, cx: &mut Context<Self>, f: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static) -> Stateful<gpui::Div> {
+        let f: KeyAct = Rc::new(f);
+        let g = f.clone();
+        self.key_only(el.on_click(cx.listener(move |w, _, window, cx| g(w, window, cx))), round, f)
+    }
+
+    /// `el` as a stop of the keys whose press runs `f`, the click left as it is (a row that acts on
+    /// the press). Ringed while the keys are on it, and kept in view after a key moves to it.
+    fn key_only(&self, el: Stateful<gpui::Div>, round: f32, f: KeyAct) -> Stateful<gpui::Div> {
+        let i = {
+            let mut stops = self.stops.borrow_mut();
+            stops.push(f);
+            stops.len() - 1
+        };
+        if !(self.keys.shown && self.keys.zone == Zone::Controls && self.keys.at == i) {
+            return el;
+        }
+        let (scroll, follow) = (self.scroll.clone(), self.follow.clone());
+        // A halo a little outside the control, following its shape: a selected pill's own border
+        // sits on its edge, so the keys' place never reads as the choice in force.
+        let ring = div()
+            .absolute()
+            .top(px(-RING_OUT))
+            .bottom(px(-RING_OUT))
+            .left(px(-RING_OUT))
+            .right(px(-RING_OUT))
+            .rounded(px(round + RING_OUT))
+            .border_1()
+            .border_color(self.theme.chrome.focus_ring.hsla());
+        el.relative().child(ring).child(
+            gpui::canvas(
+                move |b, window, _| {
+                    if follow.replace(false) {
+                        keep_in_view(&scroll, b, window);
+                    }
+                },
+                |_, _, _, _| (),
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full(),
+        )
+    }
+
+    /// A key in the window (`settings_key`).
+    fn key_down(&mut self, ks: &gpui::Keystroke, window: &mut Window, cx: &mut Context<Self>) {
+        if ks.modifiers.modified() {
+            return;
+        }
+        let stops = self.stops.borrow().len();
+        let section = Section::ALL.iter().position(|s| *s == self.section).unwrap_or(0);
+        match settings_key(&ks.key, self.keys, section, Section::ALL.len(), stops) {
+            SettingsKey::Move(keys, to) => {
+                self.keys = keys;
+                if to != section {
+                    self.section = Section::ALL[to];
+                    self.privacy.forget();
+                    self.keys.at = 0;
+                }
+                self.follow.set(true);
+            }
+            SettingsKey::Press(at) => {
+                let f = self.stops.borrow().get(at).cloned();
+                if let Some(f) = f {
+                    f(self, window, cx);
+                }
+            }
+            SettingsKey::Close => {
+                window.remove_window();
+                return;
+            }
+            SettingsKey::Pass => return,
+        }
+        cx.notify();
+    }
+
+    /// A pill that shows `dir` in Finder, making it first when it is not there yet.
+    fn folder_pill(&self, id: &'static str, label: &'static str, dir: PathBuf, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Stateful<gpui::Div> {
+        let p = pill(id, label, false, enabled, c);
+        if !enabled {
+            return p;
+        }
+        self.act(p, cx, move |_, _, cx| {
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                eprintln!("arkos: cannot create {}: {e}", dir.display());
+            }
+            cx.reveal_path(&dir);
+        })
+    }
+
     /// The Appearance section: the two looks as pills, the one in force selected, and under
     /// them that look's controls alone.
     fn appearance(&self, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -1016,7 +1201,7 @@ impl SettingsWindow {
             let mut p = pill(("look", ix), label, current, enabled, c);
             if enabled && !current {
                 let edits: Vec<Edit> = look_edits(cfg, which, &self.theme.name, self.theme.font.is_default(), self.theme.recommended_effect()).into_iter().map(|(keys, value)| edit(&keys, value.as_str())).collect();
-                p = p.on_click(cx.listener(move |w, _, _, cx| w.change(edits.clone(), cx)));
+                p = self.act(p, cx, move |w, _, cx| w.change(edits.clone(), cx));
             }
             looks = looks.child(p);
         }
@@ -1033,11 +1218,11 @@ impl SettingsWindow {
             let (src, adding) = (src.clone(), *adding);
             let (mut replace, mut keep) = (pill("replace", "Replace", false, enabled, c), pill("keep", "Keep", false, enabled, c));
             if enabled {
-                replace = replace.on_click(cx.listener(move |w, _, window, cx| w.import(src.clone(), adding, true, theme::is_dark(window.appearance()), cx)));
-                keep = keep.on_click(cx.listener(|w, _, _, cx| {
+                replace = self.act(replace, cx, move |w, window, cx| w.import(src.clone(), adding, true, theme::is_dark(window.appearance()), cx));
+                keep = self.act(keep, cx, |w, _, cx| {
                     w.pending_replace = None;
                     cx.notify();
-                }));
+                });
             }
             out.push(div().flex().items_center().gap(px(6.0)).child(format!("Replace the existing {name}?")).child(replace).child(keep).into_any_element());
         }
@@ -1052,7 +1237,7 @@ impl SettingsWindow {
         let live = enabled && !self.picking;
         let mut p = pill(id, label, false, live, c);
         if live {
-            p = p.on_click(cx.listener(move |w, _, window, cx| w.add(adding, theme::is_dark(window.appearance()), cx)));
+            p = self.act(p, cx, move |w, window, cx| w.add(adding, theme::is_dark(window.appearance()), cx));
         }
         p
     }
@@ -1066,7 +1251,7 @@ impl SettingsWindow {
             let current = cfg.appearance.mode == mode;
             let mut p = pill(("mode", ix), label, current, enabled, c);
             if enabled && !current {
-                p = p.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&["appearance", "mode"], value)], cx)));
+                p = self.act(p, cx, move |w, _, cx| w.change(vec![edit(&["appearance", "mode"], value)], cx));
             }
             modes = modes.child(p);
         }
@@ -1094,7 +1279,7 @@ impl SettingsWindow {
                                 let mut row = list_row(id, in_theme_list(&label), is_current, enabled, c);
                                 if enabled && !is_current {
                                     let name = name.clone();
-                                    row = row.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&["theme", key], name.as_str())], cx)));
+                                    row = self.act_row(row, cx, move |w, _, cx| w.change(vec![edit(&["theme", key], name.as_str())], cx));
                                 }
                                 row
                             }
@@ -1117,6 +1302,7 @@ impl SettingsWindow {
                             if is_current {
                                 row = row.cursor_pointer().hover(move |s| s.bg(c.pill));
                             }
+                            let keyed = (slot, toggle_group.clone());
                             row = row.on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(move |w, _, _, cx| {
@@ -1124,6 +1310,15 @@ impl SettingsWindow {
                                     let here = (slot, toggle_group.clone());
                                     let just_closed = w.group_closed_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(100));
                                     w.open_group = if w.open_group.as_ref() == Some(&here) || just_closed { None } else { Some(here) };
+                                    cx.notify();
+                                }),
+                            );
+                            // The keys open or close its menu; its members follow it as stops.
+                            row = self.key_only(
+                                row,
+                                ROW_ROUND,
+                                Rc::new(move |w: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                                    w.open_group = if w.open_group.as_ref() == Some(&keyed) { None } else { Some(keyed.clone()) };
                                     cx.notify();
                                 }),
                             );
@@ -1163,12 +1358,21 @@ impl SettingsWindow {
                                     .child(div().w(px(12.0)).flex_none().child(if member_current { "\u{2713}" } else { "" }))
                                     .child(in_theme_list(&member_name(&title, &group)));
                                 if !member_current {
+                                    let keyed = name.clone();
                                     item = item.cursor_pointer().hover(move |s| s.bg(c.pill)).on_mouse_down(
                                         gpui::MouseButton::Left,
                                         cx.listener(move |w, _, _, cx| {
                                             cx.stop_propagation();
                                             w.open_group = None;
                                             w.change(vec![edit(&["theme", key], name.as_str())], cx);
+                                        }),
+                                    );
+                                    item = self.key_only(
+                                        item,
+                                        ROW_ROUND,
+                                        Rc::new(move |w: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                                            w.open_group = None;
+                                            w.change(vec![edit(&["theme", key], keyed.as_str())], cx);
                                         }),
                                     );
                                 }
@@ -1184,7 +1388,7 @@ impl SettingsWindow {
         }
         out.push(columns.into_any_element());
         let add = self.add_pill("add-preset", "Add preset…", Adding::Preset, enabled, c, cx);
-        out.push(div().pt(px(10.0)).flex().gap(px(6.0)).child(add).child(folder_pill("presets-folder", "Show presets folder", paths::themes_dir(), enabled, c)).into_any_element());
+        out.push(div().pt(px(10.0)).flex().gap(px(6.0)).child(add).child(self.folder_pill("presets-folder", "Show presets folder", paths::themes_dir(), enabled, c, cx)).into_any_element());
         out
     }
 
@@ -1198,7 +1402,7 @@ impl SettingsWindow {
             let mut row = list_row((list_id, ix), r.label, r.current, clickable, c);
             if let (true, false, Some(value)) = (clickable, r.current, r.value) {
                 let edits = edits(&value);
-                row = row.on_click(cx.listener(move |w, _, _, cx| w.change(edits.clone(), cx)));
+                row = self.act_row(row, cx, move |w, _, cx| w.change(edits.clone(), cx));
             }
             list = list.child(row);
         }
@@ -1230,8 +1434,8 @@ impl SettingsWindow {
                 .pt(px(6.0))
                 .flex()
                 .gap(px(6.0))
-                .child(folder_pill("colors-folder", "Show colors folder", paths::themes_dir(), enabled, c))
-                .child(folder_pill("effects-folder", "Show effects folder", effects::effects_dir(), enabled, c))
+                .child(self.folder_pill("colors-folder", "Show colors folder", paths::themes_dir(), enabled, c, cx))
+                .child(self.folder_pill("effects-folder", "Show effects folder", effects::effects_dir(), enabled, c, cx))
                 .into_any_element(),
         );
         out
@@ -1249,7 +1453,7 @@ impl SettingsWindow {
             let mut row = list_row(("font", ix), name.clone(), current, enabled, c);
             if enabled && !current {
                 let name = name.clone();
-                row = row.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&["font", "family"], name.as_str())], cx)));
+                row = self.act_row(row, cx, move |w, _, cx| w.change(vec![edit(&["font", "family"], name.as_str())], cx));
             }
             families = families.child(row);
         }
@@ -1261,7 +1465,7 @@ impl SettingsWindow {
             let current = name == chosen;
             let mut row = list_row(("preset", ix), name.clone(), current, enabled, c);
             if enabled && !current {
-                row = row.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&["font", "preset"], name.as_str())], cx)));
+                row = self.act_row(row, cx, move |w, _, cx| w.change(vec![edit(&["font", "preset"], name.as_str())], cx));
             }
             presets = presets.child(row);
         }
@@ -1271,14 +1475,14 @@ impl SettingsWindow {
         let steppers = [("Size", "size-step", size, SIZE_STEP, true), ("Line height", "line-step", line_height, LINE_STEP, false)];
         for (title, id, value, increment, is_size) in steppers {
             out.push(heading(title, c).into_any_element());
-            let press = |ix: usize, sign: &'static str, delta: f64| {
+            let mut press = |ix: usize, sign: &'static str, delta: f64| {
                 let mut p = pill((id, ix), sign, false, enabled, c);
                 if enabled {
                     let name = chosen.clone();
-                    p = p.on_click(cx.listener(move |w, _, _, cx| {
+                    p = self.act(p, cx, move |w, _, cx| {
                         let (s, l) = preset_step(size, line_height, is_size, delta);
                         w.change(vec![edit(&["font", "presets", &name, "size"], s), edit(&["font", "presets", &name, "line_height"], l)], cx);
-                    }));
+                    });
                 }
                 p
             };
@@ -1292,7 +1496,7 @@ impl SettingsWindow {
             let current = self.shown.config.viewer.wide_tables == mode;
             let mut p = pill(("wide-tables", ix), label, current, enabled, c);
             if enabled && !current {
-                p = p.on_click(cx.listener(move |w, _, _, cx| w.change(vec![wide_tables_edit(mode)], cx)));
+                p = self.act(p, cx, move |w, _, cx| w.change(vec![wide_tables_edit(mode)], cx));
             }
             modes = modes.child(p);
         }
@@ -1303,7 +1507,7 @@ impl SettingsWindow {
             let current = self.shown.config.viewer.page_width == width;
             let mut p = pill(("page-width", ix), label, current, enabled, c);
             if enabled && !current {
-                p = p.on_click(cx.listener(move |w, _, _, cx| w.change(vec![page_width_edit(width)], cx)));
+                p = self.act(p, cx, move |w, _, cx| w.change(vec![page_width_edit(width)], cx));
             }
             widths = widths.child(p);
         }
@@ -1318,7 +1522,7 @@ impl SettingsWindow {
             let current = on == Some(value);
             let mut p = pill((id, usize::from(value)), label, current || (on.is_none() && !value), enabled, c);
             if enabled && !current {
-                p = p.on_click(cx.listener(move |w, _, _, cx| w.change(vec![write(value)], cx)));
+                p = self.act(p, cx, move |w, _, cx| w.change(vec![write(value)], cx));
             }
             row = row.child(p);
         }
@@ -1337,7 +1541,7 @@ impl SettingsWindow {
             let current = cfg.placement == which;
             let mut p = pill(("layout-placement", ix), label, current, enabled, c);
             if enabled && !current {
-                p = p.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&["layout", "placement"], value)], cx)));
+                p = self.act(p, cx, move |w, _, cx| w.change(vec![edit(&["layout", "placement"], value)], cx));
             }
             places = places.child(p);
         }
@@ -1379,7 +1583,7 @@ impl SettingsWindow {
             let mut now = pill("update-now", "Update now", false, enabled, c);
             if enabled {
                 let on_update = self.on_update.clone();
-                now = now.on_click(move |_, _, cx| {
+                now = self.act(now, cx, move |_, _, cx| {
                     let on_update = on_update.clone();
                     cx.defer(move |cx| on_update(cx));
                 });
@@ -1398,7 +1602,7 @@ impl SettingsWindow {
             let current = t.usage == value;
             let mut p = pill(("usage", ix), label, current, enabled, c);
             if enabled && !current {
-                p = p.on_click(cx.listener(move |w, _, _, cx| w.change(vec![usage_edit(value)], cx)));
+                p = self.act(p, cx, move |w, _, cx| w.change(vec![usage_edit(value)], cx));
             }
             usage = usage.child(p);
         }
@@ -1410,16 +1614,16 @@ impl SettingsWindow {
             let current = t.crashes == value;
             let mut p = pill(("crashes", ix), label, current, enabled, c);
             if enabled && !current {
-                p = p.on_click(cx.listener(move |w, _, _, cx| w.change(vec![crashes_edit(value)], cx)));
+                p = self.act(p, cx, move |w, _, cx| w.change(vec![crashes_edit(value)], cx));
             }
             crashes = crashes.child(p);
         }
         out.push(crashes.into_any_element());
         // Both stay live while the config has a problem: they only read.
-        let sends = pill("what-arkos-sends", WHAT_IS_SENT_ROW, false, true, c).on_click(|_, _, cx| aux::open_disclosure_from_settings(cx));
+        let sends = self.act(pill("what-arkos-sends", WHAT_IS_SENT_ROW, false, true, c), cx, |_, _, cx| aux::open_disclosure_from_settings(cx));
         let mut report = pill("last-report", LAST_REPORT_ROW, false, last.is_some(), c);
         if let Some(file) = last.clone() {
-            report = report.on_click(move |_, _, cx| aux::open_last_report(cx, file.clone()));
+            report = self.act(report, cx, move |_, _, cx| aux::open_last_report(cx, file.clone()));
         }
         out.push(div().pt(px(10.0)).flex().gap(px(6.0)).child(sends).child(report).into_any_element());
         if last.is_none() {
@@ -1441,20 +1645,20 @@ impl SettingsWindow {
                 .font_family(mono.clone())
                 .cursor_pointer()
                 .hover(move |s| s.bg(c.pill))
-                .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(inc.clone())))
                 .child(label)
                 .child(div().text_color(c.dim).child(status));
+            let row = self.act_row(row, cx, move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(inc.clone())));
             out.push(row.into_any_element());
         }
         out
     }
 
-    fn keyboard(&self, c: Colors) -> Vec<AnyElement> {
+    fn keyboard(&self, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
         // Live even while the config has a problem: opening the file is how it gets fixed.
-        let open = pill("open-config", "Open config", false, true, c).on_click(|_, _, cx| open_config_in_editor(cx));
+        let open = self.act(pill("open-config", "Open config", false, true, c), cx, |_, _, cx| open_config_in_editor(cx));
         // `open_keybindings` defers its work itself, so this window is not being updated when the
         // Keybindings window reads the Root.
-        let list = pill("open-keybindings", "Keybindings", false, true, c).on_click(|_, _, cx| aux::open_keybindings(cx));
+        let list = self.act(pill("open-keybindings", "Keybindings", false, true, c), cx, |_, _, cx| aux::open_keybindings(cx));
         vec![
             div().flex().items_center().gap(px(8.0)).child("Keybindings live in config.toml").child(open).into_any_element(),
             div().flex().items_center().gap(px(8.0)).child("Every binding is listed under Help, Keybindings").child(list).into_any_element(),
@@ -1474,9 +1678,13 @@ impl Render for SettingsWindow {
         if changed {
             write_group_picks(&paths::group_picks_file(), &self.group_picks);
         }
+        // The controls' stops are collected afresh as they are drawn.
+        self.stops.borrow_mut().clear();
         let t = &self.theme.chrome;
         let c = Colors::of(&self.theme);
         let (bg, sidebar) = (t.window_bg.hsla(), t.sidebar.hsla());
+        let section_ringed = self.keys.shown && self.keys.zone == Zone::Sections;
+        let ring_c = t.focus_ring.hsla();
         let enabled = self.shown.editable();
         let mut sections = div().w(px(SECTIONS_W)).flex_none().flex().flex_col().gap(px(2.0)).p(px(10.0)).bg(sidebar).border_r_1().border_color(c.border);
         for (ix, section) in Section::ALL.into_iter().enumerate() {
@@ -1489,8 +1697,12 @@ impl Render for SettingsWindow {
                 .cursor_pointer()
                 .text_color(if current { c.text } else { c.dim })
                 .when(current, |d| d.bg(c.pill))
+                // The keyboard's ring on the section shown while the keys are in the column.
+                .border_1()
+                .border_color(if current && section_ringed { ring_c } else { gpui::transparent_black() })
                 .on_click(cx.listener(move |w, _, _, cx| {
                     w.section = section;
+                    w.keys = Keys::default();
                     // A section shown reads what it shows afresh.
                     w.privacy.forget();
                     cx.notify();
@@ -1505,13 +1717,14 @@ impl Render for SettingsWindow {
             Section::Startup => self.startup(c, cx),
             Section::Updates => self.updates(c, cx),
             Section::Privacy => self.privacy(enabled, c, cx),
-            Section::Keyboard => self.keyboard(c),
+            Section::Keyboard => self.keyboard(c, cx),
         };
         let banner = self.shown.error.clone().map(|e| div().flex_none().px(px(10.0)).py(px(6.0)).rounded(px(4.0)).bg(c.pill).text_color(c.text).child(e));
         // A refused write is said above the controls, which stay live: the next write may succeed.
         let write_error = self.shown.write_error.clone().map(|e| div().flex_none().pb(px(6.0)).text_color(c.dim).child(e));
         let content = div()
             .id("settings-controls")
+            .track_scroll(&self.scroll)
             .flex_1()
             .min_w_0()
             .overflow_y_scroll()
@@ -1526,11 +1739,14 @@ impl Render for SettingsWindow {
             .id("settings")
             .key_context("Settings")
             .track_focus(&self.focus)
-            .on_key_down(|ev: &KeyDownEvent, window, _| {
-                if ev.keystroke.key == "escape" && !ev.keystroke.modifiers.modified() {
-                    window.remove_window();
+            .on_key_down(cx.listener(|w, ev: &KeyDownEvent, window, cx| w.key_down(&ev.keystroke, window, cx)))
+            // A press of the pointer hides the keyboard's ring; the next key shows it again.
+            .capture_any_mouse_down(cx.listener(|w, _: &gpui::MouseDownEvent, _, cx| {
+                if w.keys.shown {
+                    w.keys.shown = false;
+                    cx.notify();
                 }
-            })
+            }))
             // Cmd+W arrives as the close-tab action.
             .on_action(|_: &keymap::CloseTab, window, _| window.remove_window())
             .on_action(|_: &keymap::NewWindow, _, cx| aux::forward_new_window(cx))
@@ -1648,6 +1864,32 @@ mod tests {
         assert_eq!(in_theme_list("Material Navy"), "material navy");
         assert_eq!(in_theme_list(&group_line("Watercolor", "Lavender")), "watercolor lavender \u{25be}");
         assert_eq!(in_theme_list("Tokyo Rain (dark)"), "tokyo rain (dark)");
+    }
+
+    #[test]
+    fn the_settings_keys_go_as_the_ide_s_do() {
+        let k = |zone, at| Keys { zone, at, shown: true };
+        let unseen = Keys::default();
+        // The first key shows the ring and moves nothing; Escape still closes.
+        assert_eq!(settings_key("down", unseen, 2, 7, 5), SettingsKey::Move(Keys { shown: true, ..unseen }, 2));
+        assert_eq!(settings_key("escape", unseen, 2, 7, 5), SettingsKey::Close);
+        // The column: Up and Down show the section before or after, stopping at the ends.
+        assert_eq!(settings_key("down", k(Zone::Sections, 0), 2, 7, 5), SettingsKey::Move(k(Zone::Sections, 0), 3));
+        assert_eq!(settings_key("up", k(Zone::Sections, 0), 0, 7, 5), SettingsKey::Move(k(Zone::Sections, 0), 0));
+        assert_eq!(settings_key("down", k(Zone::Sections, 0), 6, 7, 5), SettingsKey::Move(k(Zone::Sections, 0), 6));
+        for key in ["right", "enter", "space"] {
+            assert_eq!(settings_key(key, k(Zone::Sections, 3), 2, 7, 5), SettingsKey::Move(k(Zone::Controls, 0), 2), "{key} goes into the controls");
+        }
+        assert_eq!(settings_key("right", k(Zone::Sections, 0), 2, 7, 0), SettingsKey::Pass, "a section with no control keeps the keys");
+        // The controls: Up and Down, stopping at the ends; Enter or Space press; Left or Escape back.
+        assert_eq!(settings_key("down", k(Zone::Controls, 1), 2, 7, 5), SettingsKey::Move(k(Zone::Controls, 2), 2));
+        assert_eq!(settings_key("down", k(Zone::Controls, 4), 2, 7, 5), SettingsKey::Move(k(Zone::Controls, 4), 2));
+        assert_eq!(settings_key("up", k(Zone::Controls, 0), 2, 7, 5), SettingsKey::Move(k(Zone::Controls, 0), 2));
+        assert_eq!(settings_key("enter", k(Zone::Controls, 3), 2, 7, 5), SettingsKey::Press(3));
+        assert_eq!(settings_key("space", k(Zone::Controls, 9), 2, 7, 5), SettingsKey::Press(4), "a place past the controls left by a press is the last");
+        assert_eq!(settings_key("left", k(Zone::Controls, 3), 2, 7, 5), SettingsKey::Move(k(Zone::Sections, 3), 2));
+        assert_eq!(settings_key("escape", k(Zone::Controls, 3), 2, 7, 5), SettingsKey::Move(k(Zone::Sections, 3), 2));
+        assert_eq!(settings_key("a", k(Zone::Controls, 3), 2, 7, 5), SettingsKey::Pass);
     }
 
     #[test]

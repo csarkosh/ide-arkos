@@ -28,3 +28,24 @@ in the tab shown; any other key, a press anywhere or another command takes the r
 ring is the keyboard's ring in the effect's own shape (`chrome::keys_ring_inset`). Ctrl+Tab and
 Ctrl+Shift+Tab are no longer bound; their actions stay in the palette, and Option+Cmd+Left and
 Right still step the tabs.
+
+## The menus from the keys
+
+Cyrus, 2026-11-17: the menus the Settings and Help icons open "must support keyboard navigation
+too".
+
+- A popover opened with a click takes the keys (`Root::click_popover`): nothing is marked, Down
+  marks the first row and Up the last, Enter presses the one marked. No ring shows on the icon,
+  since the pointer put it there, and when the popover closes the keys go back where they were
+  (`Root::bar_by_mouse`). From the keyboard nothing changes: the ring stays on the icon.
+- The Settings window goes by the IDE's rules (`settings::settings_key`): the first arrow shows
+  the ring where the keys are; in the sections' column Up and Down show the section before or
+  after, Right, Enter or Space go into its controls, Escape closes the window; in the controls Up
+  and Down move through every control that does something (in the order drawn, the ones in force
+  skipped), Enter or Space press it, Left or Escape go back to the column. Each control registers
+  itself with what a press does as it is drawn (`SettingsWindow::act`), so a click and Enter run
+  the same code. The ring is drawn two points outside the control, following its corners, so it
+  never reads as a selected pill's own border; the ringed control scrolls itself into view. A
+  pointer press hides the ring until the next key.
+- The screenshot shoot floats its window; a window opened over it (Settings, Keybindings) floats
+  too, or it would open hidden behind, and the shoot can press Cmd+, (the comma's key code).

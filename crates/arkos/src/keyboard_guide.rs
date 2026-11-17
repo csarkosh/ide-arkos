@@ -51,7 +51,11 @@ and close a folder, Enter opens a file and Space previews it.
 
 Up from the switcher reaches the title bar's icons, the bell, the doctor (a first-aid kit), Help and
 Settings (a cog): Left and Right move between them, Enter opens the menu (Up, Down and Enter
-press its buttons, Escape closes it; the cog opens Settings), and Down comes back.
+press its buttons, Escape closes it; the cog opens Settings), and Down comes back. A menu
+opened with a click takes the keys the same way.
+
+In Settings, Up and Down move through the sections, Right or Enter goes into one, Up and Down
+move through its controls, Enter or Space presses one, and Left or Escape goes back.
 
 {sessions} only moves the keys to the sidebar: whichever tab and row you left it on, it comes
 back to.

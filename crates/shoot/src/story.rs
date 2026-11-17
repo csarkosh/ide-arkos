@@ -582,6 +582,8 @@ fn letter_code(c: u8) -> Option<u16> {
         // The brackets, so a story can send Cmd+Option+] and [ (the sheet keys) and Cmd+Shift+].
         b'[' => Some(33),
         b']' => Some(30),
+        // The comma, so a story can open Settings with Cmd+,.
+        b',' => Some(43),
         _ => None,
     }
 }
@@ -985,8 +987,14 @@ mod tests {
         assert_eq!(theme_effect(&themes, "tokyo-rain").unwrap().as_deref(), Some("runic"));
         assert_eq!(theme_effect(&themes, "timo-purple").unwrap().as_deref(), Some("overworld"));
         assert_eq!(theme_effect(&themes, "peach-watercolor").unwrap().as_deref(), Some("watercolor"));
-        assert_eq!(theme_effect(&themes, "navy").unwrap(), None);
+        assert_eq!(theme_effect(&themes, "navy").unwrap().as_deref(), Some("material"), "Material Navy since 2026-11-17");
         assert!(theme_effect(&themes, "no-such-theme").is_err());
+        // Every built-in has an effect now, so a theme with none is one of the person's own.
+        let own = std::env::temp_dir().join(format!("arkos-shoot-plain-{}", std::process::id()));
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(own.join("plain.toml"), "name = \"plain\"\n").unwrap();
+        assert_eq!(theme_effect(&own, "plain").unwrap(), None);
+        std::fs::remove_dir_all(&own).ok();
     }
 
     #[test]

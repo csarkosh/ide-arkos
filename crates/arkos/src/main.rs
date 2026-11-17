@@ -391,6 +391,9 @@ pub struct Root {
     /// had the keys (Cyrus, 2026-11-17, in place of Ctrl+Tab). Left and Right move between its
     /// tabs, Enter or Down go into the tab shown, Escape leaves.
     pub tab_ring: Option<PaneId>,
+    /// The title bar's ring was put on a popover by a click (not the keys), so it goes when the
+    /// popover closes and the keys go back where they were.
+    pub bar_by_mouse: bool,
     /// Each session's reminder, by its page (sessions hold grids spec, section 4). Saved with
     /// the workspace.
     pub reminders: HashMap<tree::PageKey, reminder::Reminder>,
@@ -945,6 +948,7 @@ impl Root {
             session_filter_focused: false,
             session_cursor: None,
             tab_ring: None,
+            bar_by_mouse: false,
             dock_badge: 0,
             held: None,
             session_submenu: None,
@@ -1072,12 +1076,29 @@ impl Root {
     /// Opens the bell's popover, or closes it when it is the one open. Any right-click menu
     /// closes first: one floating card at a time.
     fn toggle_bell(&mut self, cx: &mut Context<Self>) {
-        self.toggle_popover(chrome::Popover::Bell, cx);
+        self.click_popover(chrome::Popover::Bell, cx);
     }
 
     /// Opens the doctor's popover, or closes it when it is the one open.
     fn toggle_doctor(&mut self, cx: &mut Context<Self>) {
-        self.toggle_popover(chrome::Popover::Doctor, cx);
+        self.click_popover(chrome::Popover::Doctor, cx);
+    }
+
+    /// A click on a bar icon: its popover opens or closes, and an open one takes the keys, its
+    /// rows unmarked until an arrow marks one (Cyrus, 2026-11-17: the menus "must support
+    /// keyboard navigation too"). When the keyboard's ring was there already, it stays the keys'.
+    fn click_popover(&mut self, which: chrome::Popover, cx: &mut Context<Self>) {
+        self.toggle_popover(which, cx);
+        if self.popover.value() == Some(&which) && self.bar_ring.is_none() {
+            self.session_filter_focused = false;
+            self.switcher_focused = false;
+            self.sidebar_focused = false;
+            self.wt_focused = false;
+            self.header_ring = None;
+            self.bar_ring = Some(which);
+            self.bar_by_mouse = true;
+            self.popover_mark = usize::MAX;
+        }
     }
 
     fn toggle_popover(&mut self, which: chrome::Popover, cx: &mut Context<Self>) {
@@ -1110,6 +1131,10 @@ impl Root {
 
     /// Closes the popover; true when one was open. Closing the bell marks its notices read.
     pub fn close_popovers(&mut self, now: Instant) -> bool {
+        // A ring a click put there goes with the popover: the keys go back where they were.
+        if std::mem::take(&mut self.bar_by_mouse) {
+            self.bar_ring = None;
+        }
         let was_bell = self.popover.value() == Some(&chrome::Popover::Bell);
         let closed = self.popover.hide(now);
         if closed && was_bell {
@@ -2595,6 +2620,7 @@ impl Root {
         self.wt_focused = false;
         self.header_ring = None;
         self.bar_ring = Some(chrome::Popover::Bell);
+        self.bar_by_mouse = false;
         cx.notify();
     }
 
@@ -2659,7 +2685,12 @@ impl Root {
             chrome::BarKey::Mark(delta) => {
                 let n = self.popover_buttons().len();
                 if n > 0 {
-                    self.popover_mark = (self.popover_mark as isize + delta).clamp(0, n as isize - 1) as usize;
+                    // Nothing marked yet (a click opened it): Down marks the first, Up the last.
+                    self.popover_mark = if self.popover_mark >= n {
+                        if delta > 0 { 0 } else { n - 1 }
+                    } else {
+                        (self.popover_mark as isize + delta).clamp(0, n as isize - 1) as usize
+                    };
                 }
             }
             chrome::BarKey::Press => {
@@ -6336,7 +6367,7 @@ impl Render for Root {
         }
         // The dots breathe with the focused pane's glow, on its clock; a window not in front rests.
         let breath = if self.window_active { self.breath.glow(now, crate::motion::reduce_motion()) } else { 0.0 };
-        let right = chrome::Right { bell_dot: self.notices.dot(), doctor_dot: self.doctor_needs_fix() > 0, open: self.popover.value().copied().unwrap_or_default(), hover: self.icon_hover, breath, ring: self.bar_ring.unwrap_or_default() };
+        let right = chrome::Right { bell_dot: self.notices.dot(), doctor_dot: self.doctor_needs_fix() > 0, open: self.popover.value().copied().unwrap_or_default(), hover: self.icon_hover, breath, ring: if self.bar_by_mouse { chrome::Popover::Closed } else { self.bar_ring.unwrap_or_default() } };
         let hover = |which: chrome::Popover| {
             Box::new(cx.listener(move |root, on: &bool, _, cx| {
                 let next = if *on { which } else { chrome::Popover::Closed };
@@ -6357,7 +6388,7 @@ impl Render for Root {
             self.fonts.ui.clone().map_or(gpui::SharedString::from(chrome::UI_FONT), Into::into),
             (Box::new(cx.listener(|root, _, _, cx| root.toggle_bell(cx))), hover(chrome::Popover::Bell)),
             (Box::new(cx.listener(|root, _, _, cx| root.toggle_doctor(cx))), hover(chrome::Popover::Doctor)),
-            (Box::new(cx.listener(|root, _, _, cx| root.toggle_popover(chrome::Popover::Help, cx))), hover(chrome::Popover::Help)),
+            (Box::new(cx.listener(|root, _, _, cx| root.click_popover(chrome::Popover::Help, cx))), hover(chrome::Popover::Help)),
             (
                 Box::new(cx.listener(|root, _, _, cx| {
                     root.close_popovers(Instant::now());

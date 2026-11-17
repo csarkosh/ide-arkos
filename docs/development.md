@@ -1095,7 +1095,15 @@ Things only a person at the screen can check, in order of value:
   closes the menu and the ring stays there; Enter on the question mark opens the Help menu (the
   menu bar's Help items), on the cog the Settings window; Down goes back to the switcher;
   hovering an icon shows a tooltip naming its menu and what is in it, but not while that icon's
-  own menu is open
+  own menu is open; a click on the question mark opens Help with nothing marked and no ring on the
+  icon, Down marks Keyboard Navigation, Enter opens it, and Escape instead closes the menu with
+  the keys back in the pane
+- Settings keys: Cmd+, then Down rings Appearance in the left column; Down shows Layout; Up
+  back; Right puts a ring a little outside the first control that does something (Custom), Down
+  walks the pills and then the preset rows (in force ones skipped), Enter on a group's row opens
+  its menu and Down reaches its members, Enter on one puts it in force; a long list (Text, Font
+  family) scrolls to keep the ring in view; Left goes back to the column, Escape there closes the
+  window; a click anywhere hides the ring until the next arrow
 - Files headings: on Files, Down from the switcher rings EXPLORER; Left folds it, Down rings
   WORKTREES, Left folds it, Right opens it, Up goes back; Down from EXPLORER (open) goes into the
   tree; the ring never shifts the headings

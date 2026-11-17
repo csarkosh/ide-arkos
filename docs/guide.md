@@ -722,7 +722,7 @@ session list, and the command palette (Shift+Cmd+P) for everything else.
 
 | Keys | Action |
 | --- | --- |
-| Cmd+0 | the session list: the sidebar opens on Sessions and the keys go to its filter; type to narrow it, Up and Down move the ring through the rows, Enter shows the ringed session (a closed one is resumed) and keeps the keys in the list; the groups' headings are stops too, and fold as the Files tab's folders do: Left folds an open group (and steps from a session up to its heading), Right opens a folded one (and steps into an open one), Enter folds or opens it, so you can look through sessions one after another; Escape clears what you typed and then hands the keys to the session shown, as a click in its pane does. A click on a session shows it the same way and keeps the keys in the list, and a click anywhere in the sidebar gives it the keys. Up from the first row rings the Sessions/Files switcher: Left and Right switch the sidebar between the two, Down or Enter goes into the list shown. On Files, the Explorer and Worktrees headings are stops too: Left folds a group, Right opens it, Enter or Space flips it, and Up and Down go on through the switcher, the files and the worktrees. Up from the switcher rings the title bar's bell: Left and Right move along its icons (the bell, the doctor, Help and Settings), Enter opens its menu (Up, Down and Enter press its buttons, Escape closes it; on the cog it opens Settings), Down comes back. Cmd+0 only moves the keys: the tab and the ring stay where you left them, so it comes back to the same session, heading or file |
+| Cmd+0 | the session list: the sidebar opens on Sessions and the keys go to its filter; type to narrow it, Up and Down move the ring through the rows, Enter shows the ringed session (a closed one is resumed) and keeps the keys in the list; the groups' headings are stops too, and fold as the Files tab's folders do: Left folds an open group (and steps from a session up to its heading), Right opens a folded one (and steps into an open one), Enter folds or opens it, so you can look through sessions one after another; Escape clears what you typed and then hands the keys to the session shown, as a click in its pane does. A click on a session shows it the same way and keeps the keys in the list, and a click anywhere in the sidebar gives it the keys. Up from the first row rings the Sessions/Files switcher: Left and Right switch the sidebar between the two, Down or Enter goes into the list shown. On Files, the Explorer and Worktrees headings are stops too: Left folds a group, Right opens it, Enter or Space flips it, and Up and Down go on through the switcher, the files and the worktrees. Up from the switcher rings the title bar's bell: Left and Right move along its icons (the bell, the doctor, Help and Settings), Enter opens its menu (Up, Down and Enter press its buttons, Escape closes it; on the cog it opens Settings, which takes the keys as well), Down comes back. A menu opened with a click takes the keys too: Down marks its first row (Up its last), Enter presses it, and when it closes the keys go back where they were Cmd+0 only moves the keys: the tab and the ring stay where you left them, so it comes back to the same session, heading or file |
 | Cmd+1 to Cmd+8 | focus pane 1 to 8 of the session shown |
 | Cmd+9 | focus the last pane |
 | Ctrl+Tab, Ctrl+Shift+Tab | next and previous tab in the focused pane |
@@ -886,8 +886,16 @@ About again refreshes the rows. "Copy details" puts "Arkos IDE {version}" and on
 line per row on the clipboard. Below are "Made by Cyrus Sarkosh" (a link to his GitHub) and "Buy me
 tokens" after a small pixel heart, which opens Arkos IDE's tip page, donate.csarko.sh/arkos.
 
-Settings (menu or Cmd+,) has the shared title bar and seven sections. It opens centred on the IDE
-window, as Keybindings (Cmd+/) does.
+Settings (menu, Cmd+, or the cog in the title bar) has the shared title bar and seven sections.
+It opens centred on the IDE window, as Keybindings (Cmd+/) does.
+
+Settings goes by the keys as the rest of Arkos does. The first arrow shows a ring on the section
+shown; Up and Down then show the section before or after, and Right, Enter or Space go into its
+controls. There a ring, drawn a little outside the control so it never reads as the choice in
+force, moves with Up and Down through every pill, row and button that does something (the
+choices already in force are skipped), and Enter or Space press it: on a group's row it opens
+the group's menu, its members the next stops. Left or Escape go back to the sections, and Escape
+there closes the window. A click hides the ring until the next key.
 
 - Appearance: two looks, as pills, **Presets** and **Custom**; the one in force is selected,
   a click on the other puts it in force, and neither forgets its choices.
