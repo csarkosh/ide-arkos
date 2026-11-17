@@ -135,4 +135,84 @@ mod tests {
         assert!(constant(w, "PAINTING_WAVER") <= 1.0, "a sheet cut by hand, not torn");
     }
 
+
+    /// The cat as the wash's `cat_at` places it at t: across the scene, away (0), walking (1) or
+    /// sitting (2), which way it faces.
+    fn cat_at(t: f32) -> (f32, u8, f32) {
+        let w = wash();
+        let (cycle, speed, sit) = (constant(w, "CAT_CYCLE"), constant(w, "CAT_SPEED"), constant(w, "CAT_SIT"));
+        let (table, easel, plant) = (constant(w, "CAT_SPOT_TABLE"), constant(w, "CAT_SPOT_EASEL"), constant(w, "CAT_SPOT_PLANT"));
+        let hash1 = |n: f32| ((n.sin() * 43758.547).fract() + 1.0).fract();
+        let t = t.max(0.0);
+        let k = (t / cycle).floor();
+        let tau = t - k * cycle;
+        let dir = if hash1(k * 3.1 + 0.7) < 0.5 { 1.0 } else { -1.0 };
+        let pick = (hash1(k * 5.7 + 1.3) * 3.0).floor();
+        let (mut a, mut b) = (if pick == 2.0 { easel } else { table }, if pick == 0.0 { easel } else { plant });
+        if dir < 0.0 {
+            std::mem::swap(&mut a, &mut b);
+        }
+        let (x0, x3) = if dir > 0.0 { (-0.12, 1.12) } else { (1.12, -0.12) };
+        let e1 = (a - x0).abs() / speed;
+        let e2 = e1 + sit;
+        let e3 = e2 + (b - a).abs() / speed;
+        let e4 = e3 + sit;
+        let e5 = e4 + (x3 - b).abs() / speed;
+        if tau < e1 {
+            (x0 + dir * tau * speed, 1, dir)
+        } else if tau < e2 {
+            (a, 2, dir)
+        } else if tau < e3 {
+            (a + dir * (tau - e2) * speed, 1, dir)
+        } else if tau < e4 {
+            (b, 2, dir)
+        } else if tau < e5 {
+            (b + dir * (tau - e4) * speed, 1, dir)
+        } else {
+            (x3, 0, dir)
+        }
+    }
+
+    #[test]
+    fn the_cat_strolls_in_sits_by_two_things_in_turn_and_strolls_off_then_is_away_a_while() {
+        let w = wash();
+        let (cycle, speed, sit) = (constant(w, "CAT_CYCLE"), constant(w, "CAT_SPEED"), constant(w, "CAT_SIT"));
+        let spots = [constant(w, "CAT_SPOT_TABLE"), constant(w, "CAT_SPOT_EASEL"), constant(w, "CAT_SPOT_PLANT")];
+        // Soft: a slow stroll, a slow stride.
+        assert!(speed <= 0.04 && constant(w, "CAT_STRIDE_S") >= 0.6);
+        assert!(cycle >= 120.0, "a visit now and then, not always there");
+        // Under Reduce Motion (the clock at zero) it has not come in.
+        let (x, state, _) = cat_at(0.0);
+        assert!(state == 1 && !(0.0..=1.0).contains(&x), "off the scene at zero: {x}");
+        for visit in 0..12 {
+            let start = visit as f32 * cycle;
+            let (mut sat_at, mut away, mut last) = (Vec::new(), 0.0f32, None::<(f32, u8)>);
+            let mut t = start;
+            while t < start + cycle {
+                let (x, state, _) = cat_at(t);
+                if let Some((lx, ls)) = last {
+                    // Never a jump: it walks from place to place.
+                    assert!((x - lx).abs() <= speed * 0.1 + 1e-4 || (ls == 1 && state != 1) || (ls != 1 && state == 1) || state == 0, "visit {visit} at {t}: {lx} to {x}");
+                }
+                match state {
+                    2 => {
+                        if sat_at.last() != Some(&x) {
+                            sat_at.push(x);
+                        }
+                    }
+                    0 => away += 0.1,
+                    _ => {}
+                }
+                last = Some((x, state));
+                t += 0.1;
+            }
+            assert_eq!(sat_at.len(), 2, "visit {visit} sits by two things: {sat_at:?}");
+            assert!(sat_at.iter().all(|x| spots.contains(x)) && sat_at[0] != sat_at[1], "visit {visit}: {sat_at:?}");
+            assert!(away >= 0.25 * cycle, "visit {visit}: away only {away} s of {cycle}");
+            let (x, state, _) = cat_at(start + cycle - 0.05);
+            assert!(state == 0 && !(0.0..=1.0).contains(&x), "visit {visit} ends off the scene");
+            let _ = sit;
+        }
+    }
+
 }

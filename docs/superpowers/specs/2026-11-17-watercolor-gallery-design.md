@@ -90,3 +90,17 @@ from the last painting to the next over half of it, starting later the farther i
 the four pools, so a wide soft blend drifts out from them instead of a spreading edge; the darker
 wet front is gone, the paint of both thins by up to 18 per cent at the bloom's middle so they never
 stand at full strength together, and the tape cross-fades with the paintings it holds.
+
+## The cat
+
+Cyrus, 2026-11-17: "a cat that walks in scene for a bit, sits besides various things like the plant
+/ painting / etc, and eventually walks off screen". Once every 150 seconds a cat strolls in from one
+side along the front of the floor at 0.03 scene widths a second, its legs swinging in pairs once
+every 0.9 seconds and its tail held up in a curve; it sits 12 seconds by two of its three spots in
+turn (under the side table, by the easel, by the plant; which two and from which side are drawn
+for each visit), upright with its tail curled round its feet and its tip twitching now and then,
+then strolls off the other side and is away the rest of the cycle, a third of it or more. It is a
+soft grey silhouette taken toward the theme's third pigment, with a faint shadow under it. Under
+Reduce Motion the clock holds at zero, when it has not yet come in. `effects::watercolor` mirrors its
+schedule: never a jump, two different spots a visit, away at least a quarter of the cycle, gone
+off the scene at its end.

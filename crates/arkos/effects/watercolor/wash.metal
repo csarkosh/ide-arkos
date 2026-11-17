@@ -405,6 +405,103 @@ float3 painting_onto(constant ArkosInputs& u, float3 col, float3 c, float a) {
     return mix(col, sheet * c, a);
 }
 
+// The studio's cat (Cyrus, 2026-11-17: "a cat that walks in scene for a bit, sits besides various
+// things like the plant / painting / etc, and eventually walks off screen"): once every CAT_CYCLE
+// seconds it strolls in from one side along the front of the floor at CAT_SPEED scene widths a
+// second, sits CAT_SIT seconds beside two of its spots in turn (under the side table, by the easel,
+// by the plant), then strolls off the other side, and is gone for the rest of the cycle. Under
+// Reduce Motion the clock holds at zero, where it has not yet come in.
+constant float CAT_CYCLE = 150.0;
+constant float CAT_SPEED = 0.03;
+constant float CAT_SIT = 12.0;
+constant float CAT_STRIDE_S = 0.9;
+constant float CAT_Y = 0.05;
+constant float CAT_SPOT_TABLE = 0.17;
+constant float CAT_SPOT_EASEL = 0.38;
+constant float CAT_SPOT_PLANT = 0.76;
+
+// Where the cat is at t: its place across the scene (x), whether it is away (0), walking (1) or
+// sitting (2) (y), which way it faces (z, 1 to the right), and how far through a stride it is (w).
+float4 cat_at(float t) {
+    float k = floor(max(t, 0.0) / CAT_CYCLE);
+    float tau = max(t, 0.0) - k * CAT_CYCLE;
+    float dir = hash1(k * 3.1 + 0.7) < 0.5 ? 1.0 : -1.0;
+    float pick = floor(hash1(k * 5.7 + 1.3) * 3.0);
+    float a = pick == 2.0 ? CAT_SPOT_EASEL : CAT_SPOT_TABLE;
+    float b = pick == 0.0 ? CAT_SPOT_EASEL : CAT_SPOT_PLANT;
+    if (dir < 0.0) {
+        float swap = a;
+        a = b;
+        b = swap;
+    }
+    float x0 = dir > 0.0 ? -0.12 : 1.12;
+    float x3 = dir > 0.0 ? 1.12 : -0.12;
+    float e1 = abs(a - x0) / CAT_SPEED;
+    float e2 = e1 + CAT_SIT;
+    float e3 = e2 + abs(b - a) / CAT_SPEED;
+    float e4 = e3 + CAT_SIT;
+    float e5 = e4 + abs(x3 - b) / CAT_SPEED;
+    if (tau < e1) {
+        return float4(x0 + dir * tau * CAT_SPEED, 1.0, dir, fract(tau / CAT_STRIDE_S));
+    }
+    if (tau < e2) {
+        return float4(a, 2.0, dir, 0.0);
+    }
+    if (tau < e3) {
+        return float4(a + dir * (tau - e2) * CAT_SPEED, 1.0, dir, fract((tau - e2) / CAT_STRIDE_S));
+    }
+    if (tau < e4) {
+        return float4(b, 2.0, dir, 0.0);
+    }
+    if (tau < e5) {
+        return float4(b + dir * (tau - e4) * CAT_SPEED, 1.0, dir, fract((tau - e4) / CAT_STRIDE_S));
+    }
+    return float4(x3, 0.0, dir, 0.0);
+}
+
+// A soft ellipse's coverage at q, in the cat's own units.
+float cat_blob(float2 q, float2 c, float2 r) {
+    return 1.0 - smoothstep(0.85, 1.15, length((q - c) / r));
+}
+
+// A limb or the tail, `w` units thick, from a to b.
+float cat_limb(float2 q, float2 a, float2 b, float w) {
+    return 1.0 - smoothstep(w * 0.5 - 0.35, w * 0.5 + 0.35, wc_seg(q, a, b));
+}
+
+// How much of the cat covers q: q in its own units, up positive and its head to +x.
+float cat_cover(float2 q, float state, float stride, float t) {
+    float c = 0.0;
+    if (state > 1.5) {
+        // Sitting: upright, its tail curled round its feet, the tip twitching now and then.
+        c = max(c, cat_blob(q, float2(0.0, 6.0), float2(4.2, 5.8)));
+        c = max(c, cat_blob(q, float2(1.2, 13.4), float2(3.1, 3.0)));
+        c = max(c, cat_limb(q, float2(0.4, 15.6), float2(-0.2, 17.8), 1.4));
+        c = max(c, cat_limb(q, float2(2.3, 15.7), float2(3.0, 17.8), 1.4));
+        c = max(c, cat_limb(q, float2(2.0, 4.0), float2(2.3, 0.2), 1.3));
+        c = max(c, cat_limb(q, float2(3.3, 4.0), float2(3.7, 0.2), 1.3));
+        float tip = 0.7 * sin(t * 0.9) * smoothstep(0.6, 1.0, sin(t * 0.23));
+        c = max(c, cat_limb(q, float2(-3.6, 1.2), float2(-0.8, 0.4), 1.6));
+        c = max(c, cat_limb(q, float2(-0.8, 0.4), float2(3.6, 0.5), 1.5));
+        c = max(c, cat_limb(q, float2(3.6, 0.5), float2(5.6, 1.6 + tip), 1.3));
+    } else {
+        // Walking: its legs swing in pairs, its tail held up in a gentle curve.
+        float sw = sin(stride * 6.2831853);
+        c = max(c, cat_blob(q, float2(0.0, 5.6), float2(7.6, 3.6)));
+        c = max(c, cat_blob(q, float2(7.8, 8.2), float2(3.0, 2.9)));
+        c = max(c, cat_limb(q, float2(6.7, 10.4), float2(6.2, 12.6), 1.4));
+        c = max(c, cat_limb(q, float2(8.8, 10.5), float2(9.5, 12.5), 1.4));
+        c = max(c, cat_limb(q, float2(-5.0, 3.5), float2(-5.0 + 1.6 * sw, 0.2), 1.3));
+        c = max(c, cat_limb(q, float2(-3.4, 3.5), float2(-3.4 - 1.6 * sw, 0.2), 1.3));
+        c = max(c, cat_limb(q, float2(3.6, 3.5), float2(3.6 - 1.6 * sw, 0.2), 1.3));
+        c = max(c, cat_limb(q, float2(5.2, 3.5), float2(5.2 + 1.6 * sw, 0.2), 1.3));
+        float wag = 0.8 * sin(t * 1.1);
+        c = max(c, cat_limb(q, float2(-7.0, 6.4), float2(-9.8, 8.8), 1.3));
+        c = max(c, cat_limb(q, float2(-9.8, 8.8), float2(-10.8 + wag * 0.4, 12.2 + wag * 0.3), 1.2));
+    }
+    return c;
+}
+
 // The studio at p (see `Studio`): the room, then the painting on the easel, then what stands
 // before it, and the pen's lines over all of it.
 float3 studio(constant ArkosInputs& u, texture2d_array<float> images, float2 p, float4 foot, float t, float gran, float bleed, Pen pen, float3 col, float k) {
@@ -691,6 +788,24 @@ float3 studio(constant ArkosInputs& u, texture2d_array<float> images, float2 p, 
         float glow = exp(-dot(p - (bulb + down * 9.0), p - (bulb + down * 9.0)) / (2.0 * 14.0 * 14.0));
         col = mix(col, warm, glow * 0.35 * melt);
         col = wash_onto(u, col, pig3, (1.0 - smoothstep(0.0, 1.0, wc_seg(p, (s0 + s1) * 0.5, (s2 + s3) * 0.5) - 2.0)) * 0.25 * melt);
+    }
+
+    // The cat, when it is in: a soft grey silhouette taken toward the theme, a faint shadow under it.
+    {
+        float4 cat = cat_at(t);
+        if (cat.y > 0.5) {
+            float unit = clamp(st.w / 190.0, 0.95, 1.6);
+            float2 base = sp(st, float2(cat.x, CAT_Y));
+            float2 d = p - base;
+            if (abs(d.x) < 16.0 * unit && d.y > -20.0 * unit && d.y < 3.0) {
+                float2 q = float2(d.x * cat.z, -d.y) / unit;
+                float shadow = 1.0 - smoothstep(0.6, 1.0, length(float2(q.x / 9.0, (q.y + 0.3) / 1.4)));
+                col = wash_onto(u, col, pig0, 0.18 * shadow * melt);
+                float cover = cat_cover(q, cat.y, cat.w, t);
+                float3 fur = mix(u.colors[ARKOS_TERMINAL_FG].rgb, pig2, 0.4);
+                col = mix(col, fur, cover * 0.82 * melt);
+            }
+        }
     }
 
     // Dust drifting in the light, each mote slowly down the beam and swaying across it.
