@@ -47,6 +47,7 @@ mod launch;
 mod launch_link;
 mod link_menu;
 mod new_tab_menu;
+mod update_veil;
 mod icons;
 mod image_zoom;
 mod md_links;
@@ -598,6 +599,10 @@ pub struct Root {
     /// The project window's `NSWindow`, from gpui's window handle at setup: where the
     /// placeholders are on screen and whether the window is minimized or hidden.
     pub ns_window: Option<objc2::rc::Retained<objc2_app_kit::NSWindow>>,
+    /// The update's veil over the window (update veil spec) while it is up or fading, and the
+    /// fade under way: since when, and whether it comes in.
+    pub veil: Option<update_veil::Veil>,
+    pub veil_fade: Option<(Instant, bool)>,
     /// Where the window is (display, frame), as last saved with the layout; a relaunch opens
     /// it there.
     pub window_saved: Option<workspace::WindowSaved>,
@@ -966,6 +971,8 @@ impl Root {
             updating: None,
             browser_rects: HashMap::new(),
             ns_window: None,
+            veil: None,
+            veil_fade: None,
             window_saved,
             details_open,
             folds,
@@ -4414,12 +4421,97 @@ impl Root {
             }
         };
         self.updating = Some(UpdateStage::Relaunching);
-        let (full_screen, minimized) = self.ns_window.as_ref().map_or((false, false), |w| (handoff::mac::is_full_screen(w), w.isMiniaturized()));
-        if handoff::can_hand_off(self.daemon_protocol_max, full_screen, minimized) {
-            self.begin_handoff(exe, cx);
-        } else {
-            self.sessions.relaunch(exe);
+        // The veil comes in first, and the swap happens behind it (update veil spec).
+        self.veil_in(cx);
+        let root = cx.entity();
+        cx.spawn(async move |_, cx| {
+            cx.background_executor().timer(update_veil::ENTER).await;
+            let _ = root.update(cx, |root, cx| {
+                let (full_screen, minimized) = root.ns_window.as_ref().map_or((false, false), |w| (handoff::mac::is_full_screen(w), w.isMiniaturized()));
+                if handoff::can_hand_off(root.daemon_protocol_max, full_screen, minimized) {
+                    root.begin_handoff(exe, cx);
+                } else {
+                    root.sessions.relaunch(exe);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Brings the update's veil in over the window, or keeps it if it is up.
+    fn veil_in(&mut self, cx: &mut Context<Self>) {
+        if self.veil.is_none() {
+            let Some(w) = self.ns_window.clone() else { return };
+            self.veil = update_veil::Veil::over(&w, 0.0);
         }
+        self.run_veil_fade(true, cx);
+    }
+
+    /// Takes the veil away, fading.
+    fn veil_out(&mut self, cx: &mut Context<Self>) {
+        if self.veil.is_some() {
+            self.run_veil_fade(false, cx);
+        }
+    }
+
+    /// Steps the veil's opacity every few milliseconds over its fade, and drops it once it has
+    /// gone. AppKit composites it; gpui draws nothing for it.
+    fn run_veil_fade(&mut self, entering: bool, cx: &mut Context<Self>) {
+        let since = Instant::now();
+        self.veil_fade = Some((since, entering));
+        let root = cx.entity();
+        cx.spawn(async move |_, cx| loop {
+            cx.background_executor().timer(Duration::from_millis(8)).await;
+            let done = root
+                .update(cx, |root, _| {
+                    // A newer fade took over.
+                    if root.veil_fade != Some((since, entering)) {
+                        return true;
+                    }
+                    let now = Instant::now();
+                    let o = update_veil::opacity(entering, since, now);
+                    if let Some(v) = &root.veil {
+                        v.set_opacity(o);
+                    }
+                    let over = now.saturating_duration_since(since) >= if entering { update_veil::ENTER } else { update_veil::EXIT } || crate::motion::reduce_motion();
+                    if over {
+                        root.veil_fade = None;
+                        if !entering {
+                            root.veil = None;
+                        }
+                    }
+                    over
+                })
+                .unwrap_or(true);
+            if done {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    /// A window an update relaunched without a handoff starts under the veil and lifts it once
+    /// the terminals of the page shown are back (or `update_veil::RESTORE_WAIT` has passed).
+    fn lift_veil_when_restored(&mut self, cx: &mut Context<Self>) {
+        let root = cx.entity();
+        let started = Instant::now();
+        cx.spawn(async move |_, cx| loop {
+            cx.background_executor().timer(Duration::from_millis(50)).await;
+            let done = root
+                .update(cx, |root, cx| {
+                    if root.terminals_still_restoring() == 0 || started.elapsed() >= update_veil::RESTORE_WAIT {
+                        root.veil_out(cx);
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .unwrap_or(true);
+            if done {
+                break;
+            }
+        })
+        .detach();
     }
 
     /// The old window's side of an update's handoff (`handoff`): everything is saved now, then
@@ -4458,6 +4550,7 @@ impl Root {
             Some(exe) if exe.is_file() => self.sessions.relaunch(exe),
             _ => {
                 self.updating = None;
+                self.veil_out(cx);
                 self.show_notice("cannot relaunch: this window's binary is gone; quit and open Arkos IDE again".into(), cx);
             }
         }
@@ -4590,6 +4683,9 @@ impl Root {
         cx.spawn(async move |_, cx| {
             cx.background_executor().timer(Duration::from_millis(20)).await;
             let _ = root.update(cx, |root, _| root.sessions.handoff_ready(from));
+            // The old window leaves from under the veil, then the veil lifts.
+            cx.background_executor().timer(update_veil::HOLD_AFTER_SWAP).await;
+            let _ = root.update(cx, |root, cx| root.veil_out(cx));
         })
         .detach();
     }
@@ -4893,6 +4989,7 @@ impl Root {
             Outcome::RelaunchRefused(e) => {
                 eprintln!("arkos: relaunch refused: {e}");
                 self.updating = None;
+                self.veil_out(cx);
                 self.show_notice(format!("cannot relaunch: {e}"), cx);
             }
             Outcome::Error(e) => {
@@ -6486,7 +6583,18 @@ fn open_project_window(
             root.invitation_config_changed();
             root.theme_error = theme_error;
             root.load_claude_folders();
+            let is_update = updated.is_some();
             root.seed_notices(updated);
+            // An update's window starts under the veil (update veil spec): the successor of a
+            // handoff lifts it once drawn, a relaunched one once its terminals are back.
+            if update_veil::starts_veiled(root.handoff_from.is_some(), is_update) {
+                if let Some(w) = root.ns_window.clone() {
+                    root.veil = update_veil::Veil::over(&w, 1.0);
+                }
+                if root.handoff_from.is_none() {
+                    root.lift_veil_when_restored(cx);
+                }
+            }
             if theme_retired {
                 root.notices.set(notices::Kind::ThemeRetired, config::NAVY_LIGHT_NOTICE, None, SystemTime::now());
             }

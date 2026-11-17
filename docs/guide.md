@@ -1198,12 +1198,15 @@ app does. The cask says `auto_updates`, so
 Updates arrive by themselves: the daemon checks the release manifest every five minutes, downloads
 and verifies a newer build, and the window applies it once you have been idle for thirty seconds
 (no typing, nothing open): `arkosd` swaps in place and the window relaunches with every shell
-still there. The window never leaves the screen: the new one starts out of sight (no Dock icon,
+still there. First a blur comes over the window with "Updating Arkos IDE" and "Your sessions
+keep running." (a third of a second; at once under Reduce Motion), and the swap happens behind
+it; the new window lifts it once its sessions are back. The window never leaves the screen: the new one starts out of sight (no Dock icon,
 transparent over the old one), restores every session it shows, and takes the old one's place
 within a frame, with the keyboard if the old one had it. A prompt you were typing and had not
 sent is still in Claude Code's input box, since Claude Code itself runs on in the daemon. A
-full-screen or minimized window is replaced as before (it quits, then the new one opens), and so
-is one whose new window did not come up within 20 seconds. Each window stays on the desktop
+full-screen or minimized window is replaced as before (it quits, then the new one opens, under
+the same blur until its terminals are back), and so is one whose new window did not come up
+within 20 seconds. Each window stays on the desktop
 (Mission Control Space) it was on, without taking you there; a desktop that has gone since leaves its window on the one in front. Arkos reads the
 desktops through macOS's private SkyLight calls, as window managers do; a macOS without them only
 loses this. `[update] auto = false` keeps the bell's dot and "Update now" instead.
