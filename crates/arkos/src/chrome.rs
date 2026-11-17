@@ -465,6 +465,41 @@ pub fn menu_fill(m: MenuColors, effect_menus: bool) -> gpui::Hsla {
     }
 }
 
+/// How far a selected row's pill is inset from the sidebar's edges under an effect that draws
+/// the rows as pills (the material wash's PILL_INSET).
+pub const PILL_INSET: f32 = 8.0;
+/// How strongly the keyboard's pill is filled with the selection colour: a fainter version of a
+/// selected row's pill.
+pub const KEYS_PILL_FILL: f32 = 0.45;
+
+/// Whether the keyboard's ring in the sidebar is a pill: under an effect that paints the rows as
+/// pills on rounded cards (material's), so the ring matches the selected row's shape.
+pub fn keys_ring_is_pill(style: &Style) -> bool {
+    style.highlights && style.pane_radius > 0.0
+}
+
+/// The keyboard's ring on a sidebar row or heading, laid behind its text (the row's first child,
+/// the row `relative`): under an effect that draws the rows as pills, a pill inset as a selected
+/// row's, outlined in the focus colour and filled with a fainter selection colour (Cyrus,
+/// 2026-11-17: "the outline to match the background shape and the background should be a fainter
+/// version of the currently-selected element"); otherwise the outline round the row.
+pub fn keys_ring(theme: &Theme, style: &Style) -> Div {
+    let ring = theme.chrome.focus_ring.hsla();
+    if keys_ring_is_pill(style) {
+        return div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left(px(PILL_INSET))
+            .right(px(PILL_INSET))
+            .rounded(px(999.0))
+            .border_1()
+            .border_color(ring)
+            .bg(theme.terminal.selection.alpha(KEYS_PILL_FILL));
+    }
+    div().absolute().inset_0().rounded(px(4.0)).border_1().border_color(ring)
+}
+
 /// The paper laid over an effect's backdrop in a menu: the window's colour at the effect's
 /// menu paper (`Style::menu_paper_alpha`), as a terminal's or a document's paper lies over the wash.
 pub fn menu_paper(theme: &Theme, paper_alpha: f32) -> gpui::Hsla {
@@ -682,5 +717,20 @@ mod tests {
                 assert!((0.75..=15.25).contains(&x) && (0.75..=15.25).contains(&y), "{icon:?} point {x},{y} leaves room for a 1.5 px stroke");
             }
         }
+    }
+
+    #[test]
+    fn the_keyboard_s_ring_is_a_pill_where_the_effect_draws_the_rows_as_pills() {
+        let style = |name: &str| {
+            let m = crate::effects::manifest::load(name, std::path::Path::new("/nonexistent")).unwrap().manifest;
+            crate::effects::active::style_at(&m, 1.0)
+        };
+        assert!(keys_ring_is_pill(&style("material")), "material's rows are pills on rounded cards");
+        for name in ["runic", "overworld", "watercolor"] {
+            assert!(!keys_ring_is_pill(&style(name)), "{name} keeps the outline round the row");
+        }
+        assert!(!keys_ring_is_pill(&Style::plain()), "no effect: the outline");
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "material").unwrap().wash;
+        assert!(wash.contains(&format!("constant float PILL_INSET = {PILL_INSET:?};")), "inset as the wash's pills are");
     }
 }

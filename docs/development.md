@@ -668,7 +668,8 @@ Things only a person at the screen can check, in order of value:
 - effects: Material Navy (`effect.name = "theme"`, the default) draws the material effect as
   Material's dark surfaces: cards lighter than the frame round them; under every Material theme the
   sidebar (Pane 0) is a card with a pane's margins, rounded as a pane's, a shade darker than the
-  panes' cards
+  panes' cards; the keyboard's ring on a session row or a heading there is a pill
+  inset as a selected row's, outlined in the focus colour and filled with a fainter selection
 - effects: under Timo Purple, overworld draws a night scene at the foot of the sidebar
   (stars, a crescent moon, a castle with cyan windows, pines, grass and a path) with crisp 3 point
   pixels on Retina and on a 1x screen, and a lantern on each pane's active tab; the lantern ends

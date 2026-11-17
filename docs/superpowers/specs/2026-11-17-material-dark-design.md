@@ -40,6 +40,16 @@ colour half way from a pane's card to the frame; a selected row's pill lies on t
 sidebar's focus glow is rounded as a pane's ring is. Its text keeps its contrast: the card lies
 between the frame and a pane's card, both checked against it.
 
+## The keyboard's ring there
+
+Cyrus, 2026-11-17: on Pane 0 the keyboard's indicator "does not match the theme. I want the
+outline to match the background shape and the background should be a fainter version of the
+currently-selected element". Where the effect paints the rows as pills on rounded cards
+(`chrome::keys_ring_is_pill`: highlights painted and a pane radius, material's), the ring on a
+session row or a group heading is a pill inset as a selected row's (8 points from the sidebar's
+edges), outlined in the focus colour and filled with the selection colour at 0.45, laid behind
+the row's text; elsewhere it stays the outline round the row.
+
 ## Lower case in the theme lists
 
 Settings' preset lists, the group rows and their menus, and the custom look's Color list show

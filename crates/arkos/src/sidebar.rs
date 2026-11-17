@@ -212,11 +212,16 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
             "explorer-header" => group_ring == Some(Group::Explorer),
             _ => group_ring == Some(Group::Worktrees),
         };
+        // Under an effect that draws the rows as pills the ring is the keyboard's pill behind the
+        // heading's words (`chrome::keys_ring`); else the heading's own border.
+        let pill = crate::chrome::keys_ring_is_pill(&style);
         div()
             .id(id)
+            .relative()
             .rounded(px(4.0))
             .border_1()
-            .border_color(if ringed { ring_c } else { gpui::transparent_black() })
+            .border_color(if ringed && !pill { ring_c } else { gpui::transparent_black() })
+            .when(ringed && pill, |d| d.child(crate::chrome::keys_ring(&theme, &style)))
             .h(px(ROW_H))
             .flex_none()
             .pl(px(10.0 + style.sidebar_pad))

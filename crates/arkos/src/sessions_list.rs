@@ -514,7 +514,6 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
     let (selected_bg, hover_bg, dim) = (c.tab_active.hsla(), c.tab_inactive.hsla(), c.text_dim.hsla());
     // The keyboard's cursor (Cmd+0), drawn as a ring while the filter has the keys.
     let cursor = root.session_cursor.filter(|_| root.session_filter_focused);
-    let ring = c.focus_ring.hsla();
 
     let pad = 10.0 + style.sidebar_pad;
     let mut list = div().id("session-rows").flex_1().min_h_0().overflow_y_scroll().flex().flex_col();
@@ -592,7 +591,7 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
                 .flex()
                 .gap(px(6.0))
                 .when(is_selected && !highlights, |d| d.bg(selected_bg))
-                .when(cursor == Some(key), |d| d.child(div().absolute().inset_0().rounded(px(4.0)).border_1().border_color(ring)))
+                .when(cursor == Some(key), |d| d.child(crate::chrome::keys_ring(&theme, &style)))
                 .when(!highlights, |d| d.hover(move |s| s.bg(hover_bg)))
                 .when(highlights, |d| {
                     let w_hover = weak.clone();
