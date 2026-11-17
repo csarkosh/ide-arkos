@@ -16,8 +16,9 @@ from you: Needing your input → Still at work → Quiet or done.
   and drop: split a session, move any pane or tab, and start more Claude Code sessions in it.
 - **All in one place:** a file browser, web pages and an editor for the documents Claude writes
   sit beside your sessions.
-- **Reminders:** schedule any session for later, once or on repeat (every day, every weekday,
-  every week or every month); it waits under Scheduled and comes back as unread when it is due.
+- **Reminders:** for a session you need to come back to tomorrow, or check on once a day,
+  schedule it for later, once or on repeat (every day, every weekday, every week or every
+  month); it waits under Scheduled and comes back as unread when it is due.
 
 Built for Apple silicon, macOS 14 or later.
 
