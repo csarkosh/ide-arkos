@@ -666,7 +666,7 @@ the right and waiting at their stop lines for green (headlights coming on down t
 lights going away, cars crossing on the cross streets between the blocks), and crowds on the
 sidewalks crossing only on the crosswalks with their light and gathering at the corners on red, lit
 windows in the near towers and drones blinking over the roofs, and code raining behind it from
-half the sidebar's height. Material
+half the sidebar's height, its sheets coming toward you with the city. Material
 and Lavender Material come with `material`: the
 title bar, sidebar and status bar are one pale frame with a search bar round the title, each pane
 is a card in the theme's page colour with rounded corners floating on it (white under Material), the pane's number sits on a coloured round

@@ -592,6 +592,13 @@ constant int PEOPLE = 40;
 constant int CROSS_PEOPLE = 12;
 constant float PERSON_H = 0.16;
 constant float STEPS = 2.2;
+// The sky's code rain: RAIN_SHEETS sheets from RAIN_NEAR out over RAIN_SPAN camera heights, its
+// glyph cells RAIN_COL_W wide and RAIN_CELL_H tall in the world.
+constant int RAIN_SHEETS = 6;
+constant float RAIN_NEAR = 2.0;
+constant float RAIN_SPAN = 24.0;
+constant float RAIN_COL_W = 0.22;
+constant float RAIN_CELL_H = 0.3;
 
 float hash2(float2 c) {
     uint ux = uint(int(c.x) + 1048576);
@@ -962,24 +969,44 @@ float seg_dist(float2 p, float2 a, float2 b) {
 }
 
 // The code raining in the digital horizon's sky at p (window points), from top (where it fades
-// in) down to bottom (the horizon): 5 by 7 point cells, a slow stream a column, over col. It
-// reaches half the sidebar's height (Cyrus, 2026-11-17: "the runic rain in the background of
-// the graphic to have its height increased to half the pane size").
-float3 code_rain(float2 p, float top, float bottom, float t, float3 green, float3 col) {
+// in) down to bottom (the horizon), over col. It reaches half the sidebar's height (Cyrus,
+// 2026-11-17: "the runic rain in the background of the graphic to have its height increased to
+// half the pane size"), and it comes on toward the viewer with the city ("make the rain look
+// like it's moving towards the camera too"): RAIN_SHEETS sheets of falling code at depths spread
+// over RAIN_SPAN, each sliding toward the viewer at the floor's speed, so its columns spread out
+// from the vanishing point (vx, bottom) and its glyphs grow as it nears; a sheet fades in far off
+// and out as it passes. f is the scene's focal length, as the city's.
+float3 code_rain(float2 p, float top, float bottom, float vx, float f, float t, float3 green, float3 col) {
     if (p.y < top || p.y >= bottom) {
         return col;
     }
-    float2 cell = floor(p / float2(5.0, 7.0));
-    float rows = max((bottom - top) / 7.0, 10.0);
-    float speed = 3.0 + 4.0 * hash2(float2(cell.x, 4.0));
-    float head = floor(fract(t * speed / rows + hash2(float2(cell.x, 11.0))) * (rows + 10.0)) + floor(top / 7.0);
-    float behind = head - cell.y;
-    float2 fq = fract(p / float2(5.0, 7.0));
-    float2 bit = floor(float2(fq.x * 5.0, fq.y * 7.0));
-    float on = (bit.x >= 1.0 && bit.x <= 3.0 && bit.y >= 1.0 && bit.y <= 5.0 && hash2(cell * 7.0 + bit + floor(t / 0.5)) < 0.45) ? 1.0 : 0.0;
-    float trail = (behind >= 0.0 && behind < 12.0) ? 1.0 - behind / 12.0 : 0.0;
-    float fade = saturate((p.y - top) / max((bottom - top) * 0.4, 1.0));
-    return mix(col, green, on * trail * 0.3 * fade);
+    float lit = 0.0;
+    float fade_top = saturate((p.y - top) / max((bottom - top) * 0.4, 1.0));
+    for (int i = 0; i < RAIN_SHEETS; i++) {
+        float z = RAIN_NEAR + fract(float(i) / float(RAIN_SHEETS) - t * GRID_SPEED * GRID_Z / RAIN_SPAN) * RAIN_SPAN;
+        // Its glyph cells, in the world: as wide as RAIN_COL_W, as tall as RAIN_CELL_H.
+        float px = RAIN_COL_W * f / z;
+        if (px < 2.0) {
+            continue;
+        }
+        float seen = (1.0 - smoothstep(RAIN_SPAN * 0.6, RAIN_SPAN, z - RAIN_NEAR)) * smoothstep(RAIN_NEAR, RAIN_NEAR + 2.5, z);
+        float xw = (p.x - vx) * z / f / RAIN_COL_W;
+        float colx = floor(xw) + float(i) * 37.0;
+        // Falling: the cells run down the sheet as the clock goes on.
+        float speed = 2.0 + 3.0 * hash2(float2(colx, 4.0));
+        float yw = (bottom - p.y) * z / f / RAIN_CELL_H + t * speed;
+        float cell_y = floor(yw);
+        float head = floor(fract(hash2(float2(colx, 11.0)) + t * 0.05) * 40.0);
+        float behind = fract((cell_y - head) / 40.0) * 40.0;
+        float trail = behind < 12.0 ? 1.0 - behind / 12.0 : 0.0;
+        float2 fq = float2(fract(xw), fract(yw));
+        float2 bit = floor(float2(fq.x * 5.0, (1.0 - fq.y) * 7.0));
+        float on = (bit.x >= 1.0 && bit.x <= 3.0 && bit.y >= 1.0 && bit.y <= 5.0 && hash2(float2(colx, cell_y) * 7.0 + bit + floor(t / 0.5)) < 0.45) ? 1.0 : 0.0;
+        // Only some columns of a sheet carry a stream, so the sheets show through each other.
+        float carries = hash2(float2(colx, 23.0)) < 0.35 ? 1.0 : 0.0;
+        lit = max(lit, on * trail * carries * seen);
+    }
+    return mix(col, green, lit * 0.32 * fade_top);
 }
 
 // A person's light at p, standing at screen point foot, px_h points tall, its walk's phase from
@@ -1445,7 +1472,7 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
         // the horizon, softened under the names as the scene is.
         if (u.scene > 0.5 && band.w >= SCENE_MIN_H) {
             float top = min(side.y + side.w * 0.5, band.y);
-            float3 rained = code_rain(p, top, band.y + band.w * HZ_AT, u.time, green, col);
+            float3 rained = code_rain(p, top, band.y + band.w * HZ_AT, band.x + band.z * 0.5, band.z * 0.9, u.time, green, col);
             float under = p.y < names_end ? 1.0 - UNDER_NAMES : saturate(1.0 - (p.y - names_end) / SOFT_BUFFER) * (1.0 - UNDER_NAMES);
             col = mix(col, mix(rained, col, under), k);
         }

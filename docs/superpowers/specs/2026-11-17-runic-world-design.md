@@ -57,7 +57,12 @@ different rates and in non uniform directions"); 0.16 of the camera's height tal
 the towers ("more proportional with the buildings"); a head, a body, arms and legs swinging
 twice a second, a dot of light where too far off for a figure. The sky's rain runs from half the sidebar's height (or the
 scene's top) down to the horizon ("the runic rain in the background of the graphic to have its
-height increased to half the pane size"), softened under the names.
+height increased to half the pane size"), softened under the names. It comes toward the viewer with the city ("make the
+rain look like it's moving towards the camera too"): six sheets of falling code at depths spread
+over 24 camera heights from 2 out, each sliding toward the viewer at the floor's speed, so its
+columns spread out from the vanishing point and its glyphs grow as it nears; a sheet fades in
+far off and out as it passes, and a third of each sheet's columns carry a stream, so the sheets
+show through each other.
 
 The clock's zero (Reduce Motion) has no bolt, nothing falling, every tower standing and every
 light on.
