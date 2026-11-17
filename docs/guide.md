@@ -665,7 +665,9 @@ you, alive with a city's traffic, all of it keeping the law: signals at every co
 the right and waiting at their stop lines for green (headlights coming on down the road, tail
 lights going away, cars crossing on the cross streets between the blocks), and crowds on the
 sidewalks crossing only on the crosswalks with their light and gathering at the corners on red, lit
-windows in the near towers, parks of lit trees and a warm lamp where empty lots meet, drones
+windows in the near towers, parks of lit trees and a warm lamp where empty lots meet, and on a lone empty lot a subway
+entrance with its green globes and people going down and coming up, a food cart under a striped
+umbrella with its queue, or a basketball court with players running, drones
 blinking over the roofs, and code raining behind it from
 half the sidebar's height, its sheets coming toward you with the city. Material
 and Lavender Material come with `material`: the

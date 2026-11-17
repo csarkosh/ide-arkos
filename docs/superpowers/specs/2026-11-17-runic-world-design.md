@@ -130,7 +130,15 @@ blank space is large enough, I'd like something like a park". A lot with no towe
 that touches another such lot, across or along, is open ground big enough for a park: its grass
 is the ground tinted and hatched, three trees stand on it (a trunk and a canopy of light, its
 dark fill hiding what is behind it, leaves in it) and a lamp post lit warm, at places of its own,
-drawn farthest first. A lone empty lot is left for a proposal of its own.
+drawn farthest first. A lone empty lot (too small for a park) holds, by the lot, one of
+three Cyrus chose from four proposals (a parking lot was the fourth): a subway entrance (a
+stairwell going down, its steps running away from the head beside the road, a railing round it,
+two green globes on posts at its head, one person going down into it and one coming up, sinking
+and fading on the stair), a food cart (a box with its lit front on two wheels under a striped
+umbrella, a queue of four at it toward the sidewalk; every four seconds the first walks off and
+the rest step up), or a basketball court (its lines on the ground: the boundary, the half-court
+line, the centre circle and the keys; a fence rail round it; a hoop at each end, a pole, a
+backboard and an orange rim; four players running up and down and side to side).
 
 ## Menus read over the rain
 

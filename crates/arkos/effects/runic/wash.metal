@@ -1134,6 +1134,167 @@ float3 park_at(float2 p, int kx, int m, float zc, float cx, float yh, float f, f
     return col;
 }
 
+float person_light(float2 p, float2 foot, float px_h, float t, float h, bool walking);
+float car_light(float2 p, float2 s, float r);
+
+// A lone empty lot (too small for a park; Cyrus, 2026-11-17, chose these three): a subway
+// entrance, a food cart or a basketball court, by the lot. Its near edge is zc in view; f, cx and
+// yh are the scene's projection. Things in it are placed in the world (camera heights) and drawn
+// farthest first.
+float3 small_lot_at(float2 p, int kx, int m, float zc, float cx, float yh, float f, float t, constant ArkosInputs& u, float3 green, float3 white_c, float3 col) {
+    float2 cell = float2(float(kx), float(m));
+    float x0 = float(kx) * GRID_X;
+    float xm = x0 + 0.5 * GRID_X;
+    float zm = zc + 0.5 * GRID_Z;
+    if (zc + GRID_Z < Z_NEAR) {
+        return col;
+    }
+    float seen = (1.0 - smoothstep(Z_FAR * 0.55, Z_FAR, zm)) * smoothstep(Z_NEAR, Z_NEAR + 0.6, zm);
+    float3 bg = u.colors[ARKOS_WINDOW_BG].rgb;
+    float3 person_c = mix(green, white_c, 0.3);
+    // The ground under p, if p is on it inside the lot: its place across and along.
+    float zg = p.y > yh ? f / (p.y - yh) : -1.0;
+    float xg = (p.x - cx) * zg / f;
+    bool on_lot = zg > max(zc, Z_NEAR) && zg < zc + GRID_Z && xg > x0 && xg < x0 + GRID_X;
+    // A point in the world (x across, height y, depth z) on the screen.
+    #define AT(x, y, z) float2(cx + (x) * f / (z), yh + f * (1.0 - (y)) / (z))
+    int kind = int(floor(hash2(cell + float2(29.0, 7.0)) * 3.0));
+    if (kind == 0) {
+        // A subway entrance: a stairwell going down, a railing round it, two green globes at its
+        // head, and people going down into it and coming up out of it.
+        float hx = 0.17, hz = 0.32;
+        // The stair's side nearest the road is its head, where the globes stand.
+        float side = kx < 0 ? 1.0 : -1.0;
+        float sx = xm + side * 0.12;
+        if (on_lot && abs(xg - sx) < hx && abs(zg - zm) < hz) {
+            // The hole, its steps running down away from the head.
+            float depth = (zg - (zm - hz)) / (2.0 * hz);
+            col = mix(col, bg * 0.3, 0.85 * seen);
+            col = light_on(col, green, grid_line(zg / 0.08) * 0.35 * (1.0 - depth) * seen, u.dark);
+        }
+        // The railing: a rail at waist height along three sides of the hole.
+        float rail = 0.12;
+        float rd = min(min(seg_dist(p, AT(sx - hx, rail, zm - hz), AT(sx - hx, rail, zm + hz)), seg_dist(p, AT(sx + hx, rail, zm - hz), AT(sx + hx, rail, zm + hz))), seg_dist(p, AT(sx - hx, rail, zm + hz), AT(sx + hx, rail, zm + hz)));
+        col = light_on(col, green, (1.0 - smoothstep(0.0, 0.8, rd)) * 0.55 * seen, u.dark);
+        // The globes, on short posts at the head's corners.
+        for (int g = 0; g < 2; g++) {
+            float gx = sx + (g == 0 ? -hx : hx);
+            float2 foot = AT(gx, 0.0, zm - hz);
+            float2 globe = AT(gx, 0.26, zm - hz);
+            col = light_on(col, green, (1.0 - smoothstep(0.0, 0.7, seg_dist(p, foot, globe))) * 0.4 * seen, u.dark);
+            col = light_on(col, mix(green, white_c, 0.45), car_light(p, globe, clamp(0.045 * f / (zm - hz), 0.8, 3.0)) * seen, u.dark);
+        }
+        // People: one going down, one coming up, each in its own turn.
+        for (int i = 0; i < 2; i++) {
+            float ph = fract(t / 7.0 + hash2(cell + float2(float(i), 41.0)));
+            bool down = i == 0;
+            // On the way to the head (or away from it), then on the stair, sinking (or rising).
+            float a = down ? ph : 1.0 - ph;
+            float along = a < 0.45 ? 0.0 : (a - 0.45) / 0.55;
+            float wz = zm - hz - 0.25 + (a < 0.45 ? a / 0.45 * 0.25 : along * 2.0 * hz + 0.25);
+            float sink = along * 0.22;
+            float fade = 1.0 - smoothstep(0.6, 1.0, along);
+            if (wz < Z_NEAR) {
+                continue;
+            }
+            float2 foot = AT(sx, -sink, wz);
+            col = light_on(col, person_c, person_light(p, foot, PERSON_H * f / wz, t, hash2(cell + float(i)), true) * 0.85 * seen * fade, u.dark);
+        }
+    } else if (kind == 1) {
+        // A food cart under a striped umbrella, a queue at it: now and then the first walks off
+        // with their food and the rest step up.
+        float wz = zm + 0.1;
+        float cw = 0.16;
+        float3 warm = u.colors[ARKOS_ANSI + 3].rgb;
+        // The queue, toward the sidewalk, nearest first in the line drawn farthest first.
+        float side = kx < 0 ? 1.0 : -1.0;
+        float ph = fract(t / 4.0 + hash2(cell + float2(3.0, 9.0)));
+        float step = smoothstep(0.75, 1.0, ph);
+        for (int i = 3; i >= 0; i--) {
+            float qx = xm + side * (cw + 0.12 + (float(i) - step) * 0.13);
+            float leave = i == 0 ? step : 0.0;
+            float qz = wz - 0.05 - leave * 0.5;
+            if (qz < Z_NEAR) {
+                continue;
+            }
+            float2 foot = AT(qx, 0.0, qz);
+            col = light_on(col, person_c, person_light(p, foot, PERSON_H * f / qz, t, hash2(cell + float(i) + 20.0), i == 0 ? step > 0.0 : step > 0.0 && step < 1.0) * 0.85 * seen * (1.0 - smoothstep(0.6, 1.0, leave)), u.dark);
+        }
+        // The cart: a box with its lit front, on two wheels.
+        float2 c0 = AT(xm - cw, 0.2, wz), c1 = AT(xm + cw, 0.04, wz);
+        bool in_cart = p.x > c0.x && p.x < c1.x && p.y > c0.y && p.y < c1.y;
+        if (in_cart) {
+            col = mix(col, bg * 0.6, 0.8 * seen);
+            col = light_on(col, warm, (p.y < mix(c0.y, c1.y, 0.45) ? 0.45 : 0.15) * seen, u.dark);
+        }
+        float box = min(min(abs(p.x - c0.x), abs(p.x - c1.x)), min(abs(p.y - c0.y), abs(p.y - c1.y)));
+        if (p.x > c0.x - 1.0 && p.x < c1.x + 1.0 && p.y > c0.y - 1.0 && p.y < c1.y + 1.0) {
+            col = light_on(col, green, (1.0 - smoothstep(0.0, 0.8, box)) * 0.6 * seen, u.dark);
+        }
+        for (int w = 0; w < 2; w++) {
+            float2 wheel = AT(xm + (w == 0 ? -0.1 : 0.1), 0.03, wz);
+            col = light_on(col, green, (1.0 - smoothstep(0.0, 0.8, abs(length(p - wheel) - 0.03 * f / wz))) * 0.5 * seen, u.dark);
+        }
+        // The umbrella: a pole and a striped dome over the cart.
+        float2 top = AT(xm, 0.42, wz);
+        col = light_on(col, green, (1.0 - smoothstep(0.0, 0.7, seg_dist(p, AT(xm, 0.2, wz), top))) * 0.4 * seen, u.dark);
+        float2 dq = (p - top) / (float2(0.24, 0.1) * f / wz);
+        if (dq.y > 0.0 && dq.y < 1.0 && length(dq) < 1.0) {
+            float stripe = fract(atan2(dq.y, dq.x) / 3.14159 * 5.0) < 0.5 ? 1.0 : 0.0;
+            col = mix(col, mix(warm, white_c, stripe * 0.6) * 0.75, 0.75 * seen);
+        }
+    } else {
+        // A basketball court: its lines on the ground, a fence rail round it, a hoop at each end
+        // and players running up and down it.
+        float hx = 0.36, hz = 0.7;
+        if (on_lot && abs(xg - xm) < hx + 0.02 && abs(zg - zm) < hz + 0.02) {
+            float2 c = float2(xg - xm, zg - zm);
+            float w = max(fwidth(zg), 0.004) * 1.2;
+            float lines = 0.0;
+            lines = max(lines, 1.0 - smoothstep(0.0, w, abs(max(abs(c.x) - hx, abs(c.y) - hz))));
+            lines = max(lines, 1.0 - smoothstep(0.0, w, abs(c.y)));
+            lines = max(lines, 1.0 - smoothstep(0.0, w, abs(length(c) - 0.12)));
+            float key = max(abs(c.x) - 0.1, abs(abs(c.y) - hz + 0.15) - 0.15);
+            lines = max(lines, 1.0 - smoothstep(0.0, w, abs(key)));
+            col = mix(col, mix(col, green, 0.15), 0.3 * seen);
+            col = light_on(col, white_c, lines * 0.35 * seen, u.dark);
+        }
+        // The fence's top rail along its four sides.
+        float fr = 0.22, fx = hx + 0.04, fz = hz + 0.04;
+        float fence = min(min(seg_dist(p, AT(xm - fx, fr, max(zm - fz, Z_NEAR)), AT(xm - fx, fr, zm + fz)), seg_dist(p, AT(xm + fx, fr, max(zm - fz, Z_NEAR)), AT(xm + fx, fr, zm + fz))), seg_dist(p, AT(xm - fx, fr, zm + fz), AT(xm + fx, fr, zm + fz)));
+        col = light_on(col, green, (1.0 - smoothstep(0.0, 0.8, fence)) * 0.35 * seen, u.dark);
+        // The players, running up and down and side to side, far first.
+        for (int i = 3; i >= 0; i--) {
+            float hp = hash2(cell + float2(float(i), 51.0));
+            float pz = zm + sin(t * (0.6 + 0.4 * hp) + hp * 6.28) * (hz - 0.15) * (0.6 + 0.4 * hash2(cell + float2(float(i), 52.0)));
+            float px = xm + sin(t * (0.9 + 0.5 * hp) + hp * 3.0) * (hx - 0.08);
+            if (pz < Z_NEAR) {
+                continue;
+            }
+            float2 foot = AT(px, 0.0, pz);
+            col = light_on(col, person_c, person_light(p, foot, PERSON_H * f / pz, t * 1.6, hp, true) * 0.85 * seen, u.dark);
+        }
+        // The hoops: a pole, a backboard and an orange rim at each end.
+        for (int e = 0; e < 2; e++) {
+            float ez = zm + (e == 0 ? -hz : hz);
+            if (ez < Z_NEAR) {
+                continue;
+            }
+            float2 foot = AT(xm, 0.0, ez);
+            float2 board = AT(xm, 0.36, ez);
+            col = light_on(col, green, (1.0 - smoothstep(0.0, 0.7, seg_dist(p, foot, board))) * 0.45 * seen, u.dark);
+            float2 bh = float2(0.07, 0.05) * f / ez;
+            float bd = max(abs(p.x - board.x) - bh.x, abs(p.y - board.y) - bh.y);
+            col = light_on(col, white_c, (1.0 - smoothstep(0.0, 0.8, abs(bd))) * 0.45 * seen, u.dark);
+            float2 rim = AT(xm, 0.3, ez + (e == 0 ? 0.05 : -0.05));
+            float rr = length((p - rim) / float2(1.0, 0.4)) - 0.035 * f / ez;
+            col = light_on(col, mix(u.colors[ARKOS_ANSI + 1].rgb, u.colors[ARKOS_ANSI + 3].rgb, 0.5), (1.0 - smoothstep(0.0, 0.8, abs(rr))) * 0.7 * seen, u.dark);
+        }
+    }
+    #undef AT
+    return col;
+}
+
 // A car's light at screen point s, r points across, at p: a soft round glow.
 float car_light(float2 p, float2 s, float r) {
     return 1.0 - smoothstep(r * 0.5, r * 1.6, length(p - s));
@@ -1157,7 +1318,6 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
     float yh = sz.y * HZ_AT;
     float cx = sz.x * 0.5;
     float f = sz.x * 0.9;
-    bool still = t <= 0.0;
     // The sky's rain is drawn over the whole sidebar's lower half by the caller (`code_rain`).
     if (q.y >= yh) {
         // The floor: darker than the sky, its grid's rows coming on.
@@ -1345,6 +1505,8 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
                     // An empty lot: where it touches another, the open ground is a park.
                     if (lot_in_park(kx, m)) {
                         col = park_at(q, kx, m, zc, cx, yh, f, t, u, green, white_c, col);
+                    } else {
+                        col = small_lot_at(q, kx, m, zc, cx, yh, f, t, u, green, white_c, col);
                     }
                     continue;
                 }
@@ -1535,7 +1697,6 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     // The world (see above): the sidebar's scene, frame and chevron; the title bar's clouds and
     // plates; the panes' far skyline, frames, packets, waiting cursors, underlines and lamps.
     float3 ring_c = u.colors[ARKOS_FOCUS_RING].rgb;
-    float3 sb = u.colors[ARKOS_SIDEBAR].rgb;
     // The sidebar: its scene at its foot, softened under the names; its frame; its chevron. Its
     // block is its column, inside a pane's margins, so it is framed as a pane is.
     if (side.z > 1.0 && inside_box(p, side)) {
