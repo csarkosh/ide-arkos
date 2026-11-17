@@ -162,6 +162,7 @@ pub fn render_view_group(root: &Root, pane: PaneId, tab: TabId, now: ViewKind, e
                 root.wt_menu.hide(now);
                 root.session_menu.hide(now);
                 root.link_menu.hide(now);
+                root.new_tab_menu.hide(now);
                 root.md_menu.hide(now);
                 root.close_popovers(now);
                 root.focus_pane(pane, cx);

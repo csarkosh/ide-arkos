@@ -898,7 +898,15 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
                     .hover(move |s| s.text_color(fg.hsla()))
                     .cursor_pointer()
                     .child("+")
-                    .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.new_terminal_tab(pane, cx))),
+                    // A menu of Claude, Codex and Shell (new tab menu spec). On the press, and
+                    // stopped there, so the root's listener does not close it as it opens.
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |root, ev: &MouseDownEvent, _window, cx| {
+                            cx.stop_propagation();
+                            root.toggle_new_tab_menu(pane, ev.position, cx);
+                        }),
+                    ),
             ),
             // `bar_items` names only "+": a name the bar does not draw adds nothing.
             _ => bar,
@@ -1673,6 +1681,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 root.wt_menu.hide(now);
                 root.session_menu.hide(now);
                 root.link_menu.hide(now);
+                root.new_tab_menu.hide(now);
                 root.close_popovers(now);
                 let grid = v.read(cx).grid_shown();
                 let selection = if grid { v.read(cx).grid_sel.is_some() } else { v.read(cx).has_selection() };

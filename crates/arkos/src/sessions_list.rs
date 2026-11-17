@@ -609,6 +609,7 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
                         root.context_menu.hide(now);
                         root.wt_menu.hide(now);
                         root.link_menu.hide(now);
+                        root.new_tab_menu.hide(now);
                         root.session_submenu = None;
                         root.session_menu.show((key, ev.position), now);
                         cx.notify();

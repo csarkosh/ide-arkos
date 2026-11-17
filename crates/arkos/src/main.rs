@@ -46,6 +46,7 @@ mod keymap;
 mod launch;
 mod launch_link;
 mod link_menu;
+mod new_tab_menu;
 mod icons;
 mod image_zoom;
 mod md_links;
@@ -291,6 +292,8 @@ pub struct Root {
     pub new_file_focus: FocusHandle,
     /// A terminal link's right-click menu while it is open, and while it fades out.
     pub link_menu: Transient<link_menu::LinkMenu>,
+    /// A tab bar's "+" menu (Claude, Codex, Shell) while it is open, and while it fades out.
+    pub new_tab_menu: Transient<new_tab_menu::NewTabMenu>,
     /// A markdown document's right-click menu while it is open, and while it fades out.
     pub md_menu: Transient<md_menu::MdMenu>,
     /// An image zoomed over its markdown tab by a double click, while it is and while it fades
@@ -833,6 +836,7 @@ impl Root {
             new_file: Transient::Hidden,
             new_file_focus: cx.focus_handle(),
             link_menu: Transient::Hidden,
+            new_tab_menu: Transient::Hidden,
             md_menu: Transient::Hidden,
             image_zoom: Transient::Hidden,
             image_view: image_zoom::View::new(),
@@ -1001,6 +1005,7 @@ impl Root {
         self.wt_menu.hide(now);
         self.session_menu.hide(now);
         self.link_menu.hide(now);
+        self.new_tab_menu.hide(now);
         self.md_menu.hide(now);
         let next = self.popover.value().copied().unwrap_or_default().toggled(which);
         if next == chrome::Popover::Closed {
@@ -1033,7 +1038,7 @@ impl Root {
     }
 
     /// The bell is no longer showing: whatever arrived while it was open counts as read, and an
-    /// Updated notice that was on show goes.
+    /// Updated notice that was on show goes into the history.
     fn bell_closed(&mut self) {
         self.notices.mark_read(SystemTime::now());
         self.notices.closed();
@@ -1524,11 +1529,12 @@ impl Root {
             ));
         }
         let items = self.notices.items().to_vec();
-        if items.is_empty() {
-            return Some(card.child(div().px(px(10.0)).py(px(4.0)).text_color(dim_c).child("Nothing new")));
-        }
+        let past = self.notices.past().to_vec();
         let now = SystemTime::now();
         let mut card = card;
+        if items.is_empty() {
+            card = card.child(div().px(px(10.0)).py(px(4.0)).text_color(dim_c).child("Nothing new"));
+        }
         for (i, n) in items.iter().enumerate() {
             let unread = self.notices.unread_since(n, self.bell_read_before);
             let mut row = div()
@@ -1573,6 +1579,25 @@ impl Root {
             }
             card = card.child(row);
         }
+        // The notices that went, the most recent few, drawn read: dim, with no button.
+        if !past.is_empty() {
+            card = card.child(div().px(px(10.0)).pt(px(6.0)).pb(px(2.0)).text_size(px(self.ui_size(10.5))).text_color(dim_c).child("Earlier"));
+            for (i, n) in past.iter().enumerate() {
+                card = card.child(
+                    div()
+                        .id(("past-notice", i))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .px(px(10.0))
+                        .py(px(4.0))
+                        .text_color(dim_c)
+                        .child(div().flex_1().min_w_0().truncate().child(n.text.clone()))
+                        .child(div().flex_none().child(notices::relative_time(n.at, now))),
+                );
+            }
+        }
         Some(card)
     }
 
@@ -1592,6 +1617,7 @@ impl Root {
         self.context_menu.animating(now)
             || self.new_file.animating(now)
             || self.link_menu.animating(now)
+            || self.new_tab_menu.animating(now)
             || self.md_menu.animating(now)
             || self.image_zoom.animating(now)
             || self.outline_anim.values().any(|t| t.animating(now))
@@ -1629,6 +1655,7 @@ impl Root {
         self.context_menu.settle(now);
         self.new_file.settle(now);
         self.link_menu.settle(now);
+        self.new_tab_menu.settle(now);
         self.md_menu.settle(now);
         self.image_zoom.settle(now);
         // A zoom is drawn only over its tab in front; anywhere else it ends at once.
@@ -3200,12 +3227,44 @@ impl Root {
         self.new_terminal_tab_in(pane, None, cx);
     }
 
+    /// A row of a tab bar's "+" menu (new tab menu spec): a terminal tab in `pane`, its shell
+    /// typing Claude Code's or Codex's command once it has started, or a plain shell.
+    pub fn new_tab_of(&mut self, pane: PaneId, kind: new_tab_menu::NewTab, cx: &mut Context<Self>) {
+        self.new_terminal_tab_typing(pane, None, kind.input(), cx);
+        self.focus_pane(pane, cx);
+    }
+
+    /// Opens or closes a pane's "+" menu, from a press at `at` on its "+".
+    pub fn toggle_new_tab_menu(&mut self, pane: PaneId, at: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        if self.new_tab_menu.value().is_some_and(|m| m.pane == pane) {
+            self.new_tab_menu.hide(now);
+        } else {
+            self.context_menu.hide(now);
+            self.wt_menu.hide(now);
+            self.session_menu.hide(now);
+            self.link_menu.hide(now);
+            self.md_menu.hide(now);
+            self.close_popovers(now);
+            self.new_tab_menu.show(new_tab_menu::NewTabMenu { pane, at }, now);
+        }
+        cx.notify();
+    }
+
     /// `new_terminal_tab`, with the shell in `cwd` (a worktree) while that folder exists.
     fn new_terminal_tab_in(&mut self, pane: PaneId, cwd: Option<PathBuf>, cx: &mut Context<Self>) {
+        self.new_terminal_tab_typing(pane, cwd, None, cx);
+    }
+
+    /// `new_terminal_tab_in`, its shell typing `input` once it has started.
+    fn new_terminal_tab_typing(&mut self, pane: PaneId, cwd: Option<PathBuf>, input: Option<Vec<u8>>, cx: &mut Context<Self>) {
         let idx = self.tree.add_tab(pane, Tab::Terminal { session: SessionId(0), cwd: cwd.clone() });
         telemetry::pane_open(telemetry::PaneKind::Terminal, telemetry::Opened::Click);
         self.tree.focus(pane);
         if let Some(id) = self.tree.tab_id(pane, idx) {
+            if let Some(bytes) = input {
+                self.resume_input.insert(id, bytes);
+            }
             self.start_shell(id, cwd, false);
         }
         self.save(cx);
@@ -4085,7 +4144,7 @@ impl Root {
     fn chrome_state(&self, cx: &App) -> idle::Chrome {
         idle::Chrome {
             palette: self.palette.value().is_some(),
-            menu: self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.session_menu.value().is_some() || self.remind_picker.value().is_some() || self.link_menu.value().is_some() || self.md_menu.value().is_some() || self.popover.value().is_some(),
+            menu: self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.session_menu.value().is_some() || self.remind_picker.value().is_some() || self.link_menu.value().is_some() || self.new_tab_menu.value().is_some() || self.md_menu.value().is_some() || self.popover.value().is_some(),
             prompt: self.url_prompt.value().is_some(),
             find: self.active_terminal(cx).is_some_and(|t| t.read(cx).find.is_some()) || self.active_viewer().is_some_and(|v| v.read(cx).find.is_some()),
             drag: self.drop_target.is_some() || self.resizing.is_some() || self.sidebar_resizing,
@@ -4932,6 +4991,7 @@ impl Root {
             || self.popover.value().is_some()
             || self.context_menu.value().is_some()
             || self.link_menu.value().is_some()
+            || self.new_tab_menu.value().is_some()
             || self.md_menu.value().is_some()
             || self.wt_menu.value().is_some() || self.session_menu.value().is_some()
             || self.remind_picker.value().is_some()
@@ -5582,7 +5642,7 @@ impl Render for Root {
             .on_any_mouse_down(cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
                 let now = Instant::now();
                 root.last_input = now;
-                if root.context_menu.hide(now) | root.new_file.hide(now) | root.wt_menu.hide(now) | root.session_menu.hide(now) | root.link_menu.hide(now) | root.md_menu.hide(now) | root.close_popovers(now) {
+                if root.context_menu.hide(now) | root.new_file.hide(now) | root.wt_menu.hide(now) | root.session_menu.hide(now) | root.link_menu.hide(now) | root.new_tab_menu.hide(now) | root.md_menu.hide(now) | root.close_popovers(now) {
                     cx.notify();
                 }
             }))
@@ -5637,6 +5697,7 @@ impl Render for Root {
             .children(command_palette::render(self, cx))
             .children(sidebar::render_context_menu(self, cx))
             .children(link_menu::render_link_menu(self, cx))
+            .children(new_tab_menu::render_new_tab_menu(self, cx))
             .children(md_menu::render_md_menu(self, cx))
             .children(outline_rail::render_hover(self, cx))
             .children(slash_menu::render_slash_menu(self, cx))
