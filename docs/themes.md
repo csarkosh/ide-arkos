@@ -22,8 +22,9 @@ Optional: how Settings and the palette show the theme. `title` is the name a per
 ("Plain Navy" for `navy`); without one the name is shown in capitalised words (`my-paper` is "My
 Paper"). `group` puts the theme in a group Settings lists as one row with a choice of its
 members: Watercolor (Watercolor Lavender and Watercolor Peach) and Material (Material Solar,
-Material Bright and Material Lavender). `group_default = true` marks the member a click on the
-group's row picks when none of the group is in force: Watercolor Lavender and Material Solar.
+Material Bright and Material Lavender). `group_default = true` marks the member the group's row
+shows until one of the group has been chosen (after that it shows the last one chosen, kept in
+`group-picks` in Application Support): Watercolor Lavender and Material Solar.
 The config and `arkos theme use` keep using the `name`.
 
 ## appearance

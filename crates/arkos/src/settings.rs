@@ -241,7 +241,51 @@ pub fn member_name(title: &str, group: &str) -> String {
 /// into one row where its first member stood (Watercolor: Watercolor Lavender and Watercolor
 /// Peach; Material: Material Bright, Material Solar and Material Lavender). A theme of the other
 /// kind listed because it is current stays a row of its own, and so does a broken file.
-pub fn preset_list(themes: &[(String, theme::Source, Option<theme::Appearance>)], shown: &std::collections::BTreeMap<String, theme::Shown>, slot: theme::Appearance, current: &str) -> Vec<PresetRow> {
+/// Each group's last member in force, by group name, so picking a theme of another group (or
+/// none) leaves a group's row on what was chosen there before.
+pub type GroupPicks = std::collections::BTreeMap<String, String>;
+
+/// Remembers `current` as its group's pick when it is a member of one; true when that changed
+/// the picks (so they are worth writing).
+pub fn remember_pick(picks: &mut GroupPicks, shown: &std::collections::BTreeMap<String, theme::Shown>, current: &str) -> bool {
+    let Some(group) = shown.get(current).and_then(|s| s.group.clone()) else { return false };
+    if picks.get(&group).map(String::as_str) == Some(current) {
+        return false;
+    }
+    picks.insert(group, current.to_string());
+    true
+}
+
+/// The picks from their file: a line each, the group and the theme's name split by a tab; a
+/// missing or unreadable file is no picks.
+pub fn read_group_picks(path: &std::path::Path) -> GroupPicks {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_once('\t'))
+        .map(|(g, n)| (g.to_string(), n.to_string()))
+        .collect()
+}
+
+/// Writes the picks to their file; a failure only costs the memory, so it is logged.
+pub fn write_group_picks(path: &std::path::Path, picks: &GroupPicks) {
+    let text: String = picks.iter().map(|(g, n)| format!("{g}\t{n}\n")).collect();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(e) = std::fs::write(path, text) {
+        eprintln!("arkos: could not write {}: {e}", path.display());
+    }
+}
+
+#[cfg(test)]
+fn preset_list(themes: &[(String, theme::Source, Option<theme::Appearance>)], shown: &std::collections::BTreeMap<String, theme::Shown>, slot: theme::Appearance, current: &str) -> Vec<PresetRow> {
+    preset_list_with(themes, shown, slot, current, &GroupPicks::new())
+}
+
+/// The slot's rows, a group folded into one whose pick is the member in force, else the group's
+/// last pick (`picks`) while it is still installed, else its default.
+pub fn preset_list_with(themes: &[(String, theme::Source, Option<theme::Appearance>)], shown: &std::collections::BTreeMap<String, theme::Shown>, slot: theme::Appearance, current: &str, picks: &GroupPicks) -> Vec<PresetRow> {
     let title = |name: &str| shown.get(name).map_or_else(|| theme::title_case(name), |s| s.title.clone());
     let mut out: Vec<PresetRow> = Vec::new();
     for (ix, _) in slot_rows(themes, slot, current) {
@@ -256,12 +300,22 @@ pub fn preset_list(themes: &[(String, theme::Source, Option<theme::Appearance>)]
             out.push(PresetRow::One { ix, label });
             continue;
         };
-        let is_default = shown.get(name).is_some_and(|s| s.group_default);
+        // How strongly a member claims the row's pick: in force, then last picked, then default.
+        let claim = |n: &str| {
+            if n == current {
+                3
+            } else if picks.get(&group).is_some_and(|p| p == n) {
+                2
+            } else if shown.get(n).is_some_and(|s| s.group_default) {
+                1
+            } else {
+                0
+            }
+        };
         match out.iter_mut().find(|r| matches!(r, PresetRow::Group { name: g, .. } if *g == group)) {
             Some(PresetRow::Group { members, pick, .. }) => {
                 members.push((ix, label));
-                let pick_is_current = themes[*pick].0 == current;
-                if name == current || (is_default && !pick_is_current) {
+                if claim(name) > claim(&themes[*pick].0) {
                     *pick = ix;
                 }
             }
@@ -456,6 +510,8 @@ pub struct SettingsWindow {
     themes: Vec<(String, theme::Source, Option<theme::Appearance>)>,
     /// How each theme is shown: its title and its group (`theme::shown`).
     theme_shown: std::collections::BTreeMap<String, theme::Shown>,
+    /// Each group's last member in force (`paths::group_picks_file`).
+    group_picks: GroupPicks,
     /// The preset group whose members are listed open under its row, and in which list.
     open_group: Option<(theme::Appearance, String)>,
     /// When a click outside it last closed a group's menu: a click on the group's own row closes
@@ -558,6 +614,7 @@ pub fn open(cx: &mut App, over: Option<Retained<NSWindow>>, shown: Shown, theme:
                 section: Section::Appearance,
                 themes: theme::kinds(&paths::themes_dir()),
                 theme_shown: theme::shown(&paths::themes_dir()),
+                group_picks: read_group_picks(&paths::group_picks_file()),
                 open_group: None,
                 group_closed_at: None,
                 effects: effects::manifest::list(&effects::effects_dir()),
@@ -981,7 +1038,7 @@ impl SettingsWindow {
             if let Some(missing) = not_installed(current, &names) {
                 list = list.child(list_row((list_id, usize::MAX), missing, true, enabled, c));
             }
-            for entry in preset_list(&self.themes, &self.theme_shown, slot, current) {
+            for entry in preset_list_with(&self.themes, &self.theme_shown, slot, current, &self.group_picks) {
                 match entry {
                     PresetRow::One { ix, label } => {
                         let id = (list_id, ix);
@@ -1362,6 +1419,16 @@ impl SettingsWindow {
 
 impl Render for SettingsWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A group member in force (from here, the palette or `arkos theme use`) becomes its
+        // group's remembered pick.
+        let (dark, light) = (self.shown.config.theme.dark.clone(), self.shown.config.theme.light.clone());
+        let mut changed = false;
+        for current in [dark, light] {
+            changed |= remember_pick(&mut self.group_picks, &self.theme_shown, &current);
+        }
+        if changed {
+            write_group_picks(&paths::group_picks_file(), &self.group_picks);
+        }
         let t = &self.theme.chrome;
         let c = Colors::of(&self.theme);
         let (bg, sidebar) = (t.window_bg.hsla(), t.sidebar.hsla());
@@ -1478,6 +1545,34 @@ mod tests {
         assert_eq!(preset_list(&themes, &shown, Dark, "navy"), vec![PresetRow::One { ix: 0, label: "Plain Navy".into() }]);
         assert_eq!(preset_list(&themes, &shown, Light, "navy")[0], PresetRow::One { ix: 0, label: "Plain Navy (a dark theme)".into() });
         assert_eq!(theme::title_case("my-dark-theme"), "My Dark Theme", "a user's theme without a title reads in capitalised words");
+        let peach: GroupPicks = [("Watercolor".to_string(), "peach-watercolor".to_string())].into_iter().collect();
+        assert_eq!(preset_list_with(&themes, &shown, Light, "my-paper", &peach)[0], group(1), "another preset in force leaves the group on its last pick, Peach");
+        let gone: GroupPicks = [("Watercolor".to_string(), "deleted-theme".to_string())].into_iter().collect();
+        assert_eq!(preset_list_with(&themes, &shown, Light, "my-paper", &gone)[0], group(2), "a last pick no longer installed falls back to the default");
+    }
+
+    #[test]
+    fn a_group_remembers_the_member_in_force_and_the_picks_survive_a_round_trip_through_their_file() {
+        use theme::Shown;
+        let shown: std::collections::BTreeMap<String, Shown> = [
+            ("peach-watercolor", Shown { title: "Watercolor Peach".into(), group: Some("Watercolor".into()), group_default: false }),
+            ("material", Shown { title: "Material Bright".into(), group: Some("Material".into()), group_default: false }),
+            ("navy", Shown { title: "Plain Navy".into(), group: None, group_default: false }),
+        ]
+        .into_iter()
+        .map(|(n, s)| (n.to_string(), s))
+        .collect();
+        let mut picks = GroupPicks::new();
+        assert!(remember_pick(&mut picks, &shown, "peach-watercolor"), "a member in force is remembered");
+        assert!(!remember_pick(&mut picks, &shown, "peach-watercolor"), "nothing new to write");
+        assert!(remember_pick(&mut picks, &shown, "material"));
+        assert!(!remember_pick(&mut picks, &shown, "navy"), "a theme in no group changes nothing");
+        assert_eq!(picks.get("Watercolor").map(String::as_str), Some("peach-watercolor"), "picking Material left Watercolor alone");
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("group-picks");
+        write_group_picks(&file, &picks);
+        assert_eq!(read_group_picks(&file), picks);
+        assert_eq!(read_group_picks(&dir.path().join("missing")), GroupPicks::new());
     }
 
     #[test]

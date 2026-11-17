@@ -477,12 +477,11 @@ constant float UNDER_NAMES = 0.08;
 // The clouds over the city: they reach up the sidebar to half its height (or the scene's top, if
 // that is higher), thinning out over this many points at each end.
 constant float CLOUD_FADE = 40.0;
-// How many clouds, and the slowest and fastest of their speeds across, in points a second.
-constant int CLOUD_COUNT = 16;
+// How many clouds in the bank behind and in front, and the slowest and fastest of their speeds across, in points a second.
+constant int CLOUD_BACK = 10;
+constant int CLOUD_FRONT = 9;
 constant float CLOUD_SPEED_MIN = 2.0;
 constant float CLOUD_SPEED_MAX = 11.0;
-// The overcast's share behind the clouds at its heaviest.
-constant float OVERCAST = 0.35;
 // How far down the scene the clouds reach, as a share of its height.
 constant float CLOUD_FOOT = 0.42;
 // Lightning: one bolt a cycle at most, lasting this long; none in the first cycle.
@@ -611,41 +610,56 @@ float bolt_env(float t, thread uint& key) {
     return at < 0.06 ? 1.0 : (at < 0.12 ? 0.25 : (at < 0.22 ? 0.9 : 1.0 - (at - 0.22) / (BOLT_FOR - 0.22)));
 }
 
-// The storm clouds over the city at p (window points), between top and bottom (where they thin
-// out to nothing over CLOUD_FADE at each end), across the sidebar from x0, w wide: CLOUD_COUNT
-// clouds, each a soft ragged blob of its own size and height drifting at its own speed (Cyrus,
-// 2026-11-17: "make the individual clouds move at variable and independent rates"), wrapping
-// round the sidebar; lit by a bolt's envelope env, over col.
-float3 storm_clouds(float2 p, float top, float bottom, float x0, float w, float t, float env, constant ArkosInputs& u, float3 col) {
-    if (p.y < top || p.y > bottom) {
-        return col;
-    }
+// One layer of clouds at p: `count` soft ragged clouds from seed, each of its own size and height
+// between top and bottom and its own speed between the two given, wrapping round the sidebar
+// (x0, w wide); how much of p they cover, overlapping clouds building up rather than hiding.
+float cloud_layer(float2 p, float top, float bottom, float x0, float w, float t, int count, uint seed, float2 size_lo, float2 size_hi, float speed_lo, float speed_hi) {
     float cloud = 0.0;
-    for (int i = 0; i < CLOUD_COUNT; i++) {
-        uint id = uint(i) * 7919u + 31u;
-        float2 half_size = float2(mix(36.0, 84.0, hash01(id)), mix(11.0, 22.0, hash01(id + 1u)));
-        float y = mix(top + half_size.y, bottom - half_size.y, hash01(id + 2u));
-        float speed = mix(CLOUD_SPEED_MIN, CLOUD_SPEED_MAX, hash01(id + 3u));
+    for (int i = 0; i < count; i++) {
+        uint id = seed + uint(i) * 7919u;
+        float2 half_size = mix(size_lo, size_hi, float2(hash01(id), hash01(id + 1u)));
+        float y = mix(top + half_size.y * 0.5, bottom - half_size.y * 0.5, hash01(id + 2u));
+        if (abs(p.y - y) > half_size.y * 1.6) {
+            continue;
+        }
+        float speed = mix(speed_lo, speed_hi, hash01(id + 3u));
         // Its place across, wrapping: it leaves on the right and comes back on the left.
         float span = w + 2.0 * half_size.x;
         float x = x0 - half_size.x + fract(hash01(id + 4u) + t * speed / span) * span;
         float2 q = (p - float2(x, y)) / half_size;
-        // A ragged edge: the blob's outline pushed in and out by noise of its own.
-        float rag = (vnoise((p - float2(x, y)) / 11.0 + float2(float(i) * 13.0, 5.0)) - 0.5) * 0.45;
-        float d = length(q) + rag;
+        // A ragged, puffy edge: the outline pushed in and out by noise of its own.
+        float rag = (vnoise((p - float2(x, y)) / 11.0 + float2(float(i) * 13.0 + float(seed % 97u), 5.0)) - 0.5) * 0.45;
         // Flatter below than above, as a storm cloud's base is.
-        d += q.y > 0.0 ? q.y * 0.35 : 0.0;
-        // Overlapping clouds build up into banks rather than one hiding the next.
+        float d = length(q) + rag + (q.y > 0.0 ? q.y * 0.35 : 0.0);
         float one = smoothstep(1.0, 0.5, d);
         cloud = cloud + one * (1.0 - cloud);
     }
-    // An overcast behind them, heaviest in the middle of the band, so a storm's sky shows no
-    // open patches: Cyrus, 2026-11-17, "the clouds need to be fuller given how hard it's raining".
-    float overcast = OVERCAST * smoothstep(0.0, 0.5, (p.y - top) / max(bottom - top, 1.0)) * (0.8 + 0.4 * fbm(float2((p.x + t * 3.0) / 70.0, p.y / 30.0)));
-    cloud = cloud + overcast * (1.0 - cloud);
+    return cloud;
+}
+
+// The storm clouds over the city at p (window points), between top and bottom (thinning out over
+// CLOUD_FADE at the top and into the skyline at the foot), across the sidebar from x0, w wide, lit
+// by a bolt's envelope env, over col. Three layers, so no sky shows between them (Cyrus,
+// 2026-11-17: "so full that there's no blank space behind them"): an overcast over the whole
+// band, a bank of large clouds drifting slowly over it, and lighter clouds drifting faster in
+// front, every cloud at its own speed.
+float3 storm_clouds(float2 p, float top, float bottom, float x0, float w, float t, float env, constant ArkosInputs& u, float3 col) {
+    if (p.y < top || p.y > bottom) {
+        return col;
+    }
+    float3 dim_c = u.colors[ARKOS_TEXT_DIM].rgb;
+    float lit = 0.25 * env;
     float ends = saturate((p.y - top) / CLOUD_FADE) * saturate((bottom - p.y) / CLOUD_FADE);
-    float3 cloud_c = mix(col, u.colors[ARKOS_TEXT_DIM].rgb, 0.22 + 0.25 * env);
-    return mix(col, cloud_c, saturate(cloud) * ends * 0.9);
+    // The overcast: everywhere, its tone moved a little by slow noise.
+    float tone = fbm(float2((p.x + t * 2.0) / 80.0, p.y / 26.0));
+    float3 out = mix(col, mix(col, dim_c, 0.10 + 0.06 * tone + lit), ends * 0.95);
+    // The bank behind.
+    float back = cloud_layer(p, top, bottom, x0, w, t, CLOUD_BACK, 31u, float2(48.0, 14.0), float2(96.0, 26.0), CLOUD_SPEED_MIN, CLOUD_SPEED_MIN * 2.5);
+    out = mix(out, mix(col, dim_c, 0.19 + lit), saturate(back) * ends * 0.9);
+    // The clouds in front.
+    float front = cloud_layer(p, top, bottom, x0, w, t, CLOUD_FRONT, 977u, float2(30.0, 9.0), float2(66.0, 18.0), CLOUD_SPEED_MIN * 2.5, CLOUD_SPEED_MAX);
+    out = mix(out, mix(col, dim_c, 0.28 + lit), saturate(front) * ends * 0.9);
+    return out;
 }
 
 // The city's scene at q (points into the band, band sz), over the sky colour sky: clouds, a bolt

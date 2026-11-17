@@ -19,6 +19,11 @@ pub fn recent_file() -> PathBuf {
     app_support().join("recent.json")
 }
 
+/// Each preset group's last member in force, for Settings (`settings::GroupPicks`).
+pub fn group_picks_file() -> PathBuf {
+    app_support().join("group-picks")
+}
+
 /// Where Help pages Arkos writes for itself go (`keyboard_guide`).
 pub fn help_dir() -> PathBuf {
     app_support().join("help")
