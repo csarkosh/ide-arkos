@@ -223,7 +223,102 @@ float ink_tooth(Pen pen) {
     return 0.78 + 0.22 * smoothstep(0.25, 0.75, pen.speck);
 }
 
-fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u [[buffer(0)]]) {
+// Pane 0's gallery (Cyrus, 2026-11-17: "a set of popular art in watercolor that slowly & softly
+// transitions through the set; 1 at a time"): the effect's images (gallery/CREDITS.md, public
+// domain), one at a time in the empty space under the sidebar's last row, each held
+// GALLERY_HOLD seconds and then bloomed into the next over GALLERY_BLOOM, wet in wet: the next
+// painting spreads out from a few pools of pigment that grow and merge, a darker rim where its
+// wet front runs, while the last dries back to the paper.
+constant float GALLERY_HOLD = 50.0;
+constant float GALLERY_BLOOM = 6.0;
+constant int GALLERY_POOLS = 4;
+// The painting's margin in the space, how tall it may be against its width, and the least room
+// under the rows it needs (it fades in over GALLERY_FADE more).
+constant float GALLERY_MARGIN = 14.0;
+constant float GALLERY_TALL = 1.35;
+constant float GALLERY_MIN_H = 90.0;
+constant float GALLERY_FADE = 40.0;
+
+// Which painting shows at t, the next, and how far the bloom into it has come (0 to 1).
+float3 gallery_at(float t, int n) {
+    float period = GALLERY_HOLD + GALLERY_BLOOM;
+    float cycle = floor(max(t, 0.0) / period);
+    float into = max(t, 0.0) - cycle * period;
+    float shown = fmod(cycle, float(n));
+    float next = fmod(cycle + 1.0, float(n));
+    float bloom = saturate((into - GALLERY_HOLD) / GALLERY_BLOOM);
+    return float3(shown, next, bloom * bloom * (3.0 - 2.0 * bloom));
+}
+
+// Painting i fitted in the space under the rows, `foot`, at its bottom, centred across: its
+// origin in xy, its size in zw.
+float4 gallery_rect(float4 foot, int i) {
+    float2 sz = max(ARKOS_IMAGE_SIZE[i], float2(1.0));
+    float2 box = max(foot.zw - 2.0 * GALLERY_MARGIN, float2(1.0));
+    box.y = min(box.y, box.x * GALLERY_TALL);
+    float2 wh = sz * min(box.x / sz.x, box.y / sz.y);
+    return float4(foot.x + (foot.z - wh.x) * 0.5, foot.y + foot.w - GALLERY_MARGIN - wh.y, wh);
+}
+
+// Painting i at p, as a watercolour of it: its colours softened, pooled darker where they meet,
+// with the paper's grain through them, and its edge left ragged as a wash's. The colour in rgb,
+// how much of the paper it covers in a.
+float4 painting_at(texture2d_array<float> images, float2 p, int i, float4 r, float px, float gran) {
+    constexpr sampler s(filter::linear, mip_filter::linear, address::clamp_to_edge);
+    float2 hb = r.zw * 0.5;
+    // Well off the painting, the paper alone: the noise and the samples are spent on it only.
+    float box = sd_box(p - (r.xy + hb), hb);
+    if (box > 6.0) {
+        return float4(0.0);
+    }
+    float d = box + (vnoise(p * 0.11 + float(i) * 7.3) - 0.5) * 7.0;
+    if (d > 2.0) {
+        return float4(0.0);
+    }
+    float2 uv = saturate((p - r.xy) / r.zw);
+    // A level a little softer than the pane's pixels ask for.
+    float lod = max(log2(512.0 / max(r.z * px, 1.0)), 0.0) + 0.6;
+    // Its colours run a little into each other, as wet paint does, along the paper's grain.
+    float2 run = (float2(vnoise(p * 0.06), vnoise(p * 0.06 + 3.1)) - 0.5) * (3.0 / max(r.zw, float2(1.0)));
+    float3 fine = images.sample(s, uv + run, uint(i), level(lod)).rgb;
+    float3 soft = images.sample(s, uv + run, uint(i), level(lod + 2.0)).rgb;
+    float meet = saturate(length(fine - soft) * 2.2);
+    float3 c = mix(fine, soft, 0.45);
+    // Transparent pigment: the darks lifted toward the paper, a few flat tones as washes lie,
+    // pooled darker where two colours meet, the paper's grain through them.
+    c = mix(c, float3(1.0), 0.14);
+    c = mix(c, floor(c * 7.0 + 0.5) / 7.0, 0.35);
+    c *= (1.0 - 0.32 * meet) * (0.92 + 0.16 * gran);
+    float cover = 1.0 - smoothstep(-1.5, 1.5, d);
+    // The edge pools darker, as a wash dries at its rim.
+    float rim = smoothstep(-6.0, 0.0, d) * cover;
+    return float4(c * (1.0 - 0.18 * rim), cover);
+}
+
+// Where the bloom into the next painting has reached at p: 1 inside, 0 outside, the pools
+// seeded by the painting's number across `area`.
+float bloom_at(float2 p, float4 area, float next, float bloom) {
+    float reach = 1e9;
+    for (int j = 0; j < GALLERY_POOLS; j++) {
+        float2 seed = area.xy + area.zw * float2(hash1(next * 13.1 + float(j) * 3.7), hash1(next * 7.9 + float(j) * 5.3));
+        reach = min(reach, length(p - seed));
+    }
+    // Four pools leave no point much more than half the painting from one: the bloom reaches
+    // its last corner as it ends.
+    reach = reach / (0.55 * max(max(area.z, area.w), 1.0)) + (fbm(p * 0.03 + next) - 0.5) * 0.45;
+    return smoothstep(reach - 0.08, reach + 0.08, bloom * 1.3);
+}
+
+// A painting laid on the paper at strength a, as the theme's mode has it: multiplied into light
+// paper as a wash is; on dark paper glazed over it.
+float3 painting_onto(constant ArkosInputs& u, float3 col, float3 c, float a) {
+    if (u.dark > 0.5) {
+        return mix(col, c, a * 0.85);
+    }
+    return col * mix(float3(1.0), c, a);
+}
+
+fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u [[buffer(0)]], texture2d_array<float> images [[texture(0)]]) {
     float2 p = in.uv * u.size;
     float t = u.time;
     float k = saturate(u.intensity);
@@ -296,6 +391,39 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     // The text over the paper stays readable whatever the theme's colours did to it; the ink
     // lines, which carry no text, are drawn over that as they are.
     col = keep_readable(u, col);
+    // The gallery, after the paper is kept readable: no text is over the space it hangs in.
+    if (ARKOS_IMAGE_COUNT > 0) {
+        for (int i = 0; i < nb; i++) {
+            ArkosBlock blk = u.blocks[i];
+            float4 foot = blk.rect;
+            if (int(blk.kind) != ARKOS_SIDEBAR_FOOT_BLOCK || p.x < foot.x || p.x > foot.x + foot.z || p.y < foot.y || p.y > foot.y + foot.w) {
+                continue;
+            }
+            float show = smoothstep(GALLERY_MIN_H, GALLERY_MIN_H + GALLERY_FADE, foot.w) * k;
+            if (show <= 0.0) {
+                break;
+            }
+            float3 at = gallery_at(t, ARKOS_IMAGE_COUNT);
+            int shown = int(at.x);
+            int next = int(at.y);
+            float4 r0 = gallery_rect(foot, shown);
+            float4 now_p = painting_at(images, p, shown, r0, u.scale, gran);
+            float reached = 0.0;
+            float4 next_p = float4(0.0);
+            if (at.z > 0.0) {
+                float4 r1 = gallery_rect(foot, next);
+                float4 area = float4(min(r0.xy, r1.xy), max(r0.xy + r0.zw, r1.xy + r1.zw) - min(r0.xy, r1.xy));
+                reached = bloom_at(p, area, at.y, at.z);
+                next_p = painting_at(images, p, next, r1, u.scale, gran);
+                // The wet front runs darker where the bloom is still spreading.
+                float front = reached * (1.0 - reached) * 4.0 * (1.0 - at.z);
+                next_p.rgb *= 1.0 - 0.2 * front;
+            }
+            col = painting_onto(u, col, now_p.rgb, now_p.a * (1.0 - reached) * show);
+            col = painting_onto(u, col, next_p.rgb, next_p.a * reached * show);
+            break;
+        }
+    }
     col = mix(col, u.colors[ARKOS_TERMINAL_FG].rgb, clamp(inked * ink_tooth(pen), 0.0, 1.0) * 0.96 * k);
     return float4(col, 1.0);
 }

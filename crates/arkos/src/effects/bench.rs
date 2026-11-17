@@ -7,7 +7,7 @@ use metal::{Device, MTLLoadAction, MTLPixelFormat, MTLPrimitiveType, MTLStorageM
 
 use super::blocks::{self, Block, HighlightState, Kind, Mark, Shape};
 use super::manifest::{Effect, Highlights};
-use super::{active, inputs, layer, PREAMBLE};
+use super::{active, inputs, layer};
 use crate::theme::Theme;
 use crate::tree::Rect;
 
@@ -30,7 +30,8 @@ const HEAVY: f32 = 8.0;
 /// warm-up (`measure`). Every frame waits for the GPU, so each is timed alone.
 pub fn bench(effect: &Effect, theme: &Theme, size: (f32, f32), seconds: f32) -> Result<f32, String> {
     let device = Device::system_default().ok_or("no Metal device")?;
-    let pipeline = layer::pipeline(&device, PREAMBLE, &effect.wash)?;
+    let pipeline = layer::pipeline(&device, &super::images::preamble(&effect.images)?, &effect.wash)?;
+    let gallery = super::images::texture(&device, &effect.images)?;
     let m = &effect.manifest;
     let (w, h) = layer::drawable_size((size.0 as f64, size.1 as f64), BACKING, m.scale as f64);
     if w < 1.0 || h < 1.0 {
@@ -60,6 +61,7 @@ pub fn bench(effect: &Effect, theme: &Theme, size: (f32, f32), seconds: f32) -> 
             let enc = cmd.new_render_command_encoder(pass);
             enc.set_render_pipeline_state(&pipeline);
             enc.set_fragment_bytes(0, std::mem::size_of::<inputs::Inputs>() as u64, &inputs as *const inputs::Inputs as *const std::ffi::c_void);
+            enc.set_fragment_texture(0, Some(&gallery));
             enc.draw_primitives(MTLPrimitiveType::Triangle, 0, 3);
             enc.end_encoding();
             cmd.commit();
@@ -132,7 +134,10 @@ fn sample_blocks(size: (f32, f32), effect: &Effect) -> Vec<Block> {
 #[cfg(test)]
 pub fn render_frame(wash: &str, theme: &Theme, size: (u32, u32), time: f32, blocks: &[Block]) -> Vec<crate::palette::Rgb> {
     let device = Device::system_default().expect("a Metal device");
-    let pipeline = layer::pipeline(&device, PREAMBLE, wash).unwrap();
+    // A built-in wash is drawn with its own images.
+    let images: Vec<std::sync::Arc<[u8]>> = super::BUILTIN.iter().find(|b| b.wash == wash).map(|b| super::manifest::load(b.name, std::path::Path::new("/nonexistent")).unwrap().images).unwrap_or_default();
+    let pipeline = layer::pipeline(&device, &super::images::preamble(&images).unwrap(), wash).unwrap();
+    let gallery = super::images::texture(&device, &images).unwrap();
     let desc = TextureDescriptor::new();
     desc.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
     desc.set_width(size.0 as u64);
@@ -151,6 +156,7 @@ pub fn render_frame(wash: &str, theme: &Theme, size: (u32, u32), time: f32, bloc
     let enc = cmd.new_render_command_encoder(pass);
     enc.set_render_pipeline_state(&pipeline);
     enc.set_fragment_bytes(0, std::mem::size_of::<inputs::Inputs>() as u64, &inputs as *const inputs::Inputs as *const std::ffi::c_void);
+    enc.set_fragment_texture(0, Some(&gallery));
     enc.draw_primitives(MTLPrimitiveType::Triangle, 0, 3);
     enc.end_encoding();
     cmd.commit();

@@ -103,15 +103,17 @@ fn stages(device: &DeviceRef, preamble: &str, wash: &str, vertex: &str, fragment
 /// size changes.
 struct Backdrops {
     pipeline: RenderPipelineState,
+    /// The effect's images (`effects::images::texture`).
+    gallery: metal::Texture,
     cache: core_video::metal_texture_cache::CVMetalTextureCache,
     images: std::collections::HashMap<u64, core_video::pixel_buffer::CVPixelBuffer>,
 }
 
 impl Backdrops {
-    fn new(device: &Device, preamble: &str, wash: &str) -> Result<Backdrops, String> {
+    fn new(device: &Device, preamble: &str, wash: &str, gallery: metal::Texture) -> Result<Backdrops, String> {
         let pipeline = backdrop_pipeline(device, preamble, wash)?;
         let cache = core_video::metal_texture_cache::CVMetalTextureCache::new(None, device.clone(), None).map_err(|e| format!("no texture cache ({e})"))?;
-        Ok(Backdrops { pipeline, cache, images: std::collections::HashMap::new() })
+        Ok(Backdrops { pipeline, gallery, cache, images: std::collections::HashMap::new() })
     }
 
     /// The image kept for `key`, `w` by `h` pixels: the one already there, or a new one.
@@ -163,6 +165,7 @@ impl Backdrops {
         enc.set_blend_color(0.0, 0.0, 0.0, opacity.clamp(0.0, 1.0));
         enc.set_vertex_bytes(0, std::mem::size_of_val(&share) as u64, share.as_ptr() as *const std::ffi::c_void);
         enc.set_fragment_bytes(0, std::mem::size_of::<Inputs>() as u64, inputs as *const Inputs as *const std::ffi::c_void);
+        enc.set_fragment_texture(0, Some(&self.gallery));
         enc.draw_primitives(MTLPrimitiveType::Triangle, 0, 3);
         enc.end_encoding();
         cmd.commit();
@@ -189,6 +192,8 @@ pub struct Layer {
     layer: MetalLayer,
     queue: CommandQueue,
     pipeline: RenderPipelineState,
+    /// The effect's images (`effects::images::texture`), bound to every draw.
+    gallery: metal::Texture,
     /// The manifest's `scale`: the wash's pixels per screen pixel, each side.
     scale: f64,
     drawable: (f64, f64),
@@ -255,16 +260,22 @@ impl Drop for Overlay {
 }
 
 impl Layer {
-    /// Compiles `wash` after `preamble` with the app's vertex stage and puts its layer below
-    /// gpui's `above` view in `window`, drawing at `scale` of the screen's pixels. `Err` carries
-    /// the compiler's message, its lines pointing into the wash, or what else went wrong.
-    pub fn install(window: &NSWindow, above: &NSView, preamble: &str, wash: &str, scale: f32) -> Result<Layer, String> {
+    /// Compiles the `effect`'s wash after the preamble with its images' sizes, with the app's
+    /// vertex stage, makes its images' texture, and puts its layer below gpui's `above` view in
+    /// `window`, drawing at its manifest's scale of the screen's pixels. `Err` carries the
+    /// compiler's message, its lines pointing into the wash, or what else went wrong.
+    pub fn install(window: &NSWindow, above: &NSView, effect: &crate::effects::manifest::Effect) -> Result<Layer, String> {
+        let wash = effect.wash.as_str();
+        let scale = effect.manifest.scale;
         let mtm = MainThreadMarker::new().ok_or("not on the main thread")?;
         let content = window.contentView().ok_or("the window has no content view")?;
         let device = Device::system_default().ok_or("no Metal device")?;
+        let preamble = crate::effects::images::preamble(&effect.images)?;
+        let preamble = preamble.as_str();
+        let gallery = crate::effects::images::texture(&device, &effect.images)?;
         let pipeline = pipeline(&device, preamble, wash)?;
         let (overlay, backdrops) = if crate::effects::active::has_overlay(wash) {
-            (Some(Overlay::install(&device, above, pipeline_for(&device, preamble, wash, "arkos_overlay")?)?), Some(Backdrops::new(&device, preamble, wash)?))
+            (Some(Overlay::install(&device, above, pipeline_for(&device, preamble, wash, "arkos_overlay")?)?), Some(Backdrops::new(&device, preamble, wash, gallery.clone())?))
         } else {
             (None, None)
         };
@@ -281,7 +292,7 @@ impl Layer {
             let _: () = msg_send![&*view, setLayer: layer.as_ptr() as *mut AnyObject];
         }
         content.addSubview_positioned_relativeTo(&view, NSWindowOrderingMode::Below, Some(above));
-        Ok(Layer { view, layer, queue: device.new_command_queue(), pipeline, scale: scale as f64, drawable: (0.0, 0.0), frames: 0, gpu_ms: None, overlay, backdrops })
+        Ok(Layer { view, layer, queue: device.new_command_queue(), pipeline, gallery, scale: scale as f64, drawable: (0.0, 0.0), frames: 0, gpu_ms: None, overlay, backdrops })
     }
 
     fn backing(&self) -> f64 {
@@ -322,6 +333,7 @@ impl Layer {
         let enc = cmd.new_render_command_encoder(pass);
         enc.set_render_pipeline_state(&self.pipeline);
         enc.set_fragment_bytes(0, std::mem::size_of::<Inputs>() as u64, inputs as *const Inputs as *const std::ffi::c_void);
+        enc.set_fragment_texture(0, Some(&self.gallery));
         enc.draw_primitives(MTLPrimitiveType::Triangle, 0, 3);
         enc.end_encoding();
         cmd.present_drawable(drawable);
@@ -387,6 +399,7 @@ impl Layer {
         let enc = cmd.new_render_command_encoder(pass);
         enc.set_render_pipeline_state(&overlay.pipeline);
         enc.set_fragment_bytes(0, std::mem::size_of::<Inputs>() as u64, inputs as *const Inputs as *const std::ffi::c_void);
+        enc.set_fragment_texture(0, Some(&self.gallery));
         enc.draw_primitives(MTLPrimitiveType::Triangle, 0, 3);
         enc.end_encoding();
         cmd.present_drawable(drawable);
@@ -417,7 +430,7 @@ mod tests {
     fn a_menu_s_backdrop_renders_frame_after_frame_into_the_same_image() {
         let Some(device) = Device::system_default() else { return };
         let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "watercolor").unwrap().wash;
-        let mut backdrops = Backdrops::new(&device, crate::effects::PREAMBLE, wash).unwrap();
+        let mut backdrops = Backdrops::new(&device, &crate::effects::images::preamble(&[]).unwrap(), wash, crate::effects::images::texture(&device, &[]).unwrap()).unwrap();
         let queue = device.new_command_queue();
         let theme = crate::theme::builtin("peach-watercolor").unwrap();
         let area = crate::tree::Rect { x: 100.0, y: 80.0, w: 200.0, h: 120.0 };

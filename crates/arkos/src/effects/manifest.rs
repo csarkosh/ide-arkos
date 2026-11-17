@@ -91,6 +91,10 @@ pub struct Manifest {
     /// The scenes the wash can draw, by name, in the order of the number it is handed
     /// (`ArkosInputs::scene`); a theme names one (`[effect] scene`). Empty, one scene, 0.
     pub scenes: Vec<String>,
+    /// Images the wash samples (`[[texture(0)]]`, a texture array in this order, each image's
+    /// size in `ARKOS_IMAGE_SIZE`): JPEG or PNG files in the effect's folder, or in a folder in
+    /// it, at most `images::MAX_IMAGES`.
+    pub images: Vec<String>,
 }
 
 impl Manifest {
@@ -157,6 +161,7 @@ impl Default for Manifest {
             terminal_decode: false,
             terminal_paint: false,
             scenes: Vec::new(),
+            images: Vec::new(),
         }
     }
 }
@@ -228,6 +233,16 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
             return Err(format!("{key} must be a file beside effect.toml (was {file:?})"));
         }
     }
+    if m.images.len() > super::images::MAX_IMAGES {
+        return Err(format!("images may list at most {} files (lists {})", super::images::MAX_IMAGES, m.images.len()));
+    }
+    for file in &m.images {
+        let parts: Vec<&str> = file.split('/').collect();
+        let ext = file.rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
+        if parts.len() > 2 || parts.iter().any(|p| !is_bare_name(p)) || !["jpg", "jpeg", "png"].contains(&ext.as_str()) {
+            return Err(format!("images must be .jpg, .jpeg or .png files in the effect's folder or a folder in it (was {file:?})"));
+        }
+    }
     in_range("frame_rate", m.frame_rate, 1, 60)?;
     in_range("scale", m.scale, 0.1, 1.0)?;
     in_range("ui_text_bump", m.ui_text_bump, 0.0, 4.0)?;
@@ -275,6 +290,8 @@ pub struct Effect {
     pub manifest: Manifest,
     pub wash: String,
     pub glyphs: Option<String>,
+    /// The files the manifest's `images` names, as read, in its order.
+    pub images: Vec<std::sync::Arc<[u8]>>,
     pub source: Source,
 }
 
@@ -304,14 +321,26 @@ pub fn load_folder(folder: &Path) -> Result<Effect, String> {
     }
     let wash = read(&manifest.wash)?;
     let glyphs = manifest.glyphs.as_deref().map(read).transpose()?;
-    Ok(Effect { manifest, wash, glyphs, source: Source::Folder(folder.to_path_buf()) })
+    let images = manifest
+        .images
+        .iter()
+        .map(|file| {
+            let path = folder.join(file);
+            let bytes = std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            super::images::dimensions(&bytes).map_err(|e| format!("{}: not an image Arkos can read ({e})", path.display()))?;
+            Ok(std::sync::Arc::<[u8]>::from(bytes))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(Effect { manifest, wash, glyphs, images, source: Source::Folder(folder.to_path_buf()) })
 }
 
 fn load_builtin(name: &str) -> Option<Effect> {
     let b = BUILTIN.iter().find(|b| b.name == name)?;
     // The built-in manifests are tested to parse; a failure here is a build error, not a user one.
     let manifest = parse(b.manifest).ok()?;
-    Some(Effect { manifest, wash: b.wash.to_string(), glyphs: b.glyphs.map(str::to_string), source: Source::BuiltIn })
+    // Each image the manifest names, from the files compiled in beside it.
+    let images = manifest.images.iter().map(|file| b.images.iter().find(|(n, _)| n == file).map(|(_, bytes)| std::sync::Arc::<[u8]>::from(*bytes))).collect::<Option<Vec<_>>>()?;
+    Some(Effect { manifest, wash: b.wash.to_string(), glyphs: b.glyphs.map(str::to_string), images, source: Source::BuiltIn })
 }
 
 /// The effect named: `dir/<name>/` if that folder exists, else the built-in of that name.
@@ -331,7 +360,8 @@ pub fn load(name: &str, dir: &Path) -> Result<Effect, String> {
 /// its shader files beside it). A name already in `dir` is `Err("exists")` unless `replace`.
 /// Only the folder's own files are copied, not what lies in folders inside it.
 pub fn import_folder(src: &Path, dir: &Path, replace: bool) -> Result<String, String> {
-    let name = load_folder(src)?.manifest.name;
+    let loaded = load_folder(src)?;
+    let name = loaded.manifest.name.clone();
     let dest = dir.join(&name);
     if dest.exists() {
         if !replace {
@@ -346,6 +376,14 @@ pub fn import_folder(src: &Path, dir: &Path, replace: bool) -> Result<String, St
         if from.is_file() {
             std::fs::copy(&from, dest.join(entry.file_name())).map_err(|e| format!("cannot copy {}: {e}", from.display()))?;
         }
+    }
+    // The images in a folder of the effect's own.
+    for file in loaded.manifest.images.iter().filter(|f| f.contains('/')) {
+        let to = dest.join(file);
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+        }
+        std::fs::copy(src.join(file), &to).map_err(|e| format!("cannot copy {}: {e}", src.join(file).display()))?;
     }
     load_folder(&dest).map(|_| name)
 }
@@ -400,6 +438,34 @@ mod tests {
             std::fs::write(f.join(file), format!("// {file} of {name}\n")).unwrap();
         }
         f
+    }
+
+    #[test]
+    fn images_are_jpeg_or_png_files_in_the_folder_at_most_eight_and_load_with_it() {
+        assert_eq!(parse(MINIMAL).unwrap().images, Vec::<String>::new());
+        assert_eq!(parse(&with("images = [\"a.jpg\", \"gallery/b.png\"]")).unwrap().images, ["a.jpg", "gallery/b.png"]);
+        for bad in ["../a.jpg", "/a.jpg", "a/b/c.jpg", "a.gif"] {
+            assert!(parse(&with(&format!("images = [\"{bad}\"]"))).is_err(), "{bad}");
+        }
+        let nine: Vec<String> = (0..9).map(|i| format!("\"{i}.jpg\"")).collect();
+        assert!(parse(&with(&format!("images = [{}]", nine.join(", ")))).unwrap_err().contains("at most 8"));
+        // A folder's images are read with it; one that is not an image is refused, naming it.
+        let dir = tempfile::tempdir().unwrap();
+        let wc = load("watercolor", Path::new("/nonexistent")).unwrap();
+        let f = folder(dir.path(), "pics", "name = \"pics\"\nwash = \"wash.metal\"\nimages = [\"gallery/one.jpg\"]\n", &["wash.metal"]);
+        std::fs::create_dir_all(f.join("gallery")).unwrap();
+        std::fs::write(f.join("gallery/one.jpg"), &*wc.images[0]).unwrap();
+        let e = load_folder(&f).unwrap();
+        assert_eq!(e.images.len(), 1);
+        assert_eq!(&*e.images[0], &*wc.images[0]);
+        std::fs::write(f.join("gallery/one.jpg"), b"text").unwrap();
+        assert!(load_folder(&f).unwrap_err().contains("one.jpg: not an image"));
+        // Imported, its images come along.
+        std::fs::write(f.join("gallery/one.jpg"), &*wc.images[0]).unwrap();
+        let effects = dir.path().join("effects");
+        std::fs::create_dir_all(&effects).unwrap();
+        assert_eq!(import_folder(&f, &effects, false).unwrap(), "pics");
+        assert!(effects.join("pics/gallery/one.jpg").is_file());
     }
 
     #[test]

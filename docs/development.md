@@ -1098,6 +1098,11 @@ Things only a person at the screen can check, in order of value:
   own menu is open; a click on the question mark opens Help with nothing marked and no ring on the
   icon, Down marks Keyboard Navigation, Enter opens it, and Escape instead closes the menu with
   the keys back in the pane
+- watercolor gallery: under Lavender Watercolor with room under the sidebar's rows, a painting (the
+  Great Wave first) hangs at the bottom of Pane 0 as a soft watercolour with ragged edges; within a
+  minute the next blooms in from a few pools over about six seconds while the last fades back to
+  paper, and every painting in turn comes round; open enough folders to fill the sidebar and it fades
+  out; Reduce Motion on, it holds the first painting
 - wash on other displays: with The Matrix or Tokyo Rain, drag the window to an external display
   of another refresh rate (60, 75, 144 Hz): Pane 0's traffic, rain and clouds move as smoothly
   as on the MacBook's own display, with no stutter or uneven steps; dragged back to the MacBook,

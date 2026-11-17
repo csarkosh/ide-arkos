@@ -629,8 +629,15 @@ Player". Audio still opens in QuickTime Player, and a `.webm` is shown in Finder
 An effect is a shader that paints the project window: a wash under every surface, and
 optionally the text itself. Peach Watercolor and Lavender Watercolor come with `watercolor`: washes that hug each block with
 a ragged rim, ink outlines with a slow wobble, bubbles drifting behind, the Explorer's selected
-and hovered rows and the hovered tab as fading strokes of pigment, glyphs and emoji written in ink, and UI
-text two points larger. `space` is hidden: Settings and `arkos effect list` leave it out, but a
+and hovered rows and the hovered tab as fading strokes of pigment, glyphs and emoji written in ink, UI
+text two points larger, and in the empty space under the sidebar's rows a gallery of famous paintings
+as watercolours, one at a time: each is held fifty seconds, then the next blooms in from a few pools
+of pigment over six while the last dries back to the paper. The eight are Hokusai's Great Wave,
+Monet's Water Lilies, Van Gogh's Wheat Field with Cypresses and Irises, Hiroshige's Sudden Shower over
+Shin-Ohashi Bridge, Degas's Dance Class, Bruegel's Harvesters and Vermeer's Young Woman with a Water
+Pitcher, all in the public domain and released by their museums under CC0 (their sources are in
+`crates/arkos/effects/watercolor/gallery/CREDITS.md`). The gallery shows when there is room under the
+rows; under Reduce Motion it holds the first. `space` is hidden: Settings and `arkos effect list` leave it out, but a
 config or `arkos effect use space` still draws it. It is a calm night sky of twinkling stars, a faint
 nebula, a planet drifting across over several minutes, and a shooting star every ten seconds
 or so; pane edges, videos and

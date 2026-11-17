@@ -6264,7 +6264,7 @@ struct WindowInstaller {
 impl effects::active::Installer for WindowInstaller {
     type Layer = effects::layer::Layer;
     fn install(&mut self, effect: &effects::manifest::Effect) -> Result<effects::layer::Layer, String> {
-        effects::layer::Layer::install(&self.ns, &self.view, effects::PREAMBLE, &effect.wash, effect.manifest.scale)
+        effects::layer::Layer::install(&self.ns, &self.view, effect)
     }
 }
 

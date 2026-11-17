@@ -140,6 +140,7 @@ dependencies = [
  "encoding_rs",
  "futures",
  "gpui",
+ "image",
  "imagesize",
  "libc",
  "metal",

@@ -8,6 +8,7 @@ pub mod blocks;
 pub mod cli;
 pub mod decode;
 pub mod hash;
+pub mod images;
 pub mod inputs;
 pub mod layer;
 pub mod manifest;
@@ -22,6 +23,7 @@ pub mod runic;
 /// The space wash's event schedule mirrored in Rust, for its tests alone: the app never runs it.
 #[cfg(test)]
 pub mod space;
+pub mod watercolor;
 pub mod stills;
 pub mod strokes;
 
@@ -44,7 +46,21 @@ pub struct BuiltIn {
     /// Left out of Settings and `arkos effect list`; a config or command that names it still
     /// draws it.
     pub hidden: bool,
+    /// The images its manifest names, by the name it gives them.
+    pub images: &'static [(&'static str, &'static [u8])],
 }
+
+/// Watercolor's gallery (`effects/watercolor/gallery/CREDITS.md`): public-domain works, CC0.
+const WATERCOLOR_GALLERY: &[(&str, &[u8])] = &[
+    ("gallery/1-great-wave.jpg", include_bytes!("../../effects/watercolor/gallery/1-great-wave.jpg")),
+    ("gallery/2-water-lilies.jpg", include_bytes!("../../effects/watercolor/gallery/2-water-lilies.jpg")),
+    ("gallery/3-wheat-field-with-cypresses.jpg", include_bytes!("../../effects/watercolor/gallery/3-wheat-field-with-cypresses.jpg")),
+    ("gallery/4-sudden-shower.jpg", include_bytes!("../../effects/watercolor/gallery/4-sudden-shower.jpg")),
+    ("gallery/5-the-dance-class.jpg", include_bytes!("../../effects/watercolor/gallery/5-the-dance-class.jpg")),
+    ("gallery/6-irises.jpg", include_bytes!("../../effects/watercolor/gallery/6-irises.jpg")),
+    ("gallery/7-the-harvesters.jpg", include_bytes!("../../effects/watercolor/gallery/7-the-harvesters.jpg")),
+    ("gallery/8-water-pitcher.jpg", include_bytes!("../../effects/watercolor/gallery/8-water-pitcher.jpg")),
+];
 
 /// The built-in effects, by folder name.
 pub const BUILTIN: &[BuiltIn] = &[
@@ -54,6 +70,7 @@ pub const BUILTIN: &[BuiltIn] = &[
         wash: include_str!("../../effects/watercolor/wash.metal"),
         glyphs: Some(include_str!("../../effects/watercolor/glyphs.metal")),
         hidden: false,
+        images: WATERCOLOR_GALLERY,
     },
     BuiltIn {
         name: "space",
@@ -61,6 +78,7 @@ pub const BUILTIN: &[BuiltIn] = &[
         wash: include_str!("../../effects/space/wash.metal"),
         glyphs: Some(include_str!("../../effects/space/glyphs.metal")),
         hidden: true,
+        images: &[],
     },
     BuiltIn {
         name: "runic",
@@ -68,6 +86,7 @@ pub const BUILTIN: &[BuiltIn] = &[
         wash: include_str!("../../effects/runic/wash.metal"),
         glyphs: Some(include_str!("../../effects/runic/glyphs.metal")),
         hidden: false,
+        images: &[],
     },
     BuiltIn {
         name: "material",
@@ -75,6 +94,7 @@ pub const BUILTIN: &[BuiltIn] = &[
         wash: include_str!("../../effects/material/wash.metal"),
         glyphs: None,
         hidden: false,
+        images: &[],
     },
     BuiltIn {
         name: "notebook",
@@ -82,6 +102,7 @@ pub const BUILTIN: &[BuiltIn] = &[
         wash: include_str!("../../effects/notebook/wash.metal"),
         glyphs: Some(include_str!("../../effects/notebook/glyphs.metal")),
         hidden: false,
+        images: &[],
     },
     BuiltIn {
         name: "overworld",
@@ -89,6 +110,7 @@ pub const BUILTIN: &[BuiltIn] = &[
         wash: include_str!("../../effects/overworld/wash.metal"),
         glyphs: Some(include_str!("../../effects/overworld/glyphs.metal")),
         hidden: false,
+        images: &[],
     },
 ];
 

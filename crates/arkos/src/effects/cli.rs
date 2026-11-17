@@ -155,6 +155,14 @@ fn template(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write
             let path = dest.join(file);
             std::fs::write(&path, text).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
         }
+        // Its images too, in the folders the manifest names them in.
+        for (file, bytes) in b.images {
+            let path = dest.join(file);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+            }
+            std::fs::write(&path, bytes).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        }
         Ok(())
     })();
     match made {
@@ -191,11 +199,12 @@ fn check(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
 fn compile(effect: &Effect) -> Result<(), String> {
     let device = Device::system_default().ok_or("no Metal device")?;
     let m = &effect.manifest;
-    layer::pipeline(&device, PREAMBLE, &effect.wash).map_err(|e| e.replace("program_source:", &format!("{}:", m.wash)))?;
+    let preamble = super::images::preamble(&effect.images)?;
+    layer::pipeline(&device, &preamble, &effect.wash).map_err(|e| e.replace("program_source:", &format!("{}:", m.wash)))?;
     // The menu stage, when the wash asks for one, is built as the window would.
     if active::has_overlay(&effect.wash) {
-        layer::pipeline_for(&device, PREAMBLE, &effect.wash, "arkos_overlay").map_err(|e| format!("{}: {}", m.wash, e.replace("program_source:", &format!("{}:", m.wash))))?;
-        layer::backdrop_pipeline(&device, PREAMBLE, &effect.wash).map_err(|e| format!("{}: {}", m.wash, e))?;
+        layer::pipeline_for(&device, &preamble, &effect.wash, "arkos_overlay").map_err(|e| format!("{}: {}", m.wash, e.replace("program_source:", &format!("{}:", m.wash))))?;
+        layer::backdrop_pipeline(&device, &preamble, &effect.wash).map_err(|e| format!("{}: {}", m.wash, e))?;
     }
     if let (Some(file), Some(source)) = (&m.glyphs, &effect.glyphs) {
         compile_glyphs(&device, source, file)?;

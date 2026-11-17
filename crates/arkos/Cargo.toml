@@ -34,6 +34,7 @@ similar = "2"
 pulldown-cmark.workspace = true
 # Already in the tree through gpui: an image's pixel size, read from its header, for its zoom.
 imagesize = "0.13"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 # Already in the tree through gpui and others: grapheme boundaries for the editing core.
 unicode-segmentation = "1"
 # Already in the tree through gpui: decoding a UTF-16 CSV by its byte order mark (grid.rs).
