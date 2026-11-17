@@ -504,9 +504,11 @@ constant float FOOT_NEAR_H = 22.0;
 constant float FOOT_FAR = 0.07;
 constant float FOOT_NEAR = 0.45;
 constant float FOOT_WINDOW = 0.32;
-// The lamp at a tab bar's right end: its radius and how far in from the end its centre sits.
+// The lamp at a tab bar's right end: its radius and how far in from the end its centre sits,
+// clear of the bar's + button (about 27 points at its end), as overworld's gem is (Cyrus,
+// 2026-11-17: the lamp at 16 sat on the +).
 constant float LAMP_R = 2.6;
-constant float LAMP_IN = 16.0;
+constant float LAMP_IN = 38.0;
 // The sidebar's frame line, its inset from the sidebar's edges.
 constant float SIDE_FRAME_IN = 3.5;
 // The scene at the sidebar's foot: its height, the least room it is drawn in, and how far below

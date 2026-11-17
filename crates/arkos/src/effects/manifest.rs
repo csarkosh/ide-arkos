@@ -641,7 +641,7 @@ mod tests {
         let b = BUILTIN.iter().find(|b| b.name == "runic").expect("runic is built in");
         let m = parse(b.manifest).unwrap();
         assert_eq!((m.frame_rate, m.scale, m.ui_text_bump), (30, 0.5, 0.0), "a pixel a point on a Retina display: full size cost 11 to 14 ms a frame there");
-        assert_eq!((m.gap, m.title_pad, m.sidebar_pad, m.bar_end_clear), (16.0, 8.0, 12.0, 30.0), "room for the frames, the plates, the chevron and the lamp");
+        assert_eq!((m.gap, m.title_pad, m.sidebar_pad, m.bar_end_clear), (16.0, 8.0, 12.0, 48.0), "room for the frames, the plates, the chevron and the lamp left of the +");
         assert_eq!(m.scenes, ["city", "code"]);
         assert!(m.ink_borders && m.glyph_motion && m.terminal_decode);
         assert_eq!(m.highlights, Highlights::Effect);
