@@ -1098,6 +1098,10 @@ Things only a person at the screen can check, in order of value:
   own menu is open; a click on the question mark opens Help with nothing marked and no ring on the
   icon, Down marks Keyboard Navigation, Enter opens it, and Escape instead closes the menu with
   the keys back in the pane
+- wash on other displays: with The Matrix or Tokyo Rain, drag the window to an external display
+  of another refresh rate (60, 75, 144 Hz): Pane 0's traffic, rain and clouds move as smoothly
+  as on the MacBook's own display, with no stutter or uneven steps; dragged back to the MacBook,
+  as smooth as before
 - watercolor keys: under Lavender Watercolor, Cmd+0 then Up rings Sessions in the switcher with a
   soft lavender wash, no line; Down washes the filter field and the session list's mark; Up
   past the switcher to the bell and Right to the question mark washes that icon; Enter and Down

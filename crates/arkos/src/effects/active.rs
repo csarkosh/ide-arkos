@@ -165,6 +165,103 @@ pub fn cadence(frame_rate: u32, moving: bool) -> Duration {
     Duration::from_secs_f64(1.0 / rate as f64)
 }
 
+/// The wash's frames paced on the display's own refreshes (Cyrus, 2026-11-17: Pane 0's motion
+/// "jitters significantly" on displays with other refresh rates). gpui's display link calls
+/// `refresh` on every refresh of the display the window is on; the pacer learns that display's
+/// period from the calls, draws on every k-th refresh (k the whole number of refreshes nearest
+/// the effect's cadence) and hands back the time to draw for, snapped to the refresh grid, so
+/// each frame shown moves the picture by the same step. A sleep timer's frames land on the
+/// refreshes unevenly and only ProMotion's variable refresh hides that.
+#[derive(Debug, Default)]
+pub struct Pacer {
+    /// The latest refreshes' times. The display's period is the median of the intervals over
+    /// `PACE_SPAN` refreshes each among them: a callback late then the next early cancel out
+    /// within a span, and a span with a missed or doubled callback is an outlier the median
+    /// leaves; a new display's period takes over within half the window.
+    times: std::collections::VecDeque<Instant>,
+    /// Every how many refreshes a frame is drawn, kept while it still fits the cadence.
+    k: f64,
+    /// When the clock the frames are drawn for starts.
+    origin: Option<Instant>,
+    /// The refresh the last frame was drawn on, and the time it was drawn for, in seconds from
+    /// `origin`: each frame's time moves on by exactly the refreshes since, eased toward the clock
+    /// by at most `PACE_EASE` a frame so the callbacks' jitter never reaches the picture.
+    drawn: Option<(Instant, f64)>,
+}
+
+/// The most a frame's time is eased toward the clock, in seconds; off by more than
+/// `PACE_RESYNC` refreshes (the period changed, a display's clock jumped) it is set to the
+/// clock. A single late callback, even by most of a refresh, moves nothing.
+const PACE_EASE: f64 = 0.00005;
+const PACE_RESYNC: f64 = 1.5;
+/// How many refreshes each interval is measured over, and how many are kept.
+const PACE_SPAN: usize = 8;
+const PACE_KEPT: usize = 72;
+
+impl Pacer {
+    /// The display's refresh period, in seconds: the one measured from the refreshes kept, snapped
+    /// to the screen's own rate `nominal` (or a whole number of its refreshes, a link running at
+    /// half of it) when they agree within a tenth, since a busy main thread's callbacks alone
+    /// cannot pin the period down closer than a few per cent.
+    fn period(&self, nominal: Option<f64>) -> Option<f64> {
+        let measured = self.measured()?;
+        let snapped = nominal.filter(|hz| *hz > 0.0).and_then(|hz| (1..=4).map(|n| n as f64 / hz).find(|q| (measured / q - 1.0).abs() < 0.1));
+        Some(snapped.unwrap_or(measured))
+    }
+
+    /// The period measured from the refreshes kept, in seconds.
+    fn measured(&self) -> Option<f64> {
+        if self.times.len() < 2 * PACE_SPAN {
+            return None;
+        }
+        let mut spans: Vec<f64> = (PACE_SPAN..self.times.len())
+            .map(|i| self.times[i].saturating_duration_since(self.times[i - PACE_SPAN]).as_secs_f64() / PACE_SPAN as f64)
+            .filter(|p| (0.002..0.05).contains(p))
+            .collect();
+        if spans.is_empty() {
+            return None;
+        }
+        spans.sort_by(f64::total_cmp);
+        Some(spans[spans.len() / 2])
+    }
+
+    /// A refresh at `now`: the time to draw a frame for when this refresh is one to draw on.
+    pub fn refresh(&mut self, now: Instant, target: Duration, nominal: Option<f64>) -> Option<Instant> {
+        if self.times.len() == PACE_KEPT {
+            self.times.pop_front();
+        }
+        self.times.push_back(now);
+        let origin = *self.origin.get_or_insert(now);
+        let period = self.period(nominal)?;
+        // The whole number of refreshes nearest the cadence, the faster rate on a tie, kept until
+        // the cadence is clearly nearer another.
+        let ratio = target.as_secs_f64() / period;
+        if self.k < 1.0 || (ratio - self.k).abs() > 0.6 {
+            self.k = (ratio - 0.05).round().max(1.0);
+        }
+        let real = now.saturating_duration_since(origin).as_secs_f64();
+        let at = match self.drawn {
+            Some((last, v)) => {
+                let n = (now.saturating_duration_since(last).as_secs_f64() / period).round();
+                if n < self.k {
+                    return None;
+                }
+                let v = v + n * period;
+                let off = real - v;
+                if off.abs() > PACE_RESYNC * period { real } else { v + off.clamp(-PACE_EASE, PACE_EASE) }
+            }
+            None => real,
+        };
+        self.drawn = Some((now, at));
+        Some(origin + Duration::from_secs_f64(at))
+    }
+
+    /// Forgets the display, as when the wash stops: the next refreshes learn it again.
+    pub fn reset(&mut self) {
+        *self = Pacer::default();
+    }
+}
+
 /// How long the wash's timer rests between looks while nothing of the wash can be seen: long
 /// enough that a hidden, occluded or covered window costs next to nothing, short enough that
 /// the wash comes back soon after the window does.
@@ -606,6 +703,84 @@ impl<L> ActiveEffect<L> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Refreshes of a display at `hz`, from `t0`, each callback late by up to `jitter` ms (the
+    /// main thread's dispatch), as gpui's display link calls them.
+    fn refreshes(t0: Instant, hz: f64, n: usize, jitter: f64) -> Vec<Instant> {
+        (0..n).map(|i| t0 + Duration::from_secs_f64(i as f64 / hz + jitter * 0.001 * hash_unit(i))).collect()
+    }
+
+    fn hash_unit(i: usize) -> f64 {
+        crate::effects::hash::hash01((i as u32).wrapping_mul(2_654_435_761)) as f64
+    }
+
+    /// The times drawn for, and the steps between them in seconds.
+    fn paced(pacer: &mut Pacer, ticks: &[Instant], target: Duration) -> Vec<f64> {
+        let drawn: Vec<Instant> = ticks.iter().filter_map(|t| pacer.refresh(*t, target, None)).collect();
+        drawn.windows(2).map(|w| (w[1] - w[0]).as_secs_f64()).collect()
+    }
+
+    #[test]
+    fn the_wash_draws_on_every_kth_refresh_of_any_display_and_its_clock_steps_evenly() {
+        // Cyrus, 2026-11-17: smooth on the MacBook, jittering "on non-native displays with
+        // alternative refresh rates". Each drawn frame's clock moves by the same step, a whole
+        // number of the display's refreshes nearest the effect's rate, whatever the callbacks'
+        // jitter.
+        let t0 = Instant::now();
+        for (hz, k) in [(60.0, 2usize), (75.0, 2), (120.0, 4), (144.0, 5), (50.0, 2), (100.0, 3)] {
+            let mut pacer = Pacer::default();
+            let steps = paced(&mut pacer, &refreshes(t0, hz, 600, 3.0), cadence(30, false));
+            let want = k as f64 / hz;
+            // The first second learns the refresh; after it every step is the same.
+            // On the k-th refresh every time (a refresh early or late is the judder), and the
+            // clock's step within half a millisecond of it.
+            for (i, s) in steps.iter().enumerate().skip(30) {
+                assert!((s - want).abs() < 5e-4, "{hz} Hz: step {i} is {s}, not {want}");
+            }
+            let rate = 1.0 / want;
+            assert!((24.0..=40.0).contains(&rate), "{hz} Hz draws at {rate} a second");
+        }
+        // Moving: sixty a second, or as near as whole refreshes give.
+        let mut pacer = Pacer::default();
+        let steps = paced(&mut pacer, &refreshes(t0, 144.0, 600, 3.0), cadence(30, true));
+        assert!(steps.iter().skip(60).all(|s| (s - 2.0 / 144.0).abs() < 5e-4), "72 a second at 144 Hz");
+    }
+
+    #[test]
+    fn a_busy_main_thread_s_late_and_dropped_callbacks_still_learn_the_display() {
+        // As the window's log showed on a loaded Mac: callbacks up to 10 ms late, one in twenty
+        // never coming.
+        let t0 = Instant::now();
+        let ticks: Vec<Instant> = refreshes(t0, 60.0, 900, 10.0).into_iter().enumerate().filter(|(i, _)| hash_unit(i + 7_000) > 0.05).map(|(_, t)| t).collect();
+        let mut pacer = Pacer::default();
+        let drawn: Vec<Instant> = ticks.iter().filter_map(|t| pacer.refresh(*t, cadence(30, false), Some(60.0))).collect();
+        assert_eq!(pacer.period(Some(60.0)), Some(1.0 / 60.0), "the screen's own rate");
+        let measured = pacer.measured().unwrap();
+        assert!((measured * 60.0 - 1.0).abs() < 0.1, "measured near it: {measured}");
+        assert_eq!(pacer.period(Some(144.0)), Some(measured), "a screen rate no whole number of refreshes near the measure is not taken");
+        let steps: Vec<f64> = drawn.windows(2).skip(30).map(|w| (w[1] - w[0]).as_secs_f64() * 60.0).collect();
+        let on_two = steps.iter().filter(|r| (*r - 2.0).abs() < 0.1).count();
+        assert!(on_two * 10 >= steps.len() * 8, "{on_two} of {} frames two refreshes apart", steps.len());
+    }
+
+    #[test]
+    fn a_stalled_refresh_skips_ahead_on_the_grid_and_a_new_display_is_learned() {
+        let t0 = Instant::now();
+        let mut pacer = Pacer::default();
+        let target = cadence(30, false);
+        // A busy main thread misses a quarter of a second of refreshes at 60 Hz.
+        let mut ticks = refreshes(t0, 60.0, 120, 2.0);
+        ticks.retain(|t| !(t0 + Duration::from_millis(1000)..t0 + Duration::from_millis(1250)).contains(t));
+        let drawn: Vec<Instant> = ticks.iter().filter_map(|t| pacer.refresh(*t, target, None)).collect();
+        for w in drawn.windows(2).skip(15) {
+            let refreshes = (w[1] - w[0]).as_secs_f64() * 60.0;
+            assert!((refreshes - refreshes.round()).abs() < 0.05, "the clock stays on the refresh grid: {refreshes}");
+        }
+        // The window moves to a 144 Hz display: within half a second it paces for 144.
+        let later = *ticks.last().unwrap() + Duration::from_millis(5);
+        let steps = paced(&mut pacer, &refreshes(later, 144.0, 288, 2.0), target);
+        assert!(steps.iter().skip(40).all(|s| (s - 5.0 / 144.0).abs() < 5e-4), "{:?}", &steps[40..50]);
+    }
     use crate::effects::blocks::{self, Kind};
     use crate::effects::inputs;
     use crate::effects::manifest::{self, Effect, Highlights};

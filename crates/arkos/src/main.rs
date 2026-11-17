@@ -525,6 +525,14 @@ pub struct Root {
     effect_timer: Option<bool>,
     /// Counts the timers started, so a timer started afresh ends the one it replaces.
     effect_timer_gen: u64,
+    /// The wash's frames on the display's refreshes (`effects::active::Pacer`): the window to ask
+    /// gpui's display link of, the pacer, the cadence it paces for, whether a chain of refresh
+    /// callbacks is asked for or running, and when the last one came.
+    window_handle: Option<gpui::AnyWindowHandle>,
+    wash_pacer: effects::active::Pacer,
+    wash_cadence: std::time::Duration,
+    wash_chain: bool,
+    wash_refresh_at: Option<Instant>,
     /// Whether the text's timer (`ensure_glyph_timer`) runs. It stops itself when
     /// `effects::active::glyph_wait` says so, and `render` starts it again.
     glyph_timer: bool,
@@ -819,6 +827,19 @@ fn shell_name(configured: Option<&str>, env: Option<&str>) -> String {
         .unwrap_or_else(|| "shell".into())
 }
 
+/// How often the wash's timer looks in while the display's refreshes draw the wash, and how long
+/// without a refresh before it takes the wash back.
+const WASH_WATCH: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// One of the display's refreshes for the wash (`Root::on_wash_refresh`), asking for the next
+/// while the wash runs on them.
+fn wash_refresh(root: gpui::WeakEntity<Root>, generation: u64, window: &mut Window, cx: &mut App) {
+    let next = root.update(cx, |root, cx| root.on_wash_refresh(generation, cx)).unwrap_or(false);
+    if next {
+        window.on_next_frame(move |window, cx| wash_refresh(root, generation, window, cx));
+    }
+}
+
 impl Root {
     fn new(client: Arc<client::Client>, project: PathBuf, saved: Option<Workspace>, config: config::Config, theme: theme::Theme, system_is_dark: bool, installed: SystemTime, cx: &mut Context<Self>) -> Self {
         let (text_preset, preset) = config::resolve_preset(saved.as_ref().and_then(|w| w.text_preset.as_deref()), &config.font.preset, &config.font.presets);
@@ -1003,6 +1024,11 @@ impl Root {
             glyph_scale: 2.0,
             effect_timer: None,
             effect_timer_gen: 0,
+            window_handle: None,
+            wash_pacer: effects::active::Pacer::default(),
+            wash_cadence: std::time::Duration::from_millis(33),
+            wash_chain: false,
+            wash_refresh_at: None,
             glyph_timer: false,
             glyph_timer_gen: 0,
             transparent: false,
@@ -6004,23 +6030,22 @@ impl Root {
                     return None;
                 }
                 let now = Instant::now();
-                root.step_effect_fade(now, cx);
-                let seen = root.effect_tick(now);
-                // The open menus repaint with the wash, which a paused window holds still.
-                if seen.is_some() && !root.effect_menus.is_empty() && !root.effects_paused {
-                    cx.notify();
+                // While the display's refreshes come they draw the wash (`wash_refresh`); this
+                // loop only watches, and takes over when they stop (the window covered, its
+                // display link stopped).
+                if root.wash_chain && root.wash_refresh_at.is_some_and(|t| now.saturating_duration_since(t) < WASH_WATCH) {
+                    return Some(WASH_WATCH);
                 }
-                // The text's own timer stops while the window cannot be seen and only `render`
-                // restarts it; uncovering the window brings no render by itself, so this tick does.
-                if seen.is_some() {
-                    root.ensure_glyph_timer(cx);
+                root.wash_chain = false;
+                let wait = root.wash_step(now, now, cx);
+                match wait {
+                    Some(d) if d < effects::active::REST => {
+                        root.wash_cadence = d;
+                        root.start_wash_refreshes(cx);
+                        Some(WASH_WATCH)
+                    }
+                    other => other,
                 }
-                let paused = root.effects_paused;
-                let wait = root.effect.as_ref().and_then(|e| {
-                    effects::active::next_wait(e.effect.manifest.frame_rate, seen.is_some(), seen == Some(true), !e.settled(), motion::reduce_motion(), paused)
-                });
-                root.effect_timer = wait.map(|_| seen.is_none());
-                wait
             });
             match wait {
                 Ok(Some(d)) => cx.background_executor().timer(d).await,
@@ -6028,6 +6053,69 @@ impl Root {
             }
         })
         .detach();
+    }
+
+    /// One frame of the wash at `now`, drawn for `at` (the refresh grid's time when the display
+    /// paces it): the effect's fade, the wash's inputs and draw, and what the wash's timer waits
+    /// next (`effects::active::next_wait`), or `None` to stop.
+    fn wash_step(&mut self, now: Instant, at: Instant, cx: &mut Context<Self>) -> Option<std::time::Duration> {
+        self.step_effect_fade(now, cx);
+        let seen = self.effect_tick(at);
+        // The open menus repaint with the wash, which a paused window holds still.
+        if seen.is_some() && !self.effect_menus.is_empty() && !self.effects_paused {
+            cx.notify();
+        }
+        // The text's own timer stops while the window cannot be seen and only `render`
+        // restarts it; uncovering the window brings no render by itself, so this tick does.
+        if seen.is_some() {
+            self.ensure_glyph_timer(cx);
+        }
+        let paused = self.effects_paused;
+        let wait = self.effect.as_ref().and_then(|e| effects::active::next_wait(e.effect.manifest.frame_rate, seen.is_some(), seen == Some(true), !e.settled(), motion::reduce_motion(), paused));
+        self.effect_timer = wait.map(|_| seen.is_none());
+        wait
+    }
+
+    /// Asks gpui's display link for the window's next refresh, which draws the wash when the
+    /// pacer says and asks for the one after (`wash_refresh`), until the wash rests or stops.
+    fn start_wash_refreshes(&mut self, cx: &mut Context<Self>) {
+        let Some(handle) = self.window_handle else { return };
+        if self.wash_chain {
+            return;
+        }
+        self.wash_chain = true;
+        self.wash_refresh_at = Some(Instant::now());
+        self.wash_pacer.reset();
+        let generation = self.effect_timer_gen;
+        let root = cx.entity().downgrade();
+        cx.spawn(async move |_, cx| {
+            handle
+                .update(cx, |_, window, _| window.on_next_frame(move |window, cx| wash_refresh(root, generation, window, cx)))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// A refresh of the window's display while the wash runs on them: true to ask for the next.
+    fn on_wash_refresh(&mut self, generation: u64, cx: &mut Context<Self>) -> bool {
+        if generation != self.effect_timer_gen || !self.wash_chain || self.effect.is_none() {
+            return false;
+        }
+        let now = Instant::now();
+        self.wash_refresh_at = Some(now);
+        let nominal = self.ns_window.as_ref().and_then(|ns| screen::refresh_rate(ns));
+        let Some(at) = self.wash_pacer.refresh(now, self.wash_cadence, nominal) else { return true };
+        match self.wash_step(now, at, cx) {
+            Some(d) if d < effects::active::REST => {
+                self.wash_cadence = d;
+                true
+            }
+            // Resting or stopped: the timer's loop takes the wash back.
+            _ => {
+                self.wash_chain = false;
+                false
+            }
+        }
     }
 
     /// What the text's timer waits before the next frame, or `None` when the text need not be
@@ -7162,6 +7250,7 @@ fn open_project_window(
                         let space = view_saved.as_ref().and_then(|s| s.window.as_ref()).and_then(|w| w.space.clone());
                         let mut root = Root::new(client_for_view, view_project, view_saved, view_config, view_theme, system_is_dark, installed, cx);
                         root.ns_window = screen::ns_window_of(window);
+                        root.window_handle = Some(window.window_handle());
                         if let (Some(from), Some(ns)) = (handoff_from, root.ns_window.as_ref()) {
                             handoff::mac::start_hidden(ns);
                             root.handoff_from = Some((from, Instant::now()));

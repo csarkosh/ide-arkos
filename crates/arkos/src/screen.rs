@@ -152,6 +152,13 @@ mod mac {
         window_hidden(window) || !window.occlusionState().contains(NSWindowOcclusionState::Visible)
     }
 
+    /// The refresh rate of the screen the window is on, as macOS gives it (60, 75, 120, 144...):
+    /// the wash's pacer snaps the period it measures to it (`effects::active::Pacer`).
+    pub fn refresh_rate(window: &NSWindow) -> Option<f64> {
+        let fps = window.screen()?.maximumFramesPerSecond();
+        (fps > 0).then_some(fps as f64)
+    }
+
     /// gpui's own `NSView` in a gpui window, from its AppKit window handle: the view that takes
     /// the keys back from a web view (`make_first_responder`).
     pub fn ns_view_of(window: &impl raw_window_handle::HasWindowHandle) -> Option<Retained<NSView>> {
