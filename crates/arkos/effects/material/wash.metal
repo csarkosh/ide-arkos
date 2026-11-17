@@ -25,10 +25,11 @@ constant float CARD_RADIUS = 14.0;
 constant float SIDE_CARD = 0.5;
 // The drawer's pill, in from the sidebar's edges.
 constant float PILL_INSET = 8.0;
-// The pane number's chip: its centre from the strip's left, its radius, and its container. On a
-// rounded card the app centres the number in an 18 point slot 10 points in
-// (`pane_view::number_slot`), and the chip fills that slot.
-constant float CHIP_X = 19.0;
+// The pane number's chip: its centre from the strip's left, its half length past its round ends,
+// its radius, and its container. On a rounded card the app centres the badge ("⌘1") in a 28 point
+// slot 10 points in (`pane_view::number_slot`), and the chip, a pill, fills that slot.
+constant float CHIP_X = 24.0;
+constant float CHIP_HALF = 5.0;
 // The pane's own one point border, inside its tab bar and body blocks.
 constant float PANE_BORDER = 1.0;
 constant float CHIP_R = 9.0;
@@ -207,7 +208,8 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
                     float3 hue = u.colors[ARKOS_ANSI + PANE_HUES[max(int(blk.ordinal), 0) % 4]].rgb;
                     // The app lays the strip out inside the pane's border, so its slot (and the
                     // number centred on it) sits that far in from the block's corner.
-                    float dc = length(p - float2(r.x + PANE_BORDER + CHIP_X, r.y + PANE_BORDER + r.w * 0.5)) - CHIP_R;
+                    float2 dq = p - float2(r.x + PANE_BORDER + CHIP_X, r.y + PANE_BORDER + r.w * 0.5);
+                    float dc = length(float2(max(abs(dq.x) - CHIP_HALF, 0.0), dq.y)) - CHIP_R;
                     col = mix(col, container(u, hue, CHIP_TONE, card), (1.0 - smoothstep(-0.5, 0.5, dc)) * k);
                     // A busy pane's indicator along the bottom of its strip.
                     if (blk.busy > 0.5 && p.y >= r.y + r.w - TRACK_H) {

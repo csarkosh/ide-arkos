@@ -52,7 +52,14 @@ pub fn terminal_inset(style: crate::effects::active::Style) -> f32 {
 /// left edge and this wide, so an effect can draw a chip of that width behind it (Material's
 /// sits exactly on the slot) clear of the card's corner and its focus ring.
 pub const NUMBER_SLOT_INSET: f32 = 10.0;
-pub const NUMBER_SLOT_W: f32 = 18.0;
+pub const NUMBER_SLOT_W: f32 = 28.0;
+
+/// A pane's number as its badge shows it: the Command key's sign before it (Cyrus, 2026-11-17:
+/// "so it's more obvious what the hotkey is"), "⌘1" for the pane Cmd+1 focuses, "⌘0" for the
+/// sidebar.
+pub fn number_label(number: impl std::fmt::Display) -> String {
+    format!("\u{2318}{number}")
+}
 
 /// Where to paint a line whose ink runs from `ink.0` to `ink.1` points past its origin across,
 /// whose figures are `cap` points tall on the baseline and whose ascent is `ascent`, so its ink
@@ -696,10 +703,10 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
             let slot = match number_slot(style) {
                 // Painted with its ink centred on the slot, which is the chip's place.
                 Some((inset, width)) => {
-                    let (label, family, size, color): (gpui::SharedString, _, _, _) = (format!("{number}").into(), root.ui_family(), style.ui(12.0), dim.hsla());
+                    let (label, family, size, color): (gpui::SharedString, _, _, _) = (number_label(number).into(), root.ui_family(), style.ui(12.0), dim.hsla());
                     div().id(("grip", pane)).flex_none().ml(px(inset)).mr(px(6.0)).w(px(width)).h_full().child(gpui::canvas(|_, _, _| (), move |b, _, window, cx| paint_centred(&label, family.clone(), size, color, b, window, cx)).size_full())
                 }
-                None => div().id(("grip", pane)).h_full().flex().items_center().px(px(8.0)).text_color(dim.hsla()).child(format!("{number}")),
+                None => div().id(("grip", pane)).h_full().flex().items_center().px(px(8.0)).text_color(dim.hsla()).child(number_label(number)),
             };
             slot.cursor_grab().when_some(grip, |el, value| el.on_drag(value, |d: &drag::TabDrag, position, _window, cx| cx.new(|_| d.clone().at(position))))
         })
@@ -1844,6 +1851,18 @@ mod tests {
         assert_eq!(x + 1.0 + (6.0 - 1.0) / 2.0, 19.0, "the ink's middle on the centre across");
         let baseline = y + 12.0;
         assert_eq!(baseline - 9.0 / 2.0, 15.0, "the cap height's middle on the centre down");
+    }
+
+    #[test]
+    fn a_pane_s_badge_shows_the_command_key_before_its_number_and_the_sidebar_has_one() {
+        assert_eq!(number_label(1), "\u{2318}1");
+        assert_eq!(number_label(0), "\u{2318}0");
+        assert!(include_str!("sidebar.rs").contains("crate::pane_view::number_label(0)"), "Pane 0's badge at the sidebar's top left");
+        // Material's chip spans the slot the badge is centred in.
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "material").unwrap().wash;
+        let constant = |name: &str| -> f32 { wash.lines().find(|l| l.starts_with(&format!("constant float {name} = "))).unwrap().rsplit("= ").next().unwrap().trim_end_matches(';').parse().unwrap() };
+        let (x, half, r) = (constant("CHIP_X"), constant("CHIP_HALF"), constant("CHIP_R"));
+        assert_eq!((x - half - r, x + half + r), (NUMBER_SLOT_INSET, NUMBER_SLOT_INSET + NUMBER_SLOT_W));
     }
 
     #[test]

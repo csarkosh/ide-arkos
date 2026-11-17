@@ -109,8 +109,9 @@ split as you left it, and coming back brings this one back the same way.
   The tab bar's "+" asks what to start: Claude or Codex opens a tab with the agent already
   started in its shell (quit it and the shell is still there), Shell a plain terminal as
   Ctrl+Shift+` does. "+ New session", under the filter, starts a session of its own instead.
-- Every pane has its tab bar, the session's first one included. A pane moves by its number at
-  the left end of its tab bar: drag it onto an edge of another pane to put it there, tabs and
+- Every pane has its tab bar, the session's first one included. Its left end shows the pane's
+  key, "⌘1", "⌘2" and so on, the Command key's sign before the number Cmd focuses it with; the
+  sidebar shows "⌘0" at its top left. A pane moves by that number at the left end of its tab bar: drag it onto an edge of another pane to put it there, tabs and
   all, or into another pane's middle or tab bar to join its tabs to that pane's. A tab drags
   the same way.
 - A file you open from the Explorer joins the session you are on. A file a Claude Code session
@@ -685,7 +686,7 @@ blinking over the roofs, and code raining behind it from
 half the sidebar's height, its sheets coming toward you with the city. Material
 and Lavender Material come with `material`: the
 title bar, sidebar and status bar are one pale frame with a search bar round the title, each pane
-is a card in the theme's page colour with rounded corners floating on it (white under Material), the pane's number sits on a coloured round
+is a card in the theme's page colour with rounded corners floating on it (white under Material), the pane's key ("⌘1") sits on a coloured pill
 chip (blue, green, yellow, red in turn), each active tab is underlined in the theme's accent, the selected
 Explorer row is a pill in its selection colour across the sidebar with a ripple as it is chosen, a hovered row
 or tab a faint grey pill, and a pane whose Claude session works carries an indeterminate progress bar along the

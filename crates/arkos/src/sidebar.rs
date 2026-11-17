@@ -302,6 +302,8 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
             .flex()
             .items_center()
             .gap(px(4.0))
+            // Pane 0's badge, as every pane's: Cmd+0 brings the keys here.
+            .child(div().flex_none().mr(px(4.0)).text_size(px(style.ui(12.0))).text_color(c.text_dim.hsla()).child(crate::pane_view::number_label(0)))
             .child(pill("inbox-sessions", "Sessions", !files).on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
                 root.sidebar.inbox_files = false;
                 root.sidebar_focused = false;
