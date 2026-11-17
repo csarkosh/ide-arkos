@@ -351,12 +351,14 @@ mod tests {
     fn the_manifest_keeps_the_gap_the_frames_need_and_the_paper_the_wash_draws_through() {
         let m = crate::effects::manifest::parse(crate::effects::BUILTIN.iter().find(|b| b.name == "overworld").unwrap().manifest).unwrap();
         assert_eq!(m.gap, (2 * FRAME_PX + 1) as f32 * ART_PX, "two frames and an art pixel of ground between two panes");
+        assert_eq!(m.edge_gap, Some((FRAME_PX + 1) as f32 * ART_PX), "a frame and an art pixel of ground off the window's edges, as between two frames");
+        assert!(m.sidebar_margin, "the sidebar keeps a pane's margins, framed round its column");
         assert_eq!(m.paper_alpha, PAPER);
         assert_eq!(m.document_paper_alpha(), PAPER, "a document's paper is the terminal's: the night is behind both");
         assert!(!m.ink_borders, "tables, grids and videos keep the app's own lines");
-        // A row's text starts 10 points in: with the padding it clears the frame, the cursor
-        // (three art pixels) and the art pixel it bobs by.
-        assert!(10.0 + m.sidebar_pad >= (FRAME_PX + 3 + 1) as f32 * ART_PX + 2.0);
+        // A row's text starts 10 points into the column: with the padding it clears the cursor
+        // (three art pixels) and the art pixel it bobs by; the frame lies round the column.
+        assert!(10.0 + m.sidebar_pad >= (3 + 1) as f32 * ART_PX + 2.0);
         // The Inbox's header keeps its buttons left of the gem, whose far edge is 14 art pixels
         // in from the bar's right end (`GEM_IN` and its four columns), with one of air.
         assert!(m.bar_end_clear >= 15.0 * ART_PX && m.bar_end_clear <= 64.0);
@@ -369,13 +371,16 @@ mod tests {
     const H: u32 = 300;
     const SIDE: f32 = 180.0;
     const GAP: f32 = 15.0;
+    /// The edge margin (the manifest's edge_gap): off the title bar and the window's edges, and
+    /// the sidebar's margin.
+    const EDGE: f32 = 9.0;
     const NAMES_END: f32 = 200.0;
     const WORDS: Rect = Rect { x: 80.0, y: 6.0, w: 120.0, h: 16.0 };
     const ICONS: Rect = Rect { x: 520.0, y: 4.0, w: 50.0, h: 20.0 };
     const TOP: f32 = crate::chrome::TITLE_BAR_H;
     const TAB: f32 = crate::pane_view::TAB_BAR_H;
-    const LEFT: Rect = Rect { x: SIDE + GAP, y: TOP + GAP, w: 180.0, h: H as f32 - TOP - 2.0 * GAP };
-    const RIGHT: Rect = Rect { x: SIDE + 2.0 * GAP + 180.0, y: TOP + GAP, w: 180.0, h: H as f32 - TOP - 2.0 * GAP };
+    const LEFT: Rect = Rect { x: SIDE + GAP, y: TOP + EDGE, w: 180.0, h: H as f32 - TOP - 2.0 * EDGE };
+    const RIGHT: Rect = Rect { x: SIDE + 2.0 * GAP + 180.0, y: TOP + EDGE, w: 180.0, h: H as f32 - TOP - 2.0 * EDGE };
 
     fn body(pane: Rect) -> Rect {
         Rect { x: pane.x, y: pane.y + TAB, w: pane.w, h: pane.h - TAB }
@@ -384,7 +389,7 @@ mod tests {
     /// The window's blocks with the left pane's focus, and whether it works and the right waits.
     fn window(focus: f32, busy: bool, waiting: bool) -> Vec<crate::effects::blocks::Block> {
         use crate::effects::blocks::{blocks, Kind, Scene, Shape};
-        let content = Rect { x: SIDE + GAP, y: TOP + GAP, w: W as f32 - SIDE - 2.0 * GAP, h: H as f32 - TOP - 2.0 * GAP };
+        let content = Rect { x: SIDE + GAP, y: TOP + EDGE, w: W as f32 - SIDE - GAP - EDGE, h: H as f32 - TOP - 2.0 * EDGE };
         let panes = [(1, LEFT), (2, RIGHT)];
         let rows = body(LEFT);
         let shapes = [
@@ -394,7 +399,7 @@ mod tests {
             Shape { key: 8, rect: Rect { x: rows.x + 4.0, y: rows.y + 4.0, w: rows.w - 8.0, h: rows.h - 8.0 }, kind: Kind::Rows, pitch: 18.0 },
         ];
         let (busy, focus, waiting) = (if busy { vec![1] } else { vec![] }, [(1, focus)], if waiting { vec![2] } else { vec![] });
-        let scene = Scene { edge_gap: GAP, focus: &focus, waiting: &waiting, ..crate::effects::active::scene(content, GAP, None, Some(NAMES_END), &panes, &busy, &shapes, &[]) };
+        let scene = Scene { edge_gap: EDGE, sidebar_margin: EDGE, focus: &focus, waiting: &waiting, ..crate::effects::active::scene(content, GAP, None, Some(NAMES_END), &panes, &busy, &shapes, &[]) };
         blocks(&scene, false)
     }
 
@@ -422,9 +427,15 @@ mod tests {
     }
 
     /// The sidebar's inside, clear of its frame.
+    /// The sidebar's column, inside its margin: what its frame lies round.
     fn sidebar_inside() -> Rect {
-        let f = FRAME_PX as f32 * ART_PX;
-        Rect { x: f, y: TOP + f, w: SIDE - 2.0 * f, h: H as f32 - TOP - 2.0 * f }
+        Rect { x: EDGE, y: TOP + EDGE, w: SIDE - EDGE, h: H as f32 - TOP - 2.0 * EDGE }
+    }
+
+    /// The sidebar's framed rect: its column and the frame round it.
+    fn sidebar_framed() -> Rect {
+        let (c, f) = (sidebar_inside(), FRAME_PX as f32 * ART_PX);
+        Rect { x: c.x - f, y: c.y - f, w: c.w + 2.0 * f, h: c.h + 2.0 * f }
     }
 
     #[test]
@@ -438,10 +449,10 @@ mod tests {
             let theme = crate::theme::builtin(name).unwrap();
             let (sb, dim) = (theme.chrome.sidebar, theme.chrome.text_dim);
             assert!(contrast(dim, sb) >= 4.5, "{name}");
-            let content = Rect { x: SIDE + GAP, y: TOP + GAP, w: W as f32 - SIDE - 2.0 * GAP, h: H as f32 - TOP - 2.0 * GAP };
+            let content = Rect { x: SIDE + GAP, y: TOP + EDGE, w: W as f32 - SIDE - GAP - EDGE, h: H as f32 - TOP - 2.0 * EDGE };
             let panes = [(1, content)];
             // A long file list: the names run to the sidebar's foot, over the whole scene.
-            let scene = crate::effects::blocks::Scene { edge_gap: GAP, ..crate::effects::active::scene(content, GAP, None, None, &panes, &[], &[], &[]) };
+            let scene = crate::effects::blocks::Scene { edge_gap: EDGE, sidebar_margin: EDGE, ..crate::effects::active::scene(content, GAP, None, None, &panes, &[], &[], &[]) };
             for t in [0.0, 3.7, 21.3] {
                 let frame = render(&theme, t, &blocks(&scene, false));
                 let seen = pixels(&frame, sidebar_inside());
@@ -455,10 +466,10 @@ mod tests {
     /// A window whose sidebar's names end at `names_end`.
     fn window_with_names_to(names_end: f32) -> Vec<crate::effects::blocks::Block> {
         use crate::effects::blocks::{blocks, Kind, Scene, Shape};
-        let content = Rect { x: SIDE + GAP, y: TOP + GAP, w: W as f32 - SIDE - 2.0 * GAP, h: H as f32 - TOP - 2.0 * GAP };
+        let content = Rect { x: SIDE + GAP, y: TOP + EDGE, w: W as f32 - SIDE - GAP - EDGE, h: H as f32 - TOP - 2.0 * EDGE };
         let panes = [(1, content)];
         let shapes = [Shape { key: 1, rect: WORDS, kind: Kind::TitleGroup, pitch: 0.0 }, Shape { key: 2, rect: ICONS, kind: Kind::TitleGroup, pitch: 0.0 }];
-        blocks(&Scene { edge_gap: GAP, ..crate::effects::active::scene(content, GAP, None, Some(names_end), &panes, &[], &shapes, &[]) }, false)
+        blocks(&Scene { edge_gap: EDGE, sidebar_margin: EDGE, ..crate::effects::active::scene(content, GAP, None, Some(names_end), &panes, &[], &shapes, &[]) }, false)
     }
 
     #[test]
@@ -469,7 +480,7 @@ mod tests {
         use crate::palette::contrast;
         let theme = crate::theme::builtin("timo-purple").unwrap();
         let c = &theme.chrome;
-        let band = scene_band(Rect { x: 0.0, y: TOP, w: SIDE, h: H as f32 - TOP }).unwrap();
+        let band = scene_band(sidebar_framed()).unwrap();
         // A castle window is the focus colour at time 0 wherever the scene is at full colour.
         let lit = |names_end: f32| pixels(&render(&theme, 0.0, &window_with_names_to(names_end)), band).contains(&c.focus_ring);
         assert!(band.y - TOP < 30.0, "the scene fills this small sidebar");
@@ -492,7 +503,7 @@ mod tests {
         }
         // Above the scene the sidebar is plain, whatever the names do.
         let frame = render(&theme, 3.7, &window_with_names_to(band.y + 60.0));
-        let above = Rect { y: TOP + 6.0, h: band.y - TOP - 6.0, ..sidebar_inside() };
+        let above = Rect { y: TOP + EDGE, h: band.y - TOP - EDGE, ..sidebar_inside() };
         assert!(pixels(&frame, above).iter().all(|p| *p == c.sidebar));
     }
 
@@ -569,16 +580,20 @@ mod tests {
         let at = |x: f32, y: f32| frame[(y as u32 * W + x as u32) as usize];
         // The unfocused pane's two lines, to compare with.
         let (line, dark) = (at(RIGHT.x - 4.5, RIGHT.y + 100.0), at(RIGHT.x - 1.5, RIGHT.y + 100.0));
-        let mid = TOP + 100.0;
-        assert_eq!((at(1.5, mid), at(4.5, mid)), (line, dark), "the sidebar's left edge");
-        assert_eq!((at(SIDE - 1.5, mid), at(SIDE - 4.5, mid)), (line, dark), "its right edge");
-        assert_eq!((at(60.0, H as f32 - 1.5), at(60.0, H as f32 - 4.5)), (line, dark), "its foot, over the scene");
+        let (mid, sf) = (TOP + 100.0, sidebar_framed());
+        let (left, right, foot) = (sf.x, sf.x + sf.w, sf.y + sf.h);
+        assert_eq!((at(left + 1.5, mid), at(left + 4.5, mid)), (line, dark), "the sidebar's left edge");
+        assert_eq!((at(right - 1.5, mid), at(right - 4.5, mid)), (line, dark), "its right edge");
+        assert_eq!((at(60.0, foot - 1.5), at(60.0, foot - 4.5)), (line, dark), "its foot, over the scene");
+        // Its frame lies round its column, a pane's margins off the window's edges: ground
+        // between the window's left edge and the frame, as between two panes' frames.
+        assert!(![line, dark].contains(&at(left - 1.5, mid)), "ground before the sidebar's frame");
         // The title bar's frame is the outer line alone, so the traffic lights have room.
         assert_eq!((at(300.0, 1.5), at(300.0, TOP - 1.5)), (line, line), "the title bar's top and foot");
         assert!(![line, dark].contains(&at(300.0, 4.5)) && ![line, dark].contains(&at(300.0, TOP - 4.5)), "one line, the sky inside it");
         // The notch: an outer corner is left to the ground, an inner one is the line's colour.
-        assert!(at(1.5, TOP + 1.5) != line && at(1.5, TOP + 1.5) != dark);
-        assert_eq!(at(4.5, TOP + 4.5), line);
+        assert!(at(left + 1.5, sf.y + 1.5) != line && at(left + 1.5, sf.y + 1.5) != dark);
+        assert_eq!(at(left + 4.5, sf.y + 4.5), line);
     }
 
     #[test]
@@ -751,33 +766,35 @@ mod tests {
         if !gpu() {
             return;
         }
-        use crate::effects::blocks::{blocks, HighlightState, Kind, Mark};
+        use crate::effects::blocks::{blocks, HighlightState, Kind, Mark, Scene};
         let theme = crate::theme::builtin("timo-purple").unwrap();
-        // Mid-slide the sidebar shows 90 of its 180 points; the row keeps its full column.
-        let content = Rect { x: 90.0, y: TOP, w: W as f32 - 90.0, h: H as f32 - TOP };
+        // Mid-slide the sidebar shows 90 of its 180 points (its column from the margin to 90, its
+        // frame round it); the row keeps its full column.
+        let content = Rect { x: 90.0 + GAP, y: TOP + EDGE, w: W as f32 - 90.0 - GAP - EDGE, h: H as f32 - TOP - 2.0 * EDGE };
         let panes = [(1, content)];
-        // The first row below the frame, level with the tab bar, which the fill would cover. Its
-        // mark starts where its text does: past the padding and one level of indent.
-        let row = Rect { x: 36.0, y: TOP + 8.0, w: SIDE - 36.0, h: 22.0 };
+        // The first row in the column, level with the tab bar, which the fill would cover. Its
+        // mark starts where its text does: past the padding (10 and the manifest's 4) and one
+        // level of indent (14).
+        let row = Rect { x: EDGE + 28.0, y: TOP + EDGE + 8.0, w: SIDE - EDGE - 28.0, h: 22.0 };
         let frame_of = |state: HighlightState, t: f32| {
             let strokes = [(Mark { key: 3, rect: row, kind: Kind::RowHighlight, state }, 1.0)];
-            let scene = crate::effects::active::scene(content, 0.0, None, None, &panes, &[], &[], &strokes);
+            let scene = Scene { edge_gap: EDGE, sidebar_margin: EDGE, ..crate::effects::active::scene(content, GAP, None, None, &panes, &[], &[], &strokes) };
             render(&theme, t, &blocks(&scene, false))
         };
         let frame = frame_of(HighlightState::Selected, 0.0);
         let (fill, yellow, plain) = (theme.chrome.tab_active, theme.terminal.yellow, theme.chrome.sidebar);
-        // The sidebar shows 90 points, its frame the last 6 of them.
-        assert!(pixels(&frame, Rect { x: 36.0, y: row.y, w: 48.0, h: row.h }).iter().all(|p| *p == fill), "the row is filled inside the sidebar, plain under its text");
-        // The cursor sits just inside the frame, in the padding before the row's text.
+        // The cursor's place: just inside the frame round the column, in the row's padding.
+        let at = EDGE;
+        assert!(pixels(&frame, Rect { x: row.x, y: row.y, w: 90.0 - row.x - 1.0, h: row.h }).iter().all(|p| *p == fill), "the row is filled inside the sidebar, plain under its text");
         let cursor = |f: &[crate::palette::Rgb], x: f32| pixels(f, Rect { x, y: row.y, w: 9.0, h: row.h }).iter().filter(|p| **p == yellow).count();
-        assert_eq!(cursor(&frame, 6.0), 9 * 9, "the whole triangle, nine art pixels, at time 0");
-        assert!(pixels(&frame, Rect { x: 6.0, y: row.y, w: 30.0, h: row.h }).iter().all(|p| *p == yellow || *p == plain), "nothing else before the mark");
-        assert!(pixels(&frame, Rect { x: 18.0, y: row.y, w: 18.0, h: row.h }).iter().all(|p| *p == plain), "and clear of the text");
-        assert!(pixels(&frame, Rect { x: 90.0, y: row.y, w: 90.0, h: row.h }).iter().all(|p| *p != fill && *p != yellow), "and nothing past the sidebar's edge, over the tab bar");
+        assert_eq!(cursor(&frame, at), 9 * 9, "the whole triangle, nine art pixels, at time 0");
+        assert!(pixels(&frame, Rect { x: at, y: row.y, w: row.x - at, h: row.h }).iter().all(|p| *p == yellow || *p == plain), "nothing else before the mark");
+        assert!(pixels(&frame, Rect { x: at + 12.0, y: row.y, w: row.x - at - 12.0, h: row.h }).iter().all(|p| *p == plain), "and clear of the text");
+        assert!(pixels(&frame, Rect { x: 96.0, y: row.y, w: 84.0, h: row.h }).iter().all(|p| *p != fill && *p != yellow), "and nothing past the sidebar's frame, over the tab bar");
         // Half a second on it has bobbed one art pixel toward the row, still clear of the text.
         let bobbed = frame_of(HighlightState::Selected, CURSOR_BOB + 0.01);
-        assert_eq!((cursor(&bobbed, 9.0), pixels(&bobbed, Rect { x: 6.0, y: row.y, w: 3.0, h: row.h }).contains(&yellow)), (9 * 9, false));
-        assert!(pixels(&bobbed, Rect { x: 18.0, y: row.y, w: 18.0, h: row.h }).iter().all(|p| *p == plain));
+        assert_eq!((cursor(&bobbed, at + 3.0), pixels(&bobbed, Rect { x: at, y: row.y, w: 3.0, h: row.h }).contains(&yellow)), (9 * 9, false));
+        assert!(pixels(&bobbed, Rect { x: at + 12.0, y: row.y, w: row.x - at - 12.0, h: row.h }).iter().all(|p| *p == plain));
         // A row only hovered has no cursor; one both selected and hovered keeps it.
         assert!(frame_of(HighlightState::Hovered, 0.0).iter().all(|p| *p != yellow));
         assert!(frame_of(HighlightState::Both, 0.0).contains(&yellow));

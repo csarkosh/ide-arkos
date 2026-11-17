@@ -338,6 +338,14 @@ bool inside_rect(float2 p, float4 r) {
     return p.x >= r.x && p.x <= r.x + r.z && p.y >= r.y && p.y <= r.y + r.w;
 }
 
+// The sidebar's framed rect from its block: the block is its column, which keeps a pane's margins
+// (the manifest's sidebar_margin), and its frame lies round the column as a pane's does, FRAME_PX
+// art pixels out (Cyrus, 2026-11-17: Tokyo Rain's positions and margins for Overworld too).
+float4 sidebar_rect(float4 column) {
+    float out = float(FRAME_PX) * ART_PX;
+    return float4(column.xy - out, column.zw + 2.0 * out);
+}
+
 // The band of the sidebar `side` the scene is drawn in: inside its frame, as tall as half the
 // sidebar and never less than SCENE_MAX_H (what is past the scene is open sky above it), in whole
 // art pixels, standing on the frame's foot; zero height in a sidebar with under SCENE_MIN_H of
@@ -987,8 +995,8 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     for (int i = 0; i < min(nb, 6); i++) {
         int kind = int(u.blocks[i].kind);
         if (kind == ARKOS_SIDEBAR_BLOCK) {
-            side = u.blocks[i].rect;
-            names_end = side.y + side.w;
+            side = sidebar_rect(u.blocks[i].rect);
+            names_end = u.blocks[i].rect.y + u.blocks[i].rect.w;
         } else if (kind == ARKOS_SIDEBAR_FOOT_BLOCK) {
             names_end = u.blocks[i].rect.y;
         }
@@ -1066,7 +1074,8 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             }
             continue;
         }
-        if (!inside_rect(p, r)) {
+        // The sidebar's frame lies round its column, so it is tested by its framed rect.
+        if (!inside_rect(p, kind == ARKOS_SIDEBAR_BLOCK ? sidebar_rect(r) : r)) {
             continue;
         }
         if (kind == ARKOS_TITLE_BAR_BLOCK) {
@@ -1151,7 +1160,8 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
         } else if (kind == ARKOS_SIDEBAR_BLOCK) {
             float3 sb = u.colors[ARKOS_SIDEBAR].rgb;
             col = sb;
-            // Its frame, inside its edges, lit in the focus colour while it has the keys.
+            r = sidebar_rect(r);
+            // Its frame, round its column, lit in the focus colour while it has the keys.
             if (inner_ring(p, r).x < FRAME_PX) {
                 col = mix(sb, boxed_lit(u, p, r, sb, u.blocks[i].focus), k);
                 continue;
