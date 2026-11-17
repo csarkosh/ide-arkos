@@ -441,8 +441,9 @@ float3 theme_green(constant ArkosInputs& u) {
 // street twice. Behind a terminal, the far skyline along its foot. The clock's zero (Reduce
 // Motion) has no bolt, no cat and every light on.
 
-// The frame's line: how far outside a pane's edges, its width, its halo, its corner cut.
-constant float FRAME_OUT = 6.0;
+// The frame's line: how far outside a pane's edges (the gap is 16, so two neighbours' frames keep
+// 6 points of ground between them), its width, its halo, its corner cut.
+constant float FRAME_OUT = 5.0;
 constant float FRAME_W = 1.3;
 constant float FRAME_HALO = 4.0;
 constant float FRAME_CHAMFER = 7.0;
@@ -465,8 +466,9 @@ constant float SIDE_FRAME_IN = 3.5;
 constant float SCENE_H = 230.0;
 constant float SCENE_MIN_H = 90.0;
 constant float SOFT_BUFFER = 30.0;
-// How much of the scene shows under the names (the rest is the sidebar's own colour).
-constant float UNDER_NAMES = 0.18;
+// How much of the scene shows under the names (the rest is the sidebar's own colour): little
+// enough that the dim text keeps 4.5:1 over a lit window (a GPU test holds it).
+constant float UNDER_NAMES = 0.08;
 // Lightning: one bolt a cycle at most, lasting this long; none in the first cycle.
 constant float BOLT_CYCLE = 9.0;
 constant float BOLT_FOR = 0.45;
@@ -781,9 +783,25 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     float tab = 0.0;
     float pane = 0.0;
     EdgeHit hit = no_edge();
+    // For the world below: the sidebar, its focus and where its names end, and the focus of the
+    // tab bar p is in.
+    float4 side = float4(0.0);
+    float side_focus = 0.0;
+    float names_end = 0.0;
+    float bar_focus = 0.0;
     for (int i = 0; i < nb; i++) {
-        ArkosBlock blk = u.blocks[i];
+        constant ArkosBlock& blk = u.blocks[i];
         float4 rect = blk.rect;
+        int bkind = int(blk.kind);
+        if (bkind == ARKOS_SIDEBAR_BLOCK) {
+            side = rect;
+            side_focus = saturate(blk.focus);
+            names_end = side.y + side.w;
+        } else if (bkind == ARKOS_SIDEBAR_FOOT_BLOCK) {
+            names_end = rect.y;
+        } else if (bkind == ARKOS_TAB_BAR_BLOCK && inside_box(p, rect)) {
+            bar_focus = saturate(blk.focus);
+        }
         float2 hb = rect.zw * 0.5;
         float d = sd_box(p - (rect.xy + hb), hb);
         int kind = int(blk.kind);
@@ -816,22 +834,6 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     // plates; the panes' far skyline, frames, packets, waiting cursors, underlines and lamps.
     float3 ring_c = u.colors[ARKOS_FOCUS_RING].rgb;
     float3 sb = u.colors[ARKOS_SIDEBAR].rgb;
-    float4 side = float4(0.0);
-    float side_focus = 0.0;
-    float names_end = 0.0;
-    float bar_focus = 0.0;
-    for (int i = 0; i < nb; i++) {
-        int kind = int(u.blocks[i].kind);
-        if (kind == ARKOS_SIDEBAR_BLOCK) {
-            side = u.blocks[i].rect;
-            side_focus = saturate(u.blocks[i].focus);
-            names_end = side.y + side.w;
-        } else if (kind == ARKOS_SIDEBAR_FOOT_BLOCK) {
-            names_end = u.blocks[i].rect.y;
-        } else if (kind == ARKOS_TAB_BAR_BLOCK && inside_box(p, u.blocks[i].rect)) {
-            bar_focus = saturate(u.blocks[i].focus);
-        }
-    }
     // The sidebar: its scene at its foot, softened under the names; its frame; its chevron.
     if (side.z > 1.0 && inside_box(p, side)) {
         float4 band = float4(side.x + SIDE_FRAME_IN + 2.0, max(side.y + side.w - SCENE_H, side.y + 40.0), side.z - 2.0 * (SIDE_FRAME_IN + 2.0), 0.0);
@@ -853,9 +855,16 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
         }
     }
     for (int i = 0; i < nb; i++) {
-        ArkosBlock blk = u.blocks[i];
+        constant ArkosBlock& blk = u.blocks[i];
         int kind = int(blk.kind);
         float4 r = blk.rect;
+        // Nothing of a block reaches past its frame and halo, but the title bar's plates and a
+        // pane's waiting cursor, both within its own reach: skip a block p is far from.
+        if (p.x < r.x - FRAME_OUT - FRAME_HALO - 4.0 || p.y < r.y - FRAME_OUT - FRAME_HALO - 4.0 || p.x > r.x + r.z + FRAME_OUT + FRAME_HALO + 4.0 || p.y > r.y + r.w + FRAME_OUT + FRAME_HALO + WAIT_SIZE.y) {
+            if (kind != ARKOS_TAB_BAR_BLOCK) {
+                continue;
+            }
+        }
         if (kind == ARKOS_ROW_HIGHLIGHT_BLOCK && blk.ordinal >= 1.0 && side.z > 1.0 && r.x < side.x + side.z) {
             // The selected row's chevron in the sidebar's left padding.
             float cx = side.x + SIDE_FRAME_IN + 4.0;
@@ -897,9 +906,13 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
         } else if (kind == ARKOS_TAB_BAR_BLOCK) {
             // The pane: this bar and the body laid out after it.
             float4 pr = r;
-            ArkosBlock body = u.blocks[min(i + 1, nb - 1)];
-            if (i + 1 < nb && int(body.kind) == ARKOS_PANE_BODY_BLOCK) {
-                pr.w += body.rect.w;
+            if (i + 1 < nb && int(u.blocks[i + 1].kind) == ARKOS_PANE_BODY_BLOCK) {
+                pr.w += u.blocks[i + 1].rect.w;
+            }
+            // A pixel outside this pane's frame and halo, and past its waiting cursor, has
+            // nothing of it.
+            if (p.x < pr.x - FRAME_OUT - FRAME_HALO - 2.0 || p.x > pr.x + pr.z + FRAME_OUT + FRAME_HALO + 2.0 || p.y < pr.y - FRAME_OUT - FRAME_HALO - 2.0 || p.y > pr.y + pr.w + FRAME_OUT + WAIT_SIZE.y) {
+                continue;
             }
             float focus = saturate(blk.focus);
             // The lamp at the bar's right end.

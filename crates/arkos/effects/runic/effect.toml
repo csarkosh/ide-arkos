@@ -6,7 +6,8 @@ frame_rate = 30               # 1 to 60; the wash's frames per second while anyt
 scale = 1.0                   # 0.1 to 1.0; the wash's pixels per window pixel, each side: full,
                               # so the frames, the scene and its windows stay crisp
 ui_text_bump = 0              # 0 to 4 points added to the project window's UI text
-gap = 12                      # 0 to 16 points round each pane: room for its frame, 6 points out
+gap = 16                      # 0 to 16 points round each pane: room for its frame, 5 points out,
+                              # and 6 points of ground between two neighbours' frames
 title_pad = 8                 # 0 to 24 points inside the title bar at both ends: its words and
                               # icons on their plates
 sidebar_pad = 12              # 0 to 24 points before each row and header of the sidebar: room for
