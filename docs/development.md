@@ -1115,8 +1115,9 @@ Things only a person at the screen can check, in order of value:
   right end lit on the focused pane; storm clouds along the title bar, its words and icons on
   plates; the sidebar framed, lit while it has the keys, a chevron on its selected row; at its
   foot Tokyo at night in the rain (Tokyo Tower, the Skytree, windows; a rune-chain bolt every
-  few cycles) or, in The Matrix, a digital horizon (a grid floor coming on, code falling onto
-  it and rippling, wireframe towers rising and folding back in turn); the focused pane's frame wider and brighter, runes running just inside its
+  few cycles) or, in The Matrix, a digital horizon (a grid floor coming on, a dense city of
+  wireframe towers either side of a road coming on with it and passing, code raining from half
+  the sidebar's height, code falling to the road and rippling); the focused pane's frame wider and brighter, runes running just inside its
   frame, flush against it and round its cut corners, in the focus colour (flipping along its top and foot, falling down its sides) and in no
   other pane; the tab bar and the body reaching the frame, cut at its corners; the sidebar
   (Cmd+0 pane) with a pane's margins, its rows, switcher and scene inside its frame; each tab bar a

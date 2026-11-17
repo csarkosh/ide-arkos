@@ -446,8 +446,8 @@ float3 theme_green(constant ArkosInputs& u) {
 // clouds, its words and icons on plates. The sidebar wears a frame, a chevron marks its selected
 // row, and at its foot, below the names, stands the theme's scene (`ArkosInputs::scene`): 0 a
 // city skyline in the rain, its towers' windows lit, runic lightning now and then; 1 a digital
-// horizon, a grid floor running to a line of light, code falling onto it and rippling where it
-// lands, wireframe towers rising and folding back. Behind a terminal, the far skyline along its
+// horizon, a grid floor running to a line of light with a dense city of wireframe towers on it,
+// both coming toward the viewer, code raining in its sky and falling onto its road. Behind a terminal, the far skyline along its
 // foot. The clock's zero (Reduce Motion) has no bolt, nothing falling, every tower standing and
 // every light on.
 
@@ -548,8 +548,16 @@ constant int HZ_DROPS = 3;
 constant float DROP_CYCLE = 3.4;
 constant float DROP_FALL = 0.32;
 constant float RIPPLE_MAX = 3.2;
-constant int HZ_TOWERS = 4;
-constant float TOWER_CYCLE = 12.0;
+// The city on the grid: a tower on most cells either side of an open road (ROAD_CELLS wide),
+// LANES cells a side, rows from just in front of the viewer to Z_FAR, standing still on the floor
+// so they come toward and past the viewer at the floor's speed (Cyrus, 2026-11-17: "moving
+// towards and past the user at the same speed as the floor", "so many buildings that it feels
+// dense"); far ones fade up out of the horizon.
+constant int LANES = 6;
+constant int ROAD_CELLS = 1;
+constant float TOWER_ON = 0.8;
+constant float Z_NEAR = 0.7;
+constant float Z_FAR = 30.0;
 
 float hash2(float2 c) {
     uint ux = uint(int(c.x) + 1048576);
@@ -919,6 +927,27 @@ float seg_dist(float2 p, float2 a, float2 b) {
     return length(p - a - ab * k);
 }
 
+// The code raining in the digital horizon's sky at p (window points), from top (where it fades
+// in) down to bottom (the horizon): 5 by 7 point cells, a slow stream a column, over col. It
+// reaches half the sidebar's height (Cyrus, 2026-11-17: "the runic rain in the background of
+// the graphic to have its height increased to half the pane size").
+float3 code_rain(float2 p, float top, float bottom, float t, float3 green, float3 col) {
+    if (p.y < top || p.y >= bottom) {
+        return col;
+    }
+    float2 cell = floor(p / float2(5.0, 7.0));
+    float rows = max((bottom - top) / 7.0, 10.0);
+    float speed = 3.0 + 4.0 * hash2(float2(cell.x, 4.0));
+    float head = floor(fract(t * speed / rows + hash2(float2(cell.x, 11.0))) * (rows + 10.0)) + floor(top / 7.0);
+    float behind = head - cell.y;
+    float2 fq = fract(p / float2(5.0, 7.0));
+    float2 bit = floor(float2(fq.x * 5.0, fq.y * 7.0));
+    float on = (bit.x >= 1.0 && bit.x <= 3.0 && bit.y >= 1.0 && bit.y <= 5.0 && hash2(cell * 7.0 + bit + floor(t / 0.5)) < 0.45) ? 1.0 : 0.0;
+    float trail = (behind >= 0.0 && behind < 12.0) ? 1.0 - behind / 12.0 : 0.0;
+    float fade = saturate((p.y - top) / max((bottom - top) * 0.4, 1.0));
+    return mix(col, green, on * trail * 0.3 * fade);
+}
+
 // A line's light at a phase (lines at whole numbers), drawn about a pixel wide whatever the
 // phase's rate across the screen: `fwidth` keeps far lines fine and near ones crisp.
 float grid_line(float phase) {
@@ -938,18 +967,8 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
     float cx = sz.x * 0.5;
     float f = sz.x * 0.9;
     bool still = t <= 0.0;
-    if (q.y < yh) {
-        // The sky's rain: 5 by 7 point cells, a slow stream a column, fading toward the horizon.
-        float2 cell = floor(q / float2(5.0, 7.0));
-        float speed = 3.0 + 4.0 * hash2(float2(cell.x, 4.0));
-        float head = floor(fract(t * speed / 30.0 + hash2(float2(cell.x, 11.0))) * 30.0);
-        float behind = head - cell.y;
-        float2 fq = fract(q / float2(5.0, 7.0));
-        float2 bit = floor(float2(fq.x * 5.0, fq.y * 7.0));
-        float on = (bit.x >= 1.0 && bit.x <= 3.0 && bit.y >= 1.0 && bit.y <= 5.0 && hash2(cell * 7.0 + bit + floor(t / 0.5)) < 0.45) ? 1.0 : 0.0;
-        float trail = (behind >= 0.0 && behind < 10.0) ? 1.0 - behind / 10.0 : 0.0;
-        col = mix(col, green, on * trail * 0.3 * saturate(q.y / (yh * 0.6)));
-    } else {
+    // The sky's rain is drawn over the whole sidebar's lower half by the caller (`code_rain`).
+    if (q.y >= yh) {
         // The floor: darker than the sky, its grid's rows coming on.
         float dy = q.y - yh;
         float z = f / max(dy, 0.5);
@@ -966,8 +985,10 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
             if (still || pp < DROP_FALL) {
                 continue;
             }
-            float2 at = float2(-3.0 + 6.0 * hash2(float2(slot, float(i) * 7.0 + 1.0)), 4.0 + 10.0 * hash2(float2(slot, float(i) * 7.0 + 2.0)));
+            float2 at = float2((hash2(float2(slot, float(i) * 7.0 + 1.0)) - 0.5) * GRID_X * float(2 * ROAD_CELLS), 4.0 + 10.0 * hash2(float2(slot, float(i) * 7.0 + 2.0)));
             float age = (pp - DROP_FALL) / (1.0 - DROP_FALL);
+            // It rides the floor, coming on with it since the code landed.
+            at.y -= (pp - DROP_FALL) * DROP_CYCLE * GRID_SPEED * GRID_Z;
             float d = length(float2(xw - at.x, (z - at.y) * 0.6));
             float ring = abs(d - age * RIPPLE_MAX) / max(fwidth(d), 1e-4);
             col = light_on(col, mix(green, white_c, 0.25), (1.0 - smoothstep(0.0, 1.5, ring)) * (1.0 - age) * 0.8, u.dark);
@@ -976,51 +997,62 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
     // The horizon's line, and its glow either side.
     float hd = abs(q.y - yh);
     col = light_on(col, green, (1.0 - smoothstep(0.0, 1.2, hd)) * 0.6 + exp(-hd / 4.0) * 0.18, u.dark);
-    // The towers, farthest first: each rises out of the grid, stands, folds back and is gone a
-    // while, in its own turn.
-    for (int i = 0; i < HZ_TOWERS; i++) {
-        float tz = 17.0 - float(i) * 3.0;
-        // Spread across the floor, alternating sides so they never stand in a row.
-        float tx = (i % 2 == 0 ? -1.0 : 1.0) * (1.2 + 3.2 * hash2(float2(float(i), 3.0)));
-        float tw = 0.7 + 0.8 * hash2(float2(float(i), 5.0));
-        float th = 1.6 + 2.6 * hash2(float2(float(i), 6.0));
-        float ph = fract(t / TOWER_CYCLE + float(i) * 0.25);
-        float grow = still ? 1.0 : (ph < 0.12 ? smoothstep(0.0, 0.12, ph) : (ph < 0.62 ? 1.0 : (ph < 0.74 ? 1.0 - smoothstep(0.62, 0.74, ph) : 0.0)));
-        if (grow <= 0.0) {
-            continue;
+    // The city, farthest row first so nearer towers hide farther ones: each cell's tower stands
+    // on the floor, which comes on at GRID_SPEED rows a second, so the camera has come `run` into
+    // it; a row m stands at depth m * GRID_Z - run.
+    float run = t * GRID_SPEED * GRID_Z;
+    int far_row = int(floor((run + Z_FAR) / GRID_Z));
+    int rows = int(ceil((Z_FAR - Z_NEAR) / GRID_Z)) + 1;
+    for (int r = 0; r < rows; r++) {
+        int m = far_row - r;
+        float zc = float(m) * GRID_Z - run;
+        for (int side = 0; side < 2; side++) {
+            for (int l = 0; l < LANES; l++) {
+                int kx = side == 0 ? -(ROAD_CELLS + 1 + l) : ROAD_CELLS + l;
+                float2 cell = float2(float(kx), float(m));
+                if (hash2(cell + float2(17.0, 3.0)) > TOWER_ON) {
+                    continue;
+                }
+                float tw = GRID_X * (0.5 + 0.35 * hash2(cell + float2(5.0, 11.0)));
+                float td = GRID_Z * (0.35 + 0.35 * hash2(cell + float2(9.0, 2.0)));
+                float th = 0.6 + 4.2 * pow(hash2(cell + float2(4.0, 7.0)), 1.6);
+                float tx = (float(kx) + 0.5) * GRID_X;
+                float zf = zc + 0.5 * GRID_Z - 0.5 * td;
+                if (zf < Z_NEAR || zf > Z_FAR) {
+                    continue;
+                }
+                float base = yh + f / zf;
+                float top = yh + f * (1.0 - th) / zf;
+                float x0 = cx + (tx - tw * 0.5) * f / zf;
+                float x1 = cx + (tx + tw * 0.5) * f / zf;
+                // Its back face, its depth further: drawn so it reads as a box in perspective.
+                float bz = zf + td;
+                float btop = yh + f * (1.0 - th) / bz;
+                float bx0 = cx + (tx - tw * 0.5) * f / bz;
+                float bx1 = cx + (tx + tw * 0.5) * f / bz;
+                if (q.x < min(x0, bx0) - 1.0 || q.x > max(x1, bx1) + 1.0 || q.y < min(top, btop) - 1.0 || q.y > base + 0.5) {
+                    continue;
+                }
+                // Far towers fade up out of the horizon, near ones as they pass.
+                float seen = (1.0 - smoothstep(Z_FAR * 0.55, Z_FAR, zf)) * smoothstep(Z_NEAR, Z_NEAR + 0.6, zf);
+                bool inside = q.x > x0 && q.x < x1 && q.y > top && q.y < base;
+                if (inside) {
+                    col = mix(col, bg * 0.75, 0.9 * seen);
+                }
+                float edge = min(min(abs(q.x - x0), abs(q.x - x1)), abs(q.y - top));
+                float floors = grid_line((base - q.y) / (f * 0.5 / zf));
+                float s = (1.0 - smoothstep(0.0, 1.0, edge)) * 0.8 + (inside ? floors * 0.3 : 0.0);
+                if (!inside) {
+                    // The top's back edge and the edges running back to it, and the back's
+                    // upright on the side away from the road.
+                    float outer_x = tx < 0.0 ? bx0 : bx1;
+                    float back = min(seg_dist(q, float2(bx0, btop), float2(bx1, btop)), min(seg_dist(q, float2(x0, top), float2(bx0, btop)), seg_dist(q, float2(x1, top), float2(bx1, btop))));
+                    back = min(back, seg_dist(q, float2(outer_x, btop), float2(outer_x, yh + f / bz)));
+                    s = max(s, (1.0 - smoothstep(0.0, 1.0, back)) * 0.5);
+                }
+                col = light_on(col, mix(green, white_c, 0.15), s * seen, u.dark);
+            }
         }
-        float h = th * grow;
-        float base = yh + f / tz;
-        float top = yh + f * (1.0 - h) / tz;
-        float x0 = cx + (tx - tw * 0.5) * f / tz;
-        float x1 = cx + (tx + tw * 0.5) * f / tz;
-        // Its back face, a tower's width deeper: drawn so it reads as a box in perspective.
-        float bz = tz + tw;
-        float btop = yh + f * (1.0 - h) / bz;
-        float bx0 = cx + (tx - tw * 0.5) * f / bz;
-        float bx1 = cx + (tx + tw * 0.5) * f / bz;
-        if (q.x < min(x0, bx0) - 1.0 || q.x > max(x1, bx1) + 1.0 || q.y < min(top, btop) - 1.0 || q.y > base + 0.5) {
-            continue;
-        }
-        // Its face hides the grid behind it; its outline and its floors are lines of light.
-        bool inside = q.x > x0 && q.x < x1 && q.y > top && q.y < base;
-        if (inside) {
-            col = mix(col, bg * 0.75, 0.85);
-        }
-        float edge = min(min(abs(q.x - x0), abs(q.x - x1)), abs(q.y - top));
-        float floors = grid_line((base - q.y) / (f * 0.5 / tz));
-        float mid = abs(q.x - (x0 + x1) * 0.5);
-        float s = (1.0 - smoothstep(0.0, 1.0, edge)) * 0.9 + (inside ? floors * 0.35 + (1.0 - smoothstep(0.0, 0.8, mid)) * 0.25 : 0.0);
-        if (!inside) {
-            // The top's back edge and the edges running back to it, and the back's outer upright
-            // (the side away from the middle shows), fainter than the face.
-            float outer_x = tx < 0.0 ? bx0 : bx1;
-            float back = min(seg_dist(q, float2(bx0, btop), float2(bx1, btop)), min(seg_dist(q, float2(x0, top), float2(bx0, btop)), seg_dist(q, float2(x1, top), float2(bx1, btop))));
-            back = min(back, seg_dist(q, float2(outer_x, btop), float2(outer_x, yh + f / bz)));
-            back = min(back, seg_dist(q, float2(tx < 0.0 ? x0 : x1, base), float2(outer_x, yh + f / bz)));
-            s = max(s, (1.0 - smoothstep(0.0, 1.0, back)) * 0.6);
-        }
-        col = light_on(col, mix(green, white_c, 0.15), s * (0.6 + 0.4 * grow), u.dark);
     }
     // The code falling to the floor: a stream of bits from the sky to where it lands.
     for (int i = 0; i < HZ_DROPS; i++) {
@@ -1033,7 +1065,7 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
         if (pp >= DROP_FALL) {
             continue;
         }
-        float2 at = float2(-3.0 + 6.0 * hash2(float2(slot, float(i) * 7.0 + 1.0)), 4.0 + 10.0 * hash2(float2(slot, float(i) * 7.0 + 2.0)));
+        float2 at = float2((hash2(float2(slot, float(i) * 7.0 + 1.0)) - 0.5) * GRID_X * float(2 * ROAD_CELLS), 4.0 + 10.0 * hash2(float2(slot, float(i) * 7.0 + 2.0)));
         float lx = cx + at.x * f / at.y;
         float ly = yh + f / at.y;
         float head = mix(-14.0, ly, pp / DROP_FALL);
@@ -1153,6 +1185,14 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             float under = p.y < names_end ? 1.0 - UNDER_NAMES : saturate(1.0 - (p.y - names_end) / SOFT_BUFFER) * (1.0 - UNDER_NAMES);
             art = mix(art, col, max(under, 1.0 - saturate(q.y / 60.0)) * (q.y < 60.0 ? 1.0 : 0.0) + under * (q.y >= 60.0 ? 1.0 : 0.0));
             col = mix(col, art, k);
+        }
+        // The code's rain, from half the sidebar's height (or the scene's top, if higher) down to
+        // the horizon, softened under the names as the scene is.
+        if (u.scene > 0.5 && band.w >= SCENE_MIN_H) {
+            float top = min(side.y + side.w * 0.5, band.y);
+            float3 rained = code_rain(p, top, band.y + band.w * HZ_AT, u.time, green, col);
+            float under = p.y < names_end ? 1.0 - UNDER_NAMES : saturate(1.0 - (p.y - names_end) / SOFT_BUFFER) * (1.0 - UNDER_NAMES);
+            col = mix(col, mix(rained, col, under), k);
         }
         // The city's storm clouds, from half the sidebar's height (or the scene's top, if higher)
         // down into the scene, softened under the names as the scene is.

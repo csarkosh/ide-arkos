@@ -659,9 +659,10 @@ sidebar's selected row. At the sidebar's foot, below the names, stands the theme
 Tokyo Rain's is Tokyo at night in the rain (Tokyo Tower in orange lattice, the Skytree, lit
 windows, storm clouds, and now and then a soft bolt of lightning made of runes that glows up, lights
 the clouds and fades over a second);
-The Matrix's is a digital horizon: a floor of grid lines running toward a line of light, code
-raining behind it, now and then a stream of code falling to the floor and rippling where it lands,
-and wireframe towers rising out of the grid and folding back into it in turn. Material
+The Matrix's is a digital horizon: a floor of grid lines running toward a line of light, a dense
+city of wireframe towers on both sides of an open road coming toward you with the floor and past
+you, code raining behind it from half the sidebar's height, and now and then a stream of code
+falling to the road and rippling where it lands. Material
 and Lavender Material come with `material`: the
 title bar, sidebar and status bar are one pale frame with a search bar round the title, each pane
 is a card in the theme's page colour with rounded corners floating on it (white under Material), the pane's number sits on a coloured round

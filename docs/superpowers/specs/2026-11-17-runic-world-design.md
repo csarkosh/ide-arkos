@@ -38,8 +38,16 @@ Matrix", and he picked a digital horizon over a code waterfall, a corridor of do
 with two pills. Now: a faint code rain in the sky; a line of light on the horizon (40% down the
 scene); a floor of grid lines in perspective, its rows coming toward the viewer; three streams of
 code falling in turn (a 3.4 s cycle) to the floor, each spreading a ripple across the grid where
-it lands; four wireframe towers spread across the floor, each rising out of the grid, standing
-and folding back once a 12 s cycle, a quarter apart, their back faces drawn so they read as boxes.
+it lands. First four towers rose and folded back in turn; Cyrus, 2026-11-17: "the buildings to
+look like they are moving towards and past the user at the same speed as the floor", "so many
+buildings that it feels dense". Now a tower stands on four in five of the grid's cells, six lanes
+either side of a road one cell wide each side of the middle, rows out to 30 camera heights; they
+stand still on the floor, so they come on with it (the camera has run `t * GRID_SPEED * GRID_Z`
+into the city) and pass, fading up out of the horizon far off; drawn farthest row first, each
+face hiding what is behind it, its back edges drawn so it reads as a box. The code lands on the
+road, and its ripple rides the floor. The sky's rain runs from half the sidebar's height (or the
+scene's top) down to the horizon ("the runic rain in the background of the graphic to have its
+height increased to half the pane size"), softened under the names.
 
 The clock's zero (Reduce Motion) has no bolt, nothing falling, every tower standing and every
 light on.
