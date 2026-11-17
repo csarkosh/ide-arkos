@@ -1009,6 +1009,9 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     // The focused pane whose frame p is in, if any: its focus, its frame's rect, its tab bar's
     // block and its body.
     float in_focus = 0.0;
+    // The pane whose frame's shape p is in, if any (its own rect), for an active tab that starts
+    // its bar and so reaches the frame.
+    float4 shape_pane = float4(0.0);
     float4 in_rect = float4(0.0);
     int in_block = 0;
     float4 in_body = float4(0.0);
@@ -1143,12 +1146,14 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             // The body as it should reach the screen, drawn strong enough to read through the
             // paper: its top band, its skyline, and the rain as faint as over a source file.
             float3 bgt = u.colors[ARKOS_TERMINAL_BG].rgb;
-            float3 want = pane_night(u, p - r.xy, r.y + r.w - p.y, blk.seed, u.time, green);
+            // Measured from the frame (FRAME_OUT out), as the room round it is.
+            float3 want = pane_night(u, float2(p.x - r.x + FRAME_OUT, p.y - r.y), r.y + r.w + FRAME_OUT - p.y, blk.seed, u.time, green);
             want = mix(want, green, drop.a * RAIN_ALPHA * BODY_RAIN);
             col = mix(bgt, through(bgt, want), k);
             // A highlighted row in the body keeps its glow over it.
             col = mix(col, green, lift * k);
-        } else if (kind == ARKOS_ACTIVE_TAB_BLOCK && inside_box(p, r)) {
+        } else if (kind == ARKOS_ACTIVE_TAB_BLOCK && (inside_box(p, r) || (abs(r.x - shape_pane.x) < 1.0 && shape_pane.z > 0.0 && p.x < r.x && p.x >= r.x - FRAME_OUT + 1.0 && p.y >= r.y && p.y < r.y + r.w))) {
+            // A first tab reaches the frame on its left (the room is the pane's, `shape_pane`).
             // The doorway: the tab's colour, open to the body below, a neon line along its top
             // (the focus colour on the focused pane) glowing a little down into it, and its lamp.
             float3 tabc = u.colors[ARKOS_TAB_ACTIVE].rgb;
@@ -1184,17 +1189,35 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
                 in_block = i;
                 in_body = float4(pr.x, r.y + r.w, pr.z, pr.y + pr.w - (r.y + r.w));
             }
-            // The strip: a solid panel.
-            if (inside_box(p, r)) {
+            // The pane reaches its frame: the room between the pane's own rect and the frame's
+            // line, cut at the frame's corners, is filled with the strip beside and above the
+            // tab bar and with the body's night beside and below the body (Cyrus, 2026-11-17:
+            // "flush with the pane's borders and match the shape too").
+            float2 out_c = out_rect.xy + out_rect.zw * 0.5;
+            bool in_shape = sd_chamfer(p - out_c, out_rect.zw * 0.5, FRAME_CHAMFER) < 0.0;
+            bool in_room = in_shape && !inside_box(p, pr);
+            if (in_shape) {
+                shape_pane = pr;
+            }
+            if (in_room && p.y >= r.y + r.w && i + 1 < nb && int(u.blocks[i + 1].kind) == ARKOS_PANE_BODY_BLOCK) {
+                // The body's night, as the body's paper shows it (no paper here, so as it is).
+                constant ArkosBlock& bb = u.blocks[i + 1];
+                float4 b = bb.rect;
+                float3 want = pane_night(u, float2(p.x - b.x + FRAME_OUT, p.y - b.y), b.y + b.w + FRAME_OUT - p.y, bb.seed, u.time, green);
+                want = mix(want, green, drop.a * RAIN_ALPHA * BODY_RAIN);
+                col = mix(col, want, k);
+            }
+            // The strip: a solid panel, from the frame's top to the tab bar's foot.
+            if (inside_box(p, r) || (in_room && p.y < r.y + r.w)) {
                 float3 stone = u.colors[ARKOS_BANNER].rgb;
                 float yy = p.y - r.y;
                 float3 c = stone;
-                if (yy < 1.0) {
+                if (p.y < out_rect.y + 1.0) {
                     c = mix(stone, u.colors[ARKOS_TEXT_DIM].rgb, STRIP_HI);
                 } else if (yy >= r.w - 1.0) {
                     c = away(u, stone, STRIP_FOOT);
                 } else {
-                    if (fmod(p.x - r.x + blk.seed * 17.0, STRIP_PANEL) < 1.0) {
+                    if (yy >= 0.0 && fmod(p.x - r.x + blk.seed * 17.0, STRIP_PANEL) < 1.0) {
                         c = mix(stone, u.colors[ARKOS_TAB_BAR].rgb, STRIP_SEAM);
                     }
                     if (yy >= 2.0 && yy < 3.0) {

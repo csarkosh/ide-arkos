@@ -39,6 +39,14 @@ again the same way while a glitch line sweeps the scene.
 
 The clock's zero (Reduce Motion) has no bolt and no cat, and every light on.
 
+## Panes flush with their frames
+
+The room between a pane's own rect and its frame's line (5 points) is the pane's, cut at the
+frame's corners: the strip fills it beside and above the tab bar, a first active tab reaches the
+frame on its left, and the body's night (its band, its skyline, measured from the frame, and its
+rain) fills it beside and below the body (Cyrus, 2026-11-17: "flush with the pane's borders and
+match the shape too").
+
 ## No lines of runes in the window
 
 The panes', the sidebar's and the title bar's own edges are their frames, strips and clouds, not

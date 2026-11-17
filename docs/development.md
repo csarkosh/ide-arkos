@@ -1118,7 +1118,8 @@ Things only a person at the screen can check, in order of value:
   few cycles) or, in Matrix, a city of falling code with a ringing phone booth and a black cat
   crossing twice; the focused pane's frame wider and brighter, runes running just inside its
   frame, flush against it and round its cut corners, in the focus colour (flipping along its top and foot, falling down its sides) and in no
-  other pane; each tab bar a solid panel, the active tab a doorway with a neon line along its
+  other pane; the tab bar and the body reaching the frame, cut at its corners; each tab bar a
+  solid panel, the active tab a doorway with a neon line along its
   top and a red lantern (Tokyo) or a changing rune (Matrix) on it; a pane's top a cloud band or
   falling code, its foot two rows of skyline with lit windows, the rain over it as faint as a
   source file's; the names over the scene as readable as over the rain; stills off the screen:

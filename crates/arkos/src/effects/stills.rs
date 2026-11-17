@@ -137,6 +137,25 @@ mod tests {
     }
 
     #[test]
+    fn on_the_gpu_a_pane_s_strip_reaches_its_frame() {
+        if !gpu() {
+            return;
+        }
+        let g = gap();
+        let theme = crate::theme::builtin("tokyo-rain").unwrap();
+        let frame = runic_frame(&theme, 0.0, &window(g, 0.0));
+        // The right pane (not focused, so no runes inside its frame), half way along its bar: 3
+        // points inside the frame's line (in the room between the pane and its frame) and 3
+        // outside it see the same glow from the line, so the room's pixel is nearer the strip's
+        // own (12 points into the bar) than the ground's is.
+        let x = SIDE + g + (W as f32 - SIDE - 3.0 * g) / 2.0 + g + 200.0;
+        let top = crate::chrome::TITLE_BAR_H + g;
+        let (room, ground, strip) = (at(&frame, x, top - 2.0), at(&frame, x, top - 8.0), at(&frame, x, top + 12.0));
+        let far = |a: crate::palette::Rgb, b: crate::palette::Rgb| (a.r as i32 - b.r as i32).abs() + (a.g as i32 - b.g as i32).abs() + (a.b as i32 - b.b as i32).abs();
+        assert!(far(room, strip) < far(ground, strip), "room {room:?} ground {ground:?} strip {strip:?}");
+    }
+
+    #[test]
     fn on_the_gpu_the_sidebar_s_frame_lights_while_it_has_the_keys() {
         if !gpu() {
             return;
