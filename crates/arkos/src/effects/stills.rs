@@ -116,6 +116,27 @@ mod tests {
     }
 
     #[test]
+    fn on_the_gpu_runes_run_inside_the_focused_pane_s_edges_and_not_inside_another_s() {
+        if !gpu() {
+            return;
+        }
+        let g = gap();
+        let theme = crate::theme::builtin("tokyo-rain").unwrap();
+        // The light in a column 4 points inside each pane's outer side (the left pane's left side,
+        // the right pane's right side), down its body, summed over a few moments: the left pane
+        // is focused.
+        let (mut focused, mut other) = (0u32, 0u32);
+        for t in [1.0, 3.3, 5.7, 8.2] {
+            let frame = runic_frame(&theme, t, &window(g, 0.0));
+            for y in 200..500 {
+                focused += luma(at(&frame, SIDE + g + 4.0, y as f32));
+                other += luma(at(&frame, W as f32 - g - 5.0, y as f32));
+            }
+        }
+        assert!(focused > other + other / 10, "inside the focused pane {focused} against {other}");
+    }
+
+    #[test]
     fn on_the_gpu_the_sidebar_s_frame_lights_while_it_has_the_keys() {
         if !gpu() {
             return;

@@ -457,6 +457,17 @@ constant float FRAME_HALO = 4.0;
 constant float FRAME_CHAMFER = 7.0;
 // An unfocused frame's strength against a focused one's 1.
 constant float FRAME_IDLE = 0.5;
+// The focused pane's frame is drawn a little stronger: wider, with a wider halo and brighter
+// (Cyrus, 2026-11-17: "a little stronger").
+constant float FOCUS_FRAME_W = 2.0;
+constant float FOCUS_FRAME_HALO = 5.5;
+constant float FOCUS_FRAME_LIGHT = 1.3;
+// Inside the focused pane, just within its edges, the runic edges run in the focus colour: runes
+// flipping along its top and foot, streams falling down its sides, a tear now and then (Cyrus,
+// 2026-11-17: "those runic border effects on the inside of that border"). Their line lies
+// INNER_IN points inside the pane, at INNER_LIGHT of an edge's own light.
+constant float INNER_IN = 4.0;
+constant float INNER_LIGHT = 0.8;
 // The packet of light round a working pane's frame: its length in points and its speed.
 constant float PACKET_LEN = 70.0;
 constant float PACKET_SPEED = 240.0;
@@ -987,6 +998,11 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     float names_end = 0.0;
     float bar_focus = 0.0;
     float tab_hover = 0.0;
+    // The focused pane p is in, if any: its focus, its rect, its tab bar's block and its body's top.
+    float in_focus = 0.0;
+    float4 in_rect = float4(0.0);
+    int in_block = 0;
+    float in_body_y = 0.0;
     for (int i = 0; i < nb; i++) {
         constant ArkosBlock& blk = u.blocks[i];
         float4 rect = blk.rect;
@@ -1151,6 +1167,13 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
                 continue;
             }
             float focus = saturate(blk.focus);
+            // The focused pane, for the runes inside its edges (after the world, over its body).
+            if (focus > in_focus && inside_box(p, pr)) {
+                in_focus = focus;
+                in_rect = pr;
+                in_block = i;
+                in_body_y = r.y + r.w;
+            }
             // The strip: a solid panel.
             if (inside_box(p, r)) {
                 float3 stone = u.colors[ARKOS_BANNER].rgb;
@@ -1183,8 +1206,8 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             float4 fr = float4(pr.xy - FRAME_OUT, pr.zw + 2.0 * FRAME_OUT);
             float2 hb = fr.zw * 0.5;
             float d = abs(sd_chamfer(p - (fr.xy + hb), hb, FRAME_CHAMFER));
-            if (d < FRAME_HALO + 2.0) {
-                float s = line_light(d, FRAME_W, FRAME_HALO) * mix(FRAME_IDLE, 1.0, focus);
+            if (d < FOCUS_FRAME_HALO + 2.0) {
+                float s = line_light(d, mix(FRAME_W, FOCUS_FRAME_W, focus), mix(FRAME_HALO, FOCUS_FRAME_HALO, focus)) * mix(FRAME_IDLE, FOCUS_FRAME_LIGHT, focus);
                 float3 c = mix(green, ring_c, focus);
                 if (blk.busy > 0.5) {
                     float per = 2.0 * (fr.z + fr.w);
@@ -1215,6 +1238,24 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
         col = min(col + e.rgb * e.a * k, 1.0);
     } else {
         col = mix(col, e.rgb, saturate(e.a * k));
+    }
+    // The runes inside the focused pane's edges, in the focus colour, drawn 1 / (1 - PAPER) as
+    // strong over its body so they read through the paper as over its strip.
+    if (in_focus > 0.0) {
+        ArkosBlock fb = u.blocks[in_block];
+        fb.rect = float4(in_rect.xy + INNER_IN, in_rect.zw - 2.0 * INNER_IN);
+        fb.edges = float(ARKOS_EDGE_TOP | ARKOS_EDGE_RIGHT | ARKOS_EDGE_BOTTOM | ARKOS_EDGE_LEFT);
+        fb.seed = fb.seed + 101.0;
+        EdgeHit fh = no_edge();
+        float2 fhb = fb.rect.zw * 0.5;
+        nearest_edge(p, fb, sd_box(p - (fb.rect.xy + fhb), fhb), fh, float2(0.0));
+        float4 fe = edge_glow(fh, u.time, u.colors[ARKOS_FOCUS_RING].rgb, white_c);
+        float a = fe.a * INNER_LIGHT * in_focus * (p.y >= in_body_y ? 1.0 / (1.0 - PAPER) : 1.0);
+        if (u.dark > 0.5) {
+            col = min(col + fe.rgb * a * k, 1.0);
+        } else {
+            col = mix(col, fe.rgb, saturate(a * k));
+        }
     }
     return float4(col, 1.0);
 }
