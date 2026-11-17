@@ -642,8 +642,8 @@ and brighter for a tenth of a second. In a terminal, a cell whose text changes s
 random characters for a moment before it settles (longer while Claude is working), and fresh
 text starts brighter and cools over a second and a half. Each pane wears a neon frame in the
 gap round it, its corners cut, lit in the focus colour on the focused pane, wider and brighter
-there (and round the sidebar while it has the keys); just inside the focused pane's edges the
-runes run in the focus colour, flipping along its top and foot, falling down its sides, and now
+there (and round the sidebar while it has the keys); just inside the focused pane's frame, flush
+against it and following its cut corners, the runes run in the focus colour, flipping along its top and foot, falling down its sides, and now
 and then a stretch tears and flashes; a packet of light runs round the frame of a pane whose Claude
 session works, a block cursor blinks on the frame's foot of one that waits for you. Each tab bar
 is a solid panel with a trace of light under its top; the active tab is a doorway in the tab's

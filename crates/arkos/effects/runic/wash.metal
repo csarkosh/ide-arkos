@@ -462,11 +462,13 @@ constant float FRAME_IDLE = 0.5;
 constant float FOCUS_FRAME_W = 2.0;
 constant float FOCUS_FRAME_HALO = 5.5;
 constant float FOCUS_FRAME_LIGHT = 1.3;
-// Inside the focused pane, just within its edges, the runic edges run in the focus colour: runes
-// flipping along its top and foot, streams falling down its sides, a tear now and then (Cyrus,
-// 2026-11-17: "those runic border effects on the inside of that border"). Their line lies
-// INNER_IN points inside the pane, at INNER_LIGHT of an edge's own light.
-constant float INNER_IN = 4.0;
+// Inside the focused pane's frame, flush against it and following its shape (its cut corners
+// too), the runic edges run in the focus colour: runes flipping along its top and foot, streams
+// falling down its sides, a tear now and then (Cyrus, 2026-11-17: "those runic border effects on
+// the inside of that border", "keep them flush together", "follow the border's shape"). Their
+// line lies INNER_IN inside the frame's line: half the focused frame's width and half a side
+// stream's rune, so the runes meet the line; nothing of them is drawn on or past the line.
+constant float INNER_IN = 3.2;
 constant float INNER_LIGHT = 0.8;
 // The packet of light round a working pane's frame: its length in points and its speed.
 constant float PACKET_LEN = 70.0;
@@ -998,11 +1000,12 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     float names_end = 0.0;
     float bar_focus = 0.0;
     float tab_hover = 0.0;
-    // The focused pane p is in, if any: its focus, its rect, its tab bar's block and its body's top.
+    // The focused pane whose frame p is in, if any: its focus, its frame's rect, its tab bar's
+    // block and its body.
     float in_focus = 0.0;
     float4 in_rect = float4(0.0);
     int in_block = 0;
-    float in_body_y = 0.0;
+    float4 in_body = float4(0.0);
     for (int i = 0; i < nb; i++) {
         constant ArkosBlock& blk = u.blocks[i];
         float4 rect = blk.rect;
@@ -1167,12 +1170,13 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
                 continue;
             }
             float focus = saturate(blk.focus);
-            // The focused pane, for the runes inside its edges (after the world, over its body).
-            if (focus > in_focus && inside_box(p, pr)) {
+            // The focused pane, for the runes inside its frame (after the world, over its body).
+            float4 out_rect = float4(pr.xy - FRAME_OUT, pr.zw + 2.0 * FRAME_OUT);
+            if (focus > in_focus && inside_box(p, out_rect)) {
                 in_focus = focus;
-                in_rect = pr;
+                in_rect = out_rect;
                 in_block = i;
-                in_body_y = r.y + r.w;
+                in_body = float4(pr.x, r.y + r.w, pr.z, pr.y + pr.w - (r.y + r.w));
             }
             // The strip: a solid panel.
             if (inside_box(p, r)) {
@@ -1239,22 +1243,38 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     } else {
         col = mix(col, e.rgb, saturate(e.a * k));
     }
-    // The runes inside the focused pane's edges, in the focus colour, drawn 1 / (1 - PAPER) as
-    // strong over its body so they read through the paper as over its strip.
+    // The runes inside the focused pane's frame, in the focus colour, along a line that is the
+    // frame's own outline moved INNER_IN inward (its distance field offset, so its cut corners
+    // keep their shape); drawn 1 / (1 - PAPER) as strong over its body so they read through the
+    // paper as over its strip.
     if (in_focus > 0.0) {
-        ArkosBlock fb = u.blocks[in_block];
-        fb.rect = float4(in_rect.xy + INNER_IN, in_rect.zw - 2.0 * INNER_IN);
-        fb.edges = float(ARKOS_EDGE_TOP | ARKOS_EDGE_RIGHT | ARKOS_EDGE_BOTTOM | ARKOS_EDGE_LEFT);
-        fb.seed = fb.seed + 101.0;
-        EdgeHit fh = no_edge();
-        float2 fhb = fb.rect.zw * 0.5;
-        nearest_edge(p, fb, sd_box(p - (fb.rect.xy + fhb), fhb), fh, float2(0.0));
-        float4 fe = edge_glow(fh, u.time, u.colors[ARKOS_FOCUS_RING].rgb, white_c);
-        float a = fe.a * INNER_LIGHT * in_focus * (p.y >= in_body_y ? 1.0 / (1.0 - PAPER) : 1.0);
-        if (u.dark > 0.5) {
-            col = min(col + fe.rgb * a * k, 1.0);
-        } else {
-            col = mix(col, fe.rgb, saturate(a * k));
+        constant ArkosBlock& fb = u.blocks[in_block];
+        float2 fc = in_rect.xy + in_rect.zw * 0.5;
+        float2 fhb = in_rect.zw * 0.5;
+        float frame_d = sd_chamfer(p - fc, fhb, FRAME_CHAMFER);
+        if (frame_d < -FOCUS_FRAME_W * 0.5) {
+            // Which side p is nearest decides how its runes run: streams down a side, flipping
+            // runes along the top and foot; along is measured from that side's start.
+            float2 q = abs(p - fc) - fhb;
+            bool vert = q.x > q.y;
+            uint side = vert ? (p.x > fc.x ? 1u : 3u) : (p.y > fc.y ? 2u : 0u);
+            float len = vert ? in_rect.w : in_rect.z;
+            EdgeHit fh = no_edge();
+            fh.across = frame_d + INNER_IN;
+            fh.d = abs(fh.across);
+            fh.rank = fh.d;
+            fh.along = clamp(vert ? p.y - in_rect.y : p.x - in_rect.x, 0.0, len);
+            fh.len = len;
+            fh.busy = fb.busy;
+            fh.key = as_type<uint>(fb.seed + 101.0) * 4u + side;
+            fh.vert = vert;
+            float4 fe = edge_glow(fh, u.time, u.colors[ARKOS_FOCUS_RING].rgb, white_c);
+            float a = fe.a * INNER_LIGHT * in_focus * (inside_box(p, in_body) ? 1.0 / (1.0 - PAPER) : 1.0);
+            if (u.dark > 0.5) {
+                col = min(col + fe.rgb * a * k, 1.0);
+            } else {
+                col = mix(col, fe.rgb, saturate(a * k));
+            }
         }
     }
     return float4(col, 1.0);

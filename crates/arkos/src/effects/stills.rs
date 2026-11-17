@@ -122,18 +122,18 @@ mod tests {
         }
         let g = gap();
         let theme = crate::theme::builtin("tokyo-rain").unwrap();
-        // The light in a column 4 points inside each pane's outer side (the left pane's left side,
-        // the right pane's right side), down its body, summed over a few moments: the left pane
-        // is focused.
+        // The light in a column on the runes' line, just inside each pane's frame (5 points out
+        // from the pane, the line 3.2 in from it: the left pane's left side, the right pane's
+        // right side), down its body, summed over a few moments: the left pane is focused.
         let (mut focused, mut other) = (0u32, 0u32);
         for t in [1.0, 3.3, 5.7, 8.2] {
             let frame = runic_frame(&theme, t, &window(g, 0.0));
             for y in 200..500 {
-                focused += luma(at(&frame, SIDE + g + 4.0, y as f32));
-                other += luma(at(&frame, W as f32 - g - 5.0, y as f32));
+                focused += luma(at(&frame, SIDE + g - 2.0, y as f32));
+                other += luma(at(&frame, W as f32 - g + 1.0, y as f32));
             }
         }
-        assert!(focused > other + other / 10, "inside the focused pane {focused} against {other}");
+        assert!(focused > other * 2, "inside the focused pane's frame {focused} against {other}");
     }
 
     #[test]
