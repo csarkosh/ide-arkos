@@ -379,7 +379,7 @@ still) at 2880 by 1600 and 24 fps with its last frame as `<name>.jpg`; the multi
 prospective users can be enticed by the themes", the end running into the start with no seam, and
 paused when out of view). Every shot whose theme's effect moves on its own (`MOVING_EFFECTS` in
 `crates/shoot/src/story.rs`: runic, overworld and space, so Tokyo Rain, Matrix, Timo Purple and
-Arabia Solar) is also written as `docs/images/<scene>-<shot>.mp4`, beside its still. From just
+Solar Arabia) is also written as `docs/images/<scene>-<shot>.mp4`, beside its still. From just
 before the still to the end of the loop every process under the shoot's daemon is held with
 SIGSTOP (parents first, so a shell never sees its child stop; SIGCONT after, children first), so
 the text stands still and only the effect moves, and the still matches the loop's frames. The
@@ -394,7 +394,7 @@ must be in `MOVING_EFFECTS` or `STILL_EFFECTS` (a test), so a new effect's theme
 on purpose; a shot can say `loop = true` or `loop = false` to overrule its theme. A shot's
 `theme` is `dark` or `light` (the story's pair) or any built-in theme by name, so a persona can
 be shot in a theme not its own: the multi tasker's `solar` and `solar-inbox` are its window in
-Arabia Solar, for the apps page's "Two layouts." band. The apps page
+Solar Arabia, for the apps page's "Two layouts." band. The apps page
 (csarko.sh's `apps/build.mjs`) finds each picture's `.mp4` beside it and plays it over the
 picture's window, only while it is on screen and chosen.
 
@@ -690,7 +690,7 @@ Things only a person at the screen can check, in order of value:
   seconds, two clouds in the title bar and one over the castle, the castle's windows guttering
   and its pennant waving, grass blades leaning, six fireflies, a bat crossing now and then, each
   lantern's flame flickering and a spark crossing the focused pane's gem
-- effects: under Timo Purple or Arabia Solar with Departure Mono installed the window, the
+- effects: under Timo Purple or Solar Arabia with Departure Mono installed the window, the
   terminal and rendered markdown are set in it, sharp at every preset (compact and comfortable
   both draw at 16.5, the chrome's labels at 11); Cmd+= and Cmd+- step to 22 and 11; switching to
   another theme puts the preset's own size back, and back again on return; without the font the
@@ -726,12 +726,12 @@ Things only a person at the screen can check, in order of value:
   header, row numbers and alternate rows, keep their own colours
 - effects: overworld on Peach Watercolor reads as an intended dusk scene, not a broken one: pale
   frames and ground, and a terminal's text as easy to read as without it
-- effects: Arabia Solar is Timo Purple by day: sand and cream with burnt-orange frames on the
+- effects: Solar Arabia is Timo Purple by day: sand and cream with burnt-orange frames on the
   focused pane, set in Departure Mono, its scene a desert kingdom (a palace with a great onion
   dome, two small ones and a minaret at each end, three palms, two lines of dunes, sand with a
   trail, a sun with four rays, and now and then a carpet rippling across the sky); it reads as
   its own place, not as the castle recoloured; its text is as easy to read as Peach Watercolor's
-- effects: under Arabia Solar new terminal text gathers out of sand: a scatter of gold grains a
+- effects: under Solar Arabia new terminal text gathers out of sand: a scatter of gold grains a
   little above the line, then most of the character in orange, then the whole of it settling to
   ink, in three cuts with no shimmer between them; under Timo Purple it still resolves from
   blocks
@@ -1093,7 +1093,7 @@ Things only a person at the screen can check, in order of value:
   tree; the ring never shifts the headings
 - Cmd+0's glow: press Cmd+0: the focused pane's glow fades out as the sidebar's fades in; a
   click on a pane (or Enter on a session) brings it back to the pane; under an effect the
-  pane's own focus drawing fades with it; in Timo Purple and Arabia Solar the sidebar's thick
+  pane's own focus drawing fades with it; in Timo Purple and Solar Arabia the sidebar's thick
   frame turns the focus colour as the pane's goes back to stone
 - Cmd+0 on Files: leave the keys on a file, click a pane, press Cmd+0: the sidebar stays on
   Files with the same file selected and the keys there; on Sessions it comes back to the ringed row
@@ -1116,7 +1116,10 @@ Things only a person at the screen can check, in order of value:
   plates; the sidebar framed, lit while it has the keys, a chevron on its selected row; at its
   foot Tokyo at night in the rain (Tokyo Tower, the Skytree, windows; a rune-chain bolt every
   few cycles) or, in Matrix, a city of falling code with a ringing phone booth and a black cat
-  crossing twice; the names over the scene as readable as over the rain; stills off the screen:
+  crossing twice; each tab bar a solid panel, the active tab a doorway with a neon line along its
+  top and a red lantern (Tokyo) or a changing rune (Matrix) on it; a pane's top a cloud band or
+  falling code, its foot two rows of skyline with lit windows, the rain over it as faint as a
+  source file's; the names over the scene as readable as over the rain; stills off the screen:
   `ARKOS_STILLS=<dir> cargo test -p arkos effects::stills -- --ignored`
 - Help, Keyboard Navigation: a rendered page opens in a tab of the focused pane, its keys the
   defaults (Cmd+0, Cmd+1 to Cmd+8, Cmd+9, Shift+Cmd+P, Cmd+T, Ctrl+Tab, Option+Cmd+Down); with

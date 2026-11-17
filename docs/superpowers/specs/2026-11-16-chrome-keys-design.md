@@ -58,7 +58,7 @@ session row, the switcher, a heading, the files, the worktrees), else the tab's 
 The focus glow goes with the keys (Cyrus, 2026-11-17: "When the Cmd+0 pane is in focus, the
 pane highlight should move to the Cmd+0 pane too"): while the sidebar has them it wears the glow
 a focused pane wears, and no pane glows; on the title bar's icons no pane glows either. The
-fade between is the panes' own. Under the overworld effect (Timo Purple, Arabia Solar), whose
+fade between is the panes' own. Under the overworld effect (Timo Purple, Solar Arabia), whose
 panes wear a thick frame lit in the focus colour, the sidebar's frame lights the same way
 (`Scene::sidebar_focus`).
 

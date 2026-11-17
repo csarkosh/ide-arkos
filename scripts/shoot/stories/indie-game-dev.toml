@@ -66,7 +66,7 @@ changed = { rules = 3 }
 after_secs = 30
 timeout_secs = 360
 
-# The same moment in Arabia Solar (the light slot), the theme's daytime twin, taken as soon as
+# The same moment in Solar Arabia (the light slot), the theme's daytime twin, taken as soon as
 # the first is: `indie-game-dev-solar.png`.
 [[shot]]
 name = "solar"
@@ -88,7 +88,7 @@ drag = [[0.195, 0.07], [0.96, 0.72]]
 # room its table needs, so no column header wraps.
 drags = [[[0.665, 0.72], [0.488, 0.72]]]
 
-# The Arabia Solar picture in the Inbox layout, for the apps page's Inbox and Grid switch: the sessions as a list
+# The Solar Arabia picture in the Inbox layout, for the apps page's Inbox and Grid switch: the sessions as a list
 # by what they ask of you, one shown at full size with the files it opened beside it.
 [[shot]]
 name = "solar-inbox"

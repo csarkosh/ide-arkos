@@ -1254,7 +1254,7 @@ mod tests {
     #[test]
     fn arabia_solar_is_peach_watercolor_s_colours_by_day_under_timo_purple_s_effect_and_font() {
         let (solar, peach, timo) = (builtin("arabia-solar").expect("ships"), builtin("peach-watercolor").unwrap(), builtin("timo-purple").unwrap());
-        assert_eq!(solar.name, "arabia-solar");
+        assert_eq!((solar.name.as_str(), solar.title.as_deref()), ("arabia-solar", Some("Solar Arabia")));
         assert!(solar.is_light());
         assert_eq!((&solar.chrome, &solar.terminal, &solar.semantic, &solar.tree, &solar.viewer), (&peach.chrome, &peach.terminal, &peach.semantic, &peach.tree, &peach.viewer));
         assert_eq!(solar.recommended_effect(), Some("overworld"));

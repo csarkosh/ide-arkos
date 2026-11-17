@@ -26,11 +26,11 @@ pub const RAIN_ROWS_PERIOD: f32 = 60.0;
 pub const RUNE_CHANGE: f32 = 0.5;
 /// The most the rain lays of its green over the ground, before the user's intensity.
 pub const RAIN_ALPHA: f32 = 0.22;
-/// How much more rain the tab strips carry, as a share of `RAIN_ALPHA` laid again over them.
-pub const TAB_RAIN: f32 = 0.4;
-/// How much more rain the pane bodies carry, as a share of `RAIN_ALPHA` laid again over them, so
-/// the rain shows through a terminal's paper.
-pub const PANE_RAIN: f32 = 0.4;
+/// The rain over a pane's body as it reaches the screen through the paper, as a share of
+/// `RAIN_ALPHA`: as faint as over a source file. The tab strips are solid and carry none.
+pub const BODY_RAIN: f32 = 0.11;
+/// The paper the wash draws a pane's body through, the manifest's `paper_alpha`.
+pub const PAPER: f32 = 0.6;
 /// How far a stream's head rune leans from the green toward white.
 pub const RAIN_HEAD: f32 = 0.35;
 
@@ -124,8 +124,8 @@ mod tests {
             ("constant float RAIN_ROWS_PERIOD = 60.0;", RAIN_ROWS_PERIOD),
             ("constant float RUNE_CHANGE = 0.5;", RUNE_CHANGE),
             ("constant float RAIN_ALPHA = 0.22;", RAIN_ALPHA),
-            ("constant float TAB_RAIN = 0.4;", TAB_RAIN),
-            ("constant float PANE_RAIN = 0.4;", PANE_RAIN),
+            ("constant float BODY_RAIN = 0.11;", BODY_RAIN),
+            ("constant float PAPER = 0.6;", PAPER),
             ("constant float RAIN_HEAD = 0.35;", RAIN_HEAD),
         ] {
             assert!(wash.contains(line), "wash.metal lacks {line}");
@@ -184,13 +184,12 @@ mod tests {
             "constant float E_BRIGHT = 1.4;",
             // The background rain.
             "constant float RAIN_ALPHA = 0.22;",
-            // The tab strips: undarkened, with a second layer of rain.
-            "constant float TAB_RAIN = 0.4;",
-            "col = mix(col, r.rgb, r.a * RAIN_ALPHA * TAB_RAIN * tab * k);",
+            // The tab strips: undarkened, then painted solid by the world.
             "kind == ARKOS_TAB_BAR_BLOCK ? 0.0 : 0.42",
-            // The pane bodies: a stronger second layer, so the rain shows through the paper.
-            "constant float PANE_RAIN = 0.4;",
-            "col = mix(col, green, r.a * RAIN_ALPHA * PANE_RAIN * pane * k);",
+            // The pane bodies: drawn as they should reach the screen through the paper, the rain
+            // at BODY_RAIN of RAIN_ALPHA.
+            "want = mix(want, green, drop.a * RAIN_ALPHA * BODY_RAIN);",
+            "col = mix(bgt, through(bgt, want), k);",
         ] {
             assert!(wash.contains(line), "wash.metal lacks {line}");
         }

@@ -643,8 +643,13 @@ random characters for a moment before it settles (longer while Claude is working
 text starts brighter and cools over a second and a half. Each pane wears a neon frame in the
 gap round it, its corners cut, lit in the focus colour on the focused pane (and round the
 sidebar while it has the keys); a packet of light runs round the frame of a pane whose Claude
-session works, a block cursor blinks on the frame's foot of one that waits for you, the active
-tab is underlined in light and a lamp at the bar's right end is lit on the focused pane. The
+session works, a block cursor blinks on the frame's foot of one that waits for you. Each tab bar
+is a solid panel with a trace of light under its top; the active tab is a doorway in the tab's
+colour, open to the pane below, a neon line along its top (the focus colour on the focused pane)
+and a lamp on it (a red paper lantern under Tokyo Rain, a changing rune under The Matrix), and a
+lamp at the bar's right end is lit on the focused pane. A pane's top shades into a band of storm
+cloud (Tokyo Rain) or a drizzle of falling code (The Matrix), and its foot is two rows of skyline
+with a few lit windows. The
 title bar is a strip of storm clouds, its words and icons on plates, and a chevron marks the
 sidebar's selected row. At the sidebar's foot, below the names, stands the theme's scene:
 Tokyo Rain's is Tokyo at night in the rain (Tokyo Tower in orange lattice, the Skytree, lit
@@ -679,7 +684,7 @@ carry any effect, since an effect reads the theme's colours. A theme with its ow
 preset, and the presets are one of the two looks Settings, Appearance offers; the other, Custom,
 puts any theme's colours in any theme's fonts under any effect or none (see [Config](#config)). `arkos effect use
 <name>` does the same from a shell. Each preset's own effect: `watercolor`
-for Peach Watercolor and Lavender Watercolor, `runic` for Matrix and Tokyo Rain, `material` for Material and Lavender Material, `notebook` for Composition Notebook, `overworld` for Timo Purple and Arabia Solar, and none for Navy (the default).
+for Peach Watercolor and Lavender Watercolor, `runic` for Matrix and Tokyo Rain, `material` for Material and Lavender Material, `notebook` for Composition Notebook, `overworld` for Timo Purple and Solar Arabia, and none for Navy (the default).
 Effects stay out of About, Settings, Keybindings and the chooser, which keep their plain look.
 Under Reduce Motion the wash holds still and draws only when something changes, no letter
 glitches, a changed cell settles at once, and a hidden,
@@ -876,7 +881,7 @@ window, as Keybindings (Cmd+/) does.
     presets folder". Each preset reads by its title (Plain Navy, The Matrix, Tokyo Rain…),
     and a group is one row that reads as its group and its choice, "Watercolor Lavender ▾":
     Watercolor (Lavender, the default, or Peach) and Material (Solar, the default, Bright or
-    Lavender). A group's row keeps its last pick: choosing Material Solar leaves the Watercolor
+    Lavender). Both lists are in alphabetical order, a group by its name. A group's row keeps its last pick: choosing Material Solar leaves the Watercolor
     row on Watercolor Peach if that is what you chose there, and the row shows the group's default
     only until you pick one of it. The whole row is a select: a click
     on it opens a small menu of the members, the one in force checked; a click on one puts it in

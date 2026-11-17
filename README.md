@@ -57,7 +57,7 @@ window in pigment and ink.
 </picture>
 
 **The indie game dev** builds a dungeon crawl: Claude Code fixes the combat rule a test caught and
-designs the next room's enemy. Shot in Timo Purple, a pixel-art night, and Arabia Solar, the same
+designs the next room's enemy. Shot in Timo Purple, a pixel-art night, and Solar Arabia, the same
 world by day.
 
 <picture>

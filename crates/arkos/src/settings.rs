@@ -283,8 +283,10 @@ fn preset_list(themes: &[(String, theme::Source, Option<theme::Appearance>)], sh
     preset_list_with(themes, shown, slot, current, &GroupPicks::new())
 }
 
-/// The slot's rows, a group folded into one whose pick is the member in force, else the group's
-/// last pick (`picks`) while it is still installed, else its default.
+/// The slot's rows in alphabetical order (a group by its name, its members by theme), a current
+/// pick of the other kind first and broken files last; a group folded into one whose pick is the
+/// member in force, else the group's last pick (`picks`) while it is still installed, else its
+/// default.
 pub fn preset_list_with(themes: &[(String, theme::Source, Option<theme::Appearance>)], shown: &std::collections::BTreeMap<String, theme::Shown>, slot: theme::Appearance, current: &str, picks: &GroupPicks) -> Vec<PresetRow> {
     let title = |name: &str| shown.get(name).map_or_else(|| theme::title_case(name), |s| s.title.clone());
     let mut out: Vec<PresetRow> = Vec::new();
@@ -322,6 +324,28 @@ pub fn preset_list_with(themes: &[(String, theme::Source, Option<theme::Appearan
             _ => out.push(PresetRow::Group { name: group, members: vec![(ix, label)], pick: ix }),
         }
     }
+    // Where a row sorts: a current pick of the other kind first, broken files last, the rest
+    // alphabetically by what the row reads.
+    let place = |row: &PresetRow| -> (u8, String) {
+        match row {
+            PresetRow::One { ix, label } => {
+                let (_, source, kind) = &themes[*ix];
+                let rank = match (source, kind) {
+                    (theme::Source::Invalid(_), _) | (_, None) => 2,
+                    (_, Some(k)) if *k != slot => 0,
+                    _ => 1,
+                };
+                (rank, label.to_lowercase())
+            }
+            PresetRow::Group { name, .. } => (1, name.to_lowercase()),
+        }
+    };
+    for row in out.iter_mut() {
+        if let PresetRow::Group { members, .. } = row {
+            members.sort_by_key(|(_, label)| label.to_lowercase());
+        }
+    }
+    out.sort_by_key(|row| place(row));
     out
 }
 
@@ -1539,16 +1563,32 @@ mod tests {
         .into_iter()
         .map(|(n, s)| (n.to_string(), s))
         .collect();
-        let group = |pick: usize| PresetRow::Group { name: "Watercolor".into(), members: vec![(1, "Watercolor Peach".into()), (2, "Watercolor Lavender".into())], pick };
-        assert_eq!(preset_list(&themes, &shown, Light, "my-paper"), vec![group(2), PresetRow::One { ix: 3, label: "My Paper".into() }], "the group's default, Lavender, is its pick");
-        assert_eq!(preset_list(&themes, &shown, Light, "peach-watercolor")[0], group(1), "the current member is the pick");
+        let group = |pick: usize| PresetRow::Group { name: "Watercolor".into(), members: vec![(2, "Watercolor Lavender".into()), (1, "Watercolor Peach".into())], pick };
+        assert_eq!(preset_list(&themes, &shown, Light, "my-paper"), vec![PresetRow::One { ix: 3, label: "My Paper".into() }, group(2)], "the group's default, Lavender, is its pick");
+        assert_eq!(preset_list(&themes, &shown, Light, "peach-watercolor")[1], group(1), "the current member is the pick");
         assert_eq!(preset_list(&themes, &shown, Dark, "navy"), vec![PresetRow::One { ix: 0, label: "Plain Navy".into() }]);
         assert_eq!(preset_list(&themes, &shown, Light, "navy")[0], PresetRow::One { ix: 0, label: "Plain Navy (a dark theme)".into() });
         assert_eq!(theme::title_case("my-dark-theme"), "My Dark Theme", "a user's theme without a title reads in capitalised words");
+        let alpha = vec![
+            ("zeta".to_string(), Source::File, Some(Light)),
+            ("peach-watercolor".to_string(), Source::BuiltIn, Some(Light)),
+            ("broken".to_string(), Source::Invalid("bad".into()), None),
+            ("lavender-watercolor".to_string(), Source::BuiltIn, Some(Light)),
+            ("alpha".to_string(), Source::File, Some(Light)),
+            ("navy".to_string(), Source::BuiltIn, Some(Dark)),
+        ];
+        let labels: Vec<String> = preset_list(&alpha, &shown, Light, "navy")
+            .into_iter()
+            .map(|r| match r {
+                PresetRow::One { label, .. } => label,
+                PresetRow::Group { name, members, .. } => format!("{name}: {}", members.into_iter().map(|(_, l)| l).collect::<Vec<_>>().join(", ")),
+            })
+            .collect();
+        assert_eq!(labels, ["Plain Navy (a dark theme)", "Alpha", "Watercolor: Watercolor Lavender, Watercolor Peach", "Zeta", "Broken (invalid)"], "alphabetical, the other kind's current pick first and broken files last");
         let peach: GroupPicks = [("Watercolor".to_string(), "peach-watercolor".to_string())].into_iter().collect();
-        assert_eq!(preset_list_with(&themes, &shown, Light, "my-paper", &peach)[0], group(1), "another preset in force leaves the group on its last pick, Peach");
+        assert_eq!(preset_list_with(&themes, &shown, Light, "my-paper", &peach)[1], group(1), "another preset in force leaves the group on its last pick, Peach");
         let gone: GroupPicks = [("Watercolor".to_string(), "deleted-theme".to_string())].into_iter().collect();
-        assert_eq!(preset_list_with(&themes, &shown, Light, "my-paper", &gone)[0], group(2), "a last pick no longer installed falls back to the default");
+        assert_eq!(preset_list_with(&themes, &shown, Light, "my-paper", &gone)[1], group(2), "a last pick no longer installed falls back to the default");
     }
 
     #[test]
@@ -1639,7 +1679,7 @@ mod tests {
         let row = |label: &str, value: Option<&str>, current: bool| Row { label: label.to_string(), value: value.map(str::to_string), current };
         assert_eq!(
             color_rows(&themes, &theme::shown(std::path::Path::new("/nonexistent")), "tokyo-rain"),
-            vec![row("Plain Navy (dark)", Some("navy"), false), row("Tokyo Rain (dark)", Some("tokyo-rain"), true), row("Arabia Solar (light)", Some("arabia-solar"), false), row("Broken (invalid)", None, false)]
+            vec![row("Plain Navy (dark)", Some("navy"), false), row("Tokyo Rain (dark)", Some("tokyo-rain"), true), row("Solar Arabia (light)", Some("arabia-solar"), false), row("Broken (invalid)", None, false)]
         );
         // A colour that is not installed is still shown as the one in force.
         assert_eq!(color_rows(&themes, &theme::shown(std::path::Path::new("/nonexistent")), "gone")[0], row("gone (not installed)", None, true));

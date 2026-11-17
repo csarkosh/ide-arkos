@@ -24,12 +24,14 @@ glyph_motion = true           # the glyph shader reads the clock, so the text is
 glyph_rate = 10               # 1 to 20; the text's redraws a second while glyph_motion is on
 terminal_decode = true        # the terminal decodes changed cells and brightens fresh ones;
                               # needs glyph_motion, whose timer it runs on
-paper_alpha = 0.92            # 0.5 to 1.0; a terminal's paper over the wash: a source file's,
-                              # so the rain is as faint behind a terminal as behind reading text
-document_paper_alpha = 0.92   # 0.5 to 1.0; a markdown or viewer tab's paper, so the rain barely
-                              # shows behind reading text (absent, paper_alpha)
+paper_alpha = 0.6             # 0.5 to 1.0; a terminal's paper over the wash: the wash draws a
+                              # pane's body as it should reach the screen through it (its top band,
+                              # its skyline, the rain as faint as a source file's), as overworld does
+document_paper_alpha = 0.6    # 0.5 to 1.0; a markdown or viewer tab's paper, the terminal's, so
+                              # a document's body reads as a terminal's (absent, paper_alpha)
 chrome_alpha = 0.0            # 0.0 to 1.0; the bars and the sidebar over the wash
-active_tab_alpha = 0.3        # 0.0 to 1.0; the active tab over the wash
+active_tab_alpha = 0.0        # 0.0 to 1.0; the active tab over the wash: clear, the wash paints
+                              # it as a doorway with its line and its lamp
 text_contrast = 0.0           # 0.0 to 1.0; how far the text moves towards ink while the effect is on
 scenes = ["city", "code"]     # the sidebar's scene a theme names with `[effect] scene`: a rainy
                               # city skyline (Tokyo Rain), or a city of falling code (Matrix)

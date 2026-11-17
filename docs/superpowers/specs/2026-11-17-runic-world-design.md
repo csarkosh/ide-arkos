@@ -1,7 +1,7 @@
 # The runic world: Overworld's features for Tokyo Rain and The Matrix
 
 Cyrus, 2026-11-17: "I want to work on the Tokyo Rain and Matrix themes graphics to have all the
-features that the Overworld theme uses", shared "similar to how Timo Purple and Arabia Solar are
+features that the Overworld theme uses", shared "similar to how Timo Purple and Solar Arabia are
 shared with Overworld". For Tokyo Rain's sidebar: "the Tokyo cityline with runic lightning and
 rain and clouds"; for Matrix: "it has to be something matrix related".
 
@@ -18,11 +18,11 @@ manifest `scenes` (`["city", "code"]`); the wash reads it as `ArkosInputs::scene
 | focused frame in the focus colour | the same, and the sidebar's frame while it has the keys |
 | glint along a working pane's frame | a packet of light running round it |
 | "continue" pennant on a waiting pane | a block cursor blinking on the frame's foot, in the waiting colour |
-| stone ledges, lantern on the active tab, gem lit on the focused pane | the active tab underlined in light, a lamp at the bar's right end lit on the focused pane |
+| stone ledges, the active tab a doorway with a line along its top, a lantern on it, a gem lit on the focused pane | a solid panel (top lit, foot shaded, seams, a trace of light), the active tab a doorway in the tab's colour with a neon line along its top, a red paper lantern (city) or a changing rune (code) on it, a lamp at the bar's right end lit on the focused pane |
 | a sky for a title bar, words and icons on plates | storm clouds, words and icons on plates |
 | a castle scene at the sidebar's foot, softened under the names | Tokyo at night in the rain (`city`) or a city of falling code (`code`), softened under the names |
 | the menu's cursor on the selected row | a chevron |
-| hills behind a terminal | the far skyline along its foot |
+| dusk at a pane's top, hills along its foot, drawn through the paper | a band of storm cloud (city) or falling code (code) at its top, two rows of skyline with lit windows at its foot, drawn through the paper (0.6) as overworld does, the rain at BODY_RAIN so as faint as before |
 | text typed in | text decoding, as before |
 
 `city`: storm clouds in three layers with no sky between them (an overcast over the whole band, a bank of large clouds drifting slowly, lighter clouds faster in front; each cloud its own size, height and speed, 2 to 11 points a second), drifting from half the sidebar's height (or the scene's top, if higher)
@@ -39,8 +39,11 @@ The clock's zero (Reduce Motion) has no bolt and no cat, and every light on.
 
 ## Quiet rain
 
-Behind a pane the rain is as faint as behind a source file (the paper covers 92% of it, for
-terminals too), and over the sidebar it is laid at the same ninth, in its own colour, its heads
+Behind a pane the rain is as faint as behind a source file (first by a paper covering 92% of it;
+since the panes' top and foot came, the paper is 0.6 as overworld's and the wash draws the body
+as it should reach the screen, the rain at BODY_RAIN of RAIN_ALPHA; Cyrus, 2026-11-17: "I like
+Timo Purple's approach a lot more", "Overworld also has nice graphics at the top and bottom of
+the panes"), and over the sidebar it is laid at the same ninth, in its own colour, its heads
 never whitened (Cyrus, 2026-11-17).
 
 ## Cost

@@ -646,9 +646,9 @@ mod tests {
         assert!(m.ink_borders && m.glyph_motion && m.terminal_decode);
         assert_eq!(m.highlights, Highlights::Effect);
         assert_eq!(m.menus, MenuLook::Glow);
-        assert_eq!((m.paper_alpha, m.chrome_alpha, m.active_tab_alpha, m.text_contrast), (0.92, 0.0, 0.3, 0.0), "a terminal's paper as a source file's, the rain as faint behind both");
-        assert_eq!(m.document_paper_alpha, Some(0.92), "a document reads on a nearly opaque paper");
-        assert_eq!(m.document_paper_alpha(), 0.92);
+        assert_eq!((m.paper_alpha, m.chrome_alpha, m.active_tab_alpha, m.text_contrast), (0.6, 0.0, 0.0, 0.0), "the wash draws a pane's body through its paper and paints the active tab");
+        assert_eq!(m.document_paper_alpha, Some(0.6), "a document reads on the terminal's paper, which the wash draws through");
+        assert_eq!(m.document_paper_alpha(), 0.6);
         assert_eq!(m.glyph_rate(), 10);
         assert_eq!(m.glyphs.as_deref(), Some("glyphs.metal"));
     }

@@ -293,27 +293,25 @@ mod tests {
         }
         let matrix = super::super::manifest::load("runic", std::path::Path::new("/nonexistent")).unwrap();
         let theme = crate::theme::builtin("matrix").unwrap();
-        // Inside a pane body, away from the edges' glow: the wash lays its rain twice there, at
-        // RAIN_ALPHA and again at PANE_RAIN times it, so that it shows through a terminal's paper.
-        // Through the paper (paper_alpha), what is seen of it is never more than RAIN_ALPHA of
-        // the text green over the black ground, and it does show. The brightest rune is a head,
-        // which leans RAIN_HEAD of the way toward white, with 2% for the bytes' rounding. The left
-        // pane's body below its highlighted row and that row's soft spill (6 points out), over a
-        // few moments, since about three fifths of the columns carry a stream at a time.
+        // Inside a pane body, clear of its top band and its skyline: the wash draws the body as it
+        // should reach the screen through the paper (paper_alpha), the rain at BODY_RAIN of
+        // RAIN_ALPHA in the green, drawn 1 / (1 - paper) times as strong. What is seen of it is
+        // never more than that of the text green over the black ground, and it does show. 2% for
+        // the bytes' rounding, over a few moments, since about three fifths of the columns carry a
+        // stream at a time.
         let interior: Vec<Rgb> = [7.0, 23.0, 61.0]
             .iter()
             // Clear of the right pane's frame too: this window has no gap, so its frame (6 points
             // out, with its halo) lies in the left pane's body, as it never does in the app.
-            .flat_map(|&t| pixels(&render_frame(&matrix.wash, &theme, (W, H), t, &small_window()), 4, 108, 104, 156))
+            // Below the highlighted row's spill and above the skyline at the body's foot.
+            .flat_map(|&t| pixels(&render_frame(&matrix.wash, &theme, (W, H), t, &small_window()), 4, 106, 104, 122))
             .collect();
         let text = theme.terminal.foreground.g as f32 / 255.0;
-        let head = text + (1.0 - text) * crate::effects::runic::RAIN_HEAD;
         let max = interior.iter().map(|p| p.g as f32 / 255.0).fold(0.0, f32::max);
-        let (rain, pane) = (crate::effects::runic::RAIN_ALPHA, crate::effects::runic::PANE_RAIN);
-        let laid = 1.0 - (1.0 - rain) * (1.0 - rain * pane);
-        assert!(max <= head * laid * 1.02, "the rain is too bright: green channel {max:.3}");
+        let (rain, body) = (crate::effects::runic::RAIN_ALPHA, crate::effects::runic::BODY_RAIN);
+        assert_eq!(matrix.manifest.paper_alpha, crate::effects::runic::PAPER, "the wash draws through the manifest's paper");
         let seen = max * (1.0 - matrix.manifest.paper_alpha);
-        assert!(seen <= head * rain * 1.02, "the rain seen through the paper is too bright: green channel {seen:.3}");
+        assert!(seen <= text * rain * body * 1.02 + 1.0 / 255.0, "the rain seen through the paper is too bright: green channel {seen:.3}");
         assert!(interior.iter().any(|p| p.g > 4), "the rain does not show at all");
     }
 
@@ -326,7 +324,9 @@ mod tests {
         let theme = crate::theme::builtin("matrix").unwrap();
         let all = blocks::EDGE_TOP | blocks::EDGE_RIGHT | blocks::EDGE_BOTTOM | blocks::EDGE_LEFT;
         // Two panes apart, each inked on all four sides: their outlines' bands never meet.
-        let pane = |x: f32, seed: f32, busy: f32, edges: u32| Block { rect: Rect { x, y: 16.0, w: 88.0, h: 128.0 }, kind: Kind::PaneBody, edges, seed, value: 1.0, ordinal: 0.0, busy, pitch: 0.0, focus: 0.0, waiting: 0.0 };
+        // A pane's own edges are its frame and its strip now; the runes still run along the
+        // chrome's reported edges, a title bar's here, and the busy flag works on any block's.
+        let pane = |x: f32, seed: f32, busy: f32, edges: u32| Block { rect: Rect { x, y: 16.0, w: 88.0, h: 128.0 }, kind: Kind::TitleBar, edges, seed, value: 1.0, ordinal: 0.0, busy, pitch: 0.0, focus: 0.0, waiting: 0.0 };
         // The light an outline adds, in green summed over the band within 8 points of it: the
         // frame with the edges less the same frame without, so the rain under them cancels.
         let band = |with: &[Rgb], without: &[Rgb], x: u32| -> f32 {
@@ -370,8 +370,9 @@ mod tests {
         let matrix = super::super::manifest::load("runic", std::path::Path::new("/nonexistent")).unwrap();
         let theme = crate::theme::builtin("matrix").unwrap();
         let all = blocks::EDGE_TOP | blocks::EDGE_RIGHT | blocks::EDGE_BOTTOM | blocks::EDGE_LEFT;
-        // A pane whose right and bottom edges are the window's right and bottom.
-        let pane = |edges: u32| [Block { rect: Rect { x: 16.0, y: 16.0, w: W as f32 - 16.0, h: H as f32 - 16.0 }, kind: Kind::PaneBody, edges, seed: 20.0, value: 1.0, ordinal: 0.0, busy: 1.0, pitch: 0.0, focus: 0.0, waiting: 0.0 }];
+        // A block whose right and bottom edges are the window's right and bottom (a title bar's:
+        // a pane's own edges are its frame and its strip, not runes).
+        let pane = |edges: u32| [Block { rect: Rect { x: 16.0, y: 16.0, w: W as f32 - 16.0, h: H as f32 - 16.0 }, kind: Kind::TitleBar, edges, seed: 20.0, value: 1.0, ordinal: 0.0, busy: 1.0, pitch: 0.0, focus: 0.0, waiting: 0.0 }];
         let added = |with: &[Rgb], without: &[Rgb], x0: u32, x1: u32, y0: u32, y1: u32| -> i32 {
             pixels(with, x0, y0, x1, y1).iter().zip(pixels(without, x0, y0, x1, y1)).map(|(a, b)| (a.g as i32 - b.g as i32).abs()).sum()
         };

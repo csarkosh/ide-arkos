@@ -1,8 +1,9 @@
 # The schema of every key is in docs/themes.md.
-# Arabia Solar: Timo Purple's daytime twin. The warm sand and cream of Peach Watercolor with a
+# Solar Arabia: Timo Purple's daytime twin. The warm sand and cream of Peach Watercolor with a
 # burnt-orange accent, under the overworld effect: the same framed panes, stone tab bars and
 # castle, seen by day with a sun in place of the moon, and set in the same pixel face.
 name = "arabia-solar"
+title = "Solar Arabia"
 appearance = "light"
 
 [effect]

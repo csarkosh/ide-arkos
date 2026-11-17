@@ -35,16 +35,13 @@ constant float RAIN_ROWS_PERIOD = 60.0;
 constant float RUNE_CHANGE = 0.5;
 // The most the rain adds of its green to the ground, before the user's intensity.
 constant float RAIN_ALPHA = 0.22;
-// How much more rain the tab strips carry, as a share of RAIN_ALPHA laid again over them.
-constant float TAB_RAIN = 0.4;
-// How much of the rain the sidebar carries: what a pane's paper (0.92) lets through of its rain
-// and PANE_RAIN's more, so the Cmd+0 pane is as quiet as a source file.
+// The rain over a pane's body as it reaches the screen, as a share of RAIN_ALPHA: as faint as a
+// source file's (Cyrus, 2026-11-17), the wash drawing it 1 / (1 - PAPER) times as strong under
+// the paper. The tab strips are solid and carry none.
+constant float BODY_RAIN = 0.11;
+// How much of the rain the sidebar carries: as faint as a pane's, in the rain's own colour, so
+// the Cmd+0 pane is as quiet as a source file.
 constant float SIDE_RAIN = 0.11;
-// How much more rain the pane bodies carry, as a share of RAIN_ALPHA laid again over them: a
-// terminal's paper covers the wash (paper_alpha), so without it the rain all but vanishes there;
-// a little, so it stays a quiet ground behind the text (Cyrus, 2026-11-17: "blend it better
-// into the background so it's more subtle").
-constant float PANE_RAIN = 0.4;
 // The head's extra brightness: how far its rune leans from the green toward white.
 constant float RAIN_HEAD = 0.35;
 // A rune's bit, in points: its 5 by 7 bits make a shape 10 by 14 points, centred in its cell.
@@ -437,8 +434,14 @@ float3 theme_green(constant ArkosInputs& u) {
 // Every pane wears a frame in the gap round it, a neon line with its corners cut, lit in the
 // focus colour on the focused pane and on the sidebar while it has the keys; a packet of light
 // runs round the frame of a pane whose Claude session works, and a block cursor blinks on the
-// frame's foot of one whose session waits. The tab bar's active tab is underlined in light and
-// a lamp at the bar's right end is lit on the focused pane. The title bar is a strip of storm
+// frame's foot of one whose session waits. Each tab bar is a solid panel, lit along its top and
+// shaded along its foot, faint seams across it and a trace of light under its top; the active tab
+// is a doorway in the tab's colour open to the body below, a neon line along its top (the focus
+// colour on the focused pane) and a lamp on it (a red paper lantern in the city, a changing rune
+// in the code), and a lamp at the bar's right end is lit on the focused pane. A pane's body is
+// drawn as it should reach the screen through its paper (PAPER): its top a band of storm cloud
+// (the city) or a drizzle of code (the code), its foot two rows of skyline with lit windows, and
+// the rain over it as faint as over a source file. The title bar is a strip of storm
 // clouds, its words and icons on plates. The sidebar wears a frame, a chevron marks its selected
 // row, and at its foot, below the names, stands the theme's scene (`ArkosInputs::scene`): 0 a
 // city skyline in the rain, its towers' windows lit, runic lightning now and then; 1 a city of
@@ -461,6 +464,33 @@ constant float PACKET_SPEED = 240.0;
 constant float2 WAIT_SIZE = float2(7.0, 10.0);
 constant float WAIT_IN = 26.0;
 constant float WAIT_BLINK = 1.1;
+// The tab strip: its top row lifted toward the dim text, its foot shaded, a seam every
+// STRIP_PANEL points, a trace of the theme's light STRIP_TRACE strong a point under its top, and a
+// hovered tab STRIP_HOVER toward the text.
+constant float STRIP_HI = 0.3;
+constant float STRIP_FOOT = 0.45;
+constant float STRIP_PANEL = 56.0;
+constant float STRIP_SEAM = 0.55;
+constant float STRIP_TRACE = 0.14;
+constant float STRIP_HOVER = 0.1;
+// The active tab's line along its top, its glow's reach below it, and its lamp: in from the tab's
+// left, flickering this many times a second, drawn on a tab at least this wide.
+constant float DOOR_LINE = 2.0;
+constant float DOOR_GLOW = 5.0;
+constant float TAB_LAMP_IN = 6.0;
+constant float TAB_LAMP_FLICKERS = 5.0;
+constant float TAB_LAMP_MIN_W = 30.0;
+// A pane's body: the paper over it (the manifest's paper_alpha), the band at its top (its height
+// and how far it is moved away from the text at its top), and the skyline at its foot (the far
+// row's and the near row's height and their tones away from the text, the windows' strength).
+constant float PAPER = 0.6;
+constant float BODY_TOP_H = 40.0;
+constant float BODY_DUSK = 0.22;
+constant float FOOT_FAR_H = 36.0;
+constant float FOOT_NEAR_H = 22.0;
+constant float FOOT_FAR = 0.07;
+constant float FOOT_NEAR = 0.45;
+constant float FOOT_WINDOW = 0.32;
 // The lamp at a tab bar's right end: its radius and how far in from the end its centre sits.
 constant float LAMP_R = 2.6;
 constant float LAMP_IN = 16.0;
@@ -596,6 +626,104 @@ float bolt_x(float y, float y0, float y1, float x0, uint key) {
     float a = i < 0.5 ? 0.0 : (hash01(key + uint(i)) - 0.5) * 22.0;
     float b = (hash01(key + uint(i) + 1u) - 0.5) * 22.0;
     return x0 + mix(a, b, fract(f));
+}
+
+// A colour moved `by` of the way away from the text: toward black on a dark theme, white on a
+// light one.
+float3 away(constant ArkosInputs& u, float3 c, float by) {
+    return mix(c, u.dark > 0.5 ? float3(0.0) : float3(1.0), by);
+}
+
+// A tone that should reach the screen as `want` behind a pane's paper over `bg`: drawn
+// 1 / (1 - PAPER) times as far from the background, since the paper covers the rest.
+float3 through(float3 bg, float3 want) {
+    return saturate(bg + (want - bg) / (1.0 - PAPER));
+}
+
+// A pane's body as it should reach the screen, `at` points from its top left and `to_foot` above
+// its foot: the band at its top (storm cloud in the city, a drizzle of code in the code) and two
+// rows of skyline along its foot, the near one's windows lit (warm and pale in the city, green in
+// the code); the rain is laid over it by the caller.
+float3 pane_night(constant ArkosInputs& u, float2 at, float to_foot, float seed, float t, float3 green) {
+    float3 bg = u.colors[ARKOS_TERMINAL_BG].rgb;
+    float3 dim_c = u.colors[ARKOS_TEXT_DIM].rgb;
+    bool city = u.scene < 0.5;
+    float3 want = bg;
+    if (at.y < BODY_TOP_H) {
+        float f = 1.0 - at.y / BODY_TOP_H;
+        f = f * f;
+        want = away(u, bg, BODY_DUSK * f);
+        if (city) {
+            float c = fbm(float2((at.x + seed * 37.0 + t * 4.0) / 42.0, at.y / 11.0));
+            want = mix(want, dim_c, smoothstep(0.45, 0.8, c) * 0.15 * f);
+        } else {
+            // Short streaks of code falling down out of the strip, each column at its own pace,
+            // their bits in 3 point cells.
+            float colx = floor(at.x / 5.0);
+            float h = hash2(float2(colx, seed));
+            float len = 8.0 + 10.0 * hash2(float2(colx, 4.0));
+            float pos = fract(t * (0.25 + 0.5 * h) + h * 7.0) * (BODY_TOP_H + len);
+            float behind = pos - at.y;
+            float2 bit = floor(float2(at.x, at.y - t * 0.0) / 3.0);
+            if (h < 0.7 && behind >= 0.0 && behind < len && fract(at.x / 5.0) < 0.6 && hash2(bit + float2(floor(t * 4.0), colx)) < 0.7) {
+                want = mix(want, green, 0.3 * (1.0 - behind / len) * saturate(1.2 - at.y / BODY_TOP_H));
+            }
+        }
+    }
+    float x = at.x + seed * 53.0;
+    if (to_foot < FOOT_FAR_H) {
+        float qy = FOOT_FAR_H - to_foot;
+        float top = city ? tower_top(x, FOOT_FAR_H, 0) : code_top(x, FOOT_FAR_H, 0);
+        if (qy > top) {
+            want = mix(bg, dim_c, FOOT_FAR);
+            if (window_lit(float2(x, qy - top), 0, t) > 0.5) {
+                want = mix(want, city ? dim_c : green, FOOT_WINDOW * 0.6);
+            }
+        }
+    }
+    if (to_foot < FOOT_NEAR_H) {
+        float qy = FOOT_NEAR_H - to_foot;
+        float top = city ? tower_top(x + 7.0, FOOT_NEAR_H, 1) : code_top(x + 7.0, FOOT_NEAR_H, 1);
+        if (qy > top) {
+            want = away(u, bg, FOOT_NEAR);
+            float2 wq = float2(x + 7.0, qy - top);
+            if (window_lit(wq, 1, t) > 0.5) {
+                float3 lamp = city ? (hash2(floor(wq / float2(5.0, 6.0)) + 3.0) < 0.6 ? u.colors[ARKOS_ANSI + 3].rgb : dim_c) : green;
+                want = mix(want, lamp, FOOT_WINDOW);
+            }
+        }
+    }
+    return want;
+}
+
+// The lamp on an active tab, over the tab's colour `tab` at p, the tab's rect r: a red paper
+// lantern with dark ribs and caps and a warm glow that gutters, in the city; a rune of green bits
+// that changes now and then, in the code. Returns `tab` where neither is.
+float3 tab_lamp(constant ArkosInputs& u, float2 p, float4 r, float t, float seed, float3 green, float3 tab) {
+    float2 q = p - float2(r.x + TAB_LAMP_IN, r.y + r.w * 0.5 + 0.5);
+    if (u.scene < 0.5) {
+        float3 red = u.colors[ARKOS_ANSI + 1].rgb;
+        float gutter = 0.85 + 0.15 * sin(t * TAB_LAMP_FLICKERS * 6.2832 + seed * 3.0) * sin(t * 2.3 + seed);
+        float e = length(q / float2(3.2, 4.2));
+        if (abs(q.x) < 2.0 && abs(q.y) >= 4.0 && abs(q.y) < 5.4) {
+            return mix(tab, float3(0.0), 0.55);
+        }
+        if (e < 1.0) {
+            float3 c = red * (0.8 + 0.2 * gutter);
+            if (fract((q.y + 4.2) / 2.1) < 0.26) {
+                c = mix(c, float3(0.0), 0.35);
+            }
+            return mix(c, u.colors[ARKOS_ANSI + 3].rgb, (1.0 - e) * 0.45 * gutter);
+        }
+        return light_on(tab, red, max(0.0, 1.0 - (e - 1.0) / 1.3) * 0.3 * gutter, u.dark);
+    }
+    float2 b = floor((q + float2(2.4, 4.0)) / 1.6);
+    if (b.x < 0.0 || b.x > 2.0 || b.y < 0.0 || b.y > 4.0) {
+        return tab;
+    }
+    float slot = floor(t / 0.7);
+    float on = hash01(uint(seed * 977.0) ^ (uint(slot) * 2654435761u) ^ (uint(b.y * 3.0 + b.x) * 83492791u)) < 0.55 ? 1.0 : 0.0;
+    return mix(tab, mix(green, float3(1.0), 0.2), on);
 }
 
 // The bolt's envelope at t, 0 to 1 (two flickers and a fade), and its slot's key; 0 in the first
@@ -841,7 +969,7 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     float3 green = toward_accent(theme_green(u), u.colors[ARKOS_FOCUS_RING].rgb);
 
     // The rain; laid over the flat ground once the blocks say where the sidebar is.
-    float4 r = rain(p, u.time, green);
+    float4 drop = rain(p, u.time, green);
 
     // The blocks: the bars darkened a little, the highlights glowing, every reported edge live.
     int nb = min(int(u.block_count), 48);
@@ -858,6 +986,7 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     float side_focus = 0.0;
     float names_end = 0.0;
     float bar_focus = 0.0;
+    float tab_hover = 0.0;
     for (int i = 0; i < nb; i++) {
         constant ArkosBlock& blk = u.blocks[i];
         float4 rect = blk.rect;
@@ -883,25 +1012,29 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             }
         } else if (kind == ARKOS_PANE_BODY_BLOCK) {
             pane = max(pane, 1.0 - smoothstep(-0.5, 0.5, d));
-        } else if (kind == ARKOS_ROW_HIGHLIGHT_BLOCK || kind == ARKOS_TAB_HIGHLIGHT_BLOCK) {
+        } else if (kind == ARKOS_TAB_HIGHLIGHT_BLOCK) {
+            // A hovered tab lightens the strip it is on (the world below).
+            if (d < 0.0) {
+                tab_hover = max(tab_hover, saturate(blk.value));
+            }
+        } else if (kind == ARKOS_ROW_HIGHLIGHT_BLOCK) {
             if (d < 6.0) {
                 float s = HIGHLIGHT_STRENGTH[min(max(int(blk.ordinal), 0), 2)] * blk.value;
                 float fill = (1.0 - smoothstep(-1.5, 1.0, d)) + 0.35 * (1.0 - smoothstep(0.0, 6.0, d));
                 lift = max(lift, s * saturate(fill));
             }
         }
-        nearest_edge(p, blk, d, hit, u.size);
+        // A pane's own edges are its frame and its strip (the world below), not runes.
+        if (kind != ARKOS_TAB_BAR_BLOCK && kind != ARKOS_PANE_BODY_BLOCK && kind != ARKOS_ACTIVE_TAB_BLOCK) {
+            nearest_edge(p, blk, d, hit, u.size);
+        }
     }
     // The ground, flat, and the rain laid over it, so it shows on a light ground as on black;
     // over the sidebar as faint as behind a pane's paper, in the rain's own colour (Cyrus,
     // 2026-11-17: "apply the same muted runic rain to the Cmd+0 pane").
     float in_side = side.z > 0.0 ? 1.0 - smoothstep(-0.5, 0.5, sd_box(p - (side.xy + side.zw * 0.5), side.zw * 0.5)) : 0.0;
-    float3 col = mix(bg, mix(r.rgb, green, in_side), r.a * RAIN_ALPHA * mix(1.0, SIDE_RAIN, in_side) * k);
+    float3 col = mix(bg, mix(drop.rgb, green, in_side), drop.a * RAIN_ALPHA * mix(1.0, SIDE_RAIN, in_side) * k);
     col = mix(col, bg * 0.8, dim * k);
-    // The tab strips carry the rain more strongly: TAB_RAIN more of it, laid over the first.
-    col = mix(col, r.rgb, r.a * RAIN_ALPHA * TAB_RAIN * tab * k);
-    // The pane bodies carry it more strongly still: PANE_RAIN more, under the panes' paper.
-    col = mix(col, green, r.a * RAIN_ALPHA * PANE_RAIN * pane * k);
     col = mix(col, green, lift * k);
 
     // The world (see above): the sidebar's scene, frame and chevron; the title bar's clouds and
@@ -979,14 +1112,30 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
                 col = mix(col, mix(col, u.colors[ARKOS_TEXT_DIM].rgb, 0.18), smoothstep(0.45, 0.75, c) * k);
             }
         } else if (kind == ARKOS_PANE_BODY_BLOCK && inside_box(p, r)) {
-            // The far skyline along a terminal's foot, faint under its paper.
-            float2 q = float2(p.x - r.x, p.y - (r.y + r.w - 50.0));
-            if (q.y > 0.0 && q.y > tower_top(q.x, 50.0, 0)) {
-                col = mix(col, mix(bg, sb, 0.5), 0.5 * k);
+            // The body as it should reach the screen, drawn strong enough to read through the
+            // paper: its top band, its skyline, and the rain as faint as over a source file.
+            float3 bgt = u.colors[ARKOS_TERMINAL_BG].rgb;
+            float3 want = pane_night(u, p - r.xy, r.y + r.w - p.y, blk.seed, u.time, green);
+            want = mix(want, green, drop.a * RAIN_ALPHA * BODY_RAIN);
+            col = mix(bgt, through(bgt, want), k);
+            // A highlighted row in the body keeps its glow over it.
+            col = mix(col, green, lift * k);
+        } else if (kind == ARKOS_ACTIVE_TAB_BLOCK && inside_box(p, r)) {
+            // The doorway: the tab's colour, open to the body below, a neon line along its top
+            // (the focus colour on the focused pane) glowing a little down into it, and its lamp.
+            float3 tabc = u.colors[ARKOS_TAB_ACTIVE].rgb;
+            float3 line = mix(mix(tabc, green, 0.7), ring_c, bar_focus);
+            float yy = p.y - r.y;
+            float3 c = tabc;
+            if (yy < DOOR_LINE) {
+                c = line;
+            } else {
+                c = light_on(c, line, max(0.0, 1.0 - (yy - DOOR_LINE) / DOOR_GLOW) * 0.22 * mix(0.6, 1.0, bar_focus), u.dark);
+                if (r.z >= TAB_LAMP_MIN_W) {
+                    c = tab_lamp(u, p, r, u.time, blk.seed, green, c);
+                }
             }
-        } else if (kind == ARKOS_ACTIVE_TAB_BLOCK && inside_box(p, float4(r.x, r.y + r.w - 2.0, r.z, 2.0))) {
-            // The active tab's underline, in the focus colour on the focused pane.
-            col = light_on(col, mix(green, ring_c, bar_focus), mix(0.5, 1.0, bar_focus) * k, u.dark);
+            col = mix(col, c, k);
         } else if (kind == ARKOS_TAB_BAR_BLOCK) {
             // The pane: this bar and the body laid out after it.
             float4 pr = r;
@@ -999,6 +1148,26 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
                 continue;
             }
             float focus = saturate(blk.focus);
+            // The strip: a solid panel.
+            if (inside_box(p, r)) {
+                float3 stone = u.colors[ARKOS_BANNER].rgb;
+                float yy = p.y - r.y;
+                float3 c = stone;
+                if (yy < 1.0) {
+                    c = mix(stone, u.colors[ARKOS_TEXT_DIM].rgb, STRIP_HI);
+                } else if (yy >= r.w - 1.0) {
+                    c = away(u, stone, STRIP_FOOT);
+                } else {
+                    if (fmod(p.x - r.x + blk.seed * 17.0, STRIP_PANEL) < 1.0) {
+                        c = mix(stone, u.colors[ARKOS_TAB_BAR].rgb, STRIP_SEAM);
+                    }
+                    if (yy >= 2.0 && yy < 3.0) {
+                        c = mix(c, mix(green, ring_c, focus), STRIP_TRACE);
+                    }
+                }
+                c = mix(c, u.colors[ARKOS_TEXT].rgb, STRIP_HOVER * tab_hover);
+                col = mix(col, c, k);
+            }
             // The lamp at the bar's right end.
             float ld = length(p - float2(r.x + r.z - LAMP_IN, r.y + r.w * 0.5));
             if (ld < LAMP_R + 3.0) {

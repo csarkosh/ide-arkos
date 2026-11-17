@@ -832,8 +832,8 @@ mod tests {
         m.document_paper_alpha = Some(0.1);
         assert_eq!(style_at(&m, 1.0).document_paper_alpha, 0.5);
         let matrix = manifest::load("runic", Path::new("/nonexistent/effects")).unwrap().manifest;
-        assert_eq!(style_at(&matrix, 1.0).document_paper_alpha, 0.92);
-        assert_eq!(style_at(&matrix, 1.0).paper_alpha, 0.92, "runic's terminals read on a source file's paper");
+        assert_eq!(style_at(&matrix, 1.0).document_paper_alpha, 0.6);
+        assert_eq!(style_at(&matrix, 1.0).paper_alpha, 0.6, "runic's documents and terminals read on one paper, which the wash draws through");
     }
 
     #[test]

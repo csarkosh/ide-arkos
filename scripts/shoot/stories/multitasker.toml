@@ -119,8 +119,8 @@ theme = "light"
 layout = "inbox"
 timeout_secs = 60
 
-# The same window in Arabia Solar, a theme not the multi tasker's own, for the apps page's
-# "Two layouts." band (Cyrus, 2026-11-15: the multi tasker's panes, in Arabia Solar), each
+# The same window in Solar Arabia, a theme not the multi tasker's own, for the apps page's
+# "Two layouts." band (Cyrus, 2026-11-15: the multi tasker's panes, in Solar Arabia), each
 # looped since its effect moves. The Grid one waits for the moment the Tokyo Rain still does, so
 # a run that takes only these two shows the same work.
 [[shot]]

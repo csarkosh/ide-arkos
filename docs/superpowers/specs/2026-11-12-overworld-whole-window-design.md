@@ -313,7 +313,7 @@ and "the empty in-between space" otherwise.
 Cyrus: "I'm happy with this", and asked for "a `arabia-solar` theme", the sandy look he saw
 when the effect was shot on Peach Watercolor, with the "same persona as `timo-purple`".
 
-- **Arabia Solar**, a tenth built-in theme: Peach Watercolor's colours exactly (the ones he
+- **Solar Arabia**, a tenth built-in theme: Peach Watercolor's colours exactly (the ones he
   saw), recommending `overworld`, set in Departure Mono. It is Timo Purple by day. The indie
   game dev's storyboard takes a second picture in it (`indie-game-dev-solar.png`), as the
   blogger's does in Lavender Watercolor.
@@ -335,7 +335,7 @@ when the effect was shot on Peach Watercolor, with the "same persona as `timo-pu
 
 Cyrus, in the sandbox: "part of the castle does not get dimmed when i scroll all the way down"
 (his screenshot: the strip of grass under the last worktree row at full colour, the rest
-dimmed), "the app bar is not as alive as i'd like it", and of Arabia Solar: "more aladin
+dimmed), "the app bar is not as alive as i'd like it", and of Solar Arabia: "more aladin
 themed... the same effects. just aladin instead of high fantasy".
 
 - **The scene dims as one.** Under the names it is softened as before; and once the names
@@ -347,7 +347,7 @@ themed... the same effects. just aladin instead of high fantasy".
   dim text keeps 4.5:1 (tested on four themes). A shooting star falls every 4 seconds, a bird
   crosses from right to left every 9, and a light runs the length of the bar's foot along its
   frame every 6. None of the new ones shows in the first cycle, so the still frame is calm.
-- **Arabia Solar's world.** A theme cannot pass an effect anything but its colours, so the
+- **Solar Arabia's world.** A theme cannot pass an effect anything but its colours, so the
   scene has two faces chosen by the theme's mode: by night (a dark theme) the castle in the
   hills, and by day (a light one) a desert kingdom: a palace with a great onion dome and spire,
   a small dome on each wing and a minaret at each end, its domes warmed with the focus colour;
@@ -388,7 +388,7 @@ over the palace: "the worktrees explorer drops to the bottom when the file explo
   the sidebar's layout under every theme. The split also used the panes' height for the
   sidebar's, which under an effect's gap is two gaps short: it now uses the sidebar's own.
 
-Cyrus, on the eighth pass: "i dont see the title bar padding updated." On Arabia Solar the
+Cyrus, on the eighth pass: "i dont see the title bar padding updated." On Solar Arabia the
 plates were the bar's colour on a sky dithered toward white, so nothing told them apart. The
 sky is again a step darker than the bar on every theme (the words are on plates now, never on
 the sky), a test holds the sky's mean luminance apart from the plates' on four themes, and the
