@@ -20,8 +20,6 @@ from you: needing your input → still at work → quiet or done.
   schedule it for any date and time down to the minute, once or every day, weekday or week; it
   waits under Scheduled and comes back as unread when it is due.
 
-Built for Apple silicon, macOS 14 or later.
-
 ## Install
 
 ```sh
