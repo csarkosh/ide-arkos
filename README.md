@@ -6,10 +6,10 @@
   <img alt="Seven Arkos IDE windows fanned out like postcards, each in its own theme. In front, the multi tasker: three Claude Code sessions side by side, each running its own subagents on an unrelated project. Behind, the blogger with a launch plan in the markdown editor, the data analyst with a weekly report and its chart, the hacker hardening a service in Matrix green, the indie game dev with a dungeon crawl in pixel-framed purple, the student with lecture notes on a ruled notebook page, and the web developer with the app's page in a web tab" src="docs/images/hero-dark.png" width="900">
 </picture>
 
-Arkos runs your Claude Code sessions the way a chat app runs conversations. Every session is a
-row in one inbox, sorted by what it needs from you: a question first, then the answers you have
-not read, then the ones still at work. Open a row and that session fills the window; mark it
-unread, schedule it for later or end it, as you would a thread.
+Arkos keeps track of where each of your Claude Code sessions stands, so with many running at
+once you always know which one to look at next. They sit in one list, grouped by what they need
+from you: a question first, then the answers you have not read, then the ones still at work.
+Open one and it fills the window; mark it unread, schedule it for later or end it.
 
 - **Durable:** sessions keep running through a frozen window or an update, and come back with
   their conversations after a restart, a shutdown or a macOS update.
@@ -25,6 +25,7 @@ Built for Apple silicon, macOS 14 or later.
 ## Install
 
 ```sh
+# Or install through brew
 brew trust --cask csarkosh/tap/arkos-ide
 brew install --cask csarkosh/tap/arkos-ide
 ```
