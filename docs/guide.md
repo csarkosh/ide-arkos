@@ -1198,17 +1198,21 @@ Releases from 0.3.2 on are signed with a Developer ID and notarized, so the down
 app does. The cask says `auto_updates`, so
 `brew upgrade` leaves the app alone and the IDE updates itself.
 
-Updates arrive by themselves: the daemon checks the release manifest every five minutes, downloads
-and verifies a newer build, and the window applies it once you have been idle for thirty seconds
-(no typing, nothing open): `arkosd` swaps in place and the window relaunches with every shell
-still there. First a blur comes over the window with "Updating Arkos IDE" and "Your sessions
-keep running." (a third of a second; at once under Reduce Motion), and the swap happens behind
-it; the new window lifts it once its sessions are back. The window never leaves the screen: the new one starts out of sight (no Dock icon,
+Updates arrive by themselves: the daemon checks the release manifest every five minutes and
+downloads and verifies a newer build. Then a toast at the window's bottom right says "Arkos IDE X
+is ready", with Later and Update, and stays until you click one; Later puts it away for an hour.
+Meanwhile the bell keeps its dot, and its "Update ready" row has Update now. A window that is not
+the app in front, with you idle for thirty seconds (no typing, nothing open), updates by itself:
+nobody is looking at it. Either way `arkosd` swaps in place and the window relaunches with every
+shell still there, behind a light dim with a card in the middle: "Updating Arkos IDE" over a bar
+that fills as the update goes, and under it the step, its count and the seconds ("Installing
+0.8.44", "Starting the new window", "Restoring sessions 3 of 3", "Done"). It comes in over half a
+second (at once under Reduce Motion) and lifts once the new window's sessions are back. The window never leaves the screen: the new one starts out of sight (no Dock icon,
 transparent over the old one), restores every session it shows, and takes the old one's place
 within a frame, with the keyboard if the old one had it. A prompt you were typing and had not
 sent is still in Claude Code's input box, since Claude Code itself runs on in the daemon. A
 full-screen or minimized window is replaced as before (it quits, then the new one opens, under
-the same blur until its terminals are back), and so is one whose new window did not come up
+the same card until its terminals are back), and so is one whose new window did not come up
 within 20 seconds. Each window stays on the desktop
 (Mission Control Space) it was on, without taking you there; a desktop that has gone since leaves its window on the one in front. Arkos reads the
 desktops through macOS's private SkyLight calls, as window managers do; a macOS without them only

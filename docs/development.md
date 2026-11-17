@@ -1064,11 +1064,15 @@ Things only a person at the screen can check, in order of value:
   daemon after `arkos update` in a dev sandbox) brings each window back on its own desktop, and
   the desktop in front stays in front; a desktop removed meanwhile leaves its window on the one
   in front
-- update veil: on an update's relaunch (or `ARKOS_RELAUNCH_AFTER`), the window blurs over in
-  about 0.3 s with "Updating Arkos IDE" and "Your sessions keep running." centred, the traffic
-  lights still on top; the new window comes up under the same blur, and the blur lifts in about
-  a quarter second once its terminals show; nothing flashes between the two; under Reduce Motion
-  the blur comes and goes at once; a refused relaunch lifts the blur and says why
+- update toast and card: start a sandbox with `ARKOS_UPDATE_PREVIEW=8` and bring its window to
+  the front: the toast "A new version of Arkos IDE is ready" shows at the bottom right with Later
+  and Update and stays however long you type; the bell wears its dot with "Update ready" and
+  Update now; Later hides the toast (for an hour) and the dot stays; Update (or the bell's) dims
+  the window in about half a second with the card in the middle, its bar filling through
+  "Installing", "Starting the new window", "Restoring sessions N of N", "Done", the seconds
+  counting on across the swap; the card lifts once the new window's sessions show; nothing
+  flashes between the two windows; under Reduce Motion the dim comes and goes at once; a refused
+  relaunch lifts it and says why; the preview runs once per launch
 - update handoff: in a dev sandbox, start the window with `ARKOS_RELAUNCH_AFTER=8` (it relaunches
   itself through the daemon as an update's last step does) and `ARKOS_HANDOFF_CHECK="<text>"`,
   with `claude` running in a tab and `<text>` typed in its prompt, not sent. The window stays on
