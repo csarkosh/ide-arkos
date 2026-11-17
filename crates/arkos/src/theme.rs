@@ -61,6 +61,10 @@ impl Appearance {
 #[serde(deny_unknown_fields)]
 pub struct ThemeEffect {
     pub name: String,
+    /// Which of the effect's scenes the theme shows, by the name its manifest lists (`scenes`):
+    /// runic's `city` (Tokyo Rain) or `code` (Matrix). Absent, the effect's first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<String>,
 }
 
 impl Theme {
@@ -744,7 +748,10 @@ const SCHEMA: &[TableDoc] = &[
     },
     TableDoc {
         name: "effect",
-        keys: &[surface("name", "Optional: the effect the theme was designed with, a built-in or an installed effect's folder name; the user's [effect] name in the config may choose another")],
+        keys: &[
+            surface("name", "Optional: the effect the theme was designed with, a built-in or an installed effect's folder name; the user's [effect] name in the config may choose another"),
+            surface("scene", "Optional: which of the effect's scenes the theme shows, by a name its manifest lists in `scenes` (runic: \"city\" or \"code\"); absent, the effect's first"),
+        ],
     },
 ];
 

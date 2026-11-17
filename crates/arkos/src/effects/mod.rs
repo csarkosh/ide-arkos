@@ -22,6 +22,7 @@ pub mod runic;
 /// The space wash's event schedule mirrored in Rust, for its tests alone: the app never runs it.
 #[cfg(test)]
 pub mod space;
+pub mod stills;
 pub mod strokes;
 
 use std::path::PathBuf;

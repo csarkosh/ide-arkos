@@ -76,9 +76,18 @@ pub struct Manifest {
     /// its glyph shader paints the ink in from the stamp (`effects::paint`). Needs a glyphs file,
     /// and an effect paints or decodes, not both.
     pub terminal_paint: bool,
+    /// The scenes the wash can draw, by name, in the order of the number it is handed
+    /// (`ArkosInputs::scene`); a theme names one (`[effect] scene`). Empty, one scene, 0.
+    pub scenes: Vec<String>,
 }
 
 impl Manifest {
+    /// The number of the scene a theme names among this effect's `scenes`; 0 for none, or a
+    /// name the effect does not list.
+    pub fn scene_index(&self, name: Option<&str>) -> f32 {
+        name.and_then(|n| self.scenes.iter().position(|s| s == n)).map_or(0.0, |i| i as f32)
+    }
+
     /// The frames a second the text is redrawn at while its shader moves: the `glyph_rate` key,
     /// else the wash's `frame_rate` capped at `active::GLYPH_RATE_CAP`.
     pub fn glyph_rate(&self) -> u32 {
@@ -126,6 +135,7 @@ impl Default for Manifest {
             glyph_rate: None,
             terminal_decode: false,
             terminal_paint: false,
+            scenes: Vec::new(),
         }
     }
 }

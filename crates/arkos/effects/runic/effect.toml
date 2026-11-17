@@ -21,3 +21,5 @@ document_paper_alpha = 0.92   # 0.5 to 1.0; a markdown or viewer tab's paper, so
 chrome_alpha = 0.0            # 0.0 to 1.0; the bars and the sidebar over the wash
 active_tab_alpha = 0.3        # 0.0 to 1.0; the active tab over the wash
 text_contrast = 0.0           # 0.0 to 1.0; how far the text moves towards ink while the effect is on
+scenes = ["city", "code"]     # the sidebar's scene a theme names with `[effect] scene`: a rainy
+                              # city skyline (Tokyo Rain), or a city of falling code (Matrix)

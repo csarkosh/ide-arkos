@@ -723,6 +723,7 @@ key and the range.
 | `ui_text_bump` | 0 to 4 | 0 | Points added to the project window's UI text. |
 | `bar_end_clear` | 0 to 64 | 0 | Points at the right end of a pane's bar that the wash draws in (overworld's gem). Like `ui_text_bump`, it comes in once the effect has faded in. |
 | `sidebar_pad` | 0 to 24 | 0 | Points added before every row and header of the sidebar, so their text sits clear of a frame and a cursor the wash draws along the sidebar's left edge (overworld's). Like `ui_text_bump`, it comes in once the effect has faded in. |
+| `scenes` | names | none | The scenes the wash can draw, by name; a theme names one with `[effect] scene`, and the wash reads its place in this list as `scene` (0 for the first, and for a theme that names none or a name not listed). The built-in `runic` has `["city", "code"]`. |
 | `title_grow` | 0 to 16 | 0 | Points added to the title bar's height, at its foot: its words, its icons and the traffic lights keep their places, with that much more of the bar under them (overworld's, for room under the lights inside its frame). Like `ui_text_bump`, it comes in once the effect has faded in. |
 | `title_pad` | 0 to 24 | 0 | Points added inside the title bar at both ends, so its words and icons sit clear of a shape the wash draws round them (the `notebook` cover's labels). |
 | `gap` | 0 to 16 | 0 | Points kept clear round each pane: between the panes, and between them and the window's bars and edges (beside the sidebar too, unless a `binder` is that gutter), so the wash can draw the panes as cards on its ground. Like `ui_text_bump`, it comes in once the effect has faded in. |
@@ -754,7 +755,9 @@ before your wash file when it is compiled. It declares the theme's colours by in
 pigments from `ARKOS_PIGMENT`: its focus colour and the accents of its own family, within 90
 degrees of hue of it, to tint panes and highlights with so the wash suits any theme; `ArkosInputs`
 also says whether the theme is dark (`dark`, 1 or 0) and how many of the four pigments are its
-own (`pigment_count`, 1 to 4; the rest repeat its focus colour), so a wash can lay its colours
+own (`pigment_count`, 1 to 4; the rest repeat its focus colour), and which of the manifest's
+`scenes` the theme names in its `[effect] scene` (`scene`, the name's place in the list, 0 for
+the first or none), so a wash can lay its colours
 as the theme's mode needs and make its own variations: the built-in `watercolor` glazes pigment
 into a dark theme's paper instead of multiplying it, turns the hue of a theme's own pigments for
 the ones it lacks, and keeps the paper under the UI's text at 3:1 or better against it), the block kinds

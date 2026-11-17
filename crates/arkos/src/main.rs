@@ -5965,7 +5965,9 @@ impl Root {
         self.effect_strokes_now = strokes.clone();
         let blocks = effects::blocks::blocks(&scene, style.ink_borders);
         let (size, scale) = e.layer.metrics();
-        let inputs = effects::inputs::build(&self.theme, self.config.effect.intensity, size, scale, e.time(now, reduce), &blocks);
+        let scene_no = e.effect.manifest.scene_index(self.theme.effect.as_ref().and_then(|f| f.scene.as_deref()));
+        let mut inputs = effects::inputs::build(&self.theme, self.config.effect.intensity, size, scale, e.time(now, reduce), &blocks);
+        inputs.scene = scene_no;
         if e.should_draw(&inputs, hidden, reduce, paused) {
             e.layer.draw(&inputs);
             e.last_inputs = Some(inputs);
@@ -5978,7 +5980,8 @@ impl Root {
         let menus_fading = self.effect_menus.iter().any(|m| m.opacity < 1.0);
         if style.menu_edges && !self.effect_menus.is_empty() {
             let blocks = effects::blocks::menu_blocks(&self.effect_menus);
-            let overlay = effects::inputs::build(&self.theme, self.config.effect.intensity, size, scale, e.time(now, reduce), &blocks);
+            let mut overlay = effects::inputs::build(&self.theme, self.config.effect.intensity, size, scale, e.time(now, reduce), &blocks);
+            overlay.scene = scene_no;
             if !((reduce || paused) && e.last_overlay.as_ref() == Some(&overlay)) {
                 e.layer.draw_overlay(Some(&overlay));
                 e.last_overlay = Some(overlay);
@@ -6006,7 +6009,8 @@ impl Root {
         let menu = effects::blocks::MenuShape { key, rect: area, opacity };
         let blocks = effects::blocks::backdrop_blocks(&menu, &self.effect_strokes_now);
         let (size, scale) = e.layer.metrics();
-        let inputs = effects::inputs::build(&self.theme, intensity, size, scale, e.time(now, reduce), &blocks);
+        let mut inputs = effects::inputs::build(&self.theme, intensity, size, scale, e.time(now, reduce), &blocks);
+        inputs.scene = e.effect.manifest.scene_index(self.theme.effect.as_ref().and_then(|f| f.scene.as_deref()));
         e.layer.backdrop(key, area, opacity, &inputs)
     }
 

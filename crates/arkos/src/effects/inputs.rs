@@ -48,6 +48,10 @@ pub struct Inputs {
     /// How many of the four pigments are the theme's own (1 to 4); the rest repeat its focus
     /// colour, and an effect makes its own variations for them.
     pub pigment_count: f32,
+    /// Which of the effect's scenes the theme shows (`Manifest::scene_index`), and three floats
+    /// that keep the colours on a 16 byte boundary, as the preamble's `float4` needs.
+    pub scene: f32,
+    pub spare: [f32; 3],
     pub colors: [[f32; 4]; COLORS],
     pub blocks: [ShaderBlock; MAX_BLOCKS],
 }
@@ -179,6 +183,8 @@ pub fn build(theme: &Theme, intensity: f32, size: (f32, f32), scale: f32, time: 
         block_count: n as f32,
         dark: if theme.is_light() { 0.0 } else { 1.0 },
         pigment_count: pigments(theme).1 as f32,
+        scene: 0.0,
+        spare: [0.0; 3],
         colors: colors(theme),
         blocks: out,
     }
@@ -205,14 +211,16 @@ mod tests {
         assert_eq!(offset_of!(ShaderBlock, focus), 44);
         assert_eq!(offset_of!(ShaderBlock, waiting), 48);
         assert_eq!(offset_of!(ShaderBlock, spare), 52);
-        // ArkosInputs: six floats and a float2 (32), float4 colors[39], ArkosBlock blocks[48].
+        // ArkosInputs: six floats and a float2 (32), the scene and three spare floats (16), float4
+        // colors[39], ArkosBlock blocks[48].
         assert_eq!(COLORS, 39);
-        assert_eq!(size_of::<Inputs>(), 32 + 16 * COLORS + 64 * MAX_BLOCKS);
-        assert_eq!(size_of::<Inputs>(), 3728);
+        assert_eq!(size_of::<Inputs>(), 48 + 16 * COLORS + 64 * MAX_BLOCKS);
+        assert_eq!(size_of::<Inputs>(), 3744);
+        assert_eq!(offset_of!(Inputs, scene), 32);
+        assert_eq!(offset_of!(Inputs, colors), 48, "the colours on a float4's boundary");
         assert_eq!(align_of::<Inputs>(), 16);
         assert_eq!(offset_of!(Inputs, block_count), 20);
-        assert_eq!(offset_of!(Inputs, colors), 32);
-        assert_eq!(offset_of!(Inputs, blocks), 32 + 16 * COLORS);
+        assert_eq!(offset_of!(Inputs, blocks), 48 + 16 * COLORS);
     }
 
     #[test]

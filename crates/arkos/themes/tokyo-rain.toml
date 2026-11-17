@@ -9,6 +9,7 @@ appearance = "dark"
 
 [effect]
 name = "runic"
+scene = "city"
 
 [chrome]
 window_bg = "#0e1723"

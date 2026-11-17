@@ -128,6 +128,7 @@ Optional. A shader effect drawn under the window's text.
 | Key | What it sets |
 | --- | --- |
 | `name` | The effect the theme was designed with; as a preset it draws with this one; the custom look (Settings, Appearance, or `arkos effect use`) puts any effect over its colours. `peach-watercolor` and `lavender-watercolor` set `watercolor`, `matrix` and `tokyo-rain` set `runic`, `composition-notebook` sets `notebook`, `timo-purple` and `arabia-solar` set `overworld`, and `material`, `material-solar` and `lavender-material` set `material`; `navy`, the default, sets none and draws plain. |
+| `scene` | Optional: which of the effect's scenes the theme shows, by a name the effect's manifest lists in `scenes`. The runic effect has `city` (a rainy Tokyo skyline at the sidebar's foot, Tokyo Rain's) and `code` (a city of falling code, Matrix's). Absent, the effect's first. |
 
 ## Adding a theme
 

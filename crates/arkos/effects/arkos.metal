@@ -76,6 +76,9 @@ struct ArkosInputs {
     float dark;           // 1 when the theme is dark (light text on a dark ground), 0 when light
     float pigment_count;  // how many of the four pigments are the theme's own (1 to 4); the rest
                           // repeat its focus colour, for an effect to vary as it likes
+    float scene;          // which of the manifest's `scenes` the theme names, by its place (0 first)
+    float _spare0, _spare1, _spare2;  // keep the colours on a float4's boundary (a float3 would
+                                      // take 16 bytes and move them)
     float4 colors[39];
     ArkosBlock blocks[48];
 };

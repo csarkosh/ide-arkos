@@ -13,6 +13,7 @@ appearance = "dark"
 
 [effect]
 name = "runic"
+scene = "code"
 
 [chrome]
 window_bg = "#000000"
