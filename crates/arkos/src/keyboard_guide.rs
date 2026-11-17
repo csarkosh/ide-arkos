@@ -34,8 +34,10 @@ session you are on.
 
 1. Press Up or Down to move the ring, or type a few letters of a session's name to narrow the
    list.
-2. Press Enter: that session fills the window, and the keys go to it.
-3. Changed your mind? Escape clears what you typed; Escape again goes back where you were.
+2. Press Enter: that session fills the window, and the keys stay in the list, so you can look
+   through sessions one after another.
+3. To type in the session shown, press Escape (it clears what you typed first, then hands the
+   keys to the session), or click it.
 
 Up from the top of the list reaches the Sessions/Files switcher at the top of the sidebar.
 There, Left and Right switch between your sessions and your files, and Down or Enter goes into

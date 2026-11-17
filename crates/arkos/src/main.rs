@@ -2376,16 +2376,25 @@ impl Root {
             line_edit::Edit::Submit | line_edit::Edit::SubmitBack => {
                 let rows = self.shown_session_rows();
                 let target = self.session_cursor.filter(|c| rows.contains(c)).or_else(|| rows.first().copied());
-                self.session_filter_focused = false;
-                self.switcher_focused = false;
-                self.bar_ring = None;
-                self.header_ring = None;
                 self.session_filter.clear();
                 match target {
                     Some(sessions_list::RowKey::Ended(i)) => self.resume_ended(i, cx),
                     Some(sessions_list::RowKey::Live(page)) => self.show_row(page, cx),
-                    None => cx.notify(),
+                    None => {}
                 }
+                // The keys stay in the list, the ring on the session now shown (Cyrus,
+                // 2026-11-17: "Only mouse clicks should change focus to the selected list
+                // option's pane"); Escape on the empty filter hands them to its pane.
+                if target.is_some() {
+                    self.sidebar_focused = false;
+                    self.wt_focused = false;
+                    self.switcher_focused = false;
+                    self.bar_ring = None;
+                    self.header_ring = None;
+                    self.session_filter_focused = true;
+                    self.session_cursor = Some(sessions_list::RowKey::Live(self.tree.page));
+                }
+                cx.notify();
             }
             // Escape clears what was typed; on an empty filter it gives the keys back.
             line_edit::Edit::Cancel => {

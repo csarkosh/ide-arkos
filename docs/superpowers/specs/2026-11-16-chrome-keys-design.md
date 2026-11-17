@@ -30,9 +30,10 @@ The filter field has the keys, and one row is marked as the cursor (the session 
 first row). While the list has the keys every group is open, as a typed filter opens them
 (Quiet and Done are folded at first, and most sessions are Quiet most of the time; found on
 screen, 2026-11-16). Typing narrows the list; Up and Down move the cursor through the rows;
-Enter opens the cursor's session and gives the keys to its
-pane (a closed one is resumed); Escape clears the filter, and on an empty filter goes back to the
-pane. A click anywhere else takes the keys as before.
+Enter shows the cursor's session (a closed one is resumed) and keeps the keys in the list, the
+cursor on that session (Cyrus, 2026-11-17: "Only mouse clicks should change focus to the
+selected list option's pane"); Escape clears the filter, and on an empty filter hands the keys to
+the pane shown. A click anywhere else takes the keys as before.
 
 Up from the first row (or from the file tree's first row) rings the Sessions/Files switcher at
 the top of the sidebar (Cyrus, 2026-11-16: "the session list navigation can reach the

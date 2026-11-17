@@ -1106,8 +1106,8 @@ Things only a person at the screen can check, in order of value:
   `"focus sessions" = "cmd-shift-s"` in the config it says Shift+Cmd+S; from the chooser it opens
   in the default Markdown app
 - Chrome keys: Cmd+0 opens the sidebar on Sessions with a ring on the session shown, every
-  group open while it has the keys (Quiet and Done fold back after), Up and Down move the ring, typing narrows the list, Enter opens the ringed
-  session and the keys go to its pane, Escape clears the filter and then gives the keys back;
+  group open while it has the keys (Quiet and Done fold back after), Up and Down move the ring, typing narrows the list, Enter shows the ringed
+  session and the keys stay in the list (the glow on the sidebar, the ring on that session), Escape clears the filter and then gives the keys to the pane shown;
   Cmd+9 is the last pane; Ctrl+Tab and Ctrl+Shift+Tab step the tabs, also in a terminal running
   Claude Code; Option+Cmd+Down and Up go through the sessions as listed, wrapping; Cmd+T opens
   the focused pane's "+" menu with Claude ringed, and Down, Enter opens Codex; Cmd+0 in a web tab
