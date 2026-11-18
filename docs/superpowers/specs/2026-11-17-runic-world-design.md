@@ -249,18 +249,27 @@ The packet's head gained a glow (`DATA_HALO`) and the tries went to five.
 
 Then, in the sandbox: "there's not enough runic rain yet. there should be many small ones so it
 feels like the matrix with everyones connected devices to the cloud", and of the brighter channel
-tried first, "the rain in the preview is too noisy right now". So a second layer runs beside the
-fourteen: the sky cut into columns 3 points wide from the vanishing point, each running a short
-transfer for 0.6 of a 2.5 to 6 second cycle, down or up, to whoever is on the ground under it,
-where a sidewalk (0.6 of picks), a bike lane (0.15) or a car lane (0.25) passes under the column; a
-column's x says how deep that line lies, so each pixel works out only its own column, however many
-run (`data_drizzle`; `effects::runic` mirrors it: 25 or more at once on a 260 point sidebar, never
-fewer than 12). Each is a lit dash a cell, a bright head and 9 cells fading behind, at 0.32, with a
-flicker on the thing as it lands or leaves. To keep it calm the glyphs and dashes change once every
-1.2 seconds rather than every 0.3 to 0.4, the fourteen's channel is a hint (0.2) and their glow soft
-(0.3): the moving trails carry the rain. Both layers were then made a little dimmer ("make the
-rain slightly dimmer in the graphic"): the small ones at 0.32, the fourteen at 0.8 of their light
-(`DATA_LIGHT`).
+tried first, "the rain in the preview is too noisy right now". Then: "the uploading and downloading
+rain should be tied to people, cars, bicycles, or tops of buildings. And it should be a little
+slower. It looks random to me." So a second layer runs beside the fourteen (`data_drizzle`): 36
+slots, each running a transfer for three quarters of a 4.5 to 9 second cycle (3.4 to 6.8 seconds
+across the sky), down onto or up out of one thing it follows: a walker (45 per cent), a car (20), a
+cyclist (10) or a building's roof (25), within four fifths of the view, else the slot rests. Its
+side of the road is fixed for the transfer, so a pixel on the other side of the vanishing point
+passes it by without working out where its thing is: that, one try, and the farther reach keep
+its cost near the fourteen's. `effects::runic` mirrors it: 20 or more at once on a 260 point
+sidebar, never fewer than 10, every kind connected, and a roof held through its transfer. Each is
+a column 3 points wide, a lit dash a cell, a bright head and 9 cells fading behind, at 0.32, with
+a flicker on the thing as it lands or leaves. The first cut of this layer landed each column
+wherever a sidewalk or a lane passed under it, which often fell between people and read as random.
+
+The fourteen changed with it: a building's transfer ends on its roof, not a window partway up,
+and its building is chosen among those in view when the transfer begins and held after (it was
+chosen by where the camera was each moment, so a transfer jumped to another building every two
+seconds or so); a transfer crosses in 3.5 to 5 seconds, not 2.2 to 3.6, in a 6 to 10 second cycle.
+To keep it calm the glyphs and dashes change once every 1.2 seconds rather than every 0.3 to 0.4,
+the fourteen's channel is a hint (0.2), their glow soft (0.3), and the whole of them at 0.8 of
+their light (`DATA_LIGHT`, "make the rain slightly dimmer in the graphic").
 
 ## The subway
 

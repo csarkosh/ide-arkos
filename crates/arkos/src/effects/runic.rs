@@ -920,72 +920,93 @@ mod tests {
         assert!(rain.contains("n < DATA_TRIES") && runic_constant("DATA_TRIES") >= 5.0);
     }
 
-    /// The wash's `data_drizzle` slot for small column `ci` at `t`: how far through its run it is
-    /// (0 to 1) and its seed, or nothing while it rests.
-    fn drizzle_slot(ci: f32, t: f32) -> Option<(f32, f32)> {
+    fn wash_int(name: &str) -> usize {
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        let line = wash.lines().find(|l| l.starts_with(&format!("constant int {name} = "))).unwrap_or_else(|| panic!("no {name}"));
+        line.rsplit("= ").next().unwrap().trim_end_matches(';').parse().unwrap()
+    }
+
+    fn wrap_view(z: f32) -> f32 {
+        let span = WRAP_BLOCKS * CROSS_EVERY * GRID_Z;
+        let near = runic_constant("Z_NEAR");
+        near + (z - near) - ((z - near) / span).floor() * span
+    }
+
+    /// The wash's `data_drizzle` slot `i` at `t`: how far through its run it is (0 to 1), its seed
+    /// and when it began, or nothing while it rests.
+    fn small_slot(i: usize, t: f32) -> Option<(f32, f32, f32)> {
+        let fi = i as f32;
         let (lo, hi) = (runic_constant("DRIZZLE_PERIOD_MIN"), runic_constant("DRIZZLE_PERIOD_MAX"));
-        let period = lo + (hi - lo) * hash2(ci, 41.0);
-        let off = hash2(ci, 43.0) * period;
+        let period = lo + (hi - lo) * hash2(fi, 47.0);
+        let off = hash2(fi, 49.0) * period;
         let k = ((t + off) / period).floor();
         let into = t + off - k * period;
         let run = period * runic_constant("DRIZZLE_ON");
-        (into <= run).then_some((into / run, ci * 389.0 + k))
+        (into <= run).then_some((into / run, fi * 733.0 + k, t - into))
     }
 
-    /// The wash's `drizzle_end`: where small column `ci` of a scene with focal length `f` lands for
-    /// `seed`, as the ground line under it (across, world), its depth and its kind (0 a sidewalk, 1
-    /// a bike lane, 2 a car lane), or nothing when that line is out of view under it.
-    fn drizzle_end(ci: f32, seed: f32, f: f32) -> Option<(f32, f32, usize)> {
-        let dx = ((ci + 0.5) * runic_constant("DRIZZLE_W")).abs();
-        let pick = hash2(seed, 2.0);
-        let road = runic_constant("GRID_X");
-        let (wx, kind) = if pick < runic_constant("DRIZZLE_WALK") {
-            (road + 0.06 + (hash2(seed, 5.0) - 0.3) * runic_constant("WALK_W"), 0)
-        } else if pick < runic_constant("DRIZZLE_BIKE") {
-            (runic_constant("BIKE_LANE") * road, 1)
+    /// The wash's `small_end` for the kinds the tests can follow: the walker, car or cyclist a
+    /// small transfer joins (its kind, 0 to 2, and its depth in view at `t`), or a roof (3, with
+    /// its depth); nothing when it is out of the nearer view. (Whether a roof's lot has a tower is
+    /// the shader's to say, four lots in five.)
+    fn small_end(seed: f32, side: f32, t: f32, t0: f32) -> Option<(usize, f32)> {
+        let run = |t: f32| t * runic_constant("GRID_SPEED") * GRID_Z;
+        let c = hash2(seed, 2.0);
+        let pick = hash2(seed, 7.0);
+        let (kind, z) = if c < runic_constant("SMALL_WALKER") {
+            let key = ((pick * wash_int("PEOPLE") as f32).floor(), if side > 0.0 { 17.0 + 61.0 } else { 61.0 });
+            let dir = if hash2(key.0 + 1.0, key.1 + 1.0) < 0.5 { 1.0 } else { -1.0 };
+            (0, wrap_view(road_walker_at(dir, key, t).0 - run(t)))
+        } else if c < runic_constant("SMALL_CAR") {
+            let key = ((pick * wash_int("ROAD_CARS") as f32).floor(), if side > 0.0 { 13.0 + 31.0 } else { 31.0 });
+            (1, wrap_view(road_car_at(side, key, t) - run(t)))
+        } else if c < runic_constant("SMALL_BIKE") {
+            let key = ((pick * wash_int("ROAD_BIKES") as f32).floor(), if side > 0.0 { 13.0 + 141.0 } else { 141.0 });
+            (2, wrap_view(road_bike_at(side, key, t) - run(t)))
         } else {
-            (0.5 * road, 2)
+            // A roof chosen when the transfer began, in the nearer view then; it comes on with
+            // the street after.
+            let near = runic_constant("Z_NEAR");
+            let m = ((run(t0) + near + 1.5 + pick * (runic_constant("Z_FAR") * runic_constant("DRIZZLE_FAR") - 2.0)) / GRID_Z).floor();
+            (3, m * GRID_Z - run(t) + 0.5 * GRID_Z)
         };
-        let z = wx * f / dx.max(1e-3);
-        (z >= runic_constant("Z_NEAR") + 0.4 && z <= runic_constant("Z_FAR") * 0.6).then_some((wx, z, kind))
+        (z > runic_constant("Z_NEAR") + 0.4 && z < runic_constant("Z_FAR") * runic_constant("DRIZZLE_FAR")).then_some((kind, z))
     }
 
     #[test]
-    fn the_sky_is_full_of_small_transfers_to_the_devices_on_the_ground() {
-        // Cyrus, 2026-11-17, after seeing the city move: "there's not enough runic rain yet. there
-        // should be many small ones so it feels like the matrix with everyones connected devices to
-        // the cloud".
+    fn the_sky_is_full_of_small_transfers_each_tied_to_a_walker_a_car_a_cyclist_or_a_roof() {
+        // Cyrus, 2026-11-17, after seeing the city move: "there should be many small ones so it
+        // feels like the matrix with everyones connected devices to the cloud"; then "the
+        // uploading and downloading rain should be tied to people, cars, bicycles, or tops of
+        // buildings. And it should be a little slower. It looks random to me."
         let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
         let rain = &wash[wash.find("float3 data_rain(").unwrap()..];
         assert!(rain[..rain.find("\n}\n").unwrap()].contains("data_drizzle(p, top,"), "drawn with the city's data");
-        assert!(runic_constant("DRIZZLE_W") <= 4.0, "small: a few points a column");
-        assert!(runic_constant("DRIZZLE_LIGHT") <= 0.45, "many, so each is quiet");
-        // Cyrus, 2026-11-17, in the sandbox: "make the rain slightly dimmer in the graphic".
-        assert!(runic_constant("DRIZZLE_LIGHT") <= 0.33 && runic_constant("DATA_LIGHT") <= 0.82, "a little dimmer, both layers");
-        let rain = &wash[wash.find("float3 data_rain(").unwrap()..];
-        let rain = &rain[..rain.find("\n}\n").unwrap()];
-        assert!(rain.matches("DATA_LIGHT").count() >= 3, "the trails, the glow and the flicker on the thing all dimmed");
         let drizzle = &wash[wash.find("float3 data_drizzle(").unwrap()..];
-        assert!(drizzle[..drizzle.find("\n}\n").unwrap()].contains("floor(t / DATA_FLICKER)"), "its dashes change as slowly as the glyphs");
-        // ROAD_CELLS is 1 in the wash, which the mirror takes as read.
-        assert!(wash.contains("constant int ROAD_CELLS = 1;"));
-        // A sidebar of 260 points: the scene 256 wide, its focal length 0.9 of that.
-        let (width, f) = (256.0f32, 0.9 * 256.0);
-        let half = (width / 2.0 / runic_constant("DRIZZLE_W")).floor() as i32;
+        let drizzle = &drizzle[..drizzle.find("\n}\n").unwrap()];
+        assert!(drizzle.contains("small_end(") && !wash.contains("drizzle_end("), "each follows a thing, not the ground under a column");
+        assert!(drizzle.contains("floor(t / DATA_FLICKER)"), "its dashes change as slowly as the glyphs");
+        assert!(runic_constant("DRIZZLE_W") <= 4.0, "small: a few points a column");
+        assert!(runic_constant("DRIZZLE_LIGHT") <= 0.33, "many, so each is quiet");
+        // Cyrus, 2026-11-17, in the sandbox: "make the rain slightly dimmer in the graphic".
+        assert!(runic_constant("DATA_LIGHT") <= 0.82, "the big transfers a little dimmer too");
+        assert!(rain[..rain.find("\n}\n").unwrap()].matches("DATA_LIGHT").count() >= 3, "their trails, glow and flicker all dimmed");
+        // Slower: a small transfer takes a few seconds to cross the sky.
+        assert!(runic_constant("DRIZZLE_PERIOD_MIN") * runic_constant("DRIZZLE_ON") >= 2.5);
+        let n = wash_int("DRIZZLE_STREAMS");
+        let tries = runic_constant("DRIZZLE_TRIES") as usize;
         let (mut sum, mut moments, mut least) = (0usize, 0usize, usize::MAX);
-        let mut kinds = [0usize; 3];
+        let mut kinds = [0usize; 4];
         let mut t = 0.0f32;
         while t < 120.0 {
             let mut running = 0;
-            for ci in -half..half {
-                let ci = ci as f32;
-                let Some((_, seed)) = drizzle_slot(ci, t) else { continue };
-                let Some((wx, z, kind)) = drizzle_end(ci, seed, f) else { continue };
-                // It lands under its own column: the line's screen x there is the column's.
-                let cx = (ci + 0.5) * runic_constant("DRIZZLE_W");
-                assert!((cx.signum() * wx * f / z - cx).abs() < 1e-2, "column {ci} lands at {}", wx * f / z);
-                running += 1;
-                kinds[kind] += 1;
+            for i in 0..n {
+                let Some((_, seed, t0)) = small_slot(i, t) else { continue };
+                let side = if hash2(seed, 6.0) < 0.5 { -1.0 } else { 1.0 };
+                if let Some((kind, _)) = (0..tries).find_map(|k| small_end(seed * 4.0 + k as f32, side, t, t0)) {
+                    running += 1;
+                    kinds[kind] += 1;
+                }
             }
             sum += running;
             least = least.min(running);
@@ -993,9 +1014,34 @@ mod tests {
             t += 0.25;
         }
         let mean = sum as f32 / moments as f32;
-        assert!(mean >= 25.0, "many at once: {mean} on average");
-        assert!(least >= 12, "never a thin sky: {least}");
-        assert!(kinds.iter().all(|k| *k > 0), "walkers, cyclists and cars all connected: {kinds:?}");
+        assert!(mean >= 20.0, "many at once: {mean} on average");
+        assert!(least >= 10, "never a thin sky: {least}");
+        assert!(kinds.iter().all(|k| *k > 0), "walkers, cars, cyclists and roofs all connected: {kinds:?}");
+        // A roof is chosen when its transfer begins and then held: through a transfer it comes
+        // on with the street, a steady pace, never a jump to another building.
+        let mut seen_roof = false;
+        let mut t = 0.0f32;
+        while t < 60.0 && !seen_roof {
+            for i in 0..n {
+                let Some((_, seed, t0)) = small_slot(i, t) else { continue };
+                if hash2(seed * 4.0, 2.0) < runic_constant("SMALL_BIKE") { continue }
+                let Some((3, z0)) = small_end(seed * 4.0, 1.0, t, t0) else { continue };
+                let Some((3, z1)) = small_end(seed * 4.0, 1.0, t + 0.1, t0) else { continue };
+                let step = runic_constant("GRID_SPEED") * GRID_Z * 0.1;
+                assert!((z0 - z1 - step).abs() < 1e-3, "slot {i} at {t}: roof {z0} then {z1}");
+                seen_roof = true;
+            }
+            t += 0.5;
+        }
+        assert!(seen_roof);
+    }
+
+    #[test]
+    fn the_big_transfers_end_on_a_roof_held_from_their_start_and_take_their_time() {
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        assert!(wash.contains("float4 data_end(float seed, float t, float t0)"), "the building is chosen when the transfer begins");
+        assert!(wash.contains("return float4(tx, zc + 0.5 * GRID_Z, th, 1.0);") && !wash.contains("th * mix(0.3, 0.85, h2)"), "the top of the building, not a window");
+        assert!(runic_constant("DATA_TRAVEL_MIN") >= 3.5 && runic_constant("DATA_TRAVEL_MAX") <= 5.0, "slower");
     }
 
     #[test]

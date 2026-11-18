@@ -636,10 +636,10 @@ constant float STEPS = 2.2;
 // bright head crossing it in DATA_TRAVEL_MIN to DATA_TRAVEL_MAX seconds with DATA_TRAIL cells
 // fading behind, and a flicker on the thing as a download lands or an upload leaves.
 constant int DATA_STREAMS = 14;
-constant float DATA_SLOT_MIN = 5.0;
-constant float DATA_SLOT_MAX = 9.0;
-constant float DATA_TRAVEL_MIN = 2.2;
-constant float DATA_TRAVEL_MAX = 3.6;
+constant float DATA_SLOT_MIN = 6.0;
+constant float DATA_SLOT_MAX = 10.0;
+constant float DATA_TRAVEL_MIN = 3.5;
+constant float DATA_TRAVEL_MAX = 5.0;
 constant float DATA_TRAIL = 14.0;
 // How strongly the whole channel shows while its transfer runs, against the packet's 1.
 constant float DATA_CHANNEL = 0.2;
@@ -1077,8 +1077,10 @@ float4 data_slot(int i, float t) {
 }
 
 // The thing a transfer with this seed joins at t: across (x, world), its depth in view (y), its
-// height (z, camera heights: where the stream meets it), and whether it is there (w 1).
-float4 data_end(float seed, float t) {
+// height (z, camera heights: where the stream meets it), and whether it is there (w 1). A building
+// or a cart is chosen among the lots in view when the transfer began (t0) and held after, coming on
+// with the street, so a transfer never jumps from one building to another.
+float4 data_end(float seed, float t, float t0) {
     float run = t * GRID_SPEED * GRID_Z;
     float c = hash2(float2(seed, 2.0));
     float side = hash2(float2(seed, 6.0)) < 0.5 ? -1.0 : 1.0;
@@ -1101,9 +1103,9 @@ float4 data_end(float seed, float t) {
         float z = wrap_view(road_bike_at(side, key, t) - run);
         return float4(side * BIKE_LANE * float(ROAD_CELLS) * GRID_X, z, 0.2, 1.0);
     }
-    // A lot in the nearer part of the view: a tower's window, or a food cart.
+    // A lot in the nearer part of the view when the transfer began: a tower's roof, or a food cart.
     bool cart = c >= DATA_WINDOW;
-    int far_row = int(floor((run + Z_FAR) / GRID_Z));
+    int far_row = int(floor((t0 * GRID_SPEED * GRID_Z + Z_FAR) / GRID_Z));
     int rows = int(ceil((Z_FAR - Z_NEAR) / GRID_Z));
     for (int n = 0; n < 8; n++) {
         float h1 = hash2(float2(seed, 11.0 + float(n)));
@@ -1116,12 +1118,9 @@ float4 data_end(float seed, float t) {
         float zc = float(m) * GRID_Z - run;
         float2 cell = float2(float(kx), float(m));
         if (!cart && lot_built(kx, m)) {
-            float tw = GRID_X * (0.5 + 0.35 * hash2(cell + float2(5.0, 11.0)));
-            float td = GRID_Z * (0.35 + 0.35 * hash2(cell + float2(9.0, 2.0)));
             float th = 0.6 + (TOWER_MAX - 0.6) * pow(hash2(cell + float2(4.0, 7.0)), 1.6);
             float tx = (float(kx) + 0.5) * GRID_X;
-            float zf = zc + 0.5 * GRID_Z - 0.5 * td;
-            return float4(tx + (h1 - 0.5) * tw * 0.6, zf, th * mix(0.3, 0.85, h2), 1.0);
+            return float4(tx, zc + 0.5 * GRID_Z, th, 1.0);
         }
         if (cart && lot_empty(kx, m) && !lot_in_park(kx, m) && int(floor(hash2(cell + float2(29.0, 7.0)) * 3.0)) == 1) {
             return float4((float(kx) + 0.5) * GRID_X, zc + 0.5 * GRID_Z + 0.1, 0.22, 1.0);
@@ -1131,91 +1130,132 @@ float4 data_end(float seed, float t) {
 }
 
 // Many small transfers (Cyrus, 2026-11-17: "there should be many small ones so it feels like the
-// matrix with everyones connected devices to the cloud"). The sky is cut into columns DRIZZLE_W
-// points wide, counted from the vanishing point, each running a short transfer for DRIZZLE_ON of
-// its cycle of DRIZZLE_PERIOD_MIN to DRIZZLE_PERIOD_MAX seconds between the sky and whoever is on
-// the ground under it: where a sidewalk's walkers (DRIZZLE_WALK of the picks), a bike lane's
-// cyclists (to DRIZZLE_BIKE) or a lane's cars pass under the column. A column's own x says how deep
-// that line lies under it, so each pixel works out only its own column, however many run. Each is
-// a lit dash a cell, a bright head and DRIZZLE_TRAIL cells fading behind it, down for a download
-// and up for an upload, with a flicker on the thing as it lands or leaves.
+// matrix with everyones connected devices to the cloud", then "the uploading and downloading rain
+// should be tied to people, cars, bicycles, or tops of buildings. And it should be a little slower.
+// It looks random to me."). DRIZZLE_STREAMS slots, each running a transfer for DRIZZLE_ON of its
+// cycle of DRIZZLE_PERIOD_MIN to DRIZZLE_PERIOD_MAX seconds between the sky and one thing it
+// follows: a walker (to SMALL_WALKER of the picks), a car (to SMALL_CAR), a cyclist (to
+// SMALL_BIKE) or a building's roof, the thing in the nearer view (within DRIZZLE_FAR of it) among
+// DRIZZLE_TRIES picks, else the slot rests. Each is a column DRIZZLE_W points wide: a lit dash a
+// cell, a bright head and DRIZZLE_TRAIL cells fading behind it, down onto the thing for a download
+// and up out of it for an upload, with a flicker on the thing as it lands or leaves.
+constant int DRIZZLE_STREAMS = 36;
 constant float DRIZZLE_W = 3.0;
-constant float DRIZZLE_PERIOD_MIN = 2.5;
-constant float DRIZZLE_PERIOD_MAX = 6.0;
-constant float DRIZZLE_ON = 0.6;
-constant float DRIZZLE_WALK = 0.6;
-constant float DRIZZLE_BIKE = 0.75;
+constant float DRIZZLE_PERIOD_MIN = 4.5;
+constant float DRIZZLE_PERIOD_MAX = 9.0;
+constant float DRIZZLE_ON = 0.75;
+constant float DRIZZLE_TRIES = 1.0;
+constant float DRIZZLE_FAR = 0.8;
+constant float SMALL_WALKER = 0.45;
+constant float SMALL_CAR = 0.65;
+constant float SMALL_BIKE = 0.75;
 constant float DRIZZLE_TRAIL = 9.0;
 constant float DRIZZLE_LIGHT = 0.32;
 
-// Where small column ci (DRIZZLE_W points wide, w, of a scene with focal length f) lands for the
-// transfer with this seed: its depth (x) and the height it meets (y, camera heights), or y < 0
-// when the line under it is out of view.
-float2 drizzle_end(float ci, float seed, float w, float f) {
-    float dx = abs((ci + 0.5) * w);
-    float pick = hash2(float2(seed, 2.0));
+// The thing small transfer `seed` joins at t, begun at t0, on the road's `side` (-1 left, 1 right):
+// across (x, world), its depth in view (y), the height it is met at (z), and whether it is in the
+// nearer view (w 1). A roof is chosen among the rows in view at t0 and held after.
+float4 small_end(float seed, float side, float t, float t0) {
+    float run = t * GRID_SPEED * GRID_Z;
+    float c = hash2(float2(seed, 2.0));
+    float pick = hash2(float2(seed, 7.0));
     float road = float(ROAD_CELLS) * GRID_X;
-    float wx = 0.5 * road;
-    float h = 0.1;
-    if (pick < DRIZZLE_WALK) {
-        wx = road + 0.06 + (hash2(float2(seed, 5.0)) - 0.3) * WALK_W;
-        h = PERSON_H;
-    } else if (pick < DRIZZLE_BIKE) {
-        wx = BIKE_LANE * road;
-        h = 0.2;
+    float4 e = float4(0.0);
+    if (c < SMALL_WALKER) {
+        float2 key = float2(floor(pick * float(PEOPLE)), side > 0.0 ? 17.0 + 61.0 : 61.0);
+        float dir = hash2(key + 1.0) < 0.5 ? 1.0 : -1.0;
+        float2 at = road_walker_at(dir, key, t);
+        float x = side * (road + 0.06) + side * (hash2(key + 7.0) - 0.3) * WALK_W;
+        e = float4(x, wrap_view(at.x - run), PERSON_H, 1.0);
+    } else if (c < SMALL_CAR) {
+        float2 key = float2(floor(pick * float(ROAD_CARS)), side > 0.0 ? 13.0 + 31.0 : 31.0);
+        e = float4(side * 0.5 * road, wrap_view(road_car_at(side, key, t) - run), 0.1, 1.0);
+    } else if (c < SMALL_BIKE) {
+        float2 key = float2(floor(pick * float(ROAD_BIKES)), side > 0.0 ? 13.0 + 141.0 : 141.0);
+        e = float4(side * BIKE_LANE * road, wrap_view(road_bike_at(side, key, t) - run), 0.2, 1.0);
+    } else {
+        float m = floor((t0 * GRID_SPEED * GRID_Z + Z_NEAR + 1.5 + pick * (Z_FAR * DRIZZLE_FAR - 2.0)) / GRID_Z);
+        int mi = int(m);
+        int kx = side > 0.0 ? ROAD_CELLS + int(hash2(float2(seed, 9.0)) * 2.0) : -ROAD_CELLS - 1 - int(hash2(float2(seed, 9.0)) * 2.0);
+        bool cross_row = ((mi % CROSS_EVERY) + CROSS_EVERY) % CROSS_EVERY == 0;
+        if (cross_row || !lot_built(kx, mi)) {
+            return float4(0.0);
+        }
+        float2 cell = float2(float(kx), m);
+        float th = 0.6 + (TOWER_MAX - 0.6) * pow(hash2(cell + float2(4.0, 7.0)), 1.6);
+        e = float4((float(kx) + 0.5) * GRID_X, m * GRID_Z - run + 0.5 * GRID_Z, th, 1.0);
     }
-    float z = wx * f / max(dx, 1e-3);
-    if (z < Z_NEAR + 0.4 || z > Z_FAR * 0.6) {
-        return float2(0.0, -1.0);
-    }
-    return float2(z, h);
+    e.w = (e.y > Z_NEAR + 0.4 && e.y < Z_FAR * DRIZZLE_FAR) ? 1.0 : 0.0;
+    return e;
 }
 
 // The small transfers at p over col; top, hz, vx and f as data_rain's.
 float3 data_drizzle(float2 p, float top, float hz, float vx, float f, float t, float3 green, float3 white_c, float3 col, constant ArkosInputs& u) {
-    float ci = floor((p.x - vx) / DRIZZLE_W);
-    float period = mix(DRIZZLE_PERIOD_MIN, DRIZZLE_PERIOD_MAX, hash2(float2(ci, 41.0)));
-    float off = hash2(float2(ci, 43.0)) * period;
-    float k = floor((max(t, 0.0) + off) / period);
-    float into = max(t, 0.0) + off - k * period;
-    float run = period * DRIZZLE_ON;
-    if (into > run) {
-        return col;
-    }
-    float seed = ci * 389.0 + k;
-    float2 e = drizzle_end(ci, seed, DRIZZLE_W, f);
-    if (e.y < 0.0) {
-        return col;
-    }
     float3 head_c = mix(green, white_c, 0.55);
-    float sx = vx + (ci + 0.5) * DRIZZLE_W;
-    float y_end = hz + f * (1.0 - e.y) / e.x;
-    float ch = DRIZZLE_W * 1.5;
-    float len = max((y_end - top) / ch, 1.0);
-    float r = (y_end - p.y) / ch;
-    bool up = hash2(float2(seed, 3.0)) < 0.5;
-    float travelled = (into / run) * (len + DRIZZLE_TRAIL);
-    float head = up ? travelled : len - travelled;
-    // The flicker on the thing as a download lands on it or an upload leaves it.
-    float meet = up ? (1.0 - smoothstep(0.0, 1.5, travelled)) : smoothstep(len - 1.5, len, travelled) * (1.0 - smoothstep(len + 1.0, len + 3.0, travelled));
-    float g = exp(-dot(p - float2(sx, y_end), p - float2(sx, y_end)) / (2.0 * DRIZZLE_W * DRIZZLE_W));
-    col = light_on(col, head_c, g * meet * 0.5, u.dark);
-    if (r < 0.0 || r > len) {
-        return col;
-    }
-    float behind = up ? head - r : r - head;
-    if (behind < 0.0 || behind > DRIZZLE_TRAIL) {
-        return col;
-    }
-    // A lit dash a cell, flickering as the glyphs change.
-    float2 fq = float2((p.x - sx) / DRIZZLE_W + 0.5, fract(r));
-    float2 d = abs(fq - 0.5);
-    float dash = 1.0 - smoothstep(0.22, 0.34, max(d.x * 1.4, d.y));
-    dash *= hash2(float2(seed, floor(r)) * 3.0 + floor(t / DATA_FLICKER)) < 0.85 ? 1.0 : 0.3;
     float fade_top = saturate((p.y - top) / max((hz - top) * 0.4, 1.0));
-    float trail = 1.0 - behind / DRIZZLE_TRAIL;
-    bool at_head = behind < 1.0;
-    return mix(col, at_head ? head_c : green, saturate(dash * trail * fade_top * DRIZZLE_LIGHT * (at_head ? 1.6 : 1.0)));
+    float ch = DRIZZLE_W * 1.5;
+    for (int i = 0; i < DRIZZLE_STREAMS; i++) {
+        float fi = float(i);
+        float period = mix(DRIZZLE_PERIOD_MIN, DRIZZLE_PERIOD_MAX, hash2(float2(fi, 47.0)));
+        float off = hash2(float2(fi, 49.0)) * period;
+        float k = floor((max(t, 0.0) + off) / period);
+        float into = max(t, 0.0) + off - k * period;
+        float run = period * DRIZZLE_ON;
+        if (into > run) {
+            continue;
+        }
+        float seed = fi * 733.0 + k;
+        // Its side of the road, for all its tries: a thing on one side is seen on that side of the
+        // vanishing point, so a pixel on the other side passes the slot by without working out
+        // where its thing is.
+        float side = hash2(float2(seed, 6.0)) < 0.5 ? -1.0 : 1.0;
+        if ((p.x - vx) * side < -DRIZZLE_W * 2.0) {
+            continue;
+        }
+        float4 e = float4(0.0);
+        for (float n = 0.0; n < DRIZZLE_TRIES; n += 1.0) {
+            e = small_end(seed * 4.0 + n, side, t, t - into);
+            if (e.w > 0.5) {
+                break;
+            }
+        }
+        if (e.w < 0.5) {
+            continue;
+        }
+        float sx = vx + e.x * f / e.y;
+        if (abs(p.x - sx) > DRIZZLE_W * 2.0) {
+            continue;
+        }
+        float y_end = hz + f * (1.0 - e.z) / e.y;
+        if (p.y > y_end + DRIZZLE_W * 2.0 || y_end <= top) {
+            continue;
+        }
+        float len = max((y_end - top) / ch, 1.0);
+        float r = (y_end - p.y) / ch;
+        bool up = hash2(float2(seed, 3.0)) < 0.5;
+        float travelled = (into / run) * (len + DRIZZLE_TRAIL);
+        float head = up ? travelled : len - travelled;
+        // The flicker on the thing as a download lands on it or an upload leaves it.
+        float meet = up ? (1.0 - smoothstep(0.0, 1.5, travelled)) : smoothstep(len - 1.5, len, travelled) * (1.0 - smoothstep(len + 1.0, len + 3.0, travelled));
+        float g = exp(-dot(p - float2(sx, y_end), p - float2(sx, y_end)) / (2.0 * DRIZZLE_W * DRIZZLE_W));
+        col = light_on(col, head_c, g * meet * 0.5, u.dark);
+        if (r < 0.0 || r > len || abs(p.x - sx) > DRIZZLE_W * 0.5) {
+            continue;
+        }
+        float behind = up ? head - r : r - head;
+        if (behind < 0.0 || behind > DRIZZLE_TRAIL) {
+            continue;
+        }
+        // A lit dash a cell, changing as slowly as the glyphs.
+        float2 fq = float2((p.x - sx) / DRIZZLE_W + 0.5, fract(r));
+        float2 d = abs(fq - 0.5);
+        float dash = 1.0 - smoothstep(0.22, 0.34, max(d.x * 1.4, d.y));
+        dash *= hash2(float2(seed, floor(r)) * 3.0 + floor(t / DATA_FLICKER)) < 0.85 ? 1.0 : 0.3;
+        float trail = 1.0 - behind / DRIZZLE_TRAIL;
+        bool at_head = behind < 1.0;
+        col = mix(col, at_head ? head_c : green, saturate(dash * trail * fade_top * DRIZZLE_LIGHT * (at_head ? 1.6 : 1.0)));
+    }
+    return col;
 }
 
 // The city's data at p (window points): every transfer under way, its column from the sky's top
@@ -1236,7 +1276,7 @@ float3 data_rain(float2 p, float top, float hz, float vx, float f, float t, floa
         // A thing in the nearer part of the view: out of it, the transfer tries another or two.
         float4 e = float4(0.0);
         for (float n = 0.0; n < DATA_TRIES; n += 1.0) {
-            e = data_end(slot.w * 4.0 + n, t);
+            e = data_end(slot.w * 4.0 + n, t, t - slot.y * slot.z);
             if (e.w > 0.5 && e.y > Z_NEAR + 0.4 && e.y < Z_FAR * 0.45) {
                 break;
             }
