@@ -1454,7 +1454,8 @@ mod tests {
     }
 
     fn tower_built(kx: i32, m: i32) -> bool {
-        hash2(kx as f32 + 17.0, m as f32 + 3.0) <= runic_constant("TOWER_ON")
+        // A cross street's row (every fourth) has no lots.
+        m.rem_euclid(4) != 0 && hash2(kx as f32 + 17.0, m as f32 + 3.0) <= runic_constant("TOWER_ON")
     }
 
     fn shed_of(kx: i32, m: i32) -> Option<Shed> {
@@ -1483,6 +1484,9 @@ mod tests {
             "                bool shed = beside_road && hash2(cell + float2(61.0, 13.0)) < SHED_SHARE;",
             "                bool scaffold = shed && hash2(cell + float2(67.0, 19.0)) < SCAFFOLD_SHARE;",
             "                float shed_top = scaffold ? min(th - 0.05, SHED_H + SCAFFOLD_FLOORS * SCAFFOLD_FLOOR) : SHED_H;",
+            "                    float sgn = tx < 0.0 ? -1.0 : 1.0;",
+            "                    float sx = sgn * (float(ROAD_CELLS) * GRID_X - SIDEWALK_IN + SHED_IN);",
+            "                    float fx = tx - sgn * tw * 0.5;",
         ] {
             assert!(wash.contains(line), "wash.metal lacks {line}");
         }
@@ -1506,6 +1510,25 @@ mod tests {
                 if let Some(s) = shed_of(kx, m) {
                     assert!(s.post_x > curb && s.post_x < s.face_x, "lot ({kx}, {m}): posts at {} between the curb {curb} and the face {}", s.post_x, s.face_x);
                     assert!(s.z0 > 0.0 && s.z1 < 1.6 && s.z0 < s.z1, "lot ({kx}, {m}): it runs the tower's depth within its lot");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_shed_on_the_road_s_left_stands_on_the_left_sidewalk() {
+        // The shader's signed placement, as its pinned lines work it out: the posts and the face
+        // on the tower's own side of the road, the posts between the curb and the face.
+        let curb = 0.9 - runic_constant("SIDEWALK_IN");
+        for kx in [1, -2] {
+            let tx = (kx as f32 + 0.5) * 0.9;
+            let sgn = if tx < 0.0 { -1.0 } else { 1.0 };
+            for m in 0..400 {
+                if let Some(s) = shed_of(kx, m) {
+                    let tw = 0.9 * (0.5 + 0.35 * hash2(kx as f32 + 5.0, m as f32 + 11.0));
+                    let (sx, fx) = (sgn * (curb + runic_constant("SHED_IN")), tx - sgn * tw * 0.5);
+                    assert!(sx.signum() == tx.signum() && fx.signum() == tx.signum(), "lot ({kx}, {m}): across the road");
+                    assert!((sx.abs() - s.post_x).abs() < 1e-5 && (fx.abs() - s.face_x).abs() < 1e-5);
                 }
             }
         }
