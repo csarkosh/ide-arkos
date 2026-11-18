@@ -822,7 +822,7 @@ pub fn render_rows(root: &mut Root, entries: Vec<crate::explorer::Row>, theme: &
                                 root.save(cx);
                                 cx.notify();
                             } else {
-                                root.open_viewer(&p_click, ev.click_count() >= 2, cx);
+                                root.open_clicked(&p_click, ev.click_count() >= 2, cx);
                             }
                         });
                     })
@@ -913,6 +913,16 @@ pub enum OpenPlan {
     Activate(usize),
     Replace(usize),
     Add,
+}
+
+/// Where a click on a file opens it: in the focused pane in place, or while that pane shows a
+/// terminal under Neighbor, beside it as a session's own opens go (`direct::neighbor_step`).
+pub fn click_target(tree: &Tree, placement: crate::config::OpenPlacement, focused_is_terminal: bool, bounds: Rect) -> crate::direct::OpenStep {
+    if placement == crate::config::OpenPlacement::Neighbor && focused_is_terminal {
+        crate::direct::neighbor_step(tree, tree.focused, bounds)
+    } else {
+        crate::direct::OpenStep::AddTo { pane: tree.focused }
+    }
 }
 
 pub fn open_plan(tree: &Tree, pane: PaneId, path: &Path, preview_tab: Option<TabId>, pin: bool) -> OpenPlan {
@@ -1344,7 +1354,7 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
                     .child(div().min_w_0().truncate().child(rel.to_string_lossy().into_owned()))
                     .on_click(cx.listener(move |root, ev: &ClickEvent, _window, cx| {
                         root.worktrees.selected = Some(path.clone());
-                        root.open_viewer(&path, ev.click_count() >= 2, cx);
+                        root.open_clicked(&path, ev.click_count() >= 2, cx);
                     }))
             }
         };
@@ -1924,6 +1934,34 @@ impl Root {
         self.sidebar_focused = false;
         self.wt_focused = false;
         let pane = self.tree.focused;
+        self.open_viewer_in(pane, path, pin, cx);
+    }
+
+    /// A click on a file in the tree or among a worktree's changes: it opens where the setting "A
+    /// session's files open" says (`click_target`), and the keys stay where they were, in the
+    /// focused pane or in Pane 0 (Cyrus, 2026-11-18: "When I click on files ... I expect to still
+    /// be able to type in my Claude session").
+    pub fn open_clicked(&mut self, path: &Path, pin: bool, cx: &mut Context<Self>) {
+        let before = self.tree.focused;
+        let on_terminal = self.active_terminal(cx).is_some();
+        match click_target(&self.tree, self.config.layout.placement, on_terminal, self.content) {
+            crate::direct::OpenStep::SplitFrom { pane, side } => {
+                let tab = file_tab(path);
+                crate::telemetry::pane_open(crate::telemetry::kind_of(&tab), crate::telemetry::Opened::Explorer);
+                if let Some(new) = self.tree.split(pane, side, tab) {
+                    self.preview_tab = if pin { None } else { self.tree.tab_id(new, 0) };
+                }
+                self.explorer.selected = Some(path.to_path_buf());
+                self.save(cx);
+                cx.notify();
+            }
+            crate::direct::OpenStep::AddTo { pane } | crate::direct::OpenStep::Reuse { pane, .. } => self.open_viewer_in(pane, path, pin, cx),
+        }
+        self.tree.focused = before;
+    }
+
+    /// Opens `path` in `pane` as a preview or pinned, as `open_viewer` says, leaving the keys alone.
+    fn open_viewer_in(&mut self, pane: PaneId, path: &Path, pin: bool, cx: &mut Context<Self>) {
         let plan = open_plan(&self.tree, pane, path, self.preview_tab, pin);
         let idx = match plan {
             OpenPlan::Activate(idx) => {
@@ -2416,6 +2454,61 @@ pub fn switcher_key(key: &str) -> SwitcherKey {
 
 #[cfg(test)]
 mod tests {
+    fn click_tree() -> crate::tree::Tree {
+        crate::tree::Tree::new(crate::tree::Tab::Terminal { session: protocol::SessionId(1), cwd: None })
+    }
+
+    const CLICK_BOUNDS: crate::tree::Rect = crate::tree::Rect { x: 0.0, y: 0.0, w: 1800.0, h: 1000.0 };
+
+    #[test]
+    fn a_click_in_place_opens_the_file_in_the_focused_pane() {
+        use crate::config::OpenPlacement;
+        use crate::direct::OpenStep;
+        let tree = click_tree();
+        assert_eq!(super::click_target(&tree, OpenPlacement::Inplace, true, CLICK_BOUNDS), OpenStep::AddTo { pane: tree.focused });
+    }
+
+    #[test]
+    fn a_click_beside_a_terminal_opens_the_file_in_the_pane_to_its_right() {
+        use crate::config::OpenPlacement;
+        use crate::direct::OpenStep;
+        use crate::tree::Side;
+        let mut tree = click_tree();
+        let left = tree.focused;
+        let right = tree.split(left, Side::Right, super::file_tab(std::path::Path::new("/p/a.md"))).unwrap();
+        tree.focused = left;
+        assert_eq!(super::click_target(&tree, OpenPlacement::Neighbor, true, CLICK_BOUNDS), OpenStep::AddTo { pane: right });
+    }
+
+    #[test]
+    fn a_click_beside_a_lone_terminal_splits_off_a_pane_to_its_right() {
+        use crate::config::OpenPlacement;
+        use crate::direct::OpenStep;
+        use crate::tree::Side;
+        let tree = click_tree();
+        assert_eq!(super::click_target(&tree, OpenPlacement::Neighbor, true, CLICK_BOUNDS), OpenStep::SplitFrom { pane: tree.focused, side: Side::Right });
+    }
+
+    #[test]
+    fn a_click_with_a_file_tab_focused_opens_it_there_whatever_the_setting() {
+        use crate::config::OpenPlacement;
+        use crate::direct::OpenStep;
+        let tree = click_tree();
+        assert_eq!(super::click_target(&tree, OpenPlacement::Neighbor, false, CLICK_BOUNDS), OpenStep::AddTo { pane: tree.focused });
+    }
+
+    #[test]
+    fn a_second_click_beside_a_terminal_goes_into_the_pane_the_first_split_off() {
+        use crate::config::OpenPlacement;
+        use crate::direct::OpenStep;
+        let mut tree = click_tree();
+        let agent = tree.focused;
+        let OpenStep::SplitFrom { pane, side } = super::click_target(&tree, OpenPlacement::Neighbor, true, CLICK_BOUNDS) else { panic!("a lone pane splits") };
+        let new = tree.split(pane, side, super::file_tab(std::path::Path::new("/p/a.md"))).unwrap();
+        tree.focused = agent;
+        assert_eq!(super::click_target(&tree, OpenPlacement::Neighbor, true, CLICK_BOUNDS), OpenStep::AddTo { pane: new });
+    }
+
     #[test]
     fn cmd_0_goes_back_where_the_keys_were_in_the_tab_shown() {
         use super::{spot_for, spot_now, Group, Spot};
