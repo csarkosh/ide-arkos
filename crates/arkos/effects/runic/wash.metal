@@ -610,6 +610,9 @@ constant float WALK_W = 0.24;
 constant float JAYWALK = 0.85;
 constant float WALK_GO = 9.1;
 constant float JAY_SPREAD = 0.3;
+constant float WAIT_DEPTH = 1.0;
+// How far apart across its sidewalk the road's walkers keep, nearly its whole width.
+constant float WALKER_SPREAD = 0.3;
 constant float BIKE_GO = 8.9;
 constant float BIKE_SPREAD = 0.3;
 constant float CROSS_BIKE_GO = 5.8;
@@ -1099,7 +1102,7 @@ float4 data_end(float seed, float t, float t0) {
         float dir = hash2(key + 1.0) < 0.5 ? 1.0 : -1.0;
         float2 at = road_walker_at(dir, key, t);
         float edge_x = float(ROAD_CELLS) * GRID_X + 0.06;
-        float x = side * edge_x + side * (hash2(key + 7.0) - 0.3) * WALK_W;
+        float x = side * edge_x + side * (hash2(key + 7.0) - 0.22) * WALKER_SPREAD;
         return float4(x, wrap_view(at.x - run), PERSON_H, 1.0);
     }
     if (c < DATA_CAR) {
@@ -1174,7 +1177,7 @@ float4 small_end(float seed, float side, float t, float t0) {
         float2 key = float2(floor(pick * float(PEOPLE)), side > 0.0 ? 17.0 + 61.0 : 61.0);
         float dir = hash2(key + 1.0) < 0.5 ? 1.0 : -1.0;
         float2 at = road_walker_at(dir, key, t);
-        float x = side * (road + 0.06) + side * (hash2(key + 7.0) - 0.3) * WALK_W;
+        float x = side * (road + 0.06) + side * (hash2(key + 7.0) - 0.22) * WALKER_SPREAD;
         e = float4(x, wrap_view(at.x - run), PERSON_H, 1.0);
     } else if (c < SMALL_CAR) {
         float2 key = float2(floor(pick * float(ROAD_CARS)), side > 0.0 ? 13.0 + 31.0 : 31.0);
@@ -1672,12 +1675,17 @@ float2 road_walker_at(float dir, float2 key, float t) {
     float late = min(ROAD_GREEN - AMBER, ROAD_GREEN - cross / v);
     // Most cross against the light, just behind the cross street's last car; the rest wait.
     bool jay = hash2(key + 8.0) < JAYWALK;
+    // Where it waits: a jaywalker anywhere in the group gathered up to WAIT_DEPTH back from the
+    // curb, so they stand apart (Cyrus, 2026-11-18: "people waiting to cross the street should be
+    // more spread-out in a group"); one who keeps the law waits at the curb, its crossing timed
+    // from there.
+    float back = jay ? WAIT_DEPTH * hash2(key + 9.0) : 0.0;
     float c = floor(hash2(key + 3.0) * laps) * SIG_CYCLE + (jay ? WALK_GO + JAY_SPREAD * hash2(key + 4.0) : late * hash2(key + 4.0));
     float k = floor((t - c) / period);
     float x = min(v * (t - c - k * period), block);
     float j = floor(hash2(key + 5.0) * 8.0) + dir * k;
     float corner = dir > 0.0 ? j * block - WALK_AT : j * block + GRID_Z + WALK_AT;
-    return float2(corner + dir * x, x < block ? 1.0 : 0.0);
+    return float2(corner - dir * back + dir * x, x < block ? 1.0 : 0.0);
 }
 
 // A stroller on the road's sidewalk (Cyrus, 2026-11-17: the people "distributed so the pedestrian
@@ -2169,7 +2177,7 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
             float2 at = road_walker_at(dir, key, t);
             float z = wrap_view(at.x - run);
             float seen = (1.0 - smoothstep(Z_FAR * 0.55, Z_FAR, z)) * smoothstep(Z_NEAR, Z_NEAR + 0.6, z);
-            float2 foot = float2(cx + (sx + out_x * (hash2(key + 7.0) - 0.3) * WALK_W) * f / z, yh + f / z);
+            float2 foot = float2(cx + (sx + out_x * (hash2(key + 7.0) - 0.22) * WALKER_SPREAD) * f / z, yh + f / z);
             col = light_on(col, mix(green, white_c, 0.3), person_light(q, foot, PERSON_H * f / z, t, h, at.y > 0.0) * 0.85 * seen, u.dark);
         }
         for (int j = 0; j < STROLLERS; j++) {

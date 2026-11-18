@@ -609,12 +609,13 @@ mod tests {
         let period = laps * SIG_CYCLE;
         let late = (ROAD_GREEN - AMBER).min(ROAD_GREEN - cross / v);
         let jay = h(8.0) < JAYWALK;
+        let back = if jay { runic_constant("WAIT_DEPTH") * h(9.0) } else { 0.0 };
         let c = (h(3.0) * laps).floor() * SIG_CYCLE + if jay { runic_constant("WALK_GO") + runic_constant("JAY_SPREAD") * h(4.0) } else { late * h(4.0) };
         let k = ((t - c) / period).floor();
         let x = (v * (t - c - k * period)).min(block);
         let j = (h(5.0) * 8.0).floor() + dir * k;
         let corner = if dir > 0.0 { j * block - WALK_AT } else { j * block + GRID_Z + WALK_AT };
-        (corner + dir * x, x < block)
+        (corner - dir * back + dir * x, x < block)
     }
 
     /// A stroller on the road's sidewalk, as wash.metal's `road_stroller_at` places it: where it
@@ -696,7 +697,7 @@ mod tests {
                         continue;
                     }
                     let out = if side == 0.0 { -1.0 } else { 1.0 };
-                    let x = out * (0.96 + (hash2(key.0 + 7.0, key.1 + 7.0) - 0.3) * WALK_W);
+                    let x = out * (0.96 + (hash2(key.0 + 7.0, key.1 + 7.0) - 0.22) * runic_constant("WALKER_SPREAD"));
                     if let Some(dl) = lane_of(w) {
                         assert!(!cross_car_hits(x, dl, sig) && !cross_bike_hits(x, dl, sig, cross_go), "walker {key:?} hit at {t} ({sig} into the cycle)");
                         if sig >= ROAD_GREEN {
@@ -752,7 +753,7 @@ mod tests {
     /// Every place across a walker on the road's sidewalks takes, on either side.
     fn walker_xs() -> Vec<f32> {
         (0..=20).flat_map(|i| {
-            let x = 0.96 + (i as f32 / 20.0 - 0.3) * WALK_W;
+            let x = 0.96 + (i as f32 / 20.0 - 0.22) * runic_constant("WALKER_SPREAD");
             [x, -x]
         }).collect()
     }
@@ -822,7 +823,7 @@ mod tests {
                     let out = if side == 0.0 { -1.0 } else { 1.0 };
                     for (dir, key) in sidewalk(side).0 {
                         let (w, walking) = road_walker_at(dir, key, t);
-                        let x = out * (0.96 + (hash2(key.0 + 7.0, key.1 + 7.0) - 0.3) * WALK_W);
+                        let x = out * (0.96 + (hash2(key.0 + 7.0, key.1 + 7.0) - 0.22) * runic_constant("WALKER_SPREAD"));
                         if walking && in_street(w) && near(x) {
                             return false;
                         }
@@ -875,6 +876,38 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn people_waiting_at_a_corner_stand_apart_not_on_top_of_each_other() {
+        // Cyrus, 2026-11-18: "people waiting to cross the street should be more spread-out in a
+        // group. I don't want too many stacked directly on top of eachother". The view repeats
+        // every WRAP_BLOCKS blocks, so two people that far apart stand on one spot on screen. On
+        // top of another: within a person's width across and a body's depth along.
+        let span = WRAP_BLOCKS * CROSS_EVERY * GRID_Z;
+        let (mut standing, mut stacked) = (0usize, 0usize);
+        for side in [0.0f32, 1.0] {
+            let (walkers, _) = sidewalk(side);
+            let mut t = 0.0f32;
+            while t < 240.0 {
+                let at: Vec<(f32, f32)> = walkers.iter().filter_map(|&(dir, key)| {
+                    let (w, walking) = road_walker_at(dir, key, t);
+                    let x = 0.96 + (hash2(key.0 + 7.0, key.1 + 7.0) - 0.22) * runic_constant("WALKER_SPREAD");
+                    (!walking).then_some((w.rem_euclid(span), x))
+                }).collect();
+                for (i, a) in at.iter().enumerate() {
+                    standing += 1;
+                    if at.iter().enumerate().any(|(k, b)| k != i && (a.0 - b.0).abs() < 0.12 && (a.1 - b.1).abs() < 0.05) {
+                        stacked += 1;
+                    }
+                }
+                t += 0.25;
+            }
+        }
+        let share = stacked as f32 / standing.max(1) as f32;
+        eprintln!("{stacked} of {standing} standing people on top of another ({share})");
+        // Before, everyone waited on the curb's line: 53 per cent of them on top of another.
+        assert!(share < 0.1, "{stacked} of {standing} standing people on top of another");
     }
 
     #[test]
@@ -941,6 +974,8 @@ mod tests {
             "    float late = min(ROAD_GREEN - AMBER, ROAD_GREEN - cross / v);",
             "    float c = floor(hash2(key + 3.0) * laps) * SIG_CYCLE + (jay ? WALK_GO + JAY_SPREAD * hash2(key + 4.0) : late * hash2(key + 4.0));",
             "    bool jay = hash2(key + 8.0) < JAYWALK;",
+            "    float back = jay ? WAIT_DEPTH * hash2(key + 9.0) : 0.0;",
+            "    return float2(corner - dir * back + dir * x, x < block ? 1.0 : 0.0);",
             "    float x = min(v * (t - c - k * period), block);",
             "    float j = floor(hash2(key + 5.0) * 8.0) + dir * k;",
             "    float v = mix(0.36, 0.58, hash2(key + 2.0));",
@@ -983,11 +1018,11 @@ mod tests {
         assert!(wash.contains("constant int ROAD_CELLS = 1;") && wash.contains("constant float GRID_X = 0.9;"));
         let (inset, width) = (runic_constant("SIDEWALK_IN"), runic_constant("SIDEWALK_W"));
         let (lo, hi) = (road_e - inset, road_e - inset + width);
-        // The road's walkers: edge_x plus (h - 0.3) * WALK_W, h from 0 to 1; its strollers: edge_x
+        // The road's walkers: edge_x plus (h - 0.22) * WALKER_SPREAD, h from 0 to 1; its strollers: edge_x
         // plus (0.1 + 0.6 h) * WALK_W.
         let edge_x = road_e + 0.06;
         for h in [0.0f32, 0.5, 1.0] {
-            for x in [edge_x + (h - 0.3) * WALK_W, edge_x + (0.1 + 0.6 * h) * WALK_W] {
+            for x in [edge_x + (h - 0.22) * runic_constant("WALKER_SPREAD"), edge_x + (0.1 + 0.6 * h) * WALK_W] {
                 assert!(x > lo && x < hi, "a walker at {x} off the road's sidewalk {lo}..{hi}");
             }
         }

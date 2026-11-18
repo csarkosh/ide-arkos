@@ -312,3 +312,10 @@ the intersection and no road cyclist or walker is where they cross, 1.2 s ahead 
 green. The six-minute check now holds every walker and road cyclist against the cross streets'
 cyclists as well as their cars, and nobody is hit. While the last car goes by a few jaywalkers
 stand at each corner, up to 29 of a sidewalk's 88 people at once.
+
+Cyrus, 2026-11-18: "people waiting to cross the street should be more spread-out in a group. I
+don't want too many stacked directly on top of eachother." Every walker used to wait on the curb's
+line, half of them on top of another (within a person's width across and a body's depth along, the
+view's repeat every four blocks counted). Now a jaywalker waits anywhere up to 1.0 back from the
+curb (WAIT_DEPTH; one who keeps the law waits at the curb, its crossing timed from there) and the
+walkers use nearly the sidewalk's whole width (WALKER_SPREAD 0.3, was 0.24): 6 per cent overlap.
