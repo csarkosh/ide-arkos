@@ -1373,7 +1373,7 @@ fn prepare_demo(fixture: &Path, demo: &Path, story: &Story, arkos_exe: &Path) ->
     }
     // Claude Code reads .claude/settings.json in the folder it runs in: every pane's folder
     // gets one (the worktree's is its own; a worktree's checkout does not carry the main one's).
-    let settings = claude_settings(arkos_exe, CLAUDE_THEME);
+    let settings = claude_settings(arkos_exe, CLAUDE_THEME, &story.scene.model);
     let mut dirs: Vec<PathBuf> = story.panes.iter().filter(|p| p.is_terminal()).map(|p| p.dir(demo)).collect();
     dirs.push(demo.to_path_buf());
     dirs.sort();
@@ -1416,11 +1416,13 @@ fn first_heading(readme: &Path) -> Option<String> {
 
 /// The hooks `arkos hooks install` writes (hook_cli.rs), for the dev binary, the permissions a
 /// session needs to work without asking, and Claude Code's theme for the scene.
-fn claude_settings(arkos_exe: &Path, claude_theme: &str) -> serde_json::Value {
+fn claude_settings(arkos_exe: &Path, claude_theme: &str, model: &str) -> serde_json::Value {
     let exe = arkos_exe.display().to_string().replace('\'', "'\\''");
     let cmd = |tail: &str| serde_json::json!({ "type": "command", "command": format!("'{exe}' notify {tail}"), "timeout": 5 });
     serde_json::json!({
         "theme": claude_theme,
+        // The scene's model, so a shoot never runs on whatever the account's default is.
+        "model": model,
         "permissions": {
             // Every shell command: a pattern list still stops at one with a variable in it, and
             // a session stopped at a permission question is not working. The demo is a copy.
@@ -1736,6 +1738,12 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn the_settings_a_shoot_writes_name_the_scenes_model() {
+        let settings = claude_settings(Path::new("/x/arkos"), "custom:arkos", "haiku");
+        assert_eq!(settings["model"], "haiku");
+    }
 
     #[test]
     fn backdating_a_folder_dates_every_file_in_it_and_leaves_git_s_link_alone() {

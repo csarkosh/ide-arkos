@@ -899,6 +899,18 @@ Things only a person at the screen can check, in order of value:
 - a `<details>` block opens and closes and is still open after a relaunch; `<details open>` starts
   open until you close it
 - a 5 MB markdown file with a large table stays responsive (the milestone 7 gate)
+- classic scrollback: `claude` in a tab, with `"tui": "fullscreen"` in its settings, draws down the
+  pane (no alternate screen); after a long answer a two-finger scroll goes up through all of it,
+  following the finger; `/compact`, then scroll up: everything from before the compaction is
+  there, in the same pane; `/clear` likewise
+- classic scrollback, resizes: with a conversation longer than the pane, drag a divider narrower
+  and wider, split a pane below and close it, hide and show the sidebar: the input box is whole
+  after each, and scrolling up shows nothing missing; only a widening repeats, at most the last
+  screenful
+- classic scrollback, a relaunch: with a pane resized a few times, "Update now" (or `kill -9` the
+  window and open the folder again): the history above reads as it did, and `window.log` says
+  "replay parsed at WxH, shown at WxH" with the size the session had; a shell's long line still
+  wraps, not cuts, when its pane narrows
 - `claude` in a tab with `/tui fullscreen`, a long answer: the wheel and the trackpad scroll the
   conversation; a question with options: clicking one picks it; Option+Delete at the prompt
   deletes the word before the cursor

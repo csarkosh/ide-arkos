@@ -4,6 +4,7 @@
 //! bearing the same id, and pushes `ServerMessage::Event`s on its own schedule.
 pub mod codec;
 pub mod release_key;
+pub mod replay;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

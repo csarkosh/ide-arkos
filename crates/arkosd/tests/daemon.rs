@@ -318,7 +318,9 @@ fn replay_truncated_to_capacity() {
     let mut c2 = d.connect();
     match c2.request(Request::Attach { session: id }) {
         Response::Attached { replay, .. } => {
-            assert!(replay.len() <= 64);
+            // The replay ends with the attach's own size mark; the output kept is the ring's.
+            let kept: usize = protocol::replay::pieces(&replay).pieces.iter().map(|p| if let protocol::replay::Piece::Output(b) = p { b.len() } else { 0 }).sum();
+            assert!(kept <= 64, "{kept} bytes of output kept");
             let text = String::from_utf8_lossy(&replay);
             assert!(text.contains("NEWMARK-7"), "newest output missing: {text:?}");
             assert!(!text.contains("OLDMARK-2"), "oldest output should have been dropped: {text:?}");

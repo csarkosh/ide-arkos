@@ -174,6 +174,11 @@ pub fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
+/// Whether an agent's record names a program that redraws its own screen at a resize.
+pub fn agent_redraws(agent: Option<&protocol::AgentRecord>) -> bool {
+    agent.is_some_and(|a| a.kind == "claude")
+}
+
 /// Groups a batch by session, keeping each session's events in arrival order and sessions in
 /// order of first appearance.
 pub fn group_by_session(events: &[Event]) -> Vec<(SessionId, Vec<Event>)> {
@@ -835,8 +840,16 @@ impl SessionManager {
                 self.states.insert(session, ClaudeState::Waiting);
             }
         }
+        let redraws = self.agent_redraws(session);
+        terminal.update(cx, |t, _| t.core.set_agent_redraws(redraws));
         self.terminals.insert(session, terminal);
         self.sync_label(session, cx);
+    }
+
+    /// True when the session's agent is one that redraws its own screen at a resize and so has
+    /// its screen left to it (`TerminalCore::program_redraws`): Claude Code, by its hooks' record.
+    pub fn agent_redraws(&self, session: SessionId) -> bool {
+        agent_redraws(self.agents.get(&session))
     }
 
     /// Records `label` for `session`; true when it differs from the one recorded, so the tab bar
@@ -937,6 +950,15 @@ impl SessionManager {
     /// must be told about these itself.
     pub fn route_events(&mut self, events: &[Event], cx: &mut App) -> bool {
         let mut changed = self.note_events(events);
+        for ev in events {
+            if let Event::Agent { session, .. } = ev {
+                // A terminal mid-restore hears it when it is installed (`finish_restore`).
+                let on = self.agent_redraws(*session);
+                if let Some(t) = self.terminals.get(session) {
+                    t.update(cx, |t, _| t.core.set_agent_redraws(on));
+                }
+            }
+        }
         let live: Vec<Event> = events.iter().filter(|ev| !self.stash_if_restoring(ev)).cloned().collect();
         for (session, batch) in group_by_session(&live) {
             if let Some(t) = self.terminals.get(&session) {

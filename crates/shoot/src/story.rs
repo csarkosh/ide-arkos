@@ -280,6 +280,19 @@ pub struct Scene {
     /// Read by scripts/shoot.sh when it composes the hero.
     #[allow(dead_code)]
     pub caption: String,
+    /// The model the scene's Claude Code sessions run on, written into each folder's
+    /// `.claude/settings.json`: a name or an alias `claude --model` takes. A scene that names
+    /// none gets `DEFAULT_MODEL`, never the account's own default, which may be its most
+    /// expensive one (Cyrus, 2026-11-17: a check run on it spends the week's allowance).
+    #[serde(default = "default_model")]
+    pub model: String,
+}
+
+/// The model of a scene that names none.
+pub const DEFAULT_MODEL: &str = "sonnet";
+
+fn default_model() -> String {
+    DEFAULT_MODEL.into()
 }
 
 /// The project the window opens: a copy of `fixture`, each of `repos` (folders of the copy;
@@ -979,6 +992,13 @@ mod tests {
         for name in MOVING_EFFECTS.iter().chain(STILL_EFFECTS) {
             assert!(names.iter().any(|n| n == name), "{name} is listed but is not a built-in effect");
         }
+    }
+
+    #[test]
+    fn a_scene_names_its_model_and_one_that_names_none_gets_sonnet() {
+        let scene = |extra: &str| toml::from_str::<Scene>(&format!("name = \"s\"\ncaption = \"c\"\n{extra}")).unwrap();
+        assert_eq!(scene("").model, "sonnet");
+        assert_eq!(scene("model = \"haiku\"").model, "haiku");
     }
 
     #[test]

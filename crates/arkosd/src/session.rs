@@ -358,6 +358,24 @@ fn arkos_bin_env(exe: Option<&Path>, inherited_path: Option<&str>) -> Vec<(Strin
     vec![("ARKOS_BIN".to_string(), format!("{folder}/arkos")), ("PATH".to_string(), path)]
 }
 
+/// What every spawned shell is told, before the session's own entries (which may overrule it).
+///
+/// `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` makes a Claude Code started in the shell draw with
+/// its classic renderer whatever its `tui` setting says. Its fullscreen renderer draws on the
+/// alternate screen, which has no history: the only scrollback is the one Claude Code keeps in
+/// memory, and after a resume that stops at the last compaction. The classic renderer writes the
+/// conversation down the main screen, so all of it lands in the pane's own history and in the
+/// replay, and scrolling up goes through the whole session, across compactions, restarts of
+/// Claude Code and updates of Arkos.
+fn shell_env(id: SessionId) -> Vec<(String, String)> {
+    vec![
+        ("TERM".to_string(), "xterm-256color".to_string()),
+        ("COLORTERM".to_string(), "truecolor".to_string()),
+        ("ARKOS_SESSION_ID".to_string(), id.0.to_string()),
+        ("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".to_string(), "1".to_string()),
+    ]
+}
+
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
@@ -376,11 +394,7 @@ impl Session {
         let (master, slave) = Pty::open(spec.rows, spec.cols).context("openpty")?;
         let shell = spec.shell.clone().or_else(|| std::env::var("SHELL").ok()).unwrap_or_else(|| "/bin/zsh".to_string());
         let args: Vec<&str> = if shell.ends_with("zsh") || shell.ends_with("bash") { vec!["-l"] } else { vec![] };
-        let mut env = vec![
-            ("TERM".to_string(), "xterm-256color".to_string()),
-            ("COLORTERM".to_string(), "truecolor".to_string()),
-            ("ARKOS_SESSION_ID".to_string(), spec.id.0.to_string()),
-        ];
+        let mut env = shell_env(spec.id);
         env.extend(arkos_bin_env(std::env::current_exe().ok().as_deref(), std::env::var("PATH").ok().as_deref()));
         env.extend(spec.env.iter().cloned());
         let pid = pty::spawn(slave, &shell, &args, &spec.cwd, &env).context("spawn shell")?;
@@ -612,9 +626,20 @@ impl Session {
         self.input.lock().unwrap().send(bytes.to_vec()).map_err(|_| anyhow::anyhow!("session input closed"))
     }
 
+    /// Resizes the PTY and writes the change into the replay as a size mark
+    /// (`protocol::replay`), so a window that parses the replay later resizes its grid where
+    /// this one did. The mark goes to the replay alone: a window already attached resized its
+    /// own grid before it asked. `state` is locked before `size`, as in `snapshot`.
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
         let mut size = self.size.lock().unwrap();
         self.master.resize(rows, cols).context("resize pty")?;
+        if *size != (rows, cols) {
+            st.replay.push(&protocol::replay::resize_mark(*size, (rows, cols)));
+            if st.dirty_since.is_none() {
+                st.dirty_since = Some(Instant::now());
+            }
+        }
         *size = (rows, cols);
         Ok(())
     }
@@ -677,7 +702,11 @@ impl Session {
     /// the replay and the live stream, and no live output reaches the client before the response.
     pub fn subscribe(&self, client: ClientId, tx: ClientSink, id: u32) {
         let mut st = self.state.lock().unwrap();
-        let response = Response::Attached { replay: st.replay.snapshot(), alive: st.alive };
+        // Closed with the size the session has now, which a replay that never resized cannot
+        // say otherwise. Read under `state`, which a resize holds while it writes its mark.
+        let mut replay = st.replay.snapshot();
+        replay.extend(protocol::replay::now_mark(self.size()));
+        let response = Response::Attached { replay, alive: st.alive };
         if tx.send(ServerMessage::Response { id, response }) {
             st.subscribers.insert(client, tx);
             // A window shows it again: a closed tab's grace no longer applies.
@@ -1059,6 +1088,66 @@ mod tests {
             assert!(Instant::now() < deadline, "no {want:?} in {:?}", String::from_utf8_lossy(&s.state.lock().unwrap().replay.snapshot()));
             std::thread::sleep(Duration::from_millis(20));
         }
+        s.kill().unwrap();
+    }
+
+    #[test]
+    fn every_shell_is_told_to_keep_claude_code_on_the_main_screen() {
+        let env = shell_env(SessionId(7));
+        assert!(env.contains(&("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".to_string(), "1".to_string())));
+        assert!(env.contains(&("ARKOS_SESSION_ID".to_string(), "7".to_string())));
+    }
+
+    fn quiet_session(id: u64) -> Arc<Session> {
+        let spec = SpawnSpec {
+            id: SessionId(id),
+            cwd: std::env::temp_dir(),
+            shell: Some("/bin/cat".into()),
+            env: vec![],
+            nice: 0,
+            rows: 24,
+            cols: 80,
+            replay_capacity: 8192,
+            backpressure: Backpressure::default(),
+            seed: Vec::new(),
+            recovered: false,
+            agent: None,
+        };
+        Session::spawn(spec).unwrap()
+    }
+
+    #[test]
+    fn a_resize_is_written_into_the_replay_as_a_size_mark_and_the_same_size_again_is_not() {
+        use protocol::replay::{pieces, Piece};
+        let s = quiet_session(31);
+        s.resize(24, 80).unwrap();
+        assert!(s.state.lock().unwrap().replay.snapshot().is_empty(), "the size it already has");
+        s.resize(14, 60).unwrap();
+        s.resize(14, 60).unwrap();
+        s.resize(30, 60).unwrap();
+        let replay = s.state.lock().unwrap().replay.snapshot();
+        let cut = pieces(&replay);
+        assert_eq!(cut.start, Some((24, 80)), "the size the first bytes were written for");
+        assert_eq!(cut.pieces, vec![Piece::Resize((14, 60)), Piece::Resize((30, 60))]);
+        assert!(s.state.lock().unwrap().dirty_since.is_some(), "the replay file is due the mark");
+        s.kill().unwrap();
+    }
+
+    #[test]
+    fn a_window_that_attaches_gets_the_replay_closed_with_the_size_the_session_has() {
+        use protocol::replay::{pieces, Piece};
+        let s = quiet_session(32);
+        let (a, _b) = UnixStream::pair().unwrap();
+        let sink = ClientSink::new(1, a, 1 << 20);
+        s.subscribe(1, sink.clone(), 9);
+        // The writer thread is absent here, so take what it would have written.
+        let first = sink.take().and_then(|items| items.into_iter().next()).expect("the attach's answer").into_message();
+        let ServerMessage::Response { id: 9, response: Response::Attached { replay, .. } } = first else { panic!("not the attach's answer: {first:?}") };
+        let cut = pieces(&replay);
+        assert_eq!(cut.start, Some((24, 80)));
+        assert_eq!(cut.pieces.last(), Some(&Piece::Resize((24, 80))));
+        // The mark is the window's alone: the replay the session keeps has none.
+        assert!(pieces(&s.state.lock().unwrap().replay.snapshot()).start.is_none());
         s.kill().unwrap();
     }
 

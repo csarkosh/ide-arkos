@@ -1017,6 +1017,21 @@ idle_after_secs = 30
 the login item is reinstalled ("Start at login" in the palette); a daemon already running keeps
 the interval it started with. `auto` and `idle_after_secs` apply at once.
 
+Scrolling back through a Claude Code session: Arkos starts every shell with
+`CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`, so a `claude` started in a tab draws with its classic
+renderer whatever its `tui` setting says. The conversation is written down the pane, so scrolling
+up (the wheel, the trackpad, a drag past the pane's top edge, Cmd+F) goes back through all of it in
+place: through a compaction, a restart of Claude Code and an update of Arkos, as far as the pane's
+history reaches (`[terminal] scrollback`, 20,000 lines). Claude Code's fullscreen renderer keeps
+the conversation in its own memory instead, and after a resume that stops at the last compaction.
+When a pane changes size Claude Code prints its screen again; Arkos leaves that screen to it and
+sends the rows that no longer fit to the history, so a split or a dragged divider loses nothing.
+When it compacts, and at `/clear`, Claude Code erases its screen; Arkos puts what was on it in the
+history first, so the rows just before a compaction are there to scroll back to.
+A pane made wider can show its last screenful twice in the history, once as it was wrapped and
+once as Claude Code printed it again. To run one session fullscreen anyway, start it with
+`env -u CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN claude`.
+
 Claude Code tips: fast trackpad scrolling in a fullscreen `claude` jumps unless
 `wheelScrollAccelerationEnabled` is `false` in `~/.claude/settings.json`; the doctor (the
 first-aid kit at the right of the title bar) sets it for you, there and in every other Claude config

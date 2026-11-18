@@ -115,6 +115,58 @@ pub struct TerminalCore {
     ledger: Option<Ledger>,
     /// The fraction of a line a drag held past the edge owes the program, reset at each press.
     drag_carry: WheelCarry,
+    /// The agent in this terminal said it runs here (see `set_agent_redraws`).
+    agent_redraws: bool,
+    /// How many of the history's newest rows the program on the main screen printed at the
+    /// width the grid has now: rows that scrolled off since the last change of width, and rows a
+    /// shorter pane sent up. A lower bound (at its limit the history's size says nothing of what
+    /// arrived), which is the safe side: see `resize_under_a_redrawing_program`.
+    fresh_rows: usize,
+    /// Resizes the redrawing program has not yet answered with a repaint, so the next erase of
+    /// its screen is the answer and not something to keep (`before_the_program_erases_its_screen`).
+    repaints_owed: usize,
+    /// Output applied since the last resize or the last answer to one.
+    since_resize: usize,
+    /// How much of `SCREEN_ERASE` ends the output applied so far.
+    erase_matched: usize,
+}
+
+/// Cursor home, then erase line: how Claude Code's classic renderer begins erasing its whole
+/// screen, a row at a time, before it prints a frame from the top.
+const SCREEN_ERASE: &[u8] = b"\x1b[H\x1b[2K";
+
+/// A repaint this much output after a resize is not the resize's answer: the program answers at
+/// once, or (its terminal's size unchanged, or two resizes heard as one) not at all.
+const RESIZE_ANSWER_BYTES: usize = 16 * 1024;
+
+/// `bytes` in slices, each after the first beginning with `mark`.
+fn cut_before<'a>(bytes: &'a [u8], mark: &[u8]) -> Vec<&'a [u8]> {
+    let mut slices = Vec::new();
+    let mut from = 0;
+    while let Some(at) = bytes.get(from + 1..).and_then(|rest| rest.windows(mark.len()).position(|w| w == mark)).map(|p| p + from + 1) {
+        slices.push(&bytes[from..at]);
+        from = at;
+    }
+    if from < bytes.len() {
+        slices.push(&bytes[from..]);
+    }
+    slices
+}
+
+/// How much of `SCREEN_ERASE` ends the output once `byte` follows output that ended with
+/// `matched` bytes of it.
+fn erase_match_after(matched: usize, byte: u8) -> usize {
+    let mut k = matched;
+    loop {
+        if SCREEN_ERASE[k] == byte {
+            return k + 1;
+        }
+        if k == 0 {
+            return 0;
+        }
+        // The longest shorter start of the sequence that the bytes seen so far also end with.
+        k = (0..k).rev().find(|&n| SCREEN_ERASE[..n] == SCREEN_ERASE[k - n..k]).unwrap_or(0);
+    }
 }
 
 /// The longest `CSI ?` sequence the theme scan waits for across chunks; anything longer is not
@@ -184,7 +236,7 @@ impl TerminalCore {
         // the key encoding it asked for; see `key_mode`.
         let config = Config { scrolling_history: scrollback, kitty_keyboard: true, ..Config::default() };
         let term = Term::new(config, &TermSize::new(cols, rows), listener.clone());
-        Self { term, parser: Processor::new(), listener, palette: Arc::new(NAVY), scroll: ScrollAnimator::new(), theme_updates: false, csi_tail: Vec::new(), ledger: None, drag_carry: WheelCarry::default() }
+        Self { term, parser: Processor::new(), listener, palette: Arc::new(NAVY), scroll: ScrollAnimator::new(), theme_updates: false, csi_tail: Vec::new(), ledger: None, drag_carry: WheelCarry::default(), agent_redraws: false, fresh_rows: 0, repaints_owed: 0, since_resize: 0, erase_matched: 0 }
     }
 
     pub fn apply_output(&mut self, bytes: &[u8]) -> Wakeup {
@@ -194,8 +246,10 @@ impl TerminalCore {
         if let Some(on) = asks.updates {
             self.theme_updates = on;
         }
-        self.parser.advance(&mut self.term, bytes);
+        let history = self.term.grid().history_size();
+        self.advance(bytes);
         self.flush_sync_if_due();
+        self.fresh_rows = (self.fresh_rows + self.term.grid().history_size().saturating_sub(history)).min(self.term.grid().history_size());
         // Alacritty raises display_offset as lines arrive while scrolled up; keep the animator
         // in step so the next frame does not pull the view down.
         let after = self.term.grid().display_offset();
@@ -296,11 +350,232 @@ impl TerminalCore {
         self.parser.sync_timeout().sync_timeout().is_some()
     }
 
+    /// Feeds output to the terminal. Under a program that redraws its own screen, the output is
+    /// watched for the start of an erase of the whole screen, and the screen is kept first
+    /// (`before_the_program_erases_its_screen`): everything up to the erase's last byte is
+    /// parsed, then the rows are moved, then the erase runs on what is left.
+    fn advance(&mut self, bytes: &[u8]) {
+        if !self.program_redraws() {
+            self.erase_matched = 0;
+            self.parser.advance(&mut self.term, bytes);
+            return;
+        }
+        let mut fed = 0;
+        for (i, &byte) in bytes.iter().enumerate() {
+            self.erase_matched = erase_match_after(self.erase_matched, byte);
+            if self.erase_matched == SCREEN_ERASE.len() {
+                self.erase_matched = 0;
+                self.parser.advance(&mut self.term, &bytes[fed..i]);
+                self.since_resize = self.since_resize.saturating_add(i - fed);
+                fed = i;
+                self.before_the_program_erases_its_screen();
+            }
+        }
+        self.parser.advance(&mut self.term, &bytes[fed..]);
+        self.since_resize = self.since_resize.saturating_add(bytes.len() - fed);
+    }
+
+    /// Claude Code's classic renderer erases its whole screen and prints a frame from the top
+    /// at a resize, and also when it compacts and at `/clear`. At a resize it prints the same
+    /// conversation again, so the erased rows are not kept (`repaints_owed`). Unasked, the new
+    /// frame no longer holds what was on screen, and the erase would be the end of it: the last
+    /// screenful before every compaction, gone from the history. So those rows go to the history
+    /// first, as if the program had scrolled them off. A repaint for a reason unknown here (one
+    /// that prints the same rows again) leaves that screenful in the history twice, never lost.
+    fn before_the_program_erases_its_screen(&mut self) {
+        if self.repaints_owed > 0 && self.since_resize <= RESIZE_ANSWER_BYTES {
+            self.repaints_owed -= 1;
+            self.since_resize = 0;
+            return;
+        }
+        self.repaints_owed = 0;
+        let Some(last) = self.last_written_row() else { return };
+        let rows = self.term.screen_lines();
+        self.term.grid_mut().scroll_up(&(Line(0)..Line(rows as i32)), last + 1);
+        // The grid moved under alacritty's feet, so its selection bookkeeping did not run.
+        self.term.selection = None;
+        self.fresh_rows += last + 1;
+    }
+
+    /// The last screen row with anything on it.
+    fn last_written_row(&self) -> Option<usize> {
+        use alacritty_terminal::grid::GridCell;
+        let grid = self.term.grid();
+        (0..grid.screen_lines()).rev().find(|&l| (0..grid.columns()).any(|c| !grid[Line(l as i32)][Column(c)].is_empty()))
+    }
+
+    /// Resizes the grid. A shell's screen is reflowed with its history, as in any terminal. A
+    /// program that redraws its own screen (`program_redraws`) gets its screen left to it.
     pub fn resize(&mut self, cols: usize, rows: usize) {
         // The program redraws for the new size, which no shift describes.
         self.ledger = None;
-        self.term.resize(TermSize::new(cols.max(2), rows.max(1)));
+        let (cols, rows) = (cols.max(2), rows.max(1));
+        if (cols, rows) == (self.columns(), self.screen_lines()) {
+            return;
+        }
+        if self.program_redraws() {
+            self.repaints_owed += 1;
+            self.since_resize = 0;
+            self.resize_under_a_redrawing_program(cols, rows);
+        } else {
+            self.term.resize(TermSize::new(cols, rows));
+            self.fresh_rows = 0;
+        }
         self.scroll.clamp_max(self.history_size() as f32);
+    }
+
+    /// True while the program on the main screen redraws its own screen at a resize and reckons
+    /// on a terminal that left that screen alone: Claude Code's classic renderer, known by the
+    /// theme pushes it asks for (`CSI ? 2031 h`, on until it leaves) or by its own hooks
+    /// (`set_agent_redraws`). On the alternate screen there is no history to keep whole.
+    pub fn program_redraws(&self) -> bool {
+        !self.term.mode().contains(TermMode::ALT_SCREEN) && (self.theme_updates || self.agent_redraws)
+    }
+
+    /// The agent's own word (its SessionStart and SessionEnd hooks) that it runs in this
+    /// terminal: a replay that no longer holds the start of its output cannot say so.
+    pub fn set_agent_redraws(&mut self, on: bool) {
+        self.agent_redraws = on;
+    }
+
+    /// A resize under a program that erases every screen row and prints its screen again (see
+    /// `tests::Classic` for what Claude Code's classic renderer does, measured). The history must
+    /// stay one whole conversation, so the grid changes the way the program reckons it does:
+    ///
+    /// - Shorter: the rows that no longer fit go to the history, counted from the end of what
+    ///   the program printed, not from the cursor (alacritty keeps the cursor's row and drops the
+    ///   rows under it; the program prints only the last rows again, so the rows between were
+    ///   lost).
+    /// - Taller: rows come back from the history, which the program then prints over, but only
+    ///   rows it printed at this width (`fresh_rows`). An older row may hold more text than the
+    ///   row the program prints in its place, and that text would be gone; left in the history
+    ///   it is at worst there twice.
+    /// - Narrower or wider: the screen's rows stay row for row, cut or padded, and only the
+    ///   history is reflowed. The program prints the same text again wrapped for the new width;
+    ///   reflowing the screen first would push part of it into the history, to be printed twice.
+    fn resize_under_a_redrawing_program(&mut self, cols: usize, rows: usize) {
+        let (old_cols, old_rows) = (self.columns(), self.screen_lines());
+        if rows < old_rows {
+            let push = self.used_rows().saturating_sub(rows);
+            if push > 0 {
+                let grid = self.term.grid_mut();
+                grid.scroll_up(&(Line(0)..Line(old_rows as i32)), push);
+                grid.cursor.point.line = Line((grid.cursor.point.line.0 - push as i32).max(0));
+                // The grid moved under alacritty's feet, so its selection bookkeeping did not run.
+                self.term.selection = None;
+                self.fresh_rows += push;
+            }
+            self.term.resize(TermSize::new(old_cols, rows));
+        } else if rows > old_rows {
+            let added = rows - old_rows;
+            // alacritty takes back as many rows as it adds, while the history has them.
+            let taken = added.min(self.history_size());
+            let wanted = taken.min(self.fresh_rows);
+            self.term.resize(TermSize::new(old_cols, rows));
+            let back = taken - wanted;
+            if back > 0 {
+                let grid = self.term.grid_mut();
+                grid.scroll_up(&(Line(0)..Line(rows as i32)), back);
+                grid.cursor.point.line = Line((grid.cursor.point.line.0 - back as i32).max(0));
+                self.term.selection = None;
+            }
+            self.fresh_rows -= wanted;
+        }
+        if cols != old_cols {
+            self.resize_columns_keeping_the_screen(cols);
+            self.fresh_rows = 0;
+        }
+    }
+
+    /// The screen rows the program has printed through: one past the last row with anything on
+    /// it, for the row its frame's last newline left the cursor on before it moved up to its
+    /// prompt, and never less than through the cursor's row.
+    fn used_rows(&self) -> usize {
+        let grid = self.term.grid();
+        let through_cursor = grid.cursor.point.line.0.max(0) as usize + 1;
+        self.last_written_row().map_or(0, |l| l + 2).max(through_cursor).min(grid.screen_lines())
+    }
+
+    /// Changes the width, reflowing the history and keeping each screen row a row: the rows are
+    /// taken off the screen while alacritty reflows (a blank screen has nothing to wrap, so the
+    /// history's rows wrap or join above it and the screen stays where it is), then put back cut
+    /// or padded to the new width, with the cursor on the row it was on.
+    fn resize_columns_keeping_the_screen(&mut self, cols: usize) {
+        use alacritty_terminal::term::cell::Cell;
+        let (old_cols, rows) = (self.columns(), self.screen_lines());
+        let grid = self.term.grid_mut();
+        let cursor = grid.cursor.point;
+        let saved: Vec<Vec<Cell>> = (0..rows)
+            .map(|l| {
+                let line = Line(l as i32);
+                let row = (0..old_cols).map(|c| grid[line][Column(c)].clone()).collect();
+                for c in 0..old_cols {
+                    grid[line][Column(c)] = Cell::default();
+                }
+                row
+            })
+            .collect();
+        // The history's last row no longer runs on into the screen's first.
+        if grid.history_size() > 0 {
+            grid[Line(-1)][Column(old_cols - 1)].flags.remove(Flags::WRAPLINE);
+        }
+        // A cursor past the new width would have its (blank) row wrapped like text.
+        grid.cursor.point.column = Column(cursor.column.0.min(cols - 1));
+        grid.cursor.input_needs_wrap = false;
+        self.term.resize(TermSize::new(cols, rows));
+        let grid = self.term.grid_mut();
+        let kept = old_cols.min(cols);
+        for (l, row) in saved.into_iter().enumerate() {
+            let line = Line(l as i32);
+            for (c, mut cell) in row.into_iter().take(kept).enumerate() {
+                cell.flags.remove(Flags::WRAPLINE);
+                grid[line][Column(c)] = cell;
+            }
+            // A wide character cut from its second half, or a spacer from its character.
+            if kept < old_cols {
+                let last = &mut grid[line][Column(kept - 1)];
+                if last.flags.intersects(Flags::WIDE_CHAR | Flags::LEADING_WIDE_CHAR_SPACER) {
+                    *last = Cell::default();
+                }
+            }
+        }
+        grid.cursor.point.line = cursor.line;
+        grid.cursor.point.column = Column(cursor.column.0.min(cols - 1));
+    }
+
+    /// Parses a session's replay at the sizes it was written for (`protocol::replay`): the grid
+    /// starts at the size the first bytes were written for and is resized at each mark, as the
+    /// window open at the time resized its own. It ends at the size the session has; the caller
+    /// resizes it to its pane. A replay with no marks is parsed at the size the grid has.
+    pub fn apply_replay(&mut self, replay: &[u8]) -> Wakeup {
+        use protocol::replay::Piece;
+        let cut = protocol::replay::pieces(replay);
+        if let Some((rows, cols)) = cut.start {
+            // Nothing is on the grid yet, so this only sets its size.
+            self.term.resize(TermSize::new((cols as usize).max(2), (rows as usize).max(1)));
+        }
+        let mut out = Wakeup::default();
+        for piece in cut.pieces {
+            match piece {
+                // A chunk takes the last word on theme pushes for the whole of itself, which is
+                // right for a read of the PTY and wrong for hours of output at once: the output
+                // is cut before each such word, so the program is known as one that redraws from
+                // where it said so until where it left.
+                Piece::Output(bytes) => {
+                    for slice in cut_before(bytes, b"\x1b[?2031") {
+                        let w = self.apply_output(slice);
+                        out.repaint |= w.repaint;
+                        if w.title.is_some() {
+                            out.title = w.title;
+                        }
+                        out.bell |= w.bell;
+                        out.pty_write.extend_from_slice(&w.pty_write);
+                    }
+                }
+                Piece::Resize((rows, cols)) => self.resize(cols as usize, rows as usize),
+            }
+        }
+        out
     }
 
     /// Drops the history and lands at the live bottom. The screen itself is kept.
@@ -1777,6 +2052,330 @@ mod tests {
         t.resize(40, 10);
         assert_eq!(t.rows_for_paint().visible.len(), 10);
         assert_eq!(t.rows_for_paint().visible[0].len(), 40);
+    }
+
+    /// A stand-in for Claude Code's classic renderer, written from a pty capture of 2.1.327
+    /// (2026-11-17). It prints its conversation down the main screen, every row ending in a
+    /// newline, and rests the cursor on its prompt. It answers a resize at once by homing the
+    /// cursor, erasing every screen row and printing again: the rows it reckons are on screen
+    /// (its frame's last rows, as many as the new height shows), wrapped for the new width, and
+    /// never fewer than fill the screen when it has them. It reckons on a terminal that left
+    /// those rows alone and sent the rows that no longer fit to its history.
+    struct Classic {
+        paragraphs: Vec<String>,
+        cols: usize,
+        rows: usize,
+    }
+
+    impl Classic {
+        /// Texts of differing lengths and no spaces, so the rows of any wrapping join back
+        /// into them.
+        fn new(paragraphs: usize, cols: usize, rows: usize) -> Self {
+            let paragraphs = (0..paragraphs).map(|i| format!("<{i:02}{}>", "abcdefghij".repeat(1 + i % 9))).collect();
+            Self { paragraphs, cols, rows }
+        }
+
+        /// The frame at a width: every paragraph cut into rows, then the prompt box. Each row
+        /// comes with the paragraph it is from and where in it the row starts.
+        fn frame(&self, cols: usize) -> Vec<(usize, usize, String)> {
+            let mut rows = Vec::new();
+            for (p, text) in self.paragraphs.iter().enumerate() {
+                let chars: Vec<char> = text.chars().collect();
+                for (k, chunk) in chars.chunks(cols).enumerate() {
+                    rows.push((p, k * cols, chunk.iter().collect()));
+                }
+            }
+            let n = self.paragraphs.len();
+            rows.push((n, 0, "─".repeat(cols)));
+            rows.push((n + 1, 0, "❯".to_string()));
+            rows.push((n + 2, 0, "─".repeat(cols)));
+            rows
+        }
+
+        /// The rows, the cursor left a row under the last, then moved up onto the prompt.
+        fn print(rows: &[(usize, usize, String)]) -> String {
+            let mut s: String = rows.iter().map(|(_, _, text)| format!("{text}\r\n")).collect();
+            s.push_str("\x1b[2A\x1b[2C");
+            s
+        }
+
+        /// What it writes when it starts; it asks for theme pushes (`CSI ? 2031 h`) first.
+        fn start(&self) -> Vec<u8> {
+            format!("\x1b[?2031h{}", Self::print(&self.frame(self.cols))).into_bytes()
+        }
+
+        /// What it writes when told of a new size.
+        fn resized(&mut self, cols: usize, rows: usize) -> Vec<u8> {
+            let old = self.frame(self.cols);
+            let top = old.len().saturating_sub(rows - 1);
+            let new = self.frame(cols);
+            let (paragraph, offset, _) = &old[top];
+            let same_text = new.iter().rposition(|(p, o, _)| p == paragraph && o <= offset).expect("the row is in the frame");
+            let start = same_text.min(new.len().saturating_sub(rows - 1));
+            (self.cols, self.rows) = (cols, rows);
+            format!("\x1b[2D\x1b[2B\x1b[H{}\x1b[H{}", "\x1b[2K\x1b[1B".repeat(rows), Self::print(&new[start..])).into_bytes()
+        }
+
+        /// What it writes when it compacts, or at `/clear`: the same erase as at a resize, with
+        /// nothing asked of it, and then a frame that no longer holds the conversation.
+        fn compacted(&mut self) -> Vec<u8> {
+            self.paragraphs = vec!["<Conversation-compacted>".to_string()];
+            format!("\x1b[2D\x1b[2B\x1b[H{}\x1b[H{}", "\x1b[2K\x1b[1B".repeat(self.rows), Self::print(&self.frame(self.cols))).into_bytes()
+        }
+
+        /// The whole conversation and the prompt box as one string, as the rows of a terminal
+        /// that kept all of it once join up.
+        fn whole(&self) -> String {
+            self.frame(self.cols).into_iter().map(|(_, _, text)| text).collect()
+        }
+    }
+
+    /// Every row of the history and the screen, oldest first, without trailing blanks.
+    fn all_rows(t: &TerminalCore) -> Vec<String> {
+        use alacritty_terminal::index::Column;
+        let grid = t.term.grid();
+        (-(grid.history_size() as i32)..grid.screen_lines() as i32)
+            .map(|l| (0..grid.columns()).map(|c| grid[Line(l)][Column(c)].c).collect::<String>().trim_end().to_string())
+            .collect()
+    }
+
+    /// A terminal with classic Claude Code started in it, and the program.
+    fn classic(paragraphs: usize, cols: usize, rows: usize) -> (TerminalCore, Classic) {
+        let program = Classic::new(paragraphs, cols, rows);
+        let mut t = TerminalCore::new(cols, rows, 1000);
+        t.apply_output(&program.start());
+        (t, program)
+    }
+
+    /// The pane changes size: the terminal first, then the program's answer.
+    fn resize_with(t: &mut TerminalCore, program: &mut Classic, cols: usize, rows: usize) {
+        t.resize(cols, rows);
+        t.apply_output(&program.resized(cols, rows));
+    }
+
+    #[test]
+    fn the_stand_in_fills_a_terminal_as_classic_claude_code_does() {
+        let (t, program) = classic(40, 80, 24);
+        assert_eq!(all_rows(&t).concat(), program.whole());
+        let rows = all_rows(&t);
+        assert_eq!(rows[rows.len() - 3..], ["❯".to_string(), "─".repeat(80), String::new()], "the prompt box, then the row the frame's last newline left");
+        assert_eq!(t.term.grid().cursor.point.line, Line(21), "the cursor rests on the prompt");
+        assert!(t.program_redraws());
+    }
+
+    #[test]
+    fn a_narrowed_pane_leaves_classic_claude_codes_screen_to_it_and_repeats_nothing_in_the_history() {
+        let (mut t, mut program) = classic(40, 80, 24);
+        let before = all_rows(&t);
+        t.resize(60, 24);
+        let after = all_rows(&t);
+        let screen = |rows: &[String]| rows[rows.len() - 24..].to_vec();
+        let cut: Vec<String> = screen(&before).iter().map(|r| r.chars().take(60).collect()).collect();
+        assert_eq!(screen(&after), cut, "each screen row is still its own row, cut at the new width");
+        assert_eq!(t.term.grid().cursor.point.line, Line(21), "the cursor is on the row it was on");
+        t.apply_output(&program.resized(60, 24));
+        assert_eq!(all_rows(&t).concat(), program.whole(), "nothing twice, nothing missing, no old rule left behind");
+    }
+
+    /// The program starts its reprint at the start of a row of the new wrapping, which can be a
+    /// few characters before the text that was at the top of the screen: those few are in the
+    /// history already, and no terminal can know it.
+    #[test]
+    fn a_pane_dragged_narrower_a_column_at_a_time_loses_nothing_and_repeats_less_than_a_row() {
+        let (mut t, mut program) = classic(40, 80, 24);
+        for cols in (60..80).rev() {
+            resize_with(&mut t, &mut program, cols, 24);
+        }
+        let (all, whole) = (all_rows(&t).concat(), program.whole());
+        let mut shown = all.chars();
+        assert!(whole.chars().all(|c| shown.any(|s| s == c)), "all of the conversation is there, in order");
+        let repeated = all.chars().count() - whole.chars().count();
+        assert!(repeated < 60, "{repeated} characters twice over twenty resizes");
+        assert_eq!(all.matches('❯').count(), 1, "one prompt box");
+    }
+
+    #[test]
+    fn a_shortened_pane_sends_the_rows_that_no_longer_fit_to_the_history_and_loses_none() {
+        let (mut t, mut program) = classic(40, 80, 24);
+        let history = t.history_size();
+        t.resize(80, 14);
+        assert_eq!(t.history_size(), history + 10, "the ten rows the pane lost");
+        assert_eq!(t.term.grid().cursor.point.line, Line(11), "the cursor is still on the prompt");
+        t.apply_output(&program.resized(80, 14));
+        assert_eq!(all_rows(&t).concat(), program.whole());
+    }
+
+    #[test]
+    fn a_pane_shortened_and_made_tall_again_reads_as_it_did() {
+        let (mut t, mut program) = classic(40, 80, 24);
+        let before = all_rows(&t);
+        resize_with(&mut t, &mut program, 80, 14);
+        resize_with(&mut t, &mut program, 80, 24);
+        assert_eq!(all_rows(&t), before);
+    }
+
+    #[test]
+    fn a_conversation_shorter_than_its_pane_stays_at_the_top_when_the_pane_shortens() {
+        let (mut t, mut program) = classic(3, 80, 24);
+        let before = all_rows(&t).concat();
+        resize_with(&mut t, &mut program, 80, 14);
+        assert_eq!(t.history_size(), 0, "it all still fits, so nothing went to the history");
+        assert_eq!(all_rows(&t).concat(), before);
+    }
+
+    #[test]
+    fn a_widened_pane_loses_nothing() {
+        let (mut t, mut program) = classic(40, 60, 24);
+        resize_with(&mut t, &mut program, 80, 24);
+        let all = all_rows(&t).concat();
+        for paragraph in &program.paragraphs {
+            assert!(all.contains(paragraph.as_str()), "{paragraph} is whole somewhere");
+        }
+        assert!(all.ends_with(&format!("{}❯{}", "─".repeat(80), "─".repeat(80))), "one prompt box, at the new width");
+        assert_eq!(all.matches('❯').count(), 1);
+    }
+
+    /// Rows the terminal wrapped itself hold more text each than the rows the program would
+    /// print, so taking as many of them back as the pane grew would take text the program does
+    /// not print again.
+    #[test]
+    fn a_pane_made_taller_after_it_narrowed_takes_back_only_rows_printed_at_its_width() {
+        let (mut t, mut program) = classic(40, 80, 14);
+        resize_with(&mut t, &mut program, 60, 14);
+        resize_with(&mut t, &mut program, 60, 40);
+        let all = all_rows(&t).concat();
+        for paragraph in &program.paragraphs {
+            assert!(all.contains(paragraph.as_str()), "{paragraph} is whole somewhere");
+        }
+        assert_eq!(all.matches('❯').count(), 1);
+    }
+
+    #[test]
+    fn a_screen_classic_claude_code_erases_unasked_goes_to_the_history_first() {
+        let (mut t, mut program) = classic(40, 80, 24);
+        let before = program.whole();
+        t.apply_output(&program.compacted());
+        assert_eq!(all_rows(&t).concat(), format!("{before}{}", program.whole()), "the conversation, its last screen included, then the new frame");
+    }
+
+    #[test]
+    fn the_erase_is_seen_however_the_output_is_cut_into_reads() {
+        for size in [1, 3, 7, 1024] {
+            let (mut t, mut program) = classic(40, 80, 24);
+            let before = program.whole();
+            for chunk in program.compacted().chunks(size) {
+                t.apply_output(chunk);
+            }
+            assert_eq!(all_rows(&t).concat(), format!("{before}{}", program.whole()), "reads of {size}");
+        }
+    }
+
+    #[test]
+    fn a_repaint_long_after_a_resize_is_not_its_answer() {
+        let (mut t, mut program) = classic(40, 80, 24);
+        // The program never answers this resize (its terminal's size did not change).
+        t.resize(80, 23);
+        t.resize(80, 24);
+        let before = all_rows(&t).concat();
+        t.apply_output("\x1b[s\x1b[u".repeat(4096).as_bytes());
+        t.apply_output(&program.compacted());
+        assert_eq!(all_rows(&t).concat(), format!("{before}{}", program.whole()));
+    }
+
+    #[test]
+    fn a_shell_that_homes_and_erases_a_line_sends_nothing_to_the_history() {
+        let mut t = TerminalCore::new(40, 5, 100);
+        t.apply_output(b"one\r\ntwo\r\n\x1b[H\x1b[2Kthree");
+        assert_eq!(t.history_size(), 0);
+        assert_eq!(all_rows(&t)[..2], ["three".to_string(), "two".to_string()]);
+    }
+
+    #[test]
+    fn a_shells_screen_still_reflows_when_its_pane_narrows() {
+        let mut t = TerminalCore::new(40, 5, 100);
+        t.apply_output(format!("{}{}", "a".repeat(40), "b".repeat(20)).as_bytes());
+        assert!(!t.program_redraws());
+        t.resize(30, 5);
+        let rows = all_rows(&t);
+        assert_eq!(rows[..2], ["a".repeat(30), format!("{}{}", "a".repeat(10), "b".repeat(20))], "the line is wrapped, not cut");
+    }
+
+    #[test]
+    fn a_program_on_the_alternate_screen_is_resized_as_before() {
+        let mut t = fullscreen(40, 10);
+        t.apply_output(b"\x1b[?2031h");
+        assert!(!t.program_redraws(), "a full-screen program has no history to keep whole");
+    }
+
+    #[test]
+    fn the_agents_own_word_marks_a_terminal_whose_program_redraws_its_screen() {
+        let mut t = TerminalCore::new(80, 24, 100);
+        assert!(!t.program_redraws());
+        t.set_agent_redraws(true);
+        assert!(t.program_redraws());
+        t.set_agent_redraws(false);
+        assert!(!t.program_redraws());
+        // Classic Claude Code turns theme pushes off as it leaves.
+        t.apply_output(b"\x1b[?2031h");
+        assert!(t.program_redraws());
+        t.apply_output(b"\x1b[?2031l");
+        assert!(!t.program_redraws());
+    }
+
+    #[test]
+    fn a_replay_is_parsed_at_the_sizes_its_marks_record() {
+        use protocol::replay::{now_mark, resize_mark};
+        // What a window that was open the whole time shows.
+        let (mut live, mut program) = classic(40, 100, 30);
+        let mut replay = program.start();
+        for (cols, rows) in [(60, 30), (60, 14), (90, 20)] {
+            replay.extend(resize_mark((program.rows as u16, program.cols as u16), (rows as u16, cols as u16)));
+            let answer = program.resized(cols, rows);
+            live.resize(cols, rows);
+            live.apply_output(&answer);
+            replay.extend(answer);
+        }
+        replay.extend(now_mark((20, 90)));
+        // A window opened later, in a pane of another size, parsing the replay.
+        let mut later = TerminalCore::new(72, 18, 1000);
+        later.apply_replay(&replay);
+        assert_eq!((later.columns(), later.screen_lines()), (90, 20), "it ends at the size the session has");
+        assert_eq!(all_rows(&later), all_rows(&live));
+    }
+
+    /// A replay is hours of output in one piece: the program that redraws is known from where
+    /// it asked for theme pushes to where it turned them off, not by the last word in the piece.
+    #[test]
+    fn a_replay_that_ends_after_claude_code_left_still_keeps_the_screens_it_erased() {
+        let (_, mut program) = classic(40, 80, 24);
+        let mut replay = program.start();
+        let before = program.whole();
+        replay.extend(program.compacted());
+        let after = program.whole();
+        replay.extend(b"\x1b[?2031l");
+        let mut t = TerminalCore::new(80, 24, 1000);
+        t.apply_replay(&replay);
+        assert_eq!(all_rows(&t).concat(), format!("{before}{after}"));
+        assert!(!t.program_redraws());
+    }
+
+    #[test]
+    fn output_is_cut_before_each_mark_and_loses_no_byte() {
+        let cut = |bytes: &'static [u8]| cut_before(bytes, b"ab");
+        assert_eq!(cut(b"xxabyyabzz"), [&b"xx"[..], b"abyy", b"abzz"]);
+        assert_eq!(cut(b"abxab"), [&b"abx"[..], b"ab"]);
+        assert_eq!(cut(b"none"), [&b"none"[..]]);
+        assert!(cut(b"").is_empty());
+        assert_eq!(cut(b"a"), [&b"a"[..]]);
+    }
+
+    #[test]
+    fn a_replay_without_marks_is_parsed_at_the_panes_size() {
+        let mut t = TerminalCore::new(20, 5, 100);
+        let w = t.apply_replay(b"\x1b]0;a title\x07hello");
+        assert_eq!(w.title.as_deref(), Some("a title"));
+        assert_eq!((t.columns(), t.screen_lines()), (20, 5));
+        assert_eq!(all_rows(&t)[0], "hello");
     }
 
     #[test]

@@ -5634,17 +5634,24 @@ async fn restore(root: &Entity<Root>, session: SessionId, tab: TabId, replay: Ve
             },
         }
     };
-    let scrollback = root.read_with(cx, |root, _| root.sessions.scrollback)?;
+    let (scrollback, redraws) = root.read_with(cx, |root, _| (root.sessions.scrollback, root.sessions.agent_redraws(session)))?;
     let started = std::time::Instant::now();
-    let (mut core, title) = cx
+    let (mut core, title, written_at) = cx
         .background_spawn(async move {
             let mut core = TerminalCore::new(cols, rows, scrollback);
+            // The agent's record says what the replay may no longer hold the start of: that its
+            // program redraws its own screen, so each resize in the replay leaves that screen
+            // to it as the window open at the time did.
+            core.set_agent_redraws(redraws);
             // The previous UI already answered any queries in the replay; keep only the title.
-            let title = core.apply_output(&replay).title;
-            (core, title)
+            // The replay is parsed at the sizes its marks record, then brought to this pane's.
+            let title = core.apply_replay(&replay).title;
+            let written_at = (core.columns(), core.screen_lines());
+            core.resize(cols, rows);
+            (core, title, written_at)
         })
         .await;
-    eprintln!("arkos: session {} replay parsed at {cols}x{rows} in {:?}", session.0, started.elapsed());
+    eprintln!("arkos: session {} replay parsed at {}x{}, shown at {cols}x{rows}, in {:?}", session.0, written_at.0, written_at.1, started.elapsed());
     root.update(cx, |root, cx| {
         if root.connection_generation != generation {
             eprintln!("arkos: session {} replay was parsed for a connection that has ended; dropping it", session.0);
