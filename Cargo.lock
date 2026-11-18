@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "arkos"
-version = "0.8.52"
+version = "0.8.53"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -173,7 +173,7 @@ dependencies = [
 
 [[package]]
 name = "arkos-shoot"
-version = "0.8.52"
+version = "0.8.53"
 dependencies = [
  "anyhow",
  "core-graphics 0.24.0",
@@ -189,7 +189,7 @@ dependencies = [
 
 [[package]]
 name = "arkosd"
-version = "0.8.52"
+version = "0.8.53"
 dependencies = [
  "anyhow",
  "base64",
@@ -4391,7 +4391,7 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "0.8.52"
+version = "0.8.53"
 dependencies = [
  "postcard",
  "serde",
@@ -4859,7 +4859,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "release-tool"
-version = "0.8.52"
+version = "0.8.53"
 dependencies = [
  "base64",
  "ed25519-compact",
@@ -5904,7 +5904,7 @@ dependencies = [
 
 [[package]]
 name = "telemetry"
-version = "0.8.52"
+version = "0.8.53"
 dependencies = [
  "backtrace",
  "libc",
