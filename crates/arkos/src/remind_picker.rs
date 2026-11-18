@@ -328,7 +328,10 @@ pub fn render(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     let repeat = field("remind-repeat", "Repeat", div().child(repeat_name).into_any_element(), Drop::Repeat, cx);
     // The open dropdown's list, under its field.
     let list = |rows: Vec<(String, bool, Box<dyn Fn(&mut Picker, u64)>)>, scroll: Option<gpui::ScrollHandle>, cx: &mut Context<Root>| {
-        let mut l = div().id("remind-list").absolute().left(px(LABEL_W)).top(px(28.0)).min_w(px(7.0 * CELL - LABEL_W)).max_h(px(7.5 * ROW_H)).overflow_y_scroll().rounded(px(6.0)).whitespace_nowrap().map(|d| crate::chrome::menu_frame(d, &theme, &style)).when(style.menu_edges, |d| d.child(crate::chrome::menu_report(0x1a, opacity, cx))).occlude();
+        // The frame and the effect's backdrop on a box that stays put; the rows scroll inside it
+        // (a backdrop in the scroll would move away with it).
+        let frame = div().absolute().left(px(LABEL_W)).top(px(28.0)).min_w(px(7.0 * CELL - LABEL_W)).rounded(px(6.0)).map(|d| crate::chrome::menu_frame(d, &theme, &style)).when(style.menu_edges, |d| d.child(crate::chrome::menu_report(0x1a, opacity, cx))).occlude();
+        let mut l = div().id("remind-list").relative().max_h(px(7.5 * ROW_H)).overflow_y_scroll().whitespace_nowrap();
         if let Some(scroll) = scroll {
             l = l.track_scroll(&scroll);
         }
@@ -343,7 +346,7 @@ pub fn render(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
                 cx.notify();
             })));
         }
-        l
+        frame.child(l)
     };
     let time = match p.open {
         Some(Drop::Time) => {

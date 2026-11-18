@@ -110,7 +110,7 @@ pub fn refuse_unshown(session: Option<SessionId>, anchor: Option<PaneId>, place:
 /// it (a tab opened from the sidebar under a symlinked folder such as `/tmp` keeps the path as
 /// clicked, while the command line sends the canonical one). A web address (an `http(s)`
 /// "path") matches the web tabs on that page (`web::same_url`).
-fn tabs_on_file(tree: &Tree, path: &Path) -> Vec<(PaneId, usize)> {
+pub(crate) fn tabs_on_file(tree: &Tree, path: &Path) -> Vec<(PaneId, usize)> {
     // Only the page shown, the opening session's own: another session's tab is its own.
     let shown = tree.panes();
     tabs_on_file_anywhere(tree, path).into_iter().filter(|(pane, _)| shown.contains(pane)).collect()

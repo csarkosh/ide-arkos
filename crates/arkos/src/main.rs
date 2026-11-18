@@ -2414,15 +2414,16 @@ impl Root {
         let pane = self.tree.blank_page();
         self.held = None;
         let session = SessionId(e.session);
+        // The session takes its name back, however it comes back.
+        if let Some(page) = self.tree.page_of(pane) {
+            self.tree.set_session_name(page, Some(e.name.clone()));
+        }
         match self.closed.take_session(session).filter(|c| c.in_grace(Instant::now())) {
             Some(_) => self.reopen_session(pane, session, e.cwd, cx),
             None => {
                 let idx = self.tree.add_tab(pane, Tab::Terminal { session: SessionId(0), cwd: e.cwd.clone() });
                 telemetry::pane_open(telemetry::PaneKind::Terminal, telemetry::Opened::Click);
                 self.tree.focus(pane);
-                if let Some(page) = self.tree.page_of(pane) {
-                    self.tree.set_session_name(page, Some(e.name));
-                }
                 if let Some(id) = self.tree.tab_id(pane, idx) {
                     self.resume_input.insert(id, sessions_list::resume_line(&e.resume));
                     self.start_shell(id, e.cwd, false);
@@ -2822,6 +2823,9 @@ impl Root {
     /// "Remind me in", Custom: the row's menu gives way to the date and time picker, on the
     /// page's own reminder when it has one.
     pub fn open_remind_picker(&mut self, page: tree::PageKey, window: &mut Window, cx: &mut Context<Self>) {
+        // A rename in progress keeps what was typed and gives the picker the keys.
+        self.commit_tab_rename(cx);
+        self.commit_row_rename(cx);
         self.close_session_menu();
         let p = remind_picker::Picker::new(page, sessions::now_ms(), self.reminders.get(&page));
         self.remind_time = None;
@@ -4046,6 +4050,7 @@ impl Root {
     /// nothing, while it shows its automatic name).
     pub fn begin_row_rename(&mut self, page: tree::PageKey, cx: &mut Context<Self>) {
         self.commit_tab_rename(cx);
+        self.commit_row_rename(cx);
         let mut edit = crate::line_edit::LineEdit::new();
         edit.set(self.tree.session_name(page).unwrap_or_default());
         self.row_rename = Some(sessions_list::RowRename { page, edit });

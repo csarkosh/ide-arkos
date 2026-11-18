@@ -741,6 +741,18 @@ pub fn popover_card(which: Popover, window_w: f32, opacity: f32, live: bool, the
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_scrolling_menu_list_paints_its_backdrop_outside_its_scroll() {
+        // A child of a scrolling element moves with the scroll, so a backdrop there is painted
+        // above a list opened part way down and clipped away (the reminder picker's Time list
+        // opens on the chosen time).
+        for (name, src) in [("remind_picker.rs", include_str!("remind_picker.rs"))] {
+            for line in src.lines() {
+                assert!(!(line.contains("overflow_y_scroll()") && line.contains("menu_report(")), "{name}: a backdrop inside a scroll: {line}");
+            }
+        }
+    }
+
+    #[test]
     fn every_menu_framed_by_menu_frame_paints_a_backdrop_under_an_effect() {
         // Cyrus, 2026-11-18: "the menu for 'Remind me in --> Custom...' has no background for
         // almost every theme. Menus should always have a background." Under an effect that

@@ -808,6 +808,10 @@ impl Tree {
     /// The empty screen shown is used as it is.
     pub fn blank_page(&mut self) -> PaneId {
         if self.root.panes().iter().all(|p| p.tabs.is_empty()) {
+            // The emptied page is reused for the new session, which starts without the name the
+            // one before it was given.
+            let shown = self.page;
+            self.session_names.retain(|(p, _)| *p != shown);
             let pane = self.root.panes()[0].id;
             self.root = Node::Leaf(Pane { id: pane, tabs: Vec::new(), active: 0, mru: Vec::new(), ids: Vec::new() });
             self.focused = pane;
@@ -1663,6 +1667,17 @@ mod tests {
         t.close_page(first, None);
         t.close_page(second, None);
         assert_eq!((t.session_name(first), t.session_name(second)), (None, None));
+    }
+
+    #[test]
+    fn a_new_session_on_the_emptied_page_does_not_take_the_ended_one_s_name() {
+        let mut t = Tree::new(Tab::Terminal { session: SessionId(1), cwd: None });
+        let page = t.page;
+        t.set_session_name(page, Some("IDE".into()));
+        let pane = t.panes()[0];
+        t.close_tab(pane, 0);
+        t.blank_page();
+        assert_eq!(t.session_name(t.page), None, "a new session starts from its own topic");
     }
 
     #[test]

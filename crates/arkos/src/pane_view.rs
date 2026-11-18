@@ -962,6 +962,7 @@ fn open_link_menu(root: &mut Root, terminal: &Entity<Terminal>, ev: &MouseDownEv
     root.close_popovers(now);
     root.url_prompt.hide(now);
     root.commit_tab_rename(cx);
+    root.commit_row_rename(cx);
     root.link_menu.show(LinkMenu { url: link.map(|l| l.url), selection, terminal: terminal.downgrade(), at: ev.position }, now);
     cx.notify();
     true
@@ -1155,6 +1156,9 @@ pub(crate) fn jump_pill_bottom(pinned: Option<usize>, screen: usize, cell_h: f32
 fn pill_press(root: &mut Root, pane: PaneId, cx: &mut Context<Root>) {
     let now = std::time::Instant::now();
     root.md_menu.hide(now);
+    // The press stops here, before the window's own would keep what a rename has typed.
+    root.commit_tab_rename(cx);
+    root.commit_row_rename(cx);
     root.focus_pane(pane, cx);
     cx.stop_propagation();
 }
