@@ -197,6 +197,11 @@ struct Held {
 /// same screen printed again.
 const HELD_MATCH: usize = 4;
 
+/// Whether a row is Claude Code's echo of something typed at its prompt: `❯ ` and text.
+fn is_prompt_echo(row: &str) -> bool {
+    row.strip_prefix("\u{276f} ").is_some_and(|rest| rest.starts_with(|c: char| !c.is_whitespace()))
+}
+
 /// How many rows above the held screen's first the frame printed after it may begin.
 const HELD_SLACK: usize = 4;
 
@@ -544,7 +549,24 @@ impl TerminalCore {
             self.drop_rows_printed_twice(&want[0], scrolled);
             return;
         }
-        self.keep_above_the_frame(held.rows, scrolled);
+        // A new frame (after a `/clear` or a compaction) begins with the command typed, which the
+        // held screen ends with, under it its spinner, prompt box and status lines (Cyrus,
+        // 2026-11-18: "/clear still causes the double print issue"). The held screen is kept down
+        // to that command only, so the conversation is in the history once and the box not at all.
+        let mut rows = held.rows;
+        let echoes: Vec<&String> = got.iter().filter(|r| is_prompt_echo(r)).collect();
+        if let Some(cut) = (0..rows.len()).rev().find(|&i| {
+            let row: String = text(&rows[i]).into_iter().collect();
+            echoes.iter().any(|e| row.trim_end() == e.as_str())
+        }) {
+            rows.truncate(cut);
+            while rows.last().is_some_and(|r| text(r).iter().all(|c| c.is_whitespace())) {
+                rows.pop();
+            }
+        }
+        if !rows.is_empty() {
+            self.keep_above_the_frame(rows, scrolled);
+        }
     }
 
     /// After a repaint of the same screen that began `extra` rows above where the screen did:
@@ -2590,6 +2612,26 @@ mod tests {
             assert_eq!(after.iter().filter(|r| r.starts_with(&first)).count(), 1, "one copy of {first}: {after:?}");
         }
         assert!(before.len() <= after.len());
+    }
+
+    #[test]
+    fn a_clear_or_a_compaction_keeps_the_conversation_once_and_not_the_box_under_it() {
+        // Cyrus, 2026-11-18: "/clear still causes the double print issue" (his screenshot: the
+        // erased screen's `❯ /clear`, spinner, prompt box and status lines kept above the new
+        // frame, which begins with the same `❯ /clear`). A compaction did the same.
+        for (command, frame_top) in [("/clear", ""), ("/compact", "\u{273b} Conversation compacted\r\n")] {
+            let mut t = TerminalCore::new(40, 12, 100);
+            let erased = format!("\x1b[?2031han answer\r\n\u{273b} Cooked for 18s\r\n\r\n\u{276f} {command}\r\n\r\n* Burrowing\u{2026}\r\n{rule}\r\n\u{276f}\r\n{rule}\r\n  Haiku 5.5", rule = "\u{2500}".repeat(40));
+            t.apply_output(erased.as_bytes());
+            let frame = format!("\x1b[H{}\x1b[H Claude Code v2\r\n\r\n{frame_top}\u{276f} {command}\r\n{rule}\r\n\u{276f}\r\n{rule}\r\n  Haiku 5.5", "\x1b[2K\x1b[1B".repeat(12), rule = "\u{2500}".repeat(40));
+            t.apply_output(frame.as_bytes());
+            let rows = all_rows(&t);
+            let echo = format!("\u{276f} {command}");
+            assert_eq!(rows.iter().filter(|r| **r == echo).count(), 1, "{command}: {rows:?}");
+            assert_eq!(rows.iter().filter(|r| r.starts_with("  Haiku")).count(), 1, "{command}: one status line: {rows:?}");
+            assert!(!rows.iter().any(|r| r.starts_with("* Burrowing")), "{command}: no spinner kept: {rows:?}");
+            assert_eq!(rows[..2], ["an answer".to_string(), "\u{273b} Cooked for 18s".to_string()], "{command}: the conversation kept");
+        }
     }
 
     #[test]
