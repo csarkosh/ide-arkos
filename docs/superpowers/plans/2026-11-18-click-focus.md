@@ -148,3 +148,39 @@ fn a_fade_is_not_carried_onto_a_key_already_showing() {
 - [ ] Run `nice -n 15 cargo test --workspace`. Expected: all pass. Report the arkosd pty pair separately if they fail as on 2026-11-18.
 - [ ] Run `nice -n 15 cargo check --workspace --all-targets`. Expected: no warnings.
 - [ ] Build a sandbox app and hand-check the Status rows above in it before reporting. The user does the final check in their own window.
+
+### Task 6: A session's name and a tab's name are their own
+
+**Spec:** `docs/superpowers/specs/2026-11-18-session-names-design.md`
+
+**Files:**
+- Modify: `crates/arkos/src/tree.rs` (`Tree` near line 180: new fields; `set_tab_name` near 640; page removal)
+- Modify: `crates/arkos/src/sessions_list.rs` (`entries` near 500, the row's name cell, `shown_name` callers)
+- Modify: `crates/arkos/src/main.rs` (`RowAction::Rename` near 3074, the ended entry near 3304, `resume_ended` near 2430, where the layout loads and `inbox::into_pages` runs)
+- Docs: `docs/guide.md` (renaming), a Status row.
+
+**Interfaces:**
+- Produces:
+  - `Tree` fields `#[serde(default)] session_names: Vec<(PageKey, String)>` and `#[serde(default)] pub names_split: bool`.
+  - `Tree::session_name(&self, page: PageKey) -> Option<&str>` and `Tree::set_session_name(&mut self, page: PageKey, name: Option<String>)` (trimmed, blank clears, as `set_tab_name`).
+  - `Tree::split_names(&mut self)`: when `!names_split`, copies each page's first terminal's tab name to its session, then sets the flag.
+  - `Root.row_rename: Option<RowRename { page: PageKey, edit: LineEdit }>` with a focus handle `row_rename_focus` in the `wanted` chain beside `tab_rename`.
+
+- [ ] **Step 1: Write the failing tests** in `tree.rs`:
+  - `a_session_s_name_is_its_own_and_a_tab_s_rename_leaves_it`
+  - `a_session_s_name_is_saved_with_the_layout_and_goes_with_its_page`
+  - `a_layout_from_before_copies_each_page_s_tab_name_to_its_session_once` (a second `split_names` after a session rename changes nothing)
+
+  In `sessions_list.rs`, `a_row_shows_its_session_s_name_not_its_tab_s`, through the `shown_name` the row now calls with the session's name.
+- [ ] **Step 2: Run them; expect FAIL.**
+- [ ] **Step 3: Implement.**
+  - `entries` takes the name from `tree.session_name(page)` and the typing from `row_rename` for that page.
+  - `RowAction::Rename` opens `row_rename` on the row: it no longer activates or renames a tab.
+  - The row's name cell draws `line_edit::render` while renaming, and its keys go through a `row_rename_key` that mirrors `tab_rename_key`.
+  - A press elsewhere commits it, as `commit_tab_rename` is committed today (find that call).
+  - Ended entries use the session's name. `resume_ended` sets the session's name, not the tab's. `split_names` runs on load.
+- [ ] **Step 4: Run** `nice -n 15 cargo test -p arkos --bin arkos tree:: sessions_list::`; expect PASS.
+- [ ] **Step 5: Docs.**
+  - Guide: renaming a session or a tab.
+  - Status row: "session names: right-click a row, Rename: the row's name becomes an editor, Enter keeps it; the tab keeps its own title; double-click the tab, rename it: the row keeps its name; a blank row name follows Claude's topic again".
+- [ ] **Step 6: Commit** "A session's name and a tab's name are their own"
