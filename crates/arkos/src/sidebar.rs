@@ -307,15 +307,9 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
             .gap(px(4.0))
             // Pane 0's badge, as every pane's: Cmd+0 brings the keys here.
             .child(div().flex_none().mr(px(4.0)).text_size(px(style.ui(12.0))).text_color(c.text_dim.hsla()).child(crate::pane_view::number_label(0)))
-            .child(pill("inbox-sessions", "Sessions", !files).on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
-                root.sidebar.inbox_files = false;
-                root.sidebar_focused = false;
-                root.wt_focused = false;
-                cx.notify();
-            })))
+            .child(pill("inbox-sessions", "Sessions", !files).on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| root.click_pill(false, cx))))
             .child(pill("inbox-files", "Files", files).on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
-                root.sidebar.inbox_files = true;
-                cx.notify();
+                root.click_pill(true, cx);
             })))
     });
     // "+ New session", a button over the list, just above its first group: filled in the active
@@ -472,16 +466,12 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .font_family(family)
         .text_size(px(style.ui(13.0)))
         .text_color(c.text.hsla())
-        // A press anywhere in the column gives it the keys (the Cmd+0 pane is focused), where it
-        // last had them; what was pressed may then move them within it.
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
-                if !root.sidebar_has_keys() {
-                    root.focus_sessions(cx);
-                }
-            }),
-        )
+        // A press in the column leaves the keys where they are (Cyrus, 2026-11-18: "When I click on
+        // files or open the Sessions pane in Pane 0, I expect to still be able to type in my
+        // Claude session"); Cmd+0 brings them here. gpui would focus whatever tracked element was
+        // pressed (the list, the tree, the switcher, the column itself) before the next render
+        // put the keys back, so typed keys could land here meanwhile: the press is kept from it.
+        .capture_any_mouse_down(|_ev: &MouseDownEvent, window, _cx| window.prevent_default())
         // The group headings take the keys here while the ring is on one (`Root::group_key_down`).
         .track_focus(&root.header_focus)
         // Only while the column itself has the keys: a key the switcher, the tree or the
@@ -903,6 +893,12 @@ pub fn render_context_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Di
         }));
     }
     Some(m)
+}
+
+/// Where a click on the Sessions/Files switcher's pill (`files` for Files) puts the keys: in the
+/// view it shows when Pane 0 had them (`had_keys`), else nowhere new, so they stay in the pane.
+pub fn pill_keys(had_keys: bool, files: bool) -> Option<Spot> {
+    had_keys.then_some(if files { Spot::Tree } else { Spot::Sessions })
 }
 
 /// How a click in the tree opens a file in `pane` (spec 6, VS Code's preview tabs): the tab
@@ -2176,6 +2172,18 @@ impl Root {
         cx.notify();
     }
 
+    /// A click on the switcher's Sessions pill or (`files`) its Files pill: the view switches, and
+    /// the keys move with it only when Pane 0 had them (`pill_keys`).
+    pub fn click_pill(&mut self, files: bool, cx: &mut Context<Self>) {
+        let had = self.sidebar_has_keys();
+        self.sidebar.inbox_files = files;
+        if let Some(spot) = pill_keys(had, files) {
+            self.sidebar_spot = Some(spot);
+            self.focus_sessions(cx);
+        }
+        cx.notify();
+    }
+
     /// Opens the New File prompt under `dir` (expanded, so the row has a place) and gives the tree
     /// the keys.
     pub fn open_new_file_prompt(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
@@ -2454,6 +2462,15 @@ pub fn switcher_key(key: &str) -> SwitcherKey {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_pill_click_keeps_the_keys_in_pane_0_only_when_it_had_them() {
+        use super::{pill_keys, Spot};
+        assert_eq!(pill_keys(false, true), None, "typing in a pane: Files leaves the keys there");
+        assert_eq!(pill_keys(false, false), None, "typing in a pane: Sessions leaves the keys there");
+        assert_eq!(pill_keys(true, true), Some(Spot::Tree), "after Cmd+0: Files puts them in the tree");
+        assert_eq!(pill_keys(true, false), Some(Spot::Sessions), "after Cmd+0: Sessions puts them in the list");
+    }
+
     fn click_tree() -> crate::tree::Tree {
         crate::tree::Tree::new(crate::tree::Tab::Terminal { session: protocol::SessionId(1), cwd: None })
     }

@@ -41,7 +41,8 @@ or opens it. Left and Right do this only on an empty filter; with text typed the
 Enter shows the cursor's session (a closed one is resumed) and keeps the keys in the list, the
 cursor on that session (Cyrus, 2026-11-17: "Only mouse clicks should change focus to the
 selected list option's pane"); Escape clears the filter, and on an empty filter hands the keys to
-the pane shown. A click anywhere else takes the keys as before.
+the pane shown. A click anywhere else in the sidebar leaves the keys where they were (Cyrus,
+2026-11-18, `2026-11-18-click-focus-design.md`): only the keyboard brings them to Pane 0.
 
 Up from the first row (or from the file tree's first row) rings the Sessions/Files switcher at
 the top of the sidebar (Cyrus, 2026-11-16: "the session list navigation can reach the

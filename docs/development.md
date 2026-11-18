@@ -532,6 +532,12 @@ Things only a person at the screen can check, in order of value:
 - session list clicks: after Cmd+0, a click on a group heading folds or opens it with the keys
   left in Pane 0; a click on a session shows it and Pane 0's frame goes dark as the keys go to its
   pane; "+ New session" sits a little clear of the Sessions/Files switcher
+- click focus: typing in Claude in Pane 1, click Files, a folder, the Explorer heading, Sessions
+  and a group heading: the glow stays on Pane 1 and typing still reaches Claude after each; after
+  Cmd+0 the same clicks keep the keys in Pane 0, and Sessions or Files takes them into that list;
+  with "A session's files open" on Neighbor, a click on a file opens it in the pane beside Claude
+  (a new pane on the right when there is none) and typing still reaches Claude; on In place it
+  opens over Claude in its pane
 - session list keys: Pane 0 has no filter field; Cmd+0 gives the list the keys, typing does
   nothing, Up and Down move the ring, Enter shows the ringed session with the keys left in the
   list, Escape gives them to the pane shown
