@@ -1031,7 +1031,8 @@ history first, so the rows just before a compaction are there to scroll back to.
 While a divider is dragged Claude Code's text keeps its wrapping and is wrapped again once the
 drag rests (150 ms), so a drag is one resize to it, not one a column. The history above is
 wrapped again by Arkos at word boundaries, each row's later rows under its own indent (under the
-text after a bullet), and comes back as it was when the pane widens.
+text after a bullet). The rows Claude Code wrapped a paragraph into are joined first, so an
+answer written in a narrow pane fills a wider one and comes back when the pane narrows.
 A pane made wider can show its last screenful twice in the history, once as it was wrapped and
 once as Claude Code printed it again. While you are scrolled up, Claude Code's input box and the
 status lines under it stay at the foot of the pane: what you type shows there and your place in

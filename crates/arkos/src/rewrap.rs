@@ -13,9 +13,23 @@
 //! a cell flagged `WRAPLINE`, as a terminal's own wrapped rows do; where the break took the place
 //! of a space that cell is a hidden space, and the indent of a later row is hidden spaces too. So
 //! a pane made narrow and wide again shows the rows it had.
+//!
+//! Claude Code ends every row it wraps with a newline, so to a terminal each of its rows is a
+//! line, and a paragraph written in a narrow pane would stay a narrow column in a wide one. So
+//! rows not yet looked at are first joined into the lines their program wrapped them from, by
+//! the rule a copy uses (`reflow::join`), at the width they were written for: that is the grid's
+//! width, since every change of width comes through here. A row that has been through here is
+//! marked (`SETTLED`), because the rule depends on the width a row was written for and would
+//! tell a different tale at another.
 
 use alacritty_terminal::grid::GridCell;
 use alacritty_terminal::term::cell::{Cell, Flags};
+use unicode_width::UnicodeWidthStr;
+
+/// On the first cell of every row written here: its line has been told from its neighbours, at
+/// the width it was written for, and is not looked at again. A bit alacritty leaves unused; a
+/// program's own writing replaces the cell and with it the mark.
+const SETTLED: Flags = Flags::from_bits_retain(1 << 15);
 
 /// A history wrapped for a new width.
 pub struct Rewrapped {
@@ -29,6 +43,9 @@ pub struct Rewrapped {
 struct Line {
     cells: Vec<Cell>,
     first_row: usize,
+    /// One row, as its program wrote it and not yet looked at: it may be a row of a paragraph
+    /// the program wrapped.
+    fresh: bool,
 }
 
 /// A space a line may be broken at: not the second half of a wide character.
@@ -44,12 +61,87 @@ fn ours(c: &Cell) -> bool {
 /// `rows` (each as wide as the grid was) wrapped for `cols` columns.
 pub fn rewrap(rows: &[Vec<Cell>], cols: usize) -> Rewrapped {
     let cols = cols.max(2);
+    let written = rows.first().map_or(cols, Vec::len);
     let mut out = Rewrapped { rows: Vec::with_capacity(rows.len()), starts: Vec::new() };
-    for line in lines(rows) {
-        out.starts.push((line.first_row, out.rows.len()));
+    for line in paragraphs(lines(rows), written) {
+        let from = out.rows.len();
+        out.starts.push((line.first_row, from));
         wrap(&line.cells, cols, &mut out.rows);
+        for row in &mut out.rows[from..] {
+            row[0].flags.insert(SETTLED);
+        }
     }
     out
+}
+
+/// A row's text as its program wrote it, without the blank after it.
+fn text_of(cells: &[Cell]) -> String {
+    let end = cells.iter().rposition(|c| !gap(c)).map_or(0, |i| i + 1);
+    cells[..end].iter().filter(|c| !c.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)).map(|c| c.c).collect()
+}
+
+/// Joins the fresh rows a program wrapped for `columns` into the lines it wrapped them from. A
+/// row runs on into the next when the next's first word would not have fitted after it within
+/// `columns` (`reflow::join`, which also knows a list item, a table and a rule when it sees one),
+/// and when the next sits under the line's own indent, as Claude Code's wrapped rows do. Claude
+/// Code wraps at the pane's full width (measured, 2.1.327), so the test is against `columns`
+/// itself and not, as a copy's is, against the widest row at hand: a break its program meant is
+/// lost for good here, where a copy only pastes one line for two.
+fn paragraphs(lines: Vec<Line>, columns: usize) -> Vec<Line> {
+    let prose = |l: &Line| l.fresh && l.cells.iter().any(|c| !gap(c));
+    let mut out: Vec<Line> = Vec::with_capacity(lines.len());
+    let mut rest = lines.into_iter().peekable();
+    while let Some(line) = rest.next() {
+        if !prose(&line) {
+            out.push(line);
+            continue;
+        }
+        let mut block = vec![line];
+        while let Some(next) = rest.next_if(|l| prose(l)) {
+            block.push(next);
+        }
+        let texts: Vec<String> = block.iter().map(|l| text_of(&l.cells)).collect();
+        let widths: Vec<usize> = texts.iter().map(|t| t.width()).collect();
+        // Twelve columns or fewer leave no room to tell a wrap from a break.
+        let wide_enough = columns > 12;
+        let mut open: Option<(Line, usize)> = None;
+        for (i, line) in block.into_iter().enumerate() {
+            let lead = texts[i].chars().take_while(|c| *c == ' ').count();
+            let sep = match &open {
+                Some((_, hang)) if wide_enough && lead == *hang => crate::reflow::join(&texts[i - 1], 0, widths[i - 1], &texts[i], texts[i].trim_start_matches(' '), columns, columns, columns),
+                _ => None,
+            };
+            // A row that ends exactly at the pane's edge looks cut through a word. It was not when
+            // it ends a sentence or a clause, or when the next row opens with an address: a word
+            // that happened to fill the row, then a token that had to start a row of its own.
+            let sep = sep.map(|sep| if sep.is_empty() && starts_apart(&texts[i - 1], texts[i].trim_start_matches(' ')) { " " } else { sep });
+            match (sep, &mut open) {
+                (Some(sep), Some((whole, _))) => {
+                    // The row's text, the space the wrap stood for (in a band's colour, if the
+                    // row had one), then the next row's text without its indent.
+                    let end = whole.cells.iter().rposition(|c| !gap(c)).map_or(0, |i| i + 1);
+                    let fill = whole.cells.get(end).cloned();
+                    whole.cells.truncate(end);
+                    if sep == " " {
+                        whole.cells.push(fill.unwrap_or_default());
+                    }
+                    whole.cells.extend(line.cells.into_iter().skip(lead));
+                }
+                _ => {
+                    out.extend(open.take().map(|(whole, _)| whole));
+                    let hang = hanging_indent(&line.cells);
+                    open = Some((line, hang));
+                }
+            }
+        }
+        out.extend(open.map(|(whole, _)| whole));
+    }
+    out
+}
+
+/// Whether `next` opens a word of its own after `row`, though `row` ends at the pane's edge.
+fn starts_apart(row: &str, next: &str) -> bool {
+    row.ends_with(['.', ',', ';', ':', '!', '?', ')']) || ["http://", "https://", "www."].iter().any(|scheme| next.starts_with(scheme))
 }
 
 /// The lines of `rows`: a row that ends in `WRAPLINE` runs on into the next.
@@ -58,13 +150,26 @@ fn lines(rows: &[Vec<Cell>]) -> Vec<Line> {
     let mut open: Option<Line> = None;
     for (i, row) in rows.iter().enumerate() {
         let continued = open.is_some();
-        let line = open.get_or_insert_with(|| Line { cells: Vec::new(), first_row: i });
+        let settled = row.first().is_some_and(|c| c.flags.contains(SETTLED));
+        let line = open.get_or_insert_with(|| Line { cells: Vec::new(), first_row: i, fresh: !settled });
         let last = row.last();
         let wraps = last.is_some_and(|c| c.flags.contains(Flags::WRAPLINE));
         let at_space = wraps && last.is_some_and(ours);
         // A later row's indent is ours, not the line's.
         let from = if continued { row.iter().take_while(|c| ours(c) && !c.flags.contains(Flags::WRAPLINE)).count() } else { 0 };
-        let mut cells = &row[from.min(row.len())..];
+        // More than one row: put together by its marks, not by guessing.
+        if continued || wraps {
+            line.fresh = false;
+        }
+        let unmarked: Vec<Cell> = row[from.min(row.len())..]
+            .iter()
+            .cloned()
+            .map(|mut c| {
+                c.flags.remove(SETTLED);
+                c
+            })
+            .collect();
+        let mut cells = &unmarked[..];
         if at_space {
             // The text, then the one space the break stood for.
             cells = &cells[..cells.len().saturating_sub(1)];
@@ -225,6 +330,70 @@ mod tests {
             // And narrowed in two steps as in one.
             assert_eq!(text(&rewrap(&rewrap(&rows, 55).rows, narrow).rows), text(&once.rows), "55 then {narrow}");
         }
+    }
+
+    const PARAGRAPH: &str = "⏺ I couldn't get a reliable forecast for NYC today (Tuesday, November 18, 2026). The search results were undated or from other days, so I don't want to give you numbers that might be wrong.";
+    const ITEM: &str = "- Possibly today's forecast: A National Weather Service page calls for a high near 63F,";
+
+    #[test]
+    fn a_paragraph_claude_code_wrapped_for_a_narrow_pane_fills_a_wider_one() {
+        // Cyrus's second screenshot, 2026-11-18: an answer written in a narrow pane stayed a
+        // narrow column after the pane widened. Claude Code ends every row with a newline, so
+        // its rows are joined into the lines they were wrapped from before they are wrapped again.
+        let narrow = history(
+            &[
+                "⏺ I couldn't get a reliable",
+                "  forecast for NYC today",
+                "  (Tuesday, November 18, 2026).",
+                "  The search results were undated",
+                "  or from other days, so I don't",
+                "  want to give you numbers that",
+                "  might be wrong.",
+                "",
+                "  What I did find:",
+                "",
+                "- Possibly today's forecast: A",
+                "  National Weather Service page",
+                "  calls for a high near 63F,",
+                "- Another source: no date",
+            ],
+            33,
+        );
+        let unwrapped = history(&[PARAGRAPH, "", "  What I did find:", "", ITEM, "- Another source: no date"], 300);
+        for cols in [70, 120, 33, 20] {
+            assert_eq!(text(&rewrap(&narrow, cols).rows), text(&rewrap(&unwrapped, cols).rows), "at {cols} columns");
+        }
+        assert_eq!(text(&rewrap(&narrow, 300).rows), [PARAGRAPH, "", "  What I did find:", "", ITEM, "- Another source: no date"]);
+    }
+
+    #[test]
+    fn a_word_that_fills_its_row_is_not_run_into_the_address_under_it() {
+        // From Cyrus's session, 31 columns: "check" ended at the pane's edge and the address
+        // took the next row; joined as a cut word they read "checkhttps://".
+        let rows = history(&["  For a current forecast, check", "  https://forecast.weather.gov", "  for New York City."], 31);
+        assert_eq!(text(&rewrap(&rows, 80).rows), ["  For a current forecast, check https://forecast.weather.gov for New York City."]);
+        // An address cut at the edge is still one address.
+        let cut = history(&["  see https://www.accuweather.c", "  om/en/us/new-york for more"], 31);
+        assert_eq!(text(&rewrap(&cut, 80).rows), ["  see https://www.accuweather.com/en/us/new-york for more"]);
+    }
+
+    #[test]
+    fn lines_that_were_never_near_the_pane_s_width_stay_lines() {
+        let lines = ["first line", "second line here", "third", "", "    46F. The page was not dated, so I cannot confirm it is for today xx.", "filler under no indent"];
+        assert_eq!(text(&rewrap(&history(&lines[..3], 80), 60).rows), lines[..3]);
+        // Wide enough to have been wrapped, but the next row does not sit under its indent.
+        assert_eq!(text(&rewrap(&history(&lines[4..], 76), 120).rows), lines[4..]);
+    }
+
+    #[test]
+    fn a_row_told_from_its_neighbours_once_is_not_joined_to_them_at_another_width() {
+        // Sixty columns of prose and a short line, written in a pane of a hundred: two lines.
+        let a = "The search results were undated or from other days and so on";
+        let lines = [a, "word and more"];
+        let once = rewrap(&history(&lines, 100), 62);
+        assert_eq!(text(&once.rows), lines);
+        // At 62 columns the first now nearly fills its row, as a wrapped row would.
+        assert_eq!(text(&rewrap(&once.rows, 100).rows), lines);
     }
 
     #[test]

@@ -142,11 +142,26 @@ line it was on. A full history (20,000 rows of 120 columns) wraps in about 0.2 s
 build, once a drag. His session's replay parsed again reads "mostly sunny," / "  with a" where
 it read "mostly su" / "nny, with a".
 
-Not done: Claude Code's own rows are each a line here, since it ends every row with a newline, so
-a paragraph it wrapped at 84 columns is wrapped row by row, not as one paragraph, and widening
-past the width a row was written for does not join it to the next. A copy across a wrapped row
+Claude Code's own rows are joined first. It ends every row it wraps with a newline, so to a
+terminal each is a line, and an answer written in a narrow pane stayed a narrow column in a wide
+one (Cyrus's second screenshot). Rows not yet looked at are joined into the lines Claude Code
+wrapped them from by the rule a copy uses (`reflow::join`): a row runs on into the next when the
+next's first word would not have fitted after it, the next sits under the line's own indent, and
+neither is a list item, a table or a rule. The test is against the pane's full width, which is
+where Claude Code 2.1.327 wraps, at the width the rows were written for: the grid's, since every
+change of width comes through here. A row that has been through is marked on its first cell
+(`SETTLED`, a flag bit alacritty leaves unused) and not judged again, because the same rows
+judged at another width would tell another tale. A word that fills its row is not run into an
+address under it. His session's replay parsed again reads "⏺ I couldn't get a reliable forecast
+for NYC today (Tuesday, November 18," across 76 columns where it stood in a column of 33.
+
+Left: a break Claude Code meant is taken for a wrap when the row before it is nearly as wide as
+the pane and the next sits under its indent (two short code lines after a long one); the text
+is all there, the break is not. A paragraph across the top of the screen at a resize is two
+lines in the history, since its rows were judged at different times. A copy across a wrapped row
 has not been checked. A shell's history keeps alacritty's reflow, and one resized after Claude
-Code left would join these rows with their hidden indents as spaces.
+Code left would join these rows with their hidden indents as spaces. And the rows Claude Code
+prints a second time when a pane widens are still there twice.
 
 ## Known limits
 

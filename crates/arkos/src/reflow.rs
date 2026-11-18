@@ -75,7 +75,7 @@ pub fn reflow_at(text: &str, columns: usize, first_col: usize, cut_width: usize)
 /// `b_t` is `b` without its indent, `cut_width` is where the program cuts a token wider than its
 /// wrap. The box-drawing, table and rule stops on `a` ignore `a`'s leading spaces, so a table
 /// indented under a message counts as one.
-fn join(a: &str, a_col: usize, width: usize, b: &str, b_t: &str, columns: usize, wrap: usize, cut_width: usize) -> Option<&'static str> {
+pub(crate) fn join(a: &str, a_col: usize, width: usize, b: &str, b_t: &str, columns: usize, wrap: usize, cut_width: usize) -> Option<&'static str> {
     if a.is_empty() || b_t.is_empty() {
         return None;
     }
