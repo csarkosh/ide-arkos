@@ -393,3 +393,35 @@ road the cart stands at the sidewalk's back edge, so its third and fourth people
 curb. Now the first stands at the cart's road side and the line runs along the sidewalk from
 there, everyone at that one place across it: on the road's sidewalk beside the road, inside the lot
 for a cart further out. Stepping up and the first walking off with their food go along it too.
+
+## Water towers, steam and subway entrances
+
+Cyrus, 2026-11-18, asked what else would make the city feel like New York and chose three of
+the ideas offered: rooftop water towers, steam from manholes and subway entrances ("do 1, 2 and
+3"), approving this design ("approved, go with your recommendation").
+
+Water towers. About 45 in 100 towers of middling height (0.9 to 3.0 tall; TOWER_MAX is 4.8) wear
+one, as Manhattan's walk-ups and mid-rises do and its tallest towers do not: a barrel 0.09 across
+on legs 0.05 tall, its tank 0.09 tall with two hoops, under a cone roof 0.04 tall, standing at a
+place on the roof drawn for the tower and never over its edge. It is drawn with its tower, after
+the tower's own lines, its tank filled dark so the lines behind it are hidden, its outline lit as a
+tower's edges are, and nearer towers still cover it.
+
+Steam. About seven blocks in ten have a manhole in the road between its crosswalks, in a traffic
+lane (0.15 to 0.6 from the road's middle, clear of the bike lanes), breathing a soft plume: 0.08
+wide at the street, swelling to 0.3 at 0.5 high (about three people tall) and drifting aside, its
+noise rising through it, puffing harder and softer over a few seconds. It is drawn after the road's
+traffic and before the towers, so a car's lights dim inside it and a nearer tower still covers it.
+The orange and white Con Ed stacks were left out: one would stand in a lane the cars drive through.
+
+Subway entrances. About a third of the corners where a cross street meets the road have one, at
+the road's curb, 0.9 to 1.14 past the cross street's curb (clear of the people waiting at the
+corner and the crossers stepping off it) on a lot that wears no sidewalk shed: a railing 0.08 high
+round the stair, 0.07 wide from the curb, open toward the cross street, faint steps going down
+inside, and a lamp post 0.22 high at each side of the opening under a glowing globe, green (open
+all hours) or for one in four red (exit only). The design first put it at the buildings' side of
+the sidewalk; the walkers spread across the whole sidewalk and the towers' faces stand at its back,
+so it went to the curb, where New York's entrances mostly are. The road's walkers and strollers keep
+out of it: beside an entrance (with 0.15 either end to ease in and out) their place across the
+sidewalk is pressed into the part beside the railing, at least 0.03 clear of it, and the city's data
+lands on them where they are drawn.
