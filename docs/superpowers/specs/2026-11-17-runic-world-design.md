@@ -226,3 +226,19 @@ a band 0.32 wide along the road from just inside its edge, and 0.32 along both s
 cross street from its curb (the crosswalks over the road already continue them). The paving is a
 soft wash of the city's green over the dark floor with faint joints, and a lit curb runs where
 each sidewalk meets a street. A test holds every walker's and stroller's place inside the paving.
+
+## The city's data
+
+Cyrus, 2026-11-17: "explore the idea that the runic rain comes from users uploading and download
+data ... runic rain can move in the reverse direction. It also means it goes to and originates
+from pedestrians, bicyclists, cars, food carts, and buildings." He chose that all the rain is data
+(the ambient sheets went), that direction alone tells an upload from a download, and a steady
+trickle. Fourteen slots each start a transfer every 5 to 9 seconds between the sky and one thing in
+the city (a walker 34 per cent, a car 22, a cyclist 10, a tower's window 24, a food cart 10, its
+lot found among a few tries), which it follows as it moves; out of the nearer part of the view it
+tries another. While it runs, its whole channel from the sky's top to the thing shows faintly
+(0.3), and a packet runs along it, its head bright and 14 cells of trail fading behind: down onto
+the thing for a download, up out of it for an upload, crossing in 2.2 to 3.6 seconds, the thing
+flickering as a download lands or an upload leaves. The glyphs are the rain's; a column too narrow
+for them shows lit dashes. `effects::runic` mirrors the slots: eight to thirteen at once, never
+fewer than three.

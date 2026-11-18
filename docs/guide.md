@@ -684,8 +684,9 @@ lit, paved sidewalks walking the whole length of every block, crossing only on t
 windows in the near towers, parks of lit trees and a warm lamp where empty lots meet, and on a lone empty lot a subway
 entrance with its green globes and people going down and coming up, a food cart under a striped
 umbrella with its queue, or a basketball court with players running, drones
-blinking over the roofs, and code raining behind it from
-half the sidebar's height, its sheets coming toward you with the city. Material
+blinking over the roofs, and the city's data as its rain: streams of code from
+half the sidebar's height falling onto walkers, cars, cyclists, windows and food carts as they
+download and rising out of them as they upload, each following its sender as it moves. Material
 and Lavender Material come with `material`: the
 title bar, sidebar and status bar are one pale frame with a search bar round the title, each pane
 is a card in the theme's page colour with rounded corners floating on it (white under Material), the pane's key ("⌘1") sits on a coloured pill

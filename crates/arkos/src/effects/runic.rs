@@ -760,4 +760,48 @@ mod tests {
         assert!(runic_constant("SIDEWALK_FILL") >= 0.3 && runic_constant("SIDEWALK_CURB_LIGHT") >= 0.4, "prominent: a lit curb and a paved fill");
     }
 
+
+    /// Transfer slot i as the wash's `data_slot` works it out: whether it is under way, and its
+    /// travel's seconds.
+    fn data_slot(i: usize, t: f32) -> (bool, f32) {
+        let fi = i as f32;
+        let (lo, hi) = (runic_constant("DATA_SLOT_MIN"), runic_constant("DATA_SLOT_MAX"));
+        let period = lo + (hi - lo) * hash2(fi, 3.0);
+        let off = hash2(fi, 5.0) * period;
+        let k = ((t + off) / period).floor();
+        let into = t + off - k * period;
+        let seed = fi * 1013.0 + k;
+        let travel = runic_constant("DATA_TRAVEL_MIN") + (runic_constant("DATA_TRAVEL_MAX") - runic_constant("DATA_TRAVEL_MIN")) * hash2(seed, 1.0);
+        (into < travel * 1.6, travel)
+    }
+
+    #[test]
+    fn the_city_s_data_is_a_steady_trickle_both_ways_to_every_kind_of_thing() {
+        // Cyrus, 2026-11-17: all the rain is data, up and down, to and from the city's people,
+        // cyclists, cars, food carts and buildings, a steady trickle (8 to 12 at once).
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        assert!(!wash.contains("code_rain(") && wash.contains("data_rain(p, top,"), "no ambient rain: only the data");
+        let n = wash.lines().find(|l| l.starts_with("constant int DATA_STREAMS = ")).unwrap().rsplit("= ").next().unwrap().trim_end_matches(';').parse::<usize>().unwrap();
+        let (mut sum, mut moments, mut least, mut most) = (0usize, 0usize, usize::MAX, 0usize);
+        let mut t = 0.0f32;
+        while t < 300.0 {
+            let busy = (0..n).filter(|i| data_slot(*i, t).0).count();
+            sum += busy;
+            least = least.min(busy);
+            most = most.max(busy);
+            moments += 1;
+            t += 0.25;
+        }
+        let mean = sum as f32 / moments as f32;
+        // Some fall out of view or find no cart; the slots run a little over the 8 to 12 seen.
+        assert!((8.0..=13.0).contains(&mean), "{mean} transfers on average");
+        assert!(least >= 3 && most <= n, "never an empty sky: {least}..{most}");
+        // Each kind takes a share of the slots, and the two directions about half each.
+        let shares = [runic_constant("DATA_WALKER"), runic_constant("DATA_CAR") - runic_constant("DATA_WALKER"), runic_constant("DATA_BIKE") - runic_constant("DATA_CAR"), runic_constant("DATA_WINDOW") - runic_constant("DATA_BIKE"), 1.0 - runic_constant("DATA_WINDOW")];
+        assert!(shares.iter().all(|s| *s >= 0.05), "{shares:?}");
+        assert!(wash.contains("bool up = hash2(float2(slot.w, 3.0)) < 0.5;"), "up and down alike");
+        // A transfer takes a few seconds: readable, not a blink.
+        assert!(runic_constant("DATA_TRAVEL_MIN") >= 1.5 && runic_constant("DATA_TRAVEL_MAX") <= 5.0);
+    }
+
 }

@@ -617,13 +617,24 @@ constant int STROLLERS = 48;
 constant int CROSS_PEOPLE = 12;
 constant float PERSON_H = 0.16;
 constant float STEPS = 2.2;
-// The sky's code rain: RAIN_SHEETS sheets from RAIN_NEAR out over RAIN_SPAN camera heights, its
-// glyph cells RAIN_COL_W wide and RAIN_CELL_H tall in the world.
-constant int RAIN_SHEETS = 6;
-constant float RAIN_NEAR = 2.0;
-constant float RAIN_SPAN = 24.0;
+// The city's data (Cyrus, 2026-11-17: "the runic rain comes from users uploading and download
+// data ... it goes to and originates from pedestrians, bicyclists, cars, food carts, and
+// buildings"; he chose that all rain is data, that direction alone tells the two apart, and a
+// steady trickle): DATA_STREAMS slots, each starting a transfer every DATA_SLOT_MIN to
+// DATA_SLOT_MAX seconds between the sky and one thing in the city, a walker, a car, a cyclist, a
+// tower's window or a food cart, following it as it moves. A download falls from the sky onto it,
+// an upload rises from it into the sky: a column of glyph cells RAIN_COL_W wide in the world, its
+// bright head crossing it in DATA_TRAVEL_MIN to DATA_TRAVEL_MAX seconds with DATA_TRAIL cells
+// fading behind, and a flicker on the thing as a download lands or an upload leaves.
+constant int DATA_STREAMS = 14;
+constant float DATA_SLOT_MIN = 5.0;
+constant float DATA_SLOT_MAX = 9.0;
+constant float DATA_TRAVEL_MIN = 2.2;
+constant float DATA_TRAVEL_MAX = 3.6;
+constant float DATA_TRAIL = 14.0;
+// How strongly the whole channel shows while its transfer runs, against the packet's 1.
+constant float DATA_CHANNEL = 0.3;
 constant float RAIN_COL_W = 0.22;
-constant float RAIN_CELL_H = 0.3;
 
 float hash2(float2 c) {
     uint ux = uint(int(c.x) + 1048576);
@@ -993,45 +1004,166 @@ float seg_dist(float2 p, float2 a, float2 b) {
     return length(p - a - ab * k);
 }
 
-// The code raining in the digital horizon's sky at p (window points), from top (where it fades
-// in) down to bottom (the horizon), over col. It reaches half the sidebar's height (Cyrus,
-// 2026-11-17: "the runic rain in the background of the graphic to have its height increased to
-// half the pane size"), and it comes on toward the viewer with the city ("make the rain look
-// like it's moving towards the camera too"): RAIN_SHEETS sheets of falling code at depths spread
-// over RAIN_SPAN, each sliding toward the viewer at the floor's speed, so its columns spread out
-// from the vanishing point (vx, bottom) and its glyphs grow as it nears; a sheet fades in far off
-// and out as it passes. f is the scene's focal length, as the city's.
-float3 code_rain(float2 p, float top, float bottom, float vx, float f, float t, float3 green, float3 col) {
-    if (p.y < top || p.y >= bottom) {
-        return col;
+float wrap_view(float z);
+float road_car_at(float dir, float2 key, float t);
+float road_bike_at(float dir, float2 key, float t);
+float2 road_walker_at(float dir, float2 key, float t);
+bool lot_built(int kx, int m);
+bool lot_empty(int kx, int m);
+bool lot_in_park(int kx, int m);
+
+// What kind of thing a transfer joins the sky to, and the share of the slots each takes: a walker,
+// a car, a cyclist, a tower's window or a food cart (its lot found among a few tries, else none).
+constant float DATA_WALKER = 0.34;
+constant float DATA_CAR = 0.56;
+constant float DATA_BIKE = 0.66;
+constant float DATA_WINDOW = 0.9;
+
+// Transfer slot i at t: whether one is under way (x 1), how far through it is (y, 0 to 1 of its
+// travel, on past 1 while its trail drains), its travel's seconds (z), and its seed (w).
+float4 data_slot(int i, float t) {
+    float fi = float(i);
+    float period = mix(DATA_SLOT_MIN, DATA_SLOT_MAX, hash2(float2(fi, 3.0)));
+    float off = hash2(float2(fi, 5.0)) * period;
+    float k = floor((max(t, 0.0) + off) / period);
+    float into = max(t, 0.0) + off - k * period;
+    float seed = fi * 1013.0 + k;
+    float travel = mix(DATA_TRAVEL_MIN, DATA_TRAVEL_MAX, hash2(float2(seed, 1.0)));
+    // A transfer runs for its travel and its trail's draining, then the slot rests till its next.
+    float busy = into < travel * 1.6 ? 1.0 : 0.0;
+    return float4(busy, into / travel, travel, seed);
+}
+
+// The thing a transfer with this seed joins at t: across (x, world), its depth in view (y), its
+// height (z, camera heights: where the stream meets it), and whether it is there (w 1).
+float4 data_end(float seed, float t) {
+    float run = t * GRID_SPEED * GRID_Z;
+    float c = hash2(float2(seed, 2.0));
+    float side = hash2(float2(seed, 6.0)) < 0.5 ? -1.0 : 1.0;
+    float pick = hash2(float2(seed, 7.0));
+    if (c < DATA_WALKER) {
+        float2 key = float2(floor(pick * float(PEOPLE)), side > 0.0 ? 17.0 + 61.0 : 61.0);
+        float dir = hash2(key + 1.0) < 0.5 ? 1.0 : -1.0;
+        float2 at = road_walker_at(dir, key, t);
+        float edge_x = float(ROAD_CELLS) * GRID_X + 0.06;
+        float x = side * edge_x + side * (hash2(key + 7.0) - 0.3) * WALK_W;
+        return float4(x, wrap_view(at.x - run), PERSON_H, 1.0);
     }
-    float lit = 0.0;
-    float fade_top = saturate((p.y - top) / max((bottom - top) * 0.4, 1.0));
-    for (int i = 0; i < RAIN_SHEETS; i++) {
-        float z = RAIN_NEAR + fract(float(i) / float(RAIN_SHEETS) - t * GRID_SPEED * GRID_Z / RAIN_SPAN) * RAIN_SPAN;
-        // Its glyph cells, in the world: as wide as RAIN_COL_W, as tall as RAIN_CELL_H.
-        float px = RAIN_COL_W * f / z;
-        if (px < 2.0) {
+    if (c < DATA_CAR) {
+        float2 key = float2(floor(pick * float(ROAD_CARS)), side > 0.0 ? 13.0 + 31.0 : 31.0);
+        float z = wrap_view(road_car_at(side, key, t) - run);
+        return float4(side * 0.5 * float(ROAD_CELLS) * GRID_X, z, 0.1, 1.0);
+    }
+    if (c < DATA_BIKE) {
+        float2 key = float2(floor(pick * float(ROAD_BIKES)), side > 0.0 ? 13.0 + 141.0 : 141.0);
+        float z = wrap_view(road_bike_at(side, key, t) - run);
+        return float4(side * BIKE_LANE * float(ROAD_CELLS) * GRID_X, z, 0.2, 1.0);
+    }
+    // A lot in the nearer part of the view: a tower's window, or a food cart.
+    bool cart = c >= DATA_WINDOW;
+    int far_row = int(floor((run + Z_FAR) / GRID_Z));
+    int rows = int(ceil((Z_FAR - Z_NEAR) / GRID_Z));
+    for (int n = 0; n < 8; n++) {
+        float h1 = hash2(float2(seed, 11.0 + float(n)));
+        float h2 = hash2(float2(seed, 31.0 + float(n)));
+        int m = far_row - int(float(rows) * mix(0.45, 0.95, h1));
+        int kx = side > 0.0 ? ROAD_CELLS + int(h2 * float(LANES)) : -ROAD_CELLS - 1 - int(h2 * float(LANES));
+        if (((m % CROSS_EVERY) + CROSS_EVERY) % CROSS_EVERY == 0) {
             continue;
         }
-        float seen = (1.0 - smoothstep(RAIN_SPAN * 0.6, RAIN_SPAN, z - RAIN_NEAR)) * smoothstep(RAIN_NEAR, RAIN_NEAR + 2.5, z);
-        float xw = (p.x - vx) * z / f / RAIN_COL_W;
-        float colx = floor(xw) + float(i) * 37.0;
-        // Falling: the cells run down the sheet as the clock goes on.
-        float speed = 2.0 + 3.0 * hash2(float2(colx, 4.0));
-        float yw = (bottom - p.y) * z / f / RAIN_CELL_H + t * speed;
-        float cell_y = floor(yw);
-        float head = floor(fract(hash2(float2(colx, 11.0)) + t * 0.05) * 40.0);
-        float behind = fract((cell_y - head) / 40.0) * 40.0;
-        float trail = behind < 12.0 ? 1.0 - behind / 12.0 : 0.0;
-        float2 fq = float2(fract(xw), fract(yw));
-        float2 bit = floor(float2(fq.x * 5.0, (1.0 - fq.y) * 7.0));
-        float on = (bit.x >= 1.0 && bit.x <= 3.0 && bit.y >= 1.0 && bit.y <= 5.0 && hash2(float2(colx, cell_y) * 7.0 + bit + floor(t / 0.5)) < 0.45) ? 1.0 : 0.0;
-        // Only some columns of a sheet carry a stream, so the sheets show through each other.
-        float carries = hash2(float2(colx, 23.0)) < 0.35 ? 1.0 : 0.0;
-        lit = max(lit, on * trail * carries * seen);
+        float zc = float(m) * GRID_Z - run;
+        float2 cell = float2(float(kx), float(m));
+        if (!cart && lot_built(kx, m)) {
+            float tw = GRID_X * (0.5 + 0.35 * hash2(cell + float2(5.0, 11.0)));
+            float td = GRID_Z * (0.35 + 0.35 * hash2(cell + float2(9.0, 2.0)));
+            float th = 0.6 + (TOWER_MAX - 0.6) * pow(hash2(cell + float2(4.0, 7.0)), 1.6);
+            float tx = (float(kx) + 0.5) * GRID_X;
+            float zf = zc + 0.5 * GRID_Z - 0.5 * td;
+            return float4(tx + (h1 - 0.5) * tw * 0.6, zf, th * mix(0.3, 0.85, h2), 1.0);
+        }
+        if (cart && lot_empty(kx, m) && !lot_in_park(kx, m) && int(floor(hash2(cell + float2(29.0, 7.0)) * 3.0)) == 1) {
+            return float4((float(kx) + 0.5) * GRID_X, zc + 0.5 * GRID_Z + 0.1, 0.22, 1.0);
+        }
     }
-    return mix(col, green, lit * 0.32 * fade_top);
+    return float4(0.0);
+}
+
+// The city's data at p (window points): every transfer under way, its column from the sky's top
+// (top, where it fades in) to the thing it joins, over col. vx and hz are the vanishing point
+// across and the horizon; f the scene's focal length, as the city's.
+float3 data_rain(float2 p, float top, float hz, float vx, float f, float t, float3 green, float3 white_c, float3 col, constant ArkosInputs& u) {
+    if (p.y < top) {
+        return col;
+    }
+    float fade_top = saturate((p.y - top) / max((hz - top) * 0.4, 1.0));
+    float3 head_c = mix(green, white_c, 0.55);
+    for (int i = 0; i < DATA_STREAMS; i++) {
+        float4 slot = data_slot(i, t);
+        if (slot.x < 0.5) {
+            continue;
+        }
+        // A thing in the nearer part of the view: out of it, the transfer tries another or two.
+        float4 e = float4(0.0);
+        for (int n = 0; n < 3; n++) {
+            e = data_end(slot.w * 4.0 + float(n), t);
+            if (e.w > 0.5 && e.y > Z_NEAR + 0.4 && e.y < Z_FAR * 0.45) {
+                break;
+            }
+            e.w = 0.0;
+        }
+        if (e.w < 0.5) {
+            continue;
+        }
+        float sx = vx + e.x * f / e.y;
+        float cw = clamp(RAIN_COL_W * f / e.y, 4.0, 9.0);
+        if (abs(p.x - sx) > cw * 1.8) {
+            continue;
+        }
+        float y_end = hz + f * (1.0 - e.z) / e.y;
+        if (p.y > y_end + cw * 1.8) {
+            continue;
+        }
+        float seen = (1.0 - smoothstep(Z_FAR * 0.32, Z_FAR * 0.45, e.y)) * smoothstep(Z_NEAR + 0.4, Z_NEAR + 1.0, e.y);
+        // Its cells, counted up from the thing: a download's head comes down them, an upload's goes up.
+        float ch = cw * 1.35;
+        float len = max((y_end - top) / ch, 1.0);
+        bool up = hash2(float2(slot.w, 3.0)) < 0.5;
+        float travelled = slot.y * (len + DATA_TRAIL);
+        float head = up ? travelled : len - travelled;
+        float r = (y_end - p.y) / ch;
+        // The flicker on the thing as a download lands on it or an upload leaves it.
+        float meet = up ? (1.0 - smoothstep(0.0, 1.5, travelled)) : smoothstep(len - 1.5, len, travelled) * (1.0 - smoothstep(len + 2.0, len + 4.0, travelled));
+        float glow = exp(-dot(p - float2(sx, y_end), p - float2(sx, y_end)) / (2.0 * cw * cw));
+        col = light_on(col, head_c, glow * meet * 0.6 * seen, u.dark);
+        if (r < 0.0 || r > len || abs(p.x - sx) > cw * 0.5) {
+            continue;
+        }
+        float behind = up ? head - r : r - head;
+        // The whole channel shows faintly while the transfer runs, so the packet reads as going to
+        // or from its thing; the packet runs bright along it.
+        float channel = DATA_CHANNEL * smoothstep(0.0, 0.08, slot.y) * (1.0 - smoothstep(1.35, 1.6, slot.y));
+        bool in_packet = behind >= 0.0 && behind <= DATA_TRAIL;
+        if (!in_packet && channel <= 0.0) {
+            continue;
+        }
+        // A glyph in each cell, changing now and then, as the rain's.
+        float2 fq = float2((p.x - sx) / cw + 0.5, fract(r));
+        float cell_y = floor(r);
+        float2 bit = floor(float2(fq.x * 5.0, fq.y * 7.0));
+        float on = (bit.x >= 1.0 && bit.x <= 3.0 && bit.y >= 1.0 && bit.y <= 5.0 && hash2(float2(slot.w, cell_y) * 7.0 + bit + floor(t / 0.4)) < 0.62) ? 1.0 : 0.0;
+        // Too narrow for a glyph's bits to show (a far thing, a small pane): each cell a soft lit
+        // dash instead, flickering as the glyphs change.
+        if (cw < 7.0) {
+            float2 d = abs(fq - 0.5);
+            float dash = 1.0 - smoothstep(0.28, 0.4, max(d.x * 1.1, d.y));
+            on = dash * (hash2(float2(slot.w, cell_y) * 3.0 + floor(t / 0.4)) < 0.8 ? 1.0 : 0.35);
+        }
+        float trail = in_packet ? 1.0 - behind / DATA_TRAIL : 0.0;
+        float lit = on * max(trail, channel) * seen * fade_top;
+        bool at_head = in_packet && behind < 1.0;
+        col = mix(col, at_head ? head_c : green, lit * (at_head ? 0.9 : 0.6));
+    }
+    return col;
 }
 
 // A person's light at p, standing at screen point foot, px_h points tall, its walk's phase from
@@ -1898,11 +2030,11 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             art = mix(art, col, max(under, 1.0 - saturate(q.y / 60.0)) * (q.y < 60.0 ? 1.0 : 0.0) + under * (q.y >= 60.0 ? 1.0 : 0.0));
             col = mix(col, art, k);
         }
-        // The code's rain, from half the sidebar's height (or the scene's top, if higher) down to
-        // the horizon, softened under the names as the scene is.
-        if (u.scene > 0.5 && band.w >= SCENE_MIN_H) {
+        // The city's data, from half the sidebar's height (or the scene's top, if higher) down to
+        // the things it joins, softened under the names as the scene is.
+        if (u.scene > 0.5 && band.w >= SCENE_MIN_H && p.y < band.y + band.w) {
             float top = min(side.y + side.w * 0.5, band.y);
-            float3 rained = code_rain(p, top, band.y + band.w * HZ_AT, band.x + band.z * 0.5, band.z * 0.9, u.time, green, col);
+            float3 rained = data_rain(p, top, band.y + band.w * HZ_AT, band.x + band.z * 0.5, band.z * 0.9, u.time, green, white_c, col, u);
             float under = p.y < names_end ? 1.0 - UNDER_NAMES : saturate(1.0 - (p.y - names_end) / SOFT_BUFFER) * (1.0 - UNDER_NAMES);
             col = mix(col, mix(rained, col, under), k);
         }
