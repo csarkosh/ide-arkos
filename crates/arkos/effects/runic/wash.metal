@@ -600,20 +600,25 @@ constant float WALK_W = 0.24;
 // and will run a red light even if they barely avoid an accident", "Same thing with
 // pedestrians"; 2026-11-18: "make the pedestrians and bicyclists jaywalk more often as long as
 // they don't get hit by a car or another bicycle", "they will cross the street as soon as the cars
-// have passed", "same thing with the bicyclists"). Each goes the moment its way is clear, worked
-// out from the traffic in `effects::runic`'s tests: a JAYWALK share of the walkers step off against
-// the light at WALK_GO, when a cross street's last car and cyclist have passed the sidewalks'
-// crosswalks, within JAY_SPREAD of each other; the road's cyclists reach the stop line at BIKE_GO,
-// when they have passed the bike lanes, within BIKE_SPREAD, and ride through the red; the cross
-// streets' cyclists set off over the road at CROSS_BIKE_GO, the first moment no road car, road
-// cyclist or walker is in their way, ahead of their green.
+// have passed", "same thing with the bicyclists"; then "walkers and cyclists should start walking
+// before the cars have passed ... They will time their walking so they're already crossing the
+// street as the car is passing"). Each goes at the earliest moment that never puts it in a moving
+// car's or cyclist's lane, lane by lane, found by `effects::runic`'s tests: a JAYWALK share of the
+// walkers step off against the light at WALK_GO, within JAY_SPREAD of each other, while the cross
+// street's last car is still passing their crosswalk; the road's cyclists reach the stop line at
+// BIKE_GO, within BIKE_SPREAD, as that car goes by, and ride through the red; the cross streets'
+// cyclists set off over the road at CROSS_BIKE_GO, ahead of their green, as soon as no road car,
+// road cyclist or walker will be in the lane they are crossing.
 constant float JAYWALK = 0.85;
-constant float WALK_GO = 9.1;
+constant float WALK_GO = 8.85;
 constant float JAY_SPREAD = 0.3;
-constant float WAIT_DEPTH = 1.0;
+constant float WAIT_DEPTH = 1.6;
+constant float CREEP_KEEP = 0.3;
+constant float GUTTER = 0.3;
+constant float CREEP_T = 2.0;
 // How far apart across its sidewalk the road's walkers keep, nearly its whole width.
 constant float WALKER_SPREAD = 0.3;
-constant float BIKE_GO = 8.9;
+constant float BIKE_GO = 8.2;
 constant float BIKE_SPREAD = 0.3;
 constant float CROSS_BIKE_GO = 5.8;
 // The sidewalks (Cyrus, 2026-11-17: "I want the sidewalks more prominent"): paved bands where the
@@ -1673,19 +1678,37 @@ float2 road_walker_at(float dir, float2 key, float t) {
     float laps = brisk ? 1.0 : 2.0;
     float period = laps * SIG_CYCLE;
     float late = min(ROAD_GREEN - AMBER, ROAD_GREEN - cross / v);
-    // Most cross against the light, just behind the cross street's last car; the rest wait.
+    // Most cross against the light, timed to the cross street's last car; the rest wait.
     bool jay = hash2(key + 8.0) < JAYWALK;
     // Where it waits: a jaywalker anywhere in the group gathered up to WAIT_DEPTH back from the
     // curb, so they stand apart (Cyrus, 2026-11-18: "people waiting to cross the street should be
-    // more spread-out in a group"); one who keeps the law waits at the curb, its crossing timed
-    // from there.
+    // more spread-out in a group"); and where it steps off, edged up to CREEP_KEEP of that and as
+    // much as GUTTER off the curb, in the CREEP_T seconds before (Cyrus, 2026-11-18: "The crowds
+    // also get closer to the car as the last few are passing because they are impatient"). One
+    // who keeps the law waits at the curb, its crossing timed from there.
     float back = jay ? WAIT_DEPTH * hash2(key + 9.0) : 0.0;
+    float front = jay ? back * CREEP_KEEP - GUTTER * hash2(key + 10.0) : 0.0;
     float c = floor(hash2(key + 3.0) * laps) * SIG_CYCLE + (jay ? WALK_GO + JAY_SPREAD * hash2(key + 4.0) : late * hash2(key + 4.0));
     float k = floor((t - c) / period);
-    float x = min(v * (t - c - k * period), block);
+    float s = t - c - k * period;
     float j = floor(hash2(key + 5.0) * 8.0) + dir * k;
     float corner = dir > 0.0 ? j * block - WALK_AT : j * block + GRID_Z + WALK_AT;
-    return float2(corner - dir * back + dir * x, x < block ? 1.0 : 0.0);
+    float dist = block - back + front;
+    float walk = dist / v;
+    float creep = max(walk, period - CREEP_T);
+    float x;
+    bool moving;
+    if (s < walk) {
+        x = v * s;
+        moving = true;
+    } else if (s < creep || back <= front) {
+        x = dist;
+        moving = false;
+    } else {
+        x = dist + (back - front) * (s - creep) / (period - creep);
+        moving = true;
+    }
+    return float2(corner - dir * front + dir * x, moving ? 1.0 : 0.0);
 }
 
 // A stroller on the road's sidewalk (Cyrus, 2026-11-17: the people "distributed so the pedestrian

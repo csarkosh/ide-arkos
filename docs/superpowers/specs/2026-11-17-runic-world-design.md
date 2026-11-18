@@ -319,3 +319,16 @@ line, half of them on top of another (within a person's width across and a body'
 view's repeat every four blocks counted). Now a jaywalker waits anywhere up to 1.0 back from the
 curb (WAIT_DEPTH; one who keeps the law waits at the curb, its crossing timed from there) and the
 walkers use nearly the sidewalk's whole width (WALKER_SPREAD 0.3, was 0.24): 6 per cent overlap.
+
+Cyrus, later on 2026-11-18: "walkers and cyclists should start walking before the cars have
+passed. NYC people are crazy. They will time their walking so they're already crossing the street
+as the car is passing. The crowds also get closer to the car as the last few are passing because
+they are impatient when waiting to cross the street. Also, the crowds waiting to cross the street
+are not spread out enough." Each step-off is now the earliest moment that never puts anyone in a
+moving car's or cyclist's lane, lane by lane, searched at a hundredth of a second: walkers at
+8.85 s (the last car clears their crosswalk at 9.05), the road's cyclists at their stop line at
+8.2 s, the cross streets' cyclists at 5.8 s. A jaywalker waits up to 1.6 back from the curb
+(WAIT_DEPTH) and in the last 2 s (CREEP_T) edges up to 0.3 of that (CREEP_KEEP), the front of the
+crowd up to 0.3 off the curb (GUTTER), short of the cross street's near lane. Under 3 per cent of
+the waiting people overlap another. The searches made the runic tests about ten times slower
+(13 s, in parallel with the rest of the suite).
