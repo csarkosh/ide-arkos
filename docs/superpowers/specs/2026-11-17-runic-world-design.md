@@ -255,10 +255,12 @@ transfer for 0.6 of a 2.5 to 6 second cycle, down or up, to whoever is on the gr
 where a sidewalk (0.6 of picks), a bike lane (0.15) or a car lane (0.25) passes under the column; a
 column's x says how deep that line lies, so each pixel works out only its own column, however many
 run (`data_drizzle`; `effects::runic` mirrors it: 25 or more at once on a 260 point sidebar, never
-fewer than 12). Each is a lit dash a cell, a bright head and 9 cells fading behind, at 0.4, with a
+fewer than 12). Each is a lit dash a cell, a bright head and 9 cells fading behind, at 0.32, with a
 flicker on the thing as it lands or leaves. To keep it calm the glyphs and dashes change once every
 1.2 seconds rather than every 0.3 to 0.4, the fourteen's channel is a hint (0.2) and their glow soft
-(0.3): the moving trails carry the rain.
+(0.3): the moving trails carry the rain. Both layers were then made a little dimmer ("make the
+rain slightly dimmer in the graphic"): the small ones at 0.32, the fourteen at 0.8 of their light
+(`DATA_LIGHT`).
 
 ## The subway
 

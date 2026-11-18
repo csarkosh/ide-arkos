@@ -960,6 +960,11 @@ mod tests {
         assert!(rain[..rain.find("\n}\n").unwrap()].contains("data_drizzle(p, top,"), "drawn with the city's data");
         assert!(runic_constant("DRIZZLE_W") <= 4.0, "small: a few points a column");
         assert!(runic_constant("DRIZZLE_LIGHT") <= 0.45, "many, so each is quiet");
+        // Cyrus, 2026-11-17, in the sandbox: "make the rain slightly dimmer in the graphic".
+        assert!(runic_constant("DRIZZLE_LIGHT") <= 0.33 && runic_constant("DATA_LIGHT") <= 0.82, "a little dimmer, both layers");
+        let rain = &wash[wash.find("float3 data_rain(").unwrap()..];
+        let rain = &rain[..rain.find("\n}\n").unwrap()];
+        assert!(rain.matches("DATA_LIGHT").count() >= 3, "the trails, the glow and the flicker on the thing all dimmed");
         let drizzle = &wash[wash.find("float3 data_drizzle(").unwrap()..];
         assert!(drizzle[..drizzle.find("\n}\n").unwrap()].contains("floor(t / DATA_FLICKER)"), "its dashes change as slowly as the glyphs");
         // ROAD_CELLS is 1 in the wash, which the mirror takes as read.

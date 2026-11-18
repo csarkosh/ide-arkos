@@ -650,6 +650,9 @@ constant float DATA_FLICKER = 1.2;
 // radius in column widths; and how many things in view a transfer looks among before it draws
 // nothing.
 constant float DATA_HALO = 0.3;
+// The fourteen transfers' brightness, trails, heads and glows alike (Cyrus, 2026-11-17: "make the
+// rain slightly dimmer in the graphic").
+constant float DATA_LIGHT = 0.8;
 constant float DATA_HALO_R = 0.8;
 constant float DATA_TRIES = 5.0;
 constant float RAIN_COL_W = 0.22;
@@ -1143,7 +1146,7 @@ constant float DRIZZLE_ON = 0.6;
 constant float DRIZZLE_WALK = 0.6;
 constant float DRIZZLE_BIKE = 0.75;
 constant float DRIZZLE_TRAIL = 9.0;
-constant float DRIZZLE_LIGHT = 0.4;
+constant float DRIZZLE_LIGHT = 0.32;
 
 // Where small column ci (DRIZZLE_W points wide, w, of a scene with focal length f) lands for the
 // transfer with this seed: its depth (x) and the height it meets (y, camera heights), or y < 0
@@ -1262,13 +1265,13 @@ float3 data_rain(float2 p, float top, float hz, float vx, float f, float t, floa
         // The flicker on the thing as a download lands on it or an upload leaves it.
         float meet = up ? (1.0 - smoothstep(0.0, 1.5, travelled)) : smoothstep(len - 1.5, len, travelled) * (1.0 - smoothstep(len + 2.0, len + 4.0, travelled));
         float glow = exp(-dot(p - float2(sx, y_end), p - float2(sx, y_end)) / (2.0 * cw * cw));
-        col = light_on(col, head_c, glow * meet * 0.6 * seen, u.dark);
+        col = light_on(col, head_c, glow * meet * 0.6 * seen * DATA_LIGHT, u.dark);
         // The packet's glow, round its head while the head is on the channel.
         if (head >= 0.0 && head <= len) {
             float2 hp = float2(sx, y_end - head * ch);
             float hr = cw * DATA_HALO_R;
             float halo = exp(-dot(p - hp, p - hp) / (2.0 * hr * hr));
-            col = light_on(col, head_c, halo * DATA_HALO * seen * fade_top, u.dark);
+            col = light_on(col, head_c, halo * DATA_HALO * seen * fade_top * DATA_LIGHT, u.dark);
         }
         if (r < 0.0 || r > len || abs(p.x - sx) > cw * 0.5) {
             continue;
@@ -1294,7 +1297,7 @@ float3 data_rain(float2 p, float top, float hz, float vx, float f, float t, floa
             on = dash * (hash2(float2(slot.w, cell_y) * 3.0 + floor(t / DATA_FLICKER)) < 0.8 ? 1.0 : 0.35);
         }
         float trail = in_packet ? 1.0 - behind / DATA_TRAIL : 0.0;
-        float lit = on * max(trail, channel) * seen * fade_top;
+        float lit = on * max(trail, channel) * seen * fade_top * DATA_LIGHT;
         bool at_head = in_packet && behind < 1.0;
         col = mix(col, at_head ? head_c : green, lit * (at_head ? 0.9 : 0.6));
     }
