@@ -659,6 +659,9 @@ pub struct Root {
     pub url_prompt_focus: FocusHandle,
     /// A tab being renamed in place (double-click on its title); its editor holds the keys.
     pub tab_rename: Option<pane_view::TabRename>,
+    /// A session's row being renamed in place (its menu's Rename); its editor holds the keys.
+    pub row_rename: Option<sessions_list::RowRename>,
+    pub row_rename_focus: FocusHandle,
     pub tab_rename_focus: FocusHandle,
     /// Whether this is the key window, read each frame; the pulse ticks only while it is.
     pub window_active: bool,
@@ -879,6 +882,9 @@ impl Root {
             Some(ws) => ws.tree,
             None => Tree::empty(),
         };
+        // Sessions' names apart from their tabs' (a file from before takes them once).
+        let mut tree = tree;
+        tree.split_names();
         let mut sessions = SessionManager::new(client.clone(), Some(client), project.clone());
         let t = &config.terminal;
         sessions.set_defaults(t.scrollback, t.shell.clone(), t.nice);
@@ -1078,6 +1084,8 @@ impl Root {
             url_prompt: Transient::Hidden,
             url_prompt_focus: cx.focus_handle(),
             tab_rename: None,
+            row_rename: None,
+            row_rename_focus: cx.focus_handle(),
             tab_rename_focus: cx.focus_handle(),
             window_active: true,
             effects_paused: false,
@@ -2412,8 +2420,10 @@ impl Root {
                 let idx = self.tree.add_tab(pane, Tab::Terminal { session: SessionId(0), cwd: e.cwd.clone() });
                 telemetry::pane_open(telemetry::PaneKind::Terminal, telemetry::Opened::Click);
                 self.tree.focus(pane);
+                if let Some(page) = self.tree.page_of(pane) {
+                    self.tree.set_session_name(page, Some(e.name));
+                }
                 if let Some(id) = self.tree.tab_id(pane, idx) {
-                    self.tree.set_tab_name(id, Some(e.name));
                     self.resume_input.insert(id, sessions_list::resume_line(&e.resume));
                     self.start_shell(id, e.cwd, false);
                 }
@@ -3054,7 +3064,7 @@ impl Root {
     }
 
     /// What a session row's menu does (`sessions_list::menu_items`), for the row of `page`.
-    pub fn session_row_action(&mut self, page: tree::PageKey, action: sessions_list::RowAction, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn session_row_action(&mut self, page: tree::PageKey, action: sessions_list::RowAction, _window: &mut Window, cx: &mut Context<Self>) {
         use sessions_list::RowAction;
         // What the user says of a session is shown at once, wherever the row was held.
         if self.held.is_some_and(|h| h.0 == page) {
@@ -3063,14 +3073,9 @@ impl Root {
         let terms: Vec<SessionId> = self.tree.page_tabs(page).into_iter().filter_map(|(_, _, t)| if let Tab::Terminal { session, .. } = t { Some(*session) } else { None }).collect();
         let lead = self.page_row(page).map(|e| e.session);
         match action {
-            RowAction::Rename => {
-                // The original terminal: the oldest on the page.
-                let first = self.tree.page_tabs(page).into_iter().filter(|(_, _, t)| matches!(t, Tab::Terminal { .. })).min_by_key(|(pane, idx, _)| self.tree.tab_id(*pane, *idx));
-                if let Some((pane, idx, _)) = first {
-                    self.activate_tab(pane, idx, cx);
-                    self.begin_tab_rename(pane, idx, window, cx);
-                }
-            }
+            // In place on the row, the session's own name (Cyrus, 2026-11-18: "It should not
+            // rename the tab in the other panes").
+            RowAction::Rename => self.begin_row_rename(page, cx),
             RowAction::End => self.end_page(page, cx),
             RowAction::Move(to) => {
                 // Unread marks the lead alone, which a look then clears; every other section
@@ -3293,7 +3298,8 @@ impl Root {
         // A Claude Code session is kept under the list's Done, to be resumed from there.
         if let Some(Tab::Terminal { session, cwd }) = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).cloned() {
             if let Some(agent) = self.sessions.agents.get(&session).cloned() {
-                let name = self.tree.tab_name(id).map(str::to_string).or_else(|| self.sessions.labels.get(&session).map(|l| l.title.clone()).filter(|t| !t.is_empty())).unwrap_or_else(|| self.shell_name.clone());
+                let named = self.tree.page_of(pane).and_then(|p| self.tree.session_name(p)).map(str::to_string);
+                let name = named.or_else(|| self.sessions.labels.get(&session).map(|l| l.title.clone()).filter(|t| !t.is_empty())).unwrap_or_else(|| self.shell_name.clone());
                 let line = self.sessions.note_of(session).unwrap_or_default().to_string();
                 sessions_list::keep_ended(&mut self.ended, sessions_list::Ended { session: session.0, name, line, cwd, resume: agent.resume, ended: sessions::now_ms() });
             }
@@ -4028,10 +4034,53 @@ impl Root {
         if self.tree.pane(pane).is_some_and(|p| matches!(p.tabs.get(p.active), Some(Tab::Browser { .. }))) {
             return;
         }
+        self.commit_row_rename(cx);
         let mut edit = crate::line_edit::LineEdit::new();
         edit.set(self.tree.tab_name(tab).unwrap_or_default());
         self.tab_rename = Some(pane_view::TabRename { pane, tab, edit });
         window.focus(&self.tab_rename_focus);
+        cx.notify();
+    }
+
+    /// A session row's Rename: its name becomes an editor holding the name the user gave it (or
+    /// nothing, while it shows its automatic name).
+    pub fn begin_row_rename(&mut self, page: tree::PageKey, cx: &mut Context<Self>) {
+        self.commit_tab_rename(cx);
+        let mut edit = crate::line_edit::LineEdit::new();
+        edit.set(self.tree.session_name(page).unwrap_or_default());
+        self.row_rename = Some(sessions_list::RowRename { page, edit });
+        cx.notify();
+    }
+
+    /// A key in a row's rename editor: Enter keeps the name, Escape drops the edit, Cmd+V pastes.
+    pub fn row_rename_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
+        let Some(r) = self.row_rename.as_mut() else { return };
+        if ks.modifiers.platform && ks.key == "v" {
+            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                r.edit.insert_str(&text);
+                cx.notify();
+            }
+            return;
+        }
+        match r.edit.handle(ks) {
+            crate::line_edit::Edit::Submit | crate::line_edit::Edit::SubmitBack => self.commit_row_rename(cx),
+            crate::line_edit::Edit::Cancel => {
+                self.row_rename = None;
+                cx.notify();
+            }
+            crate::line_edit::Edit::Changed => cx.notify(),
+            _ => {}
+        }
+    }
+
+    /// Enter, or a press elsewhere: the typed name is the session's, saved with the layout; a
+    /// blank one gives it its automatic name back. The tabs keep theirs.
+    pub fn commit_row_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(r) = self.row_rename.take() else { return };
+        if self.tree.page_keys().contains(&r.page) {
+            self.tree.set_session_name(r.page, Some(r.edit.text.clone()));
+            self.save(cx);
+        }
         cx.notify();
     }
 
@@ -6379,6 +6428,8 @@ impl Render for Root {
             Some(self.url_prompt_focus.clone())
         } else if self.tab_rename.is_some() {
             Some(self.tab_rename_focus.clone())
+        } else if self.row_rename.is_some() {
+            Some(self.row_rename_focus.clone())
         } else if self.remind_picker.value().is_some() {
             Some(self.remind_focus.clone())
         } else if self.bar_ring.is_some() {
@@ -6539,6 +6590,7 @@ impl Render for Root {
                     }
                     // A press outside the rename editor (it stops its own) keeps what was typed.
                     root.commit_tab_rename(cx);
+                    root.commit_row_rename(cx);
                 }),
             )
             // A right-click menu (the tree's, a worktree's or a terminal link's) or a popover (the

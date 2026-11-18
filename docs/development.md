@@ -1134,6 +1134,10 @@ Things only a person at the screen can check, in order of value:
   hovering an icon shows a tooltip naming its menu and what is in it, but not while that icon's
   own menu is open; a click on the question mark opens Help with nothing marked and no ring on the
   icon, the keys left in the pane (arrows and typing reach it), and Escape closes the menu
+- session names: right-click a session row, Rename: the row's name becomes an editor with the
+  keys in it, Enter keeps the name and the session's tab keeps its own title; double-click the
+  tab and rename it: the row keeps its name; a blank row name follows Claude's topic again; both
+  names survive a relaunch, and names given before this release show on both as before
 - row click glow: typing in Claude in Pane 1, click another session's row: the glow stays lit
   on Pane 1 through the switch, never on Pane 0, never dimming, and typing reaches the new session
 - bar clicks: typing in Claude, click the bell: its menu opens, the glow stays on the pane,

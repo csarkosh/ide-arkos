@@ -61,7 +61,7 @@ label in place of its age, until you look at it; a repeating one then goes back 
 Scheduled until its next time, once you choose another session. A moved session stays there
 until its agent next does something (a new answer, a prompt, a question or a permission), and
 then follows it again; Unread lasts until you next look at it. The same menu renames the
-session (the row shows the name as you type it) or ends it (each terminal closes as Cmd+W closes it, with the same minute in which
+session in place on its row (Enter keeps it, Escape drops the edit, a blank name follows Claude's topic again; the session's tabs keep their own names) or ends it (each terminal closes as Cmd+W closes it, with the same minute in which
 Shift+Cmd+T brings it back, and the session's other tabs close with the last). A session put
 away comes back by itself when Claude next stops or needs you. The Dock icon counts the sessions that
 need you or are unread. A Claude Code session whose tab you close (End, or Cmd+W) is kept under
@@ -864,7 +864,7 @@ Notes:
 - Double-click a tab's title to rename it: Enter keeps the name, Escape drops the edit, a click
   elsewhere keeps it, a blank name brings the automatic title back. The name is saved with the
   layout (it survives a relaunch and an update, and follows the tab between panes) and goes
-  when the tab closes.
+  when the tab closes. It names the tab alone: the session's row in Pane 0 keeps its own name.
 - Every binding can be changed in the config file; see Config. A shifted symbol can be written
   as Shift plus the plain key (`ctrl-shift-\``) or as the character itself (`ctrl-~`): macOS
   reports the character, and both spellings are the same binding.

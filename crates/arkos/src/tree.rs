@@ -196,6 +196,15 @@ pub struct Tree {
     /// pages on load (`inbox::into_pages`). A new tree is.
     #[serde(default)]
     pub paged: bool,
+    /// Names the user gave sessions (a row's Rename in Pane 0), by page, apart from the tabs'
+    /// own (Cyrus, 2026-11-18: renaming a session "should not rename the tab", and the other way
+    /// round).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    session_names: Vec<(PageKey, String)>,
+    /// Whether the session names are apart from the tabs': false for a file from before, whose
+    /// sessions take their first terminal's tab name once on load (`split_names`). A new tree is.
+    #[serde(default)]
+    pub names_split: bool,
 }
 
 /// A session's page while another is shown: its panes as they were, and where its focus was.
@@ -419,13 +428,13 @@ fn split_rects(bounds: Rect, orientation: Orientation, ratio: f32, first: &Node,
 impl Tree {
     pub fn new(first: Tab) -> Tree {
         let pane = Pane { id: 1, tabs: vec![first], active: 0, mru: vec![0], ids: vec![2] };
-        Tree { root: Node::Leaf(pane), next_id: 3, focused: 1, maximized: None, names: Vec::new(), page: 0, pages: Vec::new(), paged: true }
+        Tree { root: Node::Leaf(pane), next_id: 3, focused: 1, maximized: None, names: Vec::new(), page: 0, pages: Vec::new(), paged: true, session_names: Vec::new(), names_split: true }
     }
 
     /// One pane with no tabs: what a folder with no saved layout opens on, the empty screen.
     pub fn empty() -> Tree {
         let pane = Pane { id: 1, tabs: Vec::new(), active: 0, mru: Vec::new(), ids: Vec::new() };
-        Tree { root: Node::Leaf(pane), next_id: 2, focused: 1, maximized: None, names: Vec::new(), page: 0, pages: Vec::new(), paged: true }
+        Tree { root: Node::Leaf(pane), next_id: 2, focused: 1, maximized: None, names: Vec::new(), page: 0, pages: Vec::new(), paged: true, session_names: Vec::new(), names_split: true }
     }
 
     /// Closes `pane` when it has no tabs left, unless it is the last one, which stays and shows
@@ -644,6 +653,40 @@ impl Tree {
         }
     }
 
+    /// The name the user gave the session on page `page`, if any; its automatic name shows
+    /// otherwise.
+    pub fn session_name(&self, page: PageKey) -> Option<&str> {
+        self.session_names.iter().find(|(p, _)| *p == page).map(|(_, n)| n.as_str())
+    }
+
+    /// Sets a session's name; blank clears it, so the automatic name shows again.
+    pub fn set_session_name(&mut self, page: PageKey, name: Option<String>) {
+        self.session_names.retain(|(p, _)| *p != page);
+        if let Some(n) = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()) {
+            self.session_names.push((page, n));
+        }
+    }
+
+    /// For a layout from before session names (`names_split` false): each page takes its first
+    /// terminal's tab name as its session's, once, so no name the user gave changes. Names of
+    /// pages no longer here go.
+    pub fn split_names(&mut self) {
+        let keys = self.page_keys();
+        self.session_names.retain(|(p, _)| keys.contains(p));
+        if self.names_split {
+            return;
+        }
+        for page in keys {
+            let first = self.page_tabs(page).into_iter().filter(|(_, _, t)| matches!(t, Tab::Terminal { .. })).filter_map(|(pane, idx, _)| self.tab_id(pane, idx)).min();
+            if let Some(name) = first.and_then(|id| self.tab_name(id)).map(str::to_string) {
+                if self.session_name(page).is_none() {
+                    self.session_names.push((page, name));
+                }
+            }
+        }
+        self.names_split = true;
+    }
+
     /// Removes a tab for moving elsewhere, with its id so the move keeps it. Same removal as
     /// `close_tab`; the name says the intent.
     pub fn take_tab(&mut self, pane: PaneId, idx: usize) -> Option<(TabId, Tab)> {
@@ -799,6 +842,7 @@ impl Tree {
     /// Closes page `key` and every tab on it. When it is the page shown, `then` is shown in its
     /// place, else the empty screen.
     pub fn close_page(&mut self, key: PageKey, then: Option<PageKey>) {
+        self.session_names.retain(|(p, _)| *p != key);
         if key != self.page {
             self.pages.retain(|p| p.key != key);
             return;
@@ -1588,6 +1632,53 @@ mod tests {
         assert!(t.close_pane(c));
         assert_eq!(t.panes(), vec![a]);
         assert!(t.layout(bounds()).handles.is_empty());
+    }
+
+    #[test]
+    fn a_session_s_name_is_its_own_and_a_tab_s_rename_leaves_it() {
+        let mut t = Tree::new(Tab::Terminal { session: SessionId(1), cwd: None });
+        let page = t.page;
+        let id = t.tab_id(t.panes()[0], 0).unwrap();
+        t.set_session_name(page, Some("  IDE  ".into()));
+        assert_eq!(t.session_name(page), Some("IDE"), "trimmed");
+        assert_eq!(t.tab_name(id), None, "the tab keeps its automatic title");
+        t.set_tab_name(id, Some("build".into()));
+        assert_eq!(t.session_name(page), Some("IDE"), "a tab's rename leaves the session's name");
+        t.set_session_name(page, Some("  ".into()));
+        assert_eq!(t.session_name(page), None, "blank gives the automatic name back");
+        assert_eq!(t.tab_name(id), Some("build"), "and leaves the tab's");
+    }
+
+    #[test]
+    fn a_session_s_name_is_saved_with_the_layout_and_goes_with_its_page() {
+        let mut t = Tree::new(Tab::Terminal { session: SessionId(1), cwd: None });
+        let first = t.page;
+        t.set_session_name(first, Some("IDE".into()));
+        let back: Tree = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        assert_eq!(back.session_name(first), Some("IDE"));
+        let pane = t.blank_page();
+        t.add_tab(pane, Tab::Terminal { session: SessionId(2), cwd: None });
+        let second = t.page;
+        t.set_session_name(second, Some("Game".into()));
+        t.close_page(first, None);
+        t.close_page(second, None);
+        assert_eq!((t.session_name(first), t.session_name(second)), (None, None));
+    }
+
+    #[test]
+    fn a_layout_from_before_copies_each_page_s_tab_name_to_its_session_once() {
+        let mut t = Tree::new(Tab::Terminal { session: SessionId(1), cwd: None });
+        let page = t.page;
+        let id = t.tab_id(t.panes()[0], 0).unwrap();
+        t.set_tab_name(id, Some("IDE".into()));
+        let json = serde_json::to_string(&t).unwrap();
+        assert!(json.contains("\"names_split\":true"), "a new layout needs no copy");
+        let mut old: Tree = serde_json::from_str(&json.replace("\"names_split\":true", "\"names_split\":false")).unwrap();
+        old.split_names();
+        assert_eq!((old.session_name(page), old.tab_name(id)), (Some("IDE"), Some("IDE")), "both keep the name");
+        old.set_session_name(page, Some("Arkos".into()));
+        old.split_names();
+        assert_eq!(old.session_name(page), Some("Arkos"), "copied once");
     }
 
     #[test]

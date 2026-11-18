@@ -226,6 +226,19 @@ pub fn shown_name(saved: Option<&str>, typing: Option<&str>, title: Option<&str>
     given.or(title.filter(|t| !t.is_empty())).unwrap_or(shell).to_string()
 }
 
+/// The name a session's row shows (Cyrus, 2026-11-18: a session's and a tab's names are their
+/// own): while its row is renamed, what is typed so far; else the name the user gave the session;
+/// else its automatic one, its first terminal's title (Claude's topic) or the shell's.
+pub fn row_name(session: Option<&str>, typing: Option<&str>, automatic: &str) -> String {
+    shown_name(session, typing, Some(automatic), automatic)
+}
+
+/// A session's row being renamed in place (its menu's Rename); its editor holds the keys.
+pub struct RowRename {
+    pub page: PageKey,
+    pub edit: crate::line_edit::LineEdit,
+}
+
 /// What a terminal's title says that its name does not, for a row's second line: Claude Code
 /// titles its terminal with the conversation's topic, behind a glyph that moves while it works.
 /// None for no title, the name itself or the shell's.
@@ -510,8 +523,8 @@ pub fn entries(root: &Root, now: u64) -> Vec<Entry> {
                 let Tab::Terminal { session, cwd } = tab else { return None };
                 let id = tree.tab_id(pane, idx)?;
                 let label = root.sessions.labels.get(session);
-                let typing = root.tab_rename.as_ref().filter(|r| r.tab == id).map(|r| r.edit.text.as_str());
-                let name = shown_name(tree.tab_name(id), typing, label.map(|l| l.title.as_str()), &root.shell_name);
+                // The automatic name: a tab's own name is the tab's alone.
+                let name = shown_name(None, None, label.map(|l| l.title.as_str()), &root.shell_name);
                 let folder = || {
                     let dir = cwd.as_deref().unwrap_or(&root.project);
                     dir.file_name().map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().into_owned())
@@ -530,7 +543,11 @@ pub fn entries(root: &Root, now: u64) -> Vec<Entry> {
             Some(Tab::Terminal { session, .. }) => Some(*session),
             _ => None,
         });
-        out.extend(page_entry(page, terms, focused, root.reminders.get(&page), now));
+        let typing = root.row_rename.as_ref().filter(|r| r.page == page).map(|r| r.edit.text.as_str());
+        out.extend(page_entry(page, terms, focused, root.reminders.get(&page), now).map(|mut e| {
+            e.name = row_name(tree.session_name(page), typing, &e.name);
+            e
+        }));
     }
     out.extend(root.ended.iter().enumerate().map(|(i, e)| Entry {
         ended: Some(i),
@@ -688,7 +705,24 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
                                 .items_center()
                                 .gap(px(6.0))
                                 .line_height(px(style.ui(18.0)))
-                                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(name_color).when(bold, |d| d.font_weight(gpui::FontWeight::BOLD)).child(e.name))
+                                .child(match root.row_rename.as_ref().filter(|r| r.page == e.page && e.ended.is_none()) {
+                                    // Renamed in place: the name is an editor holding the keys.
+                                    Some(r) => div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .key_context("RowRename")
+                                        .track_focus(&root.row_rename_focus)
+                                        // A press in the field is not a press on the row.
+                                        .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation())
+                                        .on_key_down(cx.listener(|root, ev: &gpui::KeyDownEvent, _window, cx| {
+                                            cx.stop_propagation();
+                                            root.row_rename_key(&ev.keystroke, cx);
+                                        }))
+                                        .child(crate::line_edit::render(&r.edit, "session name", &theme, root.ui_family(), style.ui(13.0)))
+                                        .into_any_element(),
+                                    None => div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(name_color).when(bold, |d| d.font_weight(gpui::FontWeight::BOLD)).child(e.name).into_any_element(),
+                                })
                                 .when(reminded, |d| d.child(div().flex_none().px(px(5.0)).rounded(px(4.0)).border_1().border_color(c.focus_ring.hsla()).text_size(px(style.ui(10.0))).text_color(c.text.hsla()).child("Reminder")))
                                 .when(badge == Badge::Scheduled, |d| d.child(div().flex_none().px(px(5.0)).rounded(px(4.0)).border_1().border_color(c.border.hsla()).text_size(px(style.ui(10.0))).text_color(dim).child("Scheduled")))
                                 .when(!reminded && !when.is_empty(), |d| d.child(div().flex_none().text_size(px(style.ui(11.0))).text_color(dim).child(when))),
@@ -999,6 +1033,14 @@ mod tests {
         assert_eq!(hold(back.clone(), Some((1, Attention::Unread)))[0].group, Attention::Unread);
         assert_eq!(hold(back, Some((2, Attention::Unread)))[1].group, Attention::Working);
         assert_eq!(groups(None), vec![(Attention::Unread, vec![2]), (Attention::Unanswered, vec![1, 3])]);
+    }
+
+    #[test]
+    fn a_row_shows_its_session_s_name_else_its_automatic_one() {
+        assert_eq!(row_name(Some("IDE"), None, "Arkos layouts"), "IDE");
+        assert_eq!(row_name(None, None, "Arkos layouts"), "Arkos layouts", "unnamed, it follows Claude's topic");
+        assert_eq!(row_name(Some("IDE"), Some("Game"), "Arkos layouts"), "Game", "the typing on the row, live");
+        assert_eq!(row_name(Some("IDE"), Some(" "), "Arkos layouts"), "Arkos layouts");
     }
 
     #[test]
