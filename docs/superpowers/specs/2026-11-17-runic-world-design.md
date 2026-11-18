@@ -364,14 +364,16 @@ the late crossers, held up now and then by a cyclist, step off by 9.9 s. It cost
 ## Sidewalk sheds and scaffolding
 
 Cyrus, 2026-11-18: "the Matrix City needs some scaffolding alongside some buildings so it feels
-more like NYC." He chose sidewalk sheds, some with scaffolding above (over sheds only, or
-scaffolding only). About three in ten of the towers beside the road wear a sidewalk shed: a pipe
+more like NYC." He chose sidewalk sheds, some with scaffolding above, over sheds alone or
+scaffolding alone. About three in ten of the towers beside the road wear a sidewalk shed: a pipe
 canopy over the road's sidewalk along the tower's road side, from its front face to its back,
 its deck above a person's head, its posts standing on the sidewalk at the curb, never in the road.
 About one in three of those also has scaffolding up the tower's road side: standards and a ledger
 at each floor, a few floors up, never above the roof. The people on the sidewalk walk under the
 deck. Only the towers beside the road have a sidewalk to shelter, so only they wear one, which
-keeps the cost to a few segments per pixel near them.
+keeps the cost to a few segments per pixel near them. The deck has a faint fill of boards seen from above, so it reads as a
+roof over the sidewalk rather than a fence along it. The wash measured 5.02 ms a frame at 1200 by
+800 before and 4.92 ms after, within the bench's run-to-run noise.
 
 Approaches: drawn with the tower that wears it (chosen), from its own lot and the tower's box, so
 it can never stand apart from its building; or a layer of its own over the scene, rejected since

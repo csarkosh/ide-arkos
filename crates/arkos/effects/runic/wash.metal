@@ -650,6 +650,19 @@ constant float SIDEWALK_CURB_LIGHT = 0.6;
 constant float CART_W = 0.16;
 constant float CART_FRONT = 0.1;
 constant float CART_GAP = 0.13;
+// Sidewalk sheds (Cyrus, 2026-11-18: "some scaffolding alongside some buildings so it feels more
+// like NYC"; he chose sheds, some with scaffolding above): SHED_SHARE of the towers beside the road
+// wear a pipe canopy over the road's sidewalk along their road side, its deck SHED_H up (over the
+// people's heads), its posts SHED_POST apart on a line SHED_IN inside the curb; SCAFFOLD_SHARE of
+// those have scaffolding up the tower's road side, a ledger every SCAFFOLD_FLOOR, up to
+// SCAFFOLD_FLOORS floors over the deck and never above the roof.
+constant float SHED_SHARE = 0.3;
+constant float SHED_H = 0.22;
+constant float SHED_POST = 0.2;
+constant float SHED_IN = 0.03;
+constant float SCAFFOLD_SHARE = 0.33;
+constant float SCAFFOLD_FLOOR = 0.25;
+constant float SCAFFOLD_FLOORS = 4.0;
 // People: PEOPLE walkers and STROLLERS strollers on each of the road's sidewalks, CROSS_PEOPLE on
 // each of a cross street's two,
 // PERSON_H camera heights tall, their legs swinging STEPS times a second while they walk.
@@ -1514,6 +1527,63 @@ float3 park_at(float2 p, int kx, int m, float zc, float cx, float yh, float f, f
 float person_light(float2 p, float2 foot, float px_h, float t, float h, bool walking);
 float car_light(float2 p, float2 s, float r);
 
+// A point in the world (x across, height y in camera heights, depth z) on the screen, by the
+// scene's projection (cx, yh, f).
+float2 world_on_screen(float x, float y, float z, float cx, float yh, float f) {
+    return float2(cx + x * f / z, yh + f * (1.0 - y) / z);
+}
+
+// A sidewalk shed along a tower's road side at p over col: the posts' line at sx and the tower's
+// face at fx (world x, on the tower's side of the road), from depth z0 to z1, its deck SHED_H up and
+// any scaffolding up the face to top. Pipes are lines of the city's green.
+float3 shed_at(float2 p, float sx, float fx, float z0, float z1, float top, float cx, float yh, float f, float seen, float3 green, constant ArkosInputs& u, float3 col) {
+    #define W(x, y, z) world_on_screen(x, y, z, cx, yh, f)
+    // Only a pixel in the box the shed covers on the screen can be on it.
+    float2 a = W(sx, top, z0), b = W(fx, 0.0, z0), c = W(sx, top, z1), d = W(fx, 0.0, z1);
+    float2 lo = min(min(a, b), min(c, d)) - 1.5, hi = max(max(a, b), max(c, d)) + 1.5;
+    if (p.x < lo.x || p.x > hi.x || p.y < lo.y || p.y > hi.y) {
+        return col;
+    }
+    // The deck's boards, seen from above: a faint fill of the canopy between its rails, so it
+    // reads as a roof over the sidewalk rather than a fence along it.
+    if (p.y > yh) {
+        float dz = f * (1.0 - SHED_H) / (p.y - yh);
+        float dx = (p.x - cx) * dz / f;
+        if (dz > z0 && dz < z1 && dx > min(sx, fx) && dx < max(sx, fx)) {
+            col = light_on(col, green, 0.14 * seen, u.dark);
+        }
+    }
+    // The deck: a rail along the curb side, one along the face and one across its front.
+    float deck = min(min(seg_dist(p, W(sx, SHED_H, z0), W(sx, SHED_H, z1)), seg_dist(p, W(fx, SHED_H, z0), W(fx, SHED_H, z1))), seg_dist(p, W(sx, SHED_H, z0), W(fx, SHED_H, z0)));
+    // The posts along the curb side, and the scaffolding's standards at the same steps up the face.
+    float posts = 1e9, standards = 1e9;
+    for (int k = 0; k < 8; k++) {
+        float z = min(z0 + float(k) * SHED_POST, z1);
+        posts = min(posts, seg_dist(p, W(sx, 0.0, z), W(sx, SHED_H, z)));
+        if (top > SHED_H) {
+            standards = min(standards, seg_dist(p, W(fx, SHED_H, z), W(fx, top, z)));
+        }
+        if (z >= z1) {
+            break;
+        }
+    }
+    // The scaffolding's ledgers, one a floor, and one at its top.
+    float ledgers = 1e9;
+    for (int j = 1; j <= 4; j++) {
+        float y = min(SHED_H + float(j) * SCAFFOLD_FLOOR, top);
+        if (top <= SHED_H) {
+            break;
+        }
+        ledgers = min(ledgers, seg_dist(p, W(fx, y, z0), W(fx, y, z1)));
+        if (y >= top) {
+            break;
+        }
+    }
+    #undef W
+    float lit = max(max((1.0 - smoothstep(0.0, 0.8, deck)) * 0.55, (1.0 - smoothstep(0.0, 0.7, min(posts, standards))) * 0.4), (1.0 - smoothstep(0.0, 0.7, ledgers)) * 0.3);
+    return light_on(col, green, lit * seen, u.dark);
+}
+
 // A lone empty lot (too small for a park; Cyrus, 2026-11-17, chose these three): a subway
 // entrance, a food cart or a basketball court, by the lot. Its near edge is zc in view; f, cx and
 // yh are the scene's projection. Things in it are placed in the world (camera heights) and drawn
@@ -2255,6 +2325,19 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
                 float zf = zc + 0.5 * GRID_Z - 0.5 * td;
                 if (zf < Z_NEAR || zf > Z_FAR) {
                     continue;
+                }
+                // A sidewalk shed on its road side, some with scaffolding above (drawn before the
+                // tower's box, which it stands outside of; nearer towers still cover it).
+                bool beside_road = kx == ROAD_CELLS || kx == -ROAD_CELLS - 1;
+                bool shed = beside_road && hash2(cell + float2(61.0, 13.0)) < SHED_SHARE;
+                bool scaffold = shed && hash2(cell + float2(67.0, 19.0)) < SCAFFOLD_SHARE;
+                if (shed) {
+                    float shed_top = scaffold ? min(th - 0.05, SHED_H + SCAFFOLD_FLOORS * SCAFFOLD_FLOOR) : SHED_H;
+                    float sgn = tx < 0.0 ? -1.0 : 1.0;
+                    float sx = sgn * (float(ROAD_CELLS) * GRID_X - SIDEWALK_IN + SHED_IN);
+                    float fx = tx - sgn * tw * 0.5;
+                    float shed_seen = (1.0 - smoothstep(Z_FAR * 0.55, Z_FAR, zf)) * smoothstep(Z_NEAR, Z_NEAR + 0.6, zf);
+                    col = shed_at(q, sx, fx, zf, zf + td, shed_top, cx, yh, f, shed_seen, green, u, col);
                 }
                 float base = yh + f / zf;
                 float top = yh + f * (1.0 - th) / zf;
