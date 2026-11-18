@@ -892,6 +892,35 @@ mod tests {
     }
 
 
+    #[test]
+    fn a_transfer_reads_moving_at_the_sidebar_s_size() {
+        // Seen moving on 2026-11-17: at a 260 point sidebar the channel and a one-cell packet were
+        // a few faint points, and the rain read as a few dotted columns over the roofs.
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        assert!(runic_constant("DATA_CHANNEL") >= 0.45, "the channel shows where the data goes");
+        assert!(runic_constant("DATA_HALO") >= 0.4, "the packet carries a glow");
+        let rain = &wash[wash.find("float3 data_rain(").unwrap()..];
+        let rain = &rain[..rain.find("\n}\n").unwrap()];
+        assert!(rain.contains("DATA_HALO"), "drawn in data_rain");
+        // The halo is drawn before the column's own cull, so it shows beside the column.
+        assert!(rain.find("DATA_HALO").unwrap() < rain.find("abs(p.x - sx) > cw * 0.5").unwrap());
+        // A transfer looks for a thing in view among several, so few slots draw nothing.
+        assert!(rain.contains("n < DATA_TRIES") && runic_constant("DATA_TRIES") >= 5.0);
+    }
+
+    #[test]
+    fn the_train_is_drawn_in_hidden_lines_as_under_the_street() {
+        // Seen moving on 2026-11-17: crisp and solid, it read as a tram on the median. A drawing
+        // shows what lies under a surface in dashed lines.
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        assert!(runic_constant("SUB_DIM") <= 0.32, "dimmer");
+        assert!(runic_constant("SUB_DASH") > 0.0);
+        let seen = &wash[wash.find("float3 subway_seen(").unwrap()..];
+        let seen = &seen[..seen.find("\n}\n").unwrap()];
+        // Its outline is dashed along the train, so the dashes travel with it.
+        assert!(seen.contains("fract(along / SUB_DASH)"), "the outline dashed along the train");
+    }
+
     /// The train as the wash's `subway_at` places it: its front's and back's depths, and whether
     /// it runs.
     fn subway_at(t: f32) -> (f32, f32, bool) {

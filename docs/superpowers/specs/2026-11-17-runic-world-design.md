@@ -236,12 +236,16 @@ from pedestrians, bicyclists, cars, food carts, and buildings." He chose that al
 trickle. Fourteen slots each start a transfer every 5 to 9 seconds between the sky and one thing in
 the city (a walker 34 per cent, a car 22, a cyclist 10, a tower's window 24, a food cart 10, its
 lot found among a few tries), which it follows as it moves; out of the nearer part of the view it
-tries another. While it runs, its whole channel from the sky's top to the thing shows faintly
-(0.3), and a packet runs along it, its head bright and 14 cells of trail fading behind: down onto
+tries another, up to five. While it runs, its whole channel from the sky's top to the thing shows
+(0.5), and a packet runs along it, its head bright with a soft glow round it and 14 cells of trail
+fading behind: down onto
 the thing for a download, up out of it for an upload, crossing in 2.2 to 3.6 seconds, the thing
 flickering as a download lands or an upload leaves. The glyphs are the rain's; a column too narrow
 for them shows lit dashes. `effects::runic` mirrors the slots: eight to thirteen at once, never
-fewer than three.
+fewer than three. Seen moving in a window (2026-11-17, a 260 point sidebar), the first cut read as
+a few faint dotted columns over the roofs: a channel at 0.3 and a one-cell packet are a few points
+of green at that size, and a transfer that found nothing in view among three tries drew nothing.
+The channel went to 0.5, the packet's head gained its glow (`DATA_HALO`), and the tries went to five.
 
 ## The subway
 
@@ -251,10 +255,13 @@ and without stop since it doesn't need to follow traffic laws." A tunnel runs un
 through the ground: its walls dashed lines 0.36 to either side, at its roof (0.18 below the street)
 and its floor (0.62). Every 14 seconds a train of five cars, each 1.1 long, runs through it at 4
 world units a second (a road car averages about 0.53), never stopping, one coming on and the next
-going away: its roof 0.24 below the street, lit at its edges, two rows of lit windows down its
-sides and a headlight glowing ahead of it in the tunnel, all at 0.38 and drawn before the street's
-grid, which lies over it. `effects::runic` mirrors its passes: never a stop, coming and going in
-turn.
+going away: its roof 0.24 below the street, a faint shadow, its outline in hidden lines (soft dashes
+0.22 long that travel with it, along its sides and across its ends, as a drawing shows what lies
+under a surface), two rows of lit windows down its sides and a headlight glowing ahead of it in the
+tunnel, all at 0.3 and drawn before the street's grid, which lies over it. `effects::runic` mirrors
+its passes: never a stop, coming and going in turn. Seen moving in a window (2026-11-17), the first
+cut, its outline solid and crisp at 0.38, read as a tram on the road's median; dashed and dimmer it
+reads as under the street.
 
 ## New York's cyclists and walkers
 

@@ -642,7 +642,13 @@ constant float DATA_TRAVEL_MIN = 2.2;
 constant float DATA_TRAVEL_MAX = 3.6;
 constant float DATA_TRAIL = 14.0;
 // How strongly the whole channel shows while its transfer runs, against the packet's 1.
-constant float DATA_CHANNEL = 0.3;
+constant float DATA_CHANNEL = 0.5;
+// The glow the packet's head carries, so a transfer reads moving at a sidebar's size, and its
+// radius in column widths; and how many things in view a transfer looks among before it draws
+// nothing.
+constant float DATA_HALO = 0.5;
+constant float DATA_HALO_R = 0.8;
+constant float DATA_TRIES = 5.0;
 constant float RAIN_COL_W = 0.22;
 // The subway (Cyrus, 2026-11-17: "a subway train ... it should appear dimmer because it runs
 // underground and it should be obvious to the user that the train is underground. The subway train
@@ -661,7 +667,10 @@ constant float SUB_CAR = 1.1;
 constant float SUB_GAP = 0.08;
 constant float SUB_SPEED = 4.0;
 constant float SUB_PERIOD = 14.0;
-constant float SUB_DIM = 0.38;
+constant float SUB_DIM = 0.3;
+// The train's outline is drawn in hidden lines, as a drawing shows what lies under a surface:
+// dashes SUB_DASH world units long along it, travelling with it.
+constant float SUB_DASH = 0.22;
 
 float hash2(float2 c) {
     uint ux = uint(int(c.x) + 1048576);
@@ -1131,8 +1140,8 @@ float3 data_rain(float2 p, float top, float hz, float vx, float f, float t, floa
         }
         // A thing in the nearer part of the view: out of it, the transfer tries another or two.
         float4 e = float4(0.0);
-        for (int n = 0; n < 3; n++) {
-            e = data_end(slot.w * 4.0 + float(n), t);
+        for (float n = 0.0; n < DATA_TRIES; n += 1.0) {
+            e = data_end(slot.w * 4.0 + n, t);
             if (e.w > 0.5 && e.y > Z_NEAR + 0.4 && e.y < Z_FAR * 0.45) {
                 break;
             }
@@ -1162,6 +1171,13 @@ float3 data_rain(float2 p, float top, float hz, float vx, float f, float t, floa
         float meet = up ? (1.0 - smoothstep(0.0, 1.5, travelled)) : smoothstep(len - 1.5, len, travelled) * (1.0 - smoothstep(len + 2.0, len + 4.0, travelled));
         float glow = exp(-dot(p - float2(sx, y_end), p - float2(sx, y_end)) / (2.0 * cw * cw));
         col = light_on(col, head_c, glow * meet * 0.6 * seen, u.dark);
+        // The packet's glow, round its head while the head is on the channel.
+        if (head >= 0.0 && head <= len) {
+            float2 hp = float2(sx, y_end - head * ch);
+            float hr = cw * DATA_HALO_R;
+            float halo = exp(-dot(p - hp, p - hp) / (2.0 * hr * hr));
+            col = light_on(col, head_c, halo * DATA_HALO * seen * fade_top, u.dark);
+        }
         if (r < 0.0 || r > len || abs(p.x - sx) > cw * 0.5) {
             continue;
         }
@@ -1650,14 +1666,19 @@ float3 subway_seen(float2 q, float yh, float cx, float f, float t, float3 green,
     if (in_car > SUB_CAR) {
         return col;
     }
-    // The car's roof, dim, its edges lit; two rows of windows down its sides.
+    // The car's roof, a faint shadow; its outline in hidden lines, soft and dashed along the train
+    // and across its ends, the dashes travelling with it; two rows of windows down its sides.
     float wx = max(fwidth(xw), 1e-5);
     float wz = max(fwidth(z), 1e-5);
-    float edge = max(1.0 - smoothstep(wx, 2.0 * wx, SUB_TRAIN_HALF - abs(xw)), 1.0 - smoothstep(wz, 2.0 * wz, min(in_car, SUB_CAR - in_car)));
-    col = mix(col, green * 0.35, 0.5 * dim);
+    float sides = 1.0 - smoothstep(wx, 3.0 * wx, SUB_TRAIN_HALF - abs(xw));
+    float ends = 1.0 - smoothstep(wz, 3.0 * wz, min(in_car, SUB_CAR - in_car));
+    float along_dash = step(0.45, fract(along / SUB_DASH));
+    float across_dash = step(0.45, fract((xw + SUB_TRAIN_HALF) / (SUB_DASH * 0.5)));
+    float edge = max(sides * along_dash, ends * across_dash);
+    col = mix(col, green * 0.35, 0.3 * dim);
     col = light_on(col, green, edge * dim, u.dark);
     float win = (abs(abs(xw) - SUB_TRAIN_HALF * 0.7) < SUB_TRAIN_HALF * 0.14 && fract(in_car / 0.16) < 0.6 && in_car > 0.08 && in_car < SUB_CAR - 0.08) ? 1.0 : 0.0;
-    return light_on(col, mix(green, white_c, 0.6), win * dim * 1.1, u.dark);
+    return light_on(col, mix(green, white_c, 0.6), win * dim * 0.9, u.dark);
 }
 
 float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 green, float3 white_c, float3 sb) {
