@@ -1201,7 +1201,10 @@ impl TerminalCore {
         let screen = self.term.screen_lines();
         let cells: Vec<Vec<(char, CellStyle, CellKind)>> = (0..screen).map(|l| self.row_cells(Line(l as i32))).collect();
         let text: Vec<Vec<char>> = cells.iter().map(|row| row.iter().map(|c| c.0).collect()).collect();
-        let (top, last) = input_frame(&text)?;
+        // The box runs to the foot of the screen, blank rows under its status lines too, so it
+        // keeps the rows it has at the live bottom and does not drop when the view scrolls.
+        let (top, _) = input_frame(&text)?;
+        let last = screen - 1;
         if (last + 1 - top) * 2 > screen {
             return None;
         }
@@ -2418,7 +2421,7 @@ mod tests {
         t.set_display_offset(7);
         let frame = t.pinned_frame().expect("scrolled up, the box is pinned");
         let text: Vec<String> = frame.rows.iter().map(|r| text_of(r)).collect();
-        assert_eq!(text, ["─".repeat(80), "❯".to_string(), "─".repeat(80)], "the box, and nothing of the conversation");
+        assert_eq!(text, ["─".repeat(80), "❯".to_string(), "─".repeat(80), String::new()], "the box to the screen's foot, and nothing of the conversation");
         assert_eq!(frame.cursor, Some((2, 1)), "the cursor in it, on the prompt's row");
         // The status lines under the box come with it.
         t.set_display_offset(0);
@@ -2426,6 +2429,22 @@ mod tests {
         t.set_display_offset(3);
         let text: Vec<String> = t.pinned_frame().unwrap().rows.iter().map(|r| text_of(r)).collect();
         assert_eq!(text[3..], ["  Opus 5.5 | project".to_string(), "  accept edits on".to_string()]);
+    }
+
+    #[test]
+    fn the_pinned_box_sits_on_the_rows_it_has_at_the_live_bottom() {
+        // Cyrus, 2026-11-18: "Why does height change on the fixed user input footer when I'm
+        // scrolled all the way down vs not?" Claude Code leaves a blank row under its status
+        // lines; the pinned box keeps it, so it does not drop a row when the view scrolls.
+        let (mut t, _) = classic(40, 80, 24);
+        let rule = "─".repeat(80);
+        t.apply_output(format!("\x1b[19;1H\x1b[J{rule}\r\n❯ \r\n{rule}\r\n  Opus 5.5 | project\r\n  accept edits on\x1b[20;3H").as_bytes());
+        let at_bottom = all_rows(&t);
+        assert_eq!(at_bottom.last().map(String::as_str), Some(""), "a blank row under the status lines");
+        let box_top = at_bottom.iter().rposition(|row| row.starts_with('❯')).unwrap() - 1;
+        t.set_display_offset(6);
+        let text: Vec<String> = t.pinned_frame().unwrap().rows.iter().map(|r| text_of(r)).collect();
+        assert_eq!(text, at_bottom[box_top..], "the box's rows to the foot of the screen, blank ones too");
     }
 
     #[test]
@@ -2458,10 +2477,10 @@ mod tests {
     fn a_box_taller_than_half_the_pane_is_not_pinned() {
         let (mut t, _) = classic(40, 80, 5);
         t.set_display_offset(4);
-        assert!(t.pinned_frame().is_none(), "three rows of box in a five row pane would leave little to read");
-        let (mut t, _) = classic(40, 80, 6);
+        assert!(t.pinned_frame().is_none(), "four rows of box in a five row pane would leave little to read");
+        let (mut t, _) = classic(40, 80, 8);
         t.set_display_offset(4);
-        assert!(t.pinned_frame().is_some(), "half the pane at most");
+        assert!(t.pinned_frame().is_some(), "half the pane at most: four rows to the foot of eight");
     }
 
     #[test]
