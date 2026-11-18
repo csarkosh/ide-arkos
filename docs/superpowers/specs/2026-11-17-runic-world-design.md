@@ -379,6 +379,12 @@ Approaches: drawn with the tower that wears it (chosen), from its own lot and th
 it can never stand apart from its building; or a layer of its own over the scene, rejected since
 it would look up the tower's box a second time.
 
+Then: "The scaffolds and sheds are not visible enough." Their pipes are now lit as brightly as a
+tower's edges (SHED_LIGHT 0.85, in the towers' whitened green), the deck's boards fill at 0.32
+(SHED_DECK_FILL) and the scaffolding wears netting over its face at 0.22 (SCAFFOLD_NET); and more
+of them: 45 in 100 towers beside the road wear a shed (SHED_SHARE) and 55 in 100 of those have
+scaffolding (SCAFFOLD_SHARE).
+
 ## The food cart's line keeps to the sidewalk
 
 Cyrus, 2026-11-18: "the line of people waiting for the food cart stretches into the street. It

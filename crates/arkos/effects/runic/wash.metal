@@ -656,11 +656,17 @@ constant float CART_GAP = 0.13;
 // people's heads), its posts SHED_POST apart on a line SHED_IN inside the curb; SCAFFOLD_SHARE of
 // those have scaffolding up the tower's road side, a ledger every SCAFFOLD_FLOOR, up to
 // SCAFFOLD_FLOORS floors over the deck and never above the roof.
-constant float SHED_SHARE = 0.3;
+constant float SHED_SHARE = 0.45;
 constant float SHED_H = 0.22;
 constant float SHED_POST = 0.2;
 constant float SHED_IN = 0.03;
-constant float SCAFFOLD_SHARE = 0.33;
+constant float SCAFFOLD_SHARE = 0.55;
+// Seen at a glance (Cyrus, 2026-11-18: "The scaffolds and sheds are not visible enough"): the pipes
+// lit at SHED_LIGHT, as a tower's edges are, the deck's boards filled at SHED_DECK_FILL and the
+// scaffolding's netting at SCAFFOLD_NET.
+constant float SHED_LIGHT = 0.85;
+constant float SHED_DECK_FILL = 0.32;
+constant float SCAFFOLD_NET = 0.22;
 constant float SCAFFOLD_FLOOR = 0.25;
 constant float SCAFFOLD_FLOORS = 4.0;
 // People: PEOPLE walkers and STROLLERS strollers on each of the road's sidewalks, CROSS_PEOPLE on
@@ -1536,7 +1542,7 @@ float2 world_on_screen(float x, float y, float z, float cx, float yh, float f) {
 // A sidewalk shed along a tower's road side at p over col: the posts' line at sx and the tower's
 // face at fx (world x, on the tower's side of the road), from depth z0 to z1, its deck SHED_H up and
 // any scaffolding up the face to top. Pipes are lines of the city's green.
-float3 shed_at(float2 p, float sx, float fx, float z0, float z1, float top, float cx, float yh, float f, float seen, float3 green, constant ArkosInputs& u, float3 col) {
+float3 shed_at(float2 p, float sx, float fx, float z0, float z1, float top, float cx, float yh, float f, float seen, float3 green, float3 white_c, constant ArkosInputs& u, float3 col) {
     #define W(x, y, z) world_on_screen(x, y, z, cx, yh, f)
     // Only a pixel in the box the shed covers on the screen can be on it.
     float2 a = W(sx, top, z0), b = W(fx, 0.0, z0), c = W(sx, top, z1), d = W(fx, 0.0, z1);
@@ -1550,7 +1556,15 @@ float3 shed_at(float2 p, float sx, float fx, float z0, float z1, float top, floa
         float dz = f * (1.0 - SHED_H) / (p.y - yh);
         float dx = (p.x - cx) * dz / f;
         if (dz > z0 && dz < z1 && dx > min(sx, fx) && dx < max(sx, fx)) {
-            col = light_on(col, green, 0.14 * seen, u.dark);
+            col = light_on(col, green, SHED_DECK_FILL * seen, u.dark);
+        }
+    }
+    // The scaffolding's netting over the face, from the deck to its top.
+    if (top > SHED_H && abs(p.x - cx) > 0.5) {
+        float nz = fx * f / (p.x - cx);
+        float ny = 1.0 - (p.y - yh) * nz / f;
+        if (nz > z0 && nz < z1 && ny > SHED_H && ny < top) {
+            col = light_on(col, green, SCAFFOLD_NET * seen, u.dark);
         }
     }
     // The deck: a rail along the curb side, one along the face and one across its front.
@@ -1580,8 +1594,8 @@ float3 shed_at(float2 p, float sx, float fx, float z0, float z1, float top, floa
         }
     }
     #undef W
-    float lit = max(max((1.0 - smoothstep(0.0, 0.8, deck)) * 0.55, (1.0 - smoothstep(0.0, 0.7, min(posts, standards))) * 0.4), (1.0 - smoothstep(0.0, 0.7, ledgers)) * 0.3);
-    return light_on(col, green, lit * seen, u.dark);
+    float lit = max(max((1.0 - smoothstep(0.0, 1.0, deck)), (1.0 - smoothstep(0.0, 1.0, min(posts, standards))) * 0.85), (1.0 - smoothstep(0.0, 1.0, ledgers)) * 0.75) * SHED_LIGHT;
+    return light_on(col, mix(green, white_c, 0.25), lit * seen, u.dark);
 }
 
 // A lone empty lot (too small for a park; Cyrus, 2026-11-17, chose these three): a subway
@@ -2337,7 +2351,7 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
                     float sx = sgn * (float(ROAD_CELLS) * GRID_X - SIDEWALK_IN + SHED_IN);
                     float fx = tx - sgn * tw * 0.5;
                     float shed_seen = (1.0 - smoothstep(Z_FAR * 0.55, Z_FAR, zf)) * smoothstep(Z_NEAR, Z_NEAR + 0.6, zf);
-                    col = shed_at(q, sx, fx, zf, zf + td, shed_top, cx, yh, f, shed_seen, green, u, col);
+                    col = shed_at(q, sx, fx, zf, zf + td, shed_top, cx, yh, f, shed_seen, green, white_c, u, col);
                 }
                 float base = yh + f / zf;
                 float top = yh + f * (1.0 - th) / zf;

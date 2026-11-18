@@ -1475,7 +1475,7 @@ mod tests {
     }
 
     #[test]
-    fn about_three_in_ten_towers_beside_the_road_wear_a_sidewalk_shed() {
+    fn about_four_in_ten_towers_beside_the_road_wear_a_sidewalk_shed() {
         // Cyrus, 2026-11-18: "the Matrix City needs some scaffolding alongside some buildings so
         // it feels more like NYC"; he chose sidewalk sheds, some with scaffolding above.
         let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
@@ -1498,7 +1498,7 @@ mod tests {
             }
         }
         let share = sheds as f32 / built as f32;
-        assert!((0.2..0.4).contains(&share), "{sheds} of {built} towers beside the road");
+        assert!((0.3..0.55).contains(&share), "{sheds} of {built} towers beside the road");
         assert!((0..400).all(|m| [2, 3, 6, -3, -7].iter().all(|kx| shed_of(*kx, m).is_none())), "only beside the road");
     }
 
@@ -1535,12 +1535,25 @@ mod tests {
     }
 
     #[test]
+    fn a_shed_s_pipes_stand_out_as_a_tower_s_edges_do() {
+        // Cyrus, 2026-11-18: "The scaffolds and sheds are not visible enough." Their pipes are lit
+        // as brightly as a tower's edges, in the same whitened green, the deck's boards and the
+        // scaffolding's netting fill their planes, and more towers wear them.
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        assert!(wash.contains("float s = (1.0 - smoothstep(0.0, 1.0, edge)) * 0.8"), "a tower's edges at 0.8");
+        assert!(runic_constant("SHED_LIGHT") >= 0.8, "the pipes as bright as a tower's edges");
+        assert!(runic_constant("SHED_DECK_FILL") >= 0.3 && runic_constant("SCAFFOLD_NET") >= 0.2, "planes filled");
+        assert!(runic_constant("SHED_SHARE") >= 0.4 && runic_constant("SCAFFOLD_SHARE") >= 0.5, "more of them");
+        assert!(wash.contains("    return light_on(col, mix(green, white_c, 0.25), lit * seen, u.dark);"), "whitened as the towers' lines");
+    }
+
+    #[test]
     fn people_walk_under_a_shed_s_deck() {
         assert!(runic_constant("SHED_H") >= runic_constant("PERSON_H") + 0.04);
     }
 
     #[test]
-    fn about_one_in_three_sheds_has_scaffolding_never_above_the_roof() {
+    fn about_half_the_sheds_have_scaffolding_never_above_the_roof() {
         let (mut sheds, mut scaffolds) = (0, 0);
         for kx in [1, -2] {
             for m in 0..400 {
@@ -1554,7 +1567,7 @@ mod tests {
             }
         }
         let share = scaffolds as f32 / sheds as f32;
-        assert!((0.2..0.47).contains(&share), "{scaffolds} of {sheds} sheds");
+        assert!((0.35..0.65).contains(&share), "{scaffolds} of {sheds} sheds");
     }
 
     #[test]
