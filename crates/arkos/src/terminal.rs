@@ -541,34 +541,46 @@ impl TerminalCore {
         self.last_written_row().map_or(0, |l| l + 2).max(through_cursor).min(grid.screen_lines())
     }
 
-    /// Changes the width, reflowing the history and keeping each screen row a row: the rows are
-    /// taken off the screen while alacritty reflows (a blank screen has nothing to wrap, so the
-    /// history's rows wrap or join above it and the screen stays where it is), then put back cut
-    /// or padded to the new width, with the cursor on the row it was on.
+    /// Changes the width, keeping each screen row a row and wrapping the history again at word
+    /// boundaries (`rewrap`), where alacritty's own reflow would cut each row wherever the width
+    /// falls and start the rest at column 0. The grid is emptied first, so alacritty has nothing
+    /// to reflow; the history's rows, wrapped for the new width, then go back in through the
+    /// blank screen, and the screen's rows after them, cut or padded, with the cursor on the row
+    /// it was on. A view scrolled into the history stays on the line it was on.
     fn resize_columns_keeping_the_screen(&mut self, cols: usize) {
         use alacritty_terminal::term::cell::Cell;
         let (old_cols, rows) = (self.columns(), self.screen_lines());
+        let offset = self.display_offset();
         let grid = self.term.grid_mut();
+        let history = grid.history_size();
         let cursor = grid.cursor.point;
-        let saved: Vec<Vec<Cell>> = (0..rows)
-            .map(|l| {
-                let line = Line(l as i32);
-                let row = (0..old_cols).map(|c| grid[line][Column(c)].clone()).collect();
-                for c in 0..old_cols {
-                    grid[line][Column(c)] = Cell::default();
-                }
-                row
-            })
-            .collect();
-        // The history's last row no longer runs on into the screen's first.
-        if grid.history_size() > 0 {
-            grid[Line(-1)][Column(old_cols - 1)].flags.remove(Flags::WRAPLINE);
+        let row_at = |l: i32| -> Vec<Cell> { (0..old_cols).map(|c| grid[Line(l)][Column(c)].clone()).collect() };
+        let old: Vec<Vec<Cell>> = (-(history as i32)..0).map(row_at).collect();
+        let saved: Vec<Vec<Cell>> = (0..rows as i32).map(row_at).collect();
+        let wrapped = crate::rewrap::rewrap(&old, cols);
+        // The line at the top of a scrolled view, by the row it begins at now.
+        let top = history - offset.min(history);
+        let new_top = wrapped.starts.iter().rev().find(|(was, _)| *was <= top).map_or(0, |(_, now)| *now);
+        let template = std::mem::take(&mut grid.cursor.template);
+        grid.clear_history();
+        for l in 0..rows {
+            for c in 0..old_cols {
+                grid[Line(l as i32)][Column(c)] = Cell::default();
+            }
         }
         // A cursor past the new width would have its (blank) row wrapped like text.
         grid.cursor.point.column = Column(cursor.column.0.min(cols - 1));
         grid.cursor.input_needs_wrap = false;
         self.term.resize(TermSize::new(cols, rows));
         let grid = self.term.grid_mut();
+        for batch in wrapped.rows.chunks(rows) {
+            for (l, row) in batch.iter().enumerate() {
+                for (c, cell) in row.iter().enumerate() {
+                    grid[Line(l as i32)][Column(c)] = cell.clone();
+                }
+            }
+            grid.scroll_up(&(Line(0)..Line(rows as i32)), batch.len());
+        }
         let kept = old_cols.min(cols);
         for (l, row) in saved.into_iter().enumerate() {
             let line = Line(l as i32);
@@ -586,6 +598,11 @@ impl TerminalCore {
         }
         grid.cursor.point.line = cursor.line;
         grid.cursor.point.column = Column(cursor.column.0.min(cols - 1));
+        grid.cursor.template = template;
+        // The history may have lost its oldest rows to its limit; the view is counted from its end.
+        let now = if offset == 0 { 0 } else { (wrapped.rows.len() - new_top).min(grid.history_size()) };
+        self.set_display_offset(now);
+        self.scroll.jump_to(now as f32);
     }
 
     /// Parses a session's replay at the sizes it was written for (`protocol::replay`): the grid
@@ -2463,6 +2480,61 @@ mod tests {
         assert!(key_returns_to_bottom(false, "a"), "as every terminal does");
         assert!(!key_returns_to_bottom(true, "a") && !key_returns_to_bottom(true, "backspace"));
         assert!(key_returns_to_bottom(true, "enter"), "the answer will be at the bottom");
+    }
+
+    /// A terminal with classic Claude Code's mark on it and three lines of an answer scrolled
+    /// into its history.
+    fn answered(cols: usize, rows: usize) -> TerminalCore {
+        let mut t = TerminalCore::new(cols, rows, 1000);
+        t.apply_output(b"\x1b[?2031h");
+        t.apply_output("⏺ Today in NYC should be dry and mostly sunny, with a high in the upper 50s.\r\n  - National Weather Service (Central Park area): High near 58F, low around\r\n    46F. The page was not dated, so I cannot confirm it is for today.\r\n".as_bytes());
+        t.apply_output("filler\r\n".repeat(rows + 2).as_bytes());
+        t
+    }
+
+    #[test]
+    fn a_narrowed_claude_code_history_wraps_at_words_under_each_rows_indent_and_comes_back_whole() {
+        // Cyrus, 2026-11-17: "re-wrap the history at word boundaries too".
+        let mut t = answered(80, 6);
+        let before = all_rows(&t);
+        t.resize(40, 6);
+        assert_eq!(
+            all_rows(&t)[..7],
+            [
+                "⏺ Today in NYC should be dry and mostly",
+                "  sunny, with a high in the upper 50s.",
+                "  - National Weather Service (Central",
+                "    Park area): High near 58F, low",
+                "    around",
+                "    46F. The page was not dated, so I",
+                "    cannot confirm it is for today.",
+            ]
+        );
+        assert_eq!(t.term.grid().cursor.point.line, Line(5), "the cursor is on the row it was on");
+        t.resize(80, 6);
+        assert_eq!(all_rows(&t), before);
+        // By way of several widths, as a drag in steps.
+        for cols in [70, 55, 33, 47, 80] {
+            t.resize(cols, 6);
+        }
+        assert_eq!(all_rows(&t), before);
+    }
+
+    #[test]
+    fn a_scrolled_view_stays_on_its_line_when_the_history_is_wrapped_again() {
+        let mut t = answered(80, 6);
+        // The bullet's row at the top of the view.
+        let at = all_rows(&t).iter().position(|r| r.starts_with("  - National")).unwrap();
+        t.set_display_offset(t.history_size() - at);
+        assert!(text_of(&t.rows_for_paint().visible[0]).starts_with("  - National"));
+        t.resize(40, 6);
+        assert!(text_of(&t.rows_for_paint().visible[0]).starts_with("  - National"), "{:?}", text_of(&t.rows_for_paint().visible[0]));
+        t.resize(80, 6);
+        assert!(text_of(&t.rows_for_paint().visible[0]).starts_with("  - National"));
+        // At the live bottom it stays at the bottom.
+        t.set_display_offset(0);
+        t.resize(40, 6);
+        assert_eq!(t.display_offset(), 0);
     }
 
     #[test]

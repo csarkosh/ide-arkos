@@ -124,8 +124,29 @@ words under an indent.
 So a redrawing program's resize waits until the pane has held one size for 150 ms
 (`resize_settled`): a drag is one resize and at most one seam, not one a column. The grid keeps
 its size meanwhile, so the text re-wraps when the drag rests, not under the pointer. A shell is
-resized at once, as before. Left: the one seam a resize can still leave, and the history's
-character wrapping; a history re-wrapped at words under each row's indent would mend the second.
+resized at once, as before. Left: the one seam a resize can still leave.
+
+## The history wrapped at words
+
+Cyrus: "re-wrap the history at word boundaries too". At a change of width under a redrawing
+program the history no longer goes through alacritty's reflow. Its rows are taken out, put back
+together into the lines they were written as, and wrapped for the new width by `rewrap`: after
+the last space that fits, the later rows under the line's own indent (past a bullet, a mark or a
+number that opens it), a token wider than the pane cut where the width falls, a band's fill cut at
+the pane's edge and never a row of its own. Every row of a wrapped line but its last ends in a
+`WRAPLINE` cell, a hidden space where the break stood for a space, and a later row's indent is
+hidden spaces, so the lines can be put together again: narrowed and widened, a history shows the
+rows it had, by any path of widths. The wrapped rows go back into the grid through the blank
+screen (`resize_columns_keeping_the_screen`), and a view scrolled into the history stays on the
+line it was on. A full history (20,000 rows of 120 columns) wraps in about 0.2 s in a debug
+build, once a drag. His session's replay parsed again reads "mostly sunny," / "  with a" where
+it read "mostly su" / "nny, with a".
+
+Not done: Claude Code's own rows are each a line here, since it ends every row with a newline, so
+a paragraph it wrapped at 84 columns is wrapped row by row, not as one paragraph, and widening
+past the width a row was written for does not join it to the next. A copy across a wrapped row
+has not been checked. A shell's history keeps alacritty's reflow, and one resized after Claude
+Code left would join these rows with their hidden indents as spaces.
 
 ## Known limits
 

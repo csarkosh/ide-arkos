@@ -912,6 +912,11 @@ Things only a person at the screen can check, in order of value:
   slowly across thirty columns and back: the text keeps its wrapping under the pointer and wraps
   once when the drag rests; scrolling up shows at most one odd row where the screen's top was,
   not one a column; a shell beside it re-wraps as the divider moves
+- classic scrollback, the history's wrapping: with a long `claude` answer scrolled up, narrow
+  the pane: no word of the history is cut at the edge (a long URL is), a bullet's later rows sit
+  under its text, your own message's band makes no blank row; widen it back: the rows are as they
+  were; the view stays on the paragraph it showed; select across a wrapped row and paste: note
+  whether the indent's spaces come along
 - classic scrollback, resizes: with a conversation longer than the pane, drag a divider narrower
   and wider, split a pane below and close it, hide and show the sidebar: the input box is whole
   after each, and scrolling up shows nothing missing; only a widening repeats, at most the last

@@ -85,6 +85,7 @@ mod paths;
 mod pulse;
 mod recent;
 mod reflow;
+mod rewrap;
 mod remind_picker;
 mod reminder;
 mod remote_image;
