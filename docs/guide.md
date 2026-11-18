@@ -1028,6 +1028,8 @@ When a pane changes size Claude Code prints its screen again; Arkos leaves that 
 sends the rows that no longer fit to the history, so a split or a dragged divider loses nothing.
 When it compacts, and at `/clear`, Claude Code erases its screen; Arkos puts what was on it in the
 history first, so the rows just before a compaction are there to scroll back to.
+While a divider is dragged Claude Code's text keeps its wrapping and is wrapped again once the
+drag rests (150 ms), so a drag is one resize to it, not one a column.
 A pane made wider can show its last screenful twice in the history, once as it was wrapped and
 once as Claude Code printed it again. While you are scrolled up, Claude Code's input box and the
 status lines under it stay at the foot of the pane: what you type shows there and your place in

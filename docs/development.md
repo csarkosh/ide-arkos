@@ -908,6 +908,10 @@ Things only a person at the screen can check, in order of value:
   scroll glides; type: the text shows in the box and the view stays where it is; Enter: the view
   goes to the bottom; scroll up while Claude Code asks a permission question: nothing is held;
   a shell scrolled up holds nothing; under each effect the held rows sit on plain paper
+- classic scrollback, a dragged divider: with a long `claude` conversation, drag a divider
+  slowly across thirty columns and back: the text keeps its wrapping under the pointer and wraps
+  once when the drag rests; scrolling up shows at most one odd row where the screen's top was,
+  not one a column; a shell beside it re-wraps as the divider moves
 - classic scrollback, resizes: with a conversation longer than the pane, drag a divider narrower
   and wider, split a pane below and close it, hide and show the sidebar: the input box is whole
   after each, and scrolling up shows nothing missing; only a widening repeats, at most the last

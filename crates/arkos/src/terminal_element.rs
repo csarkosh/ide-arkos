@@ -295,11 +295,15 @@ impl Element for TerminalElement {
     fn prepaint(&mut self, _id: Option<&GlobalElementId>, _inspector: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _state: &mut (), window: &mut Window, cx: &mut App) -> Prepaint {
         let cell = measure_cell(window, self.font_size, self.line_height, self.family.clone());
         let (cols, rows) = grid_in(bounds, cell);
-        self.terminal.update(cx, |t, _| {
+        let resize_waits = self.terminal.update(cx, |t, _| {
             t.cell = Some(cell);
             t.origin = Some((f32::from(bounds.origin.x), f32::from(bounds.origin.y)));
-            t.ensure_size(cols, rows);
+            t.ensure_size(cols, rows)
         });
+        // A resize waiting for the pane to settle is made in a later frame.
+        if resize_waits {
+            window.request_animation_frame();
+        }
         // The grid of rows, as far as it is seen, for a wash that rules the paper under each row.
         if let Some(root) = &self.root {
             if let Some(rect) = rows_shape(bounds, window.content_mask().bounds, cell, rows) {

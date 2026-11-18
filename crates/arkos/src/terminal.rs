@@ -80,6 +80,20 @@ pub(crate) fn input_frame(rows: &[Vec<char>]) -> Option<(usize, usize)> {
     Some((prompt - 1, last))
 }
 
+/// How long a pane's size must hold before a program that redraws its own screen is resized to
+/// it. Not a transition: nothing moves over it.
+pub(crate) const RESIZE_SETTLE: Duration = Duration::from_millis(150);
+
+/// Whether a pane that wants the size `want` is resized now. A shell is, at once. A program that
+/// redraws its own screen (Claude Code's classic renderer) prints its screen again at every
+/// resize, and each time the paragraph that straddles the top of the screen is left in the
+/// history in two wrappings; a divider dragged across thirty columns left thirty such seams
+/// (Cyrus, 2026-11-17: "why is the indentation weird after I change the width back and forth?").
+/// So its resize waits until the pane has held one size for `RESIZE_SETTLE`: one resize a drag.
+pub(crate) fn resize_settled(redraws: bool, pending: Option<((usize, usize), Instant)>, want: (usize, usize), now: Instant) -> bool {
+    !redraws || pending.is_some_and(|(size, since)| size == want && now.saturating_duration_since(since) >= RESIZE_SETTLE)
+}
+
 /// Whether a key sent to the program brings the view back to the live bottom. Every key does,
 /// as in any terminal, except while Claude Code's input box is pinned at the pane's foot: what
 /// is typed shows there, so the place in the history is kept, and Enter goes to the bottom,
@@ -1250,6 +1264,8 @@ pub struct Terminal {
     /// When the user last typed, pasted, clicked or scrolled here, so the decode leaves the
     /// echo of their own input alone (`user_quiet`); None before the first.
     pub last_user_input: Option<Instant>,
+    /// The size the pane has taken that the grid has not yet (`ensure_size`), and since when.
+    pending_size: Option<((usize, usize), Instant)>,
     /// When the view last moved under the user's hand: the wheel (every mode), a keyboard page
     /// scroll or a drag past an edge. The window's glyph clock rests meanwhile
     /// (`effects::active::glyph_clock`); None before the first.
@@ -1290,6 +1306,7 @@ impl Terminal {
             clicks: Clicks::default(),
             decode: None,
             last_user_input: None,
+            pending_size: None,
             last_scroll: None,
             painted_draw: 0,
         }
@@ -1564,13 +1581,26 @@ impl Terminal {
     }
 
     /// Resizes the grid and the PTY when the pane's cell grid changes.
-    pub fn ensure_size(&mut self, cols: usize, rows: usize) {
-        let (cols, rows) = (cols.max(2), rows.max(1));
-        if cols == self.core.columns() && rows == self.core.screen_lines() {
-            return;
+    /// Under a program that redraws its own screen the resize waits until the pane's size has
+    /// held for `RESIZE_SETTLE` (`resize_settled`), the grid staying as it was meanwhile. Returns
+    /// whether a resize is waiting, so the element asks for another frame.
+    pub fn ensure_size(&mut self, cols: usize, rows: usize) -> bool {
+        let want = (cols.max(2), rows.max(1));
+        if want == (self.core.columns(), self.core.screen_lines()) {
+            self.pending_size = None;
+            return false;
         }
-        self.core.resize(cols, rows);
-        self.client.send(Request::Resize { session: self.session, rows: rows as u16, cols: cols as u16 });
+        let now = Instant::now();
+        if !resize_settled(self.core.program_redraws(), self.pending_size, want, now) {
+            if self.pending_size.map(|p| p.0) != Some(want) {
+                self.pending_size = Some((want, now));
+            }
+            return true;
+        }
+        self.pending_size = None;
+        self.core.resize(want.0, want.1);
+        self.client.send(Request::Resize { session: self.session, rows: want.1 as u16, cols: want.0 as u16 });
+        false
     }
 }
 
@@ -2113,6 +2143,19 @@ mod tests {
         assert_eq!(t.rows_for_paint().visible[0].len(), 40);
     }
 
+    /// A tool, not a check: parses the replay file named by `ARKOS_REPLAY` (a session's
+    /// `.replay` from the daemon's state folder, size marks and all) and writes the grid's rows,
+    /// history first, to the file named by `ARKOS_ROWS`, so what a window would show after a
+    /// relaunch can be read and searched. `cargo test -p arkos zz_replay -- --ignored`.
+    #[test]
+    #[ignore]
+    fn zz_replay_rows_are_written_out() {
+        let (Ok(replay), Ok(rows)) = (std::env::var("ARKOS_REPLAY"), std::env::var("ARKOS_ROWS")) else { return };
+        let mut t = TerminalCore::new(80, 24, 20_000);
+        t.apply_replay(&std::fs::read(replay).unwrap());
+        std::fs::write(rows, all_rows(&t).join("\n")).unwrap();
+    }
+
     /// A stand-in for Claude Code's classic renderer, written from a pty capture of 2.1.327
     /// (2026-11-17). It prints its conversation down the main screen, every row ending in a
     /// newline, and rests the cursor on its prompt. It answers a resize at once by homing the
@@ -2402,6 +2445,17 @@ mod tests {
         let (mut t, _) = classic(40, 80, 6);
         t.set_display_offset(4);
         assert!(t.pinned_frame().is_some(), "half the pane at most");
+    }
+
+    #[test]
+    fn a_dragged_pane_resizes_claude_code_once_it_has_settled_and_a_shell_at_once() {
+        let t0 = Instant::now();
+        let later = |ms: u64| t0 + Duration::from_millis(ms);
+        assert!(resize_settled(false, None, (80, 24), t0), "a shell is resized at once");
+        assert!(!resize_settled(true, None, (80, 24), t0), "the first frame of a new size waits");
+        assert!(!resize_settled(true, Some(((80, 24), t0)), (80, 24), later(149)));
+        assert!(resize_settled(true, Some(((80, 24), t0)), (80, 24), later(150)));
+        assert!(!resize_settled(true, Some(((80, 24), t0)), (79, 24), later(500)), "still moving: the wait starts again");
     }
 
     #[test]

@@ -109,6 +109,24 @@ and its status lines at the foot with the text in it. Left as it is for now: a c
 the held rows lands on the history under them, and the "jump to bottom" chip sits over the right
 end of the status lines.
 
+## One resize a drag
+
+Cyrus, in the sandbox: "why is the indentation weird after I change the width back and forth?"
+His session's replay (37 resizes: 84 columns down to 54 a column or two at a time, back up to 71)
+parsed again shows why. Claude Code prints its screen again at every resize, starting at a row of
+the new wrapping; the paragraph that straddles the top of the screen is then in the history in
+its old wrapping and on screen in the new, so each step can leave a seam: a lone "today." or "for
+today." under the paragraph's older copy. Thirty-seven steps left a stack of them. And rows
+already in the history were written for a wider pane, so the terminal wraps them a character at
+a time from column 0 ("mostly su" / "nny"), as any terminal does, where Claude Code wraps at
+words under an indent.
+
+So a redrawing program's resize waits until the pane has held one size for 150 ms
+(`resize_settled`): a drag is one resize and at most one seam, not one a column. The grid keeps
+its size meanwhile, so the text re-wraps when the drag rests, not under the pointer. A shell is
+resized at once, as before. Left: the one seam a resize can still leave, and the history's
+character wrapping; a history re-wrapped at words under each row's indent would mend the second.
+
 ## Known limits
 
 - The frame on screen when a compaction or `/clear` erases it goes to the history with its
