@@ -1029,7 +1029,11 @@ sends the rows that no longer fit to the history, so a split or a dragged divide
 When it compacts, and at `/clear`, Claude Code erases its screen; Arkos puts what was on it in the
 history first, so the rows just before a compaction are there to scroll back to.
 A pane made wider can show its last screenful twice in the history, once as it was wrapped and
-once as Claude Code printed it again. To run one session fullscreen anyway, start it with
+once as Claude Code printed it again. While you are scrolled up, Claude Code's input box and the
+status lines under it stay at the foot of the pane: what you type shows there and your place in
+the history is kept, and Enter goes back to the bottom, where the answer will be. When Claude
+Code shows something else in the box's place (a question, a menu) nothing is held; scroll down
+to it. To run one session fullscreen anyway, start it with
 `env -u CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN claude`.
 
 Claude Code tips: fast trackpad scrolling in a fullscreen `claude` jumps unless

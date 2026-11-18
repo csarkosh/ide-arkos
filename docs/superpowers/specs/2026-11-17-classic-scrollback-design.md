@@ -92,6 +92,23 @@ Not checked on screen, and left for hands: scrolling up past a compaction in a w
 from recorded bytes instead, because the shoot's typed letters arrive in Arkos as "a", so
 `/compact` and the find bar could not be driven), the feel of the scroll, and a relaunch.
 
+## The input box held at the pane's foot
+
+Cyrus, 2026-11-17: "in the classic /tui view, is it possible to keep the claude user input footer
+fixed to the bottom of the screen despite user scroll position?" Claude Code cannot: its box is
+the last rows it wrote, and the scroll is the terminal's. So the terminal holds it
+(`TerminalCore::pinned_frame`): while the view is scrolled up under a redrawing program, the live
+screen is searched for the box (the last row that opens with the prompt and hangs under a rule,
+through the last row with anything on it, so the status lines come too), and the painter draws
+those rows over the pane's last rows on plain paper, on whole rows whatever the scroll's
+fraction, with the cursor where it is in the box. Typing then keeps the place in the history
+(`key_returns_to_bottom`); Enter goes to the bottom. Nothing is held when the screen shows no
+box (a question or a menu in its place) or when the box would take more than half the pane.
+Checked in a window with a Haiku session: scrolled a page up, three characters typed, the box
+and its status lines at the foot with the text in it. Left as it is for now: a click or a drag on
+the held rows lands on the history under them, and the "jump to bottom" chip sits over the right
+end of the status lines.
+
 ## Known limits
 
 - The frame on screen when a compaction or `/clear` erases it goes to the history with its

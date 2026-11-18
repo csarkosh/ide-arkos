@@ -57,6 +57,37 @@ pub struct RowsForPaint {
     pub links: Vec<crate::links::Span>,
 }
 
+/// The rows `TerminalCore::pinned_frame` holds at the pane's foot, and the cursor in them as
+/// (column, row of these).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PinnedFrame {
+    pub rows: Vec<Vec<(char, CellStyle, CellKind)>>,
+    pub cursor: Option<(usize, usize)>,
+}
+
+/// Claude Code's input box among a screen's rows, as (the first row, the last row): from the
+/// rule over its prompt to the last row with anything on it, so the status lines under the box
+/// come with it. The box is the last row that opens with the prompt `\u{276f}` and hangs under
+/// a rule; a past prompt in the conversation opens with the same mark under no rule.
+pub(crate) fn input_frame(rows: &[Vec<char>]) -> Option<(usize, usize)> {
+    let written = |row: &Vec<char>| row.iter().any(|c| !c.is_whitespace());
+    let rule = |row: &Vec<char>| {
+        let dashes = row.iter().filter(|c| **c == '\u{2500}').count();
+        dashes >= 8 && row.iter().all(|c| *c == '\u{2500}' || c.is_whitespace())
+    };
+    let last = rows.iter().rposition(written)?;
+    let prompt = (1..=last).rev().find(|&i| rows[i].first() == Some(&'\u{276f}') && rule(&rows[i - 1]))?;
+    Some((prompt - 1, last))
+}
+
+/// Whether a key sent to the program brings the view back to the live bottom. Every key does,
+/// as in any terminal, except while Claude Code's input box is pinned at the pane's foot: what
+/// is typed shows there, so the place in the history is kept, and Enter goes to the bottom,
+/// where the answer will be.
+pub(crate) fn key_returns_to_bottom(pinned: bool, key: &str) -> bool {
+    !pinned || key == "enter"
+}
+
 pub const MAX_MATCHES: usize = 10_000;
 
 /// Backslash-escapes every regex metacharacter so the query matches literally.
@@ -1125,6 +1156,31 @@ impl TerminalCore {
         crate::links::in_input_box(&rows, rows.len() - 1)
     }
 
+    /// Claude Code's input box and the lines under it, for painting fixed at the pane's foot
+    /// while the view is scrolled up into the history (Cyrus, 2026-11-17: "keep the claude user
+    /// input footer fixed to the bottom of the screen despite user scroll position"). Its classic
+    /// renderer writes the box as the last rows of the screen, so a scroll takes it out of view
+    /// with everything else; the terminal owns the scroll, so only the terminal can hold it.
+    /// Nothing at the live bottom, for a shell, when the screen shows no input box (a question
+    /// or a menu in its place), or when the box would take more than half the pane.
+    pub fn pinned_frame(&self) -> Option<PinnedFrame> {
+        if self.display_offset() == 0 || !self.program_redraws() {
+            return None;
+        }
+        let screen = self.term.screen_lines();
+        let cells: Vec<Vec<(char, CellStyle, CellKind)>> = (0..screen).map(|l| self.row_cells(Line(l as i32))).collect();
+        let text: Vec<Vec<char>> = cells.iter().map(|row| row.iter().map(|c| c.0).collect()).collect();
+        let (top, last) = input_frame(&text)?;
+        if (last + 1 - top) * 2 > screen {
+            return None;
+        }
+        let content = self.term.renderable_content();
+        let at = content.cursor.point;
+        let line = at.line.0.max(0) as usize;
+        let cursor = (content.cursor.shape != CursorShape::Hidden && (top..=last).contains(&line)).then(|| (at.column.0, line - top));
+        Some(PinnedFrame { rows: cells[top..=last].to_vec(), cursor })
+    }
+
     pub fn rows_for_paint(&self) -> RowsForPaint {
         let off = self.display_offset() as i32;
         let screen = self.term.screen_lines() as i32;
@@ -1462,9 +1518,12 @@ impl Terminal {
         if let Some(bytes) = keystroke_to_bytes(ks, self.core.key_mode(option_as_meta)) {
             self.last_user_input = Some(Instant::now());
             self.client.send(Request::Input { session: self.session, bytes });
-            // Typing jumps back to the live bottom, as every terminal does.
-            self.core.scroll.jump_to(0.0);
-            self.core.set_display_offset(0);
+            // Typing jumps back to the live bottom, as every terminal does, unless the input box
+            // is pinned at the pane's foot (`key_returns_to_bottom`).
+            if key_returns_to_bottom(self.core.pinned_frame().is_some(), &ks.key) {
+                self.core.scroll.jump_to(0.0);
+                self.core.set_display_offset(0);
+            }
             cx.notify();
         }
     }
@@ -2288,6 +2347,68 @@ mod tests {
         t.apply_output(b"one\r\ntwo\r\n\x1b[H\x1b[2Kthree");
         assert_eq!(t.history_size(), 0);
         assert_eq!(all_rows(&t)[..2], ["three".to_string(), "two".to_string()]);
+    }
+
+    #[test]
+    fn scrolled_up_classic_claude_code_keeps_its_input_box_for_the_panes_foot() {
+        // Cyrus, 2026-11-17: "is it possible to keep the claude user input footer fixed to the
+        // bottom of the screen despite user scroll position?"
+        let (mut t, _) = classic(40, 80, 24);
+        assert!(t.pinned_frame().is_none(), "at the live bottom the box is where it is");
+        t.set_display_offset(7);
+        let frame = t.pinned_frame().expect("scrolled up, the box is pinned");
+        let text: Vec<String> = frame.rows.iter().map(|r| text_of(r)).collect();
+        assert_eq!(text, ["─".repeat(80), "❯".to_string(), "─".repeat(80)], "the box, and nothing of the conversation");
+        assert_eq!(frame.cursor, Some((2, 1)), "the cursor in it, on the prompt's row");
+        // The status lines under the box come with it.
+        t.set_display_offset(0);
+        t.apply_output(b"\x1b[2B\r  Opus 5.5 | project\r\n  accept edits on\x1b[4A\x1b[2C");
+        t.set_display_offset(3);
+        let text: Vec<String> = t.pinned_frame().unwrap().rows.iter().map(|r| text_of(r)).collect();
+        assert_eq!(text[3..], ["  Opus 5.5 | project".to_string(), "  accept edits on".to_string()]);
+    }
+
+    #[test]
+    fn nothing_is_pinned_for_a_shell_or_when_the_box_is_not_on_screen() {
+        // A shell, scrolled up.
+        let mut shell = TerminalCore::new(40, 5, 100);
+        shell.apply_output("line\r\n".repeat(20).as_bytes());
+        shell.set_display_offset(4);
+        assert!(shell.pinned_frame().is_none());
+        // Claude Code showing something else where its box was (a question, a menu).
+        let (mut t, _) = classic(40, 80, 24);
+        t.apply_output(format!("\x1b[1A\r\x1b[J{}\r\n  Allow this command?\r\n  1. Yes", "─".repeat(80)).as_bytes());
+        t.set_display_offset(5);
+        assert!(t.pinned_frame().is_none());
+    }
+
+    #[test]
+    fn the_input_box_is_the_last_prompt_under_a_rule_and_all_that_follows() {
+        let rows = |lines: &[&str]| -> Vec<Vec<char>> { lines.iter().map(|l| l.chars().collect()).collect() };
+        let rule = "─".repeat(40);
+        // A past prompt in the conversation opens with the same mark but hangs under no rule.
+        assert_eq!(input_frame(&rows(&["❯ an old message", "", "an answer", &rule, "❯ typing", "  a second line", &rule, "  status", ""])), Some((3, 7)));
+        assert_eq!(input_frame(&rows(&["❯ an old message", "", "an answer"])), None);
+        assert_eq!(input_frame(&rows(&[&rule, "not a prompt", &rule])), None);
+        assert_eq!(input_frame(&rows(&["──", "❯ a short dash is no rule"])), None);
+        assert_eq!(input_frame(&rows(&[])), None);
+    }
+
+    #[test]
+    fn a_box_taller_than_half_the_pane_is_not_pinned() {
+        let (mut t, _) = classic(40, 80, 5);
+        t.set_display_offset(4);
+        assert!(t.pinned_frame().is_none(), "three rows of box in a five row pane would leave little to read");
+        let (mut t, _) = classic(40, 80, 6);
+        t.set_display_offset(4);
+        assert!(t.pinned_frame().is_some(), "half the pane at most");
+    }
+
+    #[test]
+    fn typing_keeps_the_place_while_the_box_is_pinned_and_enter_goes_to_the_bottom() {
+        assert!(key_returns_to_bottom(false, "a"), "as every terminal does");
+        assert!(!key_returns_to_bottom(true, "a") && !key_returns_to_bottom(true, "backspace"));
+        assert!(key_returns_to_bottom(true, "enter"), "the answer will be at the bottom");
     }
 
     #[test]

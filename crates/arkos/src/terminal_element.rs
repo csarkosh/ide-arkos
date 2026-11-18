@@ -319,7 +319,7 @@ impl Element for TerminalElement {
         // The colours come from the terminal's palette, which follows the theme.
         let mouse = window.mouse_position();
         let ink = self.ink;
-        let (rows, visible, (stamps, ghosts), dry, frac, cursor, animating, highlights, selection, palette, find_owed) = self.terminal.update(cx, |t, _| {
+        let (rows, visible, (stamps, ghosts), dry, frac, cursor, animating, highlights, selection, palette, find_owed, pinned) = self.terminal.update(cx, |t, _| {
             // vte only checks the synchronized update deadline when bytes arrive, so a program
             // killed inside one would freeze the grid. Releasing it here means this frame paints
             // the released rows; while one is still open, keep frames coming to check again.
@@ -372,7 +372,7 @@ impl Element for TerminalElement {
                 Some(Ink::Decode(timing)) => (decoded_rows(&mut t.decode, &rows, Some(timing), quiet, cols, now), (Vec::new(), Vec::new()), None),
                 None => (decoded_rows(&mut t.decode, &rows, None, quiet, cols, now), (Vec::new(), Vec::new()), None),
             };
-            (rows, visible, stamps, dry, frac, t.core.cursor(), animating || sync_open || drag_scrolling, highlights, t.core.selection_spans(), palette.clone(), find_owed)
+            (rows, visible, stamps, dry, frac, t.core.cursor(), animating || sync_open || drag_scrolling, highlights, t.core.selection_spans(), palette.clone(), find_owed, t.core.pinned_frame())
         });
         let (bg, cursor_color) = (palette.bg, palette.cursor);
         // Under an effect the wash shows faintly through the paper.
@@ -538,6 +538,23 @@ impl Element for TerminalElement {
                 let y = origin.y + px((row as f32 + frac) * cell.height) + lh - px(2.0);
                 let fg = rows.visible.get(row).and_then(|r| r.get(start)).map(|c| c.1.fg).unwrap_or(palette.fg);
                 window.paint_quad(fill(Bounds { origin: point(x, y), size: size(w, px(1.0)) }, hsla(fg)));
+            }
+            // Claude Code's input box, held at the pane's foot while the history is scrolled
+            // (`TerminalCore::pinned_frame`): over everything above, on the paper's own colour so
+            // nothing shows through, on whole rows whatever the scroll's fraction, with the
+            // cursor where it is in the box.
+            if let Some(frame) = &pinned {
+                let first = rows.visible.len().saturating_sub(frame.rows.len());
+                let top = origin.y + px(first as f32 * cell.height);
+                window.paint_quad(fill(Bounds { origin: point(origin.x, top), size: size(bounds.size.width, bounds.bottom() - top) }, hsla(bg)));
+                for (i, row) in frame.rows.iter().enumerate() {
+                    paint_row(row, &[], [None, None], top + px(i as f32 * cell.height), window, cx);
+                }
+                if let Some((col, line)) = frame.cursor {
+                    let mut c = hsla(cursor_color);
+                    c.a = 0.85;
+                    window.paint_quad(fill(Bounds { origin: point(origin.x + px(col as f32 * cw), top + px(line as f32 * cell.height)), size: size(px(cw), lh) }, c));
+                }
             }
         });
 

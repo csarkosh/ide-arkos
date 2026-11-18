@@ -903,6 +903,11 @@ Things only a person at the screen can check, in order of value:
   pane (no alternate screen); after a long answer a two-finger scroll goes up through all of it,
   following the finger; `/compact`, then scroll up: everything from before the compaction is
   there, in the same pane; `/clear` likewise
+- classic scrollback, the pinned input box: in a `claude` with a long answer, scroll up: the
+  input box and the status lines stay at the pane's foot over the history, on whole rows while the
+  scroll glides; type: the text shows in the box and the view stays where it is; Enter: the view
+  goes to the bottom; scroll up while Claude Code asks a permission question: nothing is held;
+  a shell scrolled up holds nothing; under each effect the held rows sit on plain paper
 - classic scrollback, resizes: with a conversation longer than the pane, drag a divider narrower
   and wider, split a pane below and close it, hide and show the sidebar: the input box is whole
   after each, and scrolling up shows nothing missing; only a widening repeats, at most the last
