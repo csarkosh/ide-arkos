@@ -1388,6 +1388,175 @@ mod tests {
         *constants.get(name).unwrap_or_else(|| panic!("no {name}"))
     }
 
+    /// Where the food cart's line has person `i` on lot column `kx`, as the wash's `small_lot_at`
+    /// works it out: across (x) and along from the lot's near edge (z), `step` of the way through
+    /// stepping up and the first `leave` of the way through walking off with their food.
+    fn cart_line_at(kx: i32, i: i32, step: f32, leave: f32) -> (f32, f32) {
+        let xm = (kx as f32 + 0.5) * 0.9;
+        let side = if kx < 0 { 1.0 } else { -1.0 };
+        let wz = 0.5 * 1.6 + 0.1;
+        let qx = xm + side * (runic_constant("CART_W") + runic_constant("CART_FRONT"));
+        let qz = wz - 0.05 + (i as f32 - step) * runic_constant("CART_GAP") - leave * 0.5;
+        (qx, qz)
+    }
+
+    #[test]
+    fn the_food_cart_s_line_stays_on_the_sidewalk_by_the_road() {
+        // Cyrus, 2026-11-18: "the line of people waiting for the food cart stretches into the
+        // street. It should stay within the sidewalk."
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        for line in [
+            "            float qx = xm + side * (CART_W + CART_FRONT);",
+            "            float qz = wz - 0.05 + (float(i) - step) * CART_GAP - leave * 0.5;",
+        ] {
+            assert!(wash.contains(line), "wash.metal lacks {line}");
+        }
+        let curb = 0.9 - runic_constant("SIDEWALK_IN");
+        let back = curb + runic_constant("SIDEWALK_W");
+        for kx in [1, -2] {
+            for i in 0..4 {
+                for k in 0..=20 {
+                    let step = k as f32 / 20.0;
+                    let (x, _) = cart_line_at(kx, i, step, if i == 0 { step } else { 0.0 });
+                    assert!(x.abs() > curb + 0.03 && x.abs() < back, "lot {kx}, person {i}: {x} off the sidewalk {curb}..{back}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_food_cart_s_line_stays_in_its_lot_further_out() {
+        for kx in (2..=6).chain(-7..=-3) {
+            let x0 = kx as f32 * 0.9;
+            for i in 0..4 {
+                for k in 0..=20 {
+                    let step = k as f32 / 20.0;
+                    let (x, z) = cart_line_at(kx, i, step, if i == 0 { step } else { 0.0 });
+                    assert!(x > x0 && x < x0 + 0.9, "lot {kx}, person {i}: {x} outside {x0}..");
+                    assert!(z > 0.0 && z < 1.6, "lot {kx}, person {i}: {z} off the lot along the road");
+                }
+            }
+        }
+    }
+
+    /// A sidewalk shed as the wash draws it on the tower at lot (kx, m): on the tower's road side,
+    /// |x| of its posts' line and of the tower's face, its run along the road from the lot's near
+    /// edge (z0 to z1), its deck's height and the top of any scaffolding (the deck's without).
+    #[derive(Debug, Clone, Copy)]
+    struct Shed {
+        post_x: f32,
+        face_x: f32,
+        z0: f32,
+        z1: f32,
+        deck: f32,
+        top: f32,
+        roof: f32,
+    }
+
+    fn tower_built(kx: i32, m: i32) -> bool {
+        // A cross street's row (every fourth) has no lots.
+        m.rem_euclid(4) != 0 && hash2(kx as f32 + 17.0, m as f32 + 3.0) <= runic_constant("TOWER_ON")
+    }
+
+    fn shed_of(kx: i32, m: i32) -> Option<Shed> {
+        let beside_road = kx == 1 || kx == -2;
+        if !beside_road || !tower_built(kx, m) || hash2(kx as f32 + 61.0, m as f32 + 13.0) >= runic_constant("SHED_SHARE") {
+            return None;
+        }
+        let scaffold = hash2(kx as f32 + 67.0, m as f32 + 19.0) < runic_constant("SCAFFOLD_SHARE");
+        let tw = 0.9 * (0.5 + 0.35 * hash2(kx as f32 + 5.0, m as f32 + 11.0));
+        let td = 1.6 * (0.35 + 0.35 * hash2(kx as f32 + 9.0, m as f32 + 2.0));
+        let th = 0.6 + (runic_constant("TOWER_MAX") - 0.6) * hash2(kx as f32 + 4.0, m as f32 + 7.0).powf(1.6);
+        let tx = (kx as f32 + 0.5) * 0.9;
+        let deck = runic_constant("SHED_H");
+        let top = if scaffold { (th - 0.05).min(deck + runic_constant("SCAFFOLD_FLOORS") * runic_constant("SCAFFOLD_FLOOR")) } else { deck };
+        let z0 = 0.5 * 1.6 - 0.5 * td;
+        Some(Shed { post_x: 0.9 - runic_constant("SIDEWALK_IN") + runic_constant("SHED_IN"), face_x: tx.abs() - 0.5 * tw, z0, z1: z0 + td, deck, top, roof: th })
+    }
+
+    #[test]
+    fn about_three_in_ten_towers_beside_the_road_wear_a_sidewalk_shed() {
+        // Cyrus, 2026-11-18: "the Matrix City needs some scaffolding alongside some buildings so
+        // it feels more like NYC"; he chose sidewalk sheds, some with scaffolding above.
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        for line in [
+            "                bool beside_road = kx == ROAD_CELLS || kx == -ROAD_CELLS - 1;",
+            "                bool shed = beside_road && hash2(cell + float2(61.0, 13.0)) < SHED_SHARE;",
+            "                bool scaffold = shed && hash2(cell + float2(67.0, 19.0)) < SCAFFOLD_SHARE;",
+            "                float shed_top = scaffold ? min(th - 0.05, SHED_H + SCAFFOLD_FLOORS * SCAFFOLD_FLOOR) : SHED_H;",
+            "                    float sgn = tx < 0.0 ? -1.0 : 1.0;",
+            "                    float sx = sgn * (float(ROAD_CELLS) * GRID_X - SIDEWALK_IN + SHED_IN);",
+            "                    float fx = tx - sgn * tw * 0.5;",
+        ] {
+            assert!(wash.contains(line), "wash.metal lacks {line}");
+        }
+        let (mut built, mut sheds) = (0, 0);
+        for kx in [1, -2] {
+            for m in 0..400 {
+                built += usize::from(tower_built(kx, m));
+                sheds += usize::from(shed_of(kx, m).is_some());
+            }
+        }
+        let share = sheds as f32 / built as f32;
+        assert!((0.2..0.4).contains(&share), "{sheds} of {built} towers beside the road");
+        assert!((0..400).all(|m| [2, 3, 6, -3, -7].iter().all(|kx| shed_of(*kx, m).is_none())), "only beside the road");
+    }
+
+    #[test]
+    fn a_shed_s_posts_stand_on_the_sidewalk_never_in_the_road() {
+        let curb = 0.9 - runic_constant("SIDEWALK_IN");
+        for kx in [1, -2] {
+            for m in 0..400 {
+                if let Some(s) = shed_of(kx, m) {
+                    assert!(s.post_x > curb && s.post_x < s.face_x, "lot ({kx}, {m}): posts at {} between the curb {curb} and the face {}", s.post_x, s.face_x);
+                    assert!(s.z0 > 0.0 && s.z1 < 1.6 && s.z0 < s.z1, "lot ({kx}, {m}): it runs the tower's depth within its lot");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_shed_on_the_road_s_left_stands_on_the_left_sidewalk() {
+        // The shader's signed placement, as its pinned lines work it out: the posts and the face
+        // on the tower's own side of the road, the posts between the curb and the face.
+        let curb = 0.9 - runic_constant("SIDEWALK_IN");
+        for kx in [1, -2] {
+            let tx = (kx as f32 + 0.5) * 0.9;
+            let sgn = if tx < 0.0 { -1.0 } else { 1.0 };
+            for m in 0..400 {
+                if let Some(s) = shed_of(kx, m) {
+                    let tw = 0.9 * (0.5 + 0.35 * hash2(kx as f32 + 5.0, m as f32 + 11.0));
+                    let (sx, fx) = (sgn * (curb + runic_constant("SHED_IN")), tx - sgn * tw * 0.5);
+                    assert!(sx.signum() == tx.signum() && fx.signum() == tx.signum(), "lot ({kx}, {m}): across the road");
+                    assert!((sx.abs() - s.post_x).abs() < 1e-5 && (fx.abs() - s.face_x).abs() < 1e-5);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn people_walk_under_a_shed_s_deck() {
+        assert!(runic_constant("SHED_H") >= runic_constant("PERSON_H") + 0.04);
+    }
+
+    #[test]
+    fn about_one_in_three_sheds_has_scaffolding_never_above_the_roof() {
+        let (mut sheds, mut scaffolds) = (0, 0);
+        for kx in [1, -2] {
+            for m in 0..400 {
+                if let Some(s) = shed_of(kx, m) {
+                    sheds += 1;
+                    if s.top > s.deck {
+                        scaffolds += 1;
+                        assert!(s.top <= s.roof, "lot ({kx}, {m}): scaffolding to {} over a roof at {}", s.top, s.roof);
+                    }
+                }
+            }
+        }
+        let share = scaffolds as f32 / sheds as f32;
+        assert!((0.2..0.47).contains(&share), "{scaffolds} of {sheds} sheds");
+    }
+
     #[test]
     fn every_walker_keeps_to_a_paved_sidewalk() {
         // Cyrus, 2026-11-17: "I want the sidewalks more prominent". The wash paves where the people
