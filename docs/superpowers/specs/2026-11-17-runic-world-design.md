@@ -245,7 +245,20 @@ for them shows lit dashes. `effects::runic` mirrors the slots: eight to thirteen
 fewer than three. Seen moving in a window (2026-11-17, a 260 point sidebar), the first cut read as
 a few faint dotted columns over the roofs: a channel at 0.3 and a one-cell packet are a few points
 of green at that size, and a transfer that found nothing in view among three tries drew nothing.
-The channel went to 0.5, the packet's head gained its glow (`DATA_HALO`), and the tries went to five.
+The packet's head gained a glow (`DATA_HALO`) and the tries went to five.
+
+Then, in the sandbox: "there's not enough runic rain yet. there should be many small ones so it
+feels like the matrix with everyones connected devices to the cloud", and of the brighter channel
+tried first, "the rain in the preview is too noisy right now". So a second layer runs beside the
+fourteen: the sky cut into columns 3 points wide from the vanishing point, each running a short
+transfer for 0.6 of a 2.5 to 6 second cycle, down or up, to whoever is on the ground under it,
+where a sidewalk (0.6 of picks), a bike lane (0.15) or a car lane (0.25) passes under the column; a
+column's x says how deep that line lies, so each pixel works out only its own column, however many
+run (`data_drizzle`; `effects::runic` mirrors it: 25 or more at once on a 260 point sidebar, never
+fewer than 12). Each is a lit dash a cell, a bright head and 9 cells fading behind, at 0.4, with a
+flicker on the thing as it lands or leaves. To keep it calm the glyphs and dashes change once every
+1.2 seconds rather than every 0.3 to 0.4, the fourteen's channel is a hint (0.2) and their glow soft
+(0.3): the moving trails carry the rain.
 
 ## The subway
 

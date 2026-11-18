@@ -816,9 +816,17 @@ mod tests {
 
     /// A shader constant's value, read from the runic wash's text.
     fn runic_constant(name: &str) -> f32 {
-        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
-        let line = wash.lines().find(|l| l.starts_with(&format!("constant float {name} = "))).unwrap_or_else(|| panic!("no {name}"));
-        line.rsplit("= ").next().unwrap().trim_end_matches(';').parse().unwrap()
+        // Read once: the mirrors call this in loops over minutes of simulated time.
+        static CONSTANTS: std::sync::OnceLock<std::collections::HashMap<String, f32>> = std::sync::OnceLock::new();
+        let constants = CONSTANTS.get_or_init(|| {
+            let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+            wash.lines()
+                .filter_map(|l| l.strip_prefix("constant float "))
+                .filter_map(|l| l.split_once(" = ").map(|(n, v)| (n.to_string(), v.trim_end_matches(';').parse().ok())))
+                .filter_map(|(n, v)| v.map(|v| (n, v)))
+                .collect()
+        });
+        *constants.get(name).unwrap_or_else(|| panic!("no {name}"))
     }
 
     #[test]
@@ -897,8 +905,12 @@ mod tests {
         // Seen moving on 2026-11-17: at a 260 point sidebar the channel and a one-cell packet were
         // a few faint points, and the rain read as a few dotted columns over the roofs.
         let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
-        assert!(runic_constant("DATA_CHANNEL") >= 0.45, "the channel shows where the data goes");
-        assert!(runic_constant("DATA_HALO") >= 0.4, "the packet carries a glow");
+        // Then, in the sandbox the same day: "the rain in the preview is too noisy right now". The
+        // moving trails carry it; the channel is a hint, the glow soft, and the glyphs change slowly.
+        assert!(runic_constant("DATA_CHANNEL") <= 0.25, "the channel only hints where the data goes");
+        assert!((0.2..=0.35).contains(&runic_constant("DATA_HALO")), "the packet carries a soft glow");
+        assert!(runic_constant("DATA_FLICKER") >= 1.0, "a glyph changes about once a second at most");
+        assert!(!wash.contains("floor(t / 0.4)") && !wash.contains("floor(t / 0.3)"), "no faster glyph changes left");
         let rain = &wash[wash.find("float3 data_rain(").unwrap()..];
         let rain = &rain[..rain.find("\n}\n").unwrap()];
         assert!(rain.contains("DATA_HALO"), "drawn in data_rain");
@@ -906,6 +918,79 @@ mod tests {
         assert!(rain.find("DATA_HALO").unwrap() < rain.find("abs(p.x - sx) > cw * 0.5").unwrap());
         // A transfer looks for a thing in view among several, so few slots draw nothing.
         assert!(rain.contains("n < DATA_TRIES") && runic_constant("DATA_TRIES") >= 5.0);
+    }
+
+    /// The wash's `data_drizzle` slot for small column `ci` at `t`: how far through its run it is
+    /// (0 to 1) and its seed, or nothing while it rests.
+    fn drizzle_slot(ci: f32, t: f32) -> Option<(f32, f32)> {
+        let (lo, hi) = (runic_constant("DRIZZLE_PERIOD_MIN"), runic_constant("DRIZZLE_PERIOD_MAX"));
+        let period = lo + (hi - lo) * hash2(ci, 41.0);
+        let off = hash2(ci, 43.0) * period;
+        let k = ((t + off) / period).floor();
+        let into = t + off - k * period;
+        let run = period * runic_constant("DRIZZLE_ON");
+        (into <= run).then_some((into / run, ci * 389.0 + k))
+    }
+
+    /// The wash's `drizzle_end`: where small column `ci` of a scene with focal length `f` lands for
+    /// `seed`, as the ground line under it (across, world), its depth and its kind (0 a sidewalk, 1
+    /// a bike lane, 2 a car lane), or nothing when that line is out of view under it.
+    fn drizzle_end(ci: f32, seed: f32, f: f32) -> Option<(f32, f32, usize)> {
+        let dx = ((ci + 0.5) * runic_constant("DRIZZLE_W")).abs();
+        let pick = hash2(seed, 2.0);
+        let road = runic_constant("GRID_X");
+        let (wx, kind) = if pick < runic_constant("DRIZZLE_WALK") {
+            (road + 0.06 + (hash2(seed, 5.0) - 0.3) * runic_constant("WALK_W"), 0)
+        } else if pick < runic_constant("DRIZZLE_BIKE") {
+            (runic_constant("BIKE_LANE") * road, 1)
+        } else {
+            (0.5 * road, 2)
+        };
+        let z = wx * f / dx.max(1e-3);
+        (z >= runic_constant("Z_NEAR") + 0.4 && z <= runic_constant("Z_FAR") * 0.6).then_some((wx, z, kind))
+    }
+
+    #[test]
+    fn the_sky_is_full_of_small_transfers_to_the_devices_on_the_ground() {
+        // Cyrus, 2026-11-17, after seeing the city move: "there's not enough runic rain yet. there
+        // should be many small ones so it feels like the matrix with everyones connected devices to
+        // the cloud".
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        let rain = &wash[wash.find("float3 data_rain(").unwrap()..];
+        assert!(rain[..rain.find("\n}\n").unwrap()].contains("data_drizzle(p, top,"), "drawn with the city's data");
+        assert!(runic_constant("DRIZZLE_W") <= 4.0, "small: a few points a column");
+        assert!(runic_constant("DRIZZLE_LIGHT") <= 0.45, "many, so each is quiet");
+        let drizzle = &wash[wash.find("float3 data_drizzle(").unwrap()..];
+        assert!(drizzle[..drizzle.find("\n}\n").unwrap()].contains("floor(t / DATA_FLICKER)"), "its dashes change as slowly as the glyphs");
+        // ROAD_CELLS is 1 in the wash, which the mirror takes as read.
+        assert!(wash.contains("constant int ROAD_CELLS = 1;"));
+        // A sidebar of 260 points: the scene 256 wide, its focal length 0.9 of that.
+        let (width, f) = (256.0f32, 0.9 * 256.0);
+        let half = (width / 2.0 / runic_constant("DRIZZLE_W")).floor() as i32;
+        let (mut sum, mut moments, mut least) = (0usize, 0usize, usize::MAX);
+        let mut kinds = [0usize; 3];
+        let mut t = 0.0f32;
+        while t < 120.0 {
+            let mut running = 0;
+            for ci in -half..half {
+                let ci = ci as f32;
+                let Some((_, seed)) = drizzle_slot(ci, t) else { continue };
+                let Some((wx, z, kind)) = drizzle_end(ci, seed, f) else { continue };
+                // It lands under its own column: the line's screen x there is the column's.
+                let cx = (ci + 0.5) * runic_constant("DRIZZLE_W");
+                assert!((cx.signum() * wx * f / z - cx).abs() < 1e-2, "column {ci} lands at {}", wx * f / z);
+                running += 1;
+                kinds[kind] += 1;
+            }
+            sum += running;
+            least = least.min(running);
+            moments += 1;
+            t += 0.25;
+        }
+        let mean = sum as f32 / moments as f32;
+        assert!(mean >= 25.0, "many at once: {mean} on average");
+        assert!(least >= 12, "never a thin sky: {least}");
+        assert!(kinds.iter().all(|k| *k > 0), "walkers, cyclists and cars all connected: {kinds:?}");
     }
 
     #[test]

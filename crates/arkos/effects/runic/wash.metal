@@ -642,11 +642,14 @@ constant float DATA_TRAVEL_MIN = 2.2;
 constant float DATA_TRAVEL_MAX = 3.6;
 constant float DATA_TRAIL = 14.0;
 // How strongly the whole channel shows while its transfer runs, against the packet's 1.
-constant float DATA_CHANNEL = 0.5;
+constant float DATA_CHANNEL = 0.2;
+// How often a glyph of the city's data changes, in seconds: slowly, so the moving trails carry the
+// rain and the sky does not fizz (Cyrus, 2026-11-17: "the rain in the preview is too noisy").
+constant float DATA_FLICKER = 1.2;
 // The glow the packet's head carries, so a transfer reads moving at a sidebar's size, and its
 // radius in column widths; and how many things in view a transfer looks among before it draws
 // nothing.
-constant float DATA_HALO = 0.5;
+constant float DATA_HALO = 0.3;
 constant float DATA_HALO_R = 0.8;
 constant float DATA_TRIES = 5.0;
 constant float RAIN_COL_W = 0.22;
@@ -1124,6 +1127,94 @@ float4 data_end(float seed, float t) {
     return float4(0.0);
 }
 
+// Many small transfers (Cyrus, 2026-11-17: "there should be many small ones so it feels like the
+// matrix with everyones connected devices to the cloud"). The sky is cut into columns DRIZZLE_W
+// points wide, counted from the vanishing point, each running a short transfer for DRIZZLE_ON of
+// its cycle of DRIZZLE_PERIOD_MIN to DRIZZLE_PERIOD_MAX seconds between the sky and whoever is on
+// the ground under it: where a sidewalk's walkers (DRIZZLE_WALK of the picks), a bike lane's
+// cyclists (to DRIZZLE_BIKE) or a lane's cars pass under the column. A column's own x says how deep
+// that line lies under it, so each pixel works out only its own column, however many run. Each is
+// a lit dash a cell, a bright head and DRIZZLE_TRAIL cells fading behind it, down for a download
+// and up for an upload, with a flicker on the thing as it lands or leaves.
+constant float DRIZZLE_W = 3.0;
+constant float DRIZZLE_PERIOD_MIN = 2.5;
+constant float DRIZZLE_PERIOD_MAX = 6.0;
+constant float DRIZZLE_ON = 0.6;
+constant float DRIZZLE_WALK = 0.6;
+constant float DRIZZLE_BIKE = 0.75;
+constant float DRIZZLE_TRAIL = 9.0;
+constant float DRIZZLE_LIGHT = 0.4;
+
+// Where small column ci (DRIZZLE_W points wide, w, of a scene with focal length f) lands for the
+// transfer with this seed: its depth (x) and the height it meets (y, camera heights), or y < 0
+// when the line under it is out of view.
+float2 drizzle_end(float ci, float seed, float w, float f) {
+    float dx = abs((ci + 0.5) * w);
+    float pick = hash2(float2(seed, 2.0));
+    float road = float(ROAD_CELLS) * GRID_X;
+    float wx = 0.5 * road;
+    float h = 0.1;
+    if (pick < DRIZZLE_WALK) {
+        wx = road + 0.06 + (hash2(float2(seed, 5.0)) - 0.3) * WALK_W;
+        h = PERSON_H;
+    } else if (pick < DRIZZLE_BIKE) {
+        wx = BIKE_LANE * road;
+        h = 0.2;
+    }
+    float z = wx * f / max(dx, 1e-3);
+    if (z < Z_NEAR + 0.4 || z > Z_FAR * 0.6) {
+        return float2(0.0, -1.0);
+    }
+    return float2(z, h);
+}
+
+// The small transfers at p over col; top, hz, vx and f as data_rain's.
+float3 data_drizzle(float2 p, float top, float hz, float vx, float f, float t, float3 green, float3 white_c, float3 col, constant ArkosInputs& u) {
+    float ci = floor((p.x - vx) / DRIZZLE_W);
+    float period = mix(DRIZZLE_PERIOD_MIN, DRIZZLE_PERIOD_MAX, hash2(float2(ci, 41.0)));
+    float off = hash2(float2(ci, 43.0)) * period;
+    float k = floor((max(t, 0.0) + off) / period);
+    float into = max(t, 0.0) + off - k * period;
+    float run = period * DRIZZLE_ON;
+    if (into > run) {
+        return col;
+    }
+    float seed = ci * 389.0 + k;
+    float2 e = drizzle_end(ci, seed, DRIZZLE_W, f);
+    if (e.y < 0.0) {
+        return col;
+    }
+    float3 head_c = mix(green, white_c, 0.55);
+    float sx = vx + (ci + 0.5) * DRIZZLE_W;
+    float y_end = hz + f * (1.0 - e.y) / e.x;
+    float ch = DRIZZLE_W * 1.5;
+    float len = max((y_end - top) / ch, 1.0);
+    float r = (y_end - p.y) / ch;
+    bool up = hash2(float2(seed, 3.0)) < 0.5;
+    float travelled = (into / run) * (len + DRIZZLE_TRAIL);
+    float head = up ? travelled : len - travelled;
+    // The flicker on the thing as a download lands on it or an upload leaves it.
+    float meet = up ? (1.0 - smoothstep(0.0, 1.5, travelled)) : smoothstep(len - 1.5, len, travelled) * (1.0 - smoothstep(len + 1.0, len + 3.0, travelled));
+    float g = exp(-dot(p - float2(sx, y_end), p - float2(sx, y_end)) / (2.0 * DRIZZLE_W * DRIZZLE_W));
+    col = light_on(col, head_c, g * meet * 0.5, u.dark);
+    if (r < 0.0 || r > len) {
+        return col;
+    }
+    float behind = up ? head - r : r - head;
+    if (behind < 0.0 || behind > DRIZZLE_TRAIL) {
+        return col;
+    }
+    // A lit dash a cell, flickering as the glyphs change.
+    float2 fq = float2((p.x - sx) / DRIZZLE_W + 0.5, fract(r));
+    float2 d = abs(fq - 0.5);
+    float dash = 1.0 - smoothstep(0.22, 0.34, max(d.x * 1.4, d.y));
+    dash *= hash2(float2(seed, floor(r)) * 3.0 + floor(t / DATA_FLICKER)) < 0.85 ? 1.0 : 0.3;
+    float fade_top = saturate((p.y - top) / max((hz - top) * 0.4, 1.0));
+    float trail = 1.0 - behind / DRIZZLE_TRAIL;
+    bool at_head = behind < 1.0;
+    return mix(col, at_head ? head_c : green, saturate(dash * trail * fade_top * DRIZZLE_LIGHT * (at_head ? 1.6 : 1.0)));
+}
+
 // The city's data at p (window points): every transfer under way, its column from the sky's top
 // (top, where it fades in) to the thing it joins, over col. vx and hz are the vanishing point
 // across and the horizon; f the scene's focal length, as the city's.
@@ -1131,6 +1222,7 @@ float3 data_rain(float2 p, float top, float hz, float vx, float f, float t, floa
     if (p.y < top) {
         return col;
     }
+    col = data_drizzle(p, top, hz, vx, f, t, green, white_c, col, u);
     float fade_top = saturate((p.y - top) / max((hz - top) * 0.4, 1.0));
     float3 head_c = mix(green, white_c, 0.55);
     for (int i = 0; i < DATA_STREAMS; i++) {
@@ -1193,13 +1285,13 @@ float3 data_rain(float2 p, float top, float hz, float vx, float f, float t, floa
         float2 fq = float2((p.x - sx) / cw + 0.5, fract(r));
         float cell_y = floor(r);
         float2 bit = floor(float2(fq.x * 5.0, fq.y * 7.0));
-        float on = (bit.x >= 1.0 && bit.x <= 3.0 && bit.y >= 1.0 && bit.y <= 5.0 && hash2(float2(slot.w, cell_y) * 7.0 + bit + floor(t / 0.4)) < 0.62) ? 1.0 : 0.0;
+        float on = (bit.x >= 1.0 && bit.x <= 3.0 && bit.y >= 1.0 && bit.y <= 5.0 && hash2(float2(slot.w, cell_y) * 7.0 + bit + floor(t / DATA_FLICKER)) < 0.62) ? 1.0 : 0.0;
         // Too narrow for a glyph's bits to show (a far thing, a small pane): each cell a soft lit
         // dash instead, flickering as the glyphs change.
         if (cw < 7.0) {
             float2 d = abs(fq - 0.5);
             float dash = 1.0 - smoothstep(0.28, 0.4, max(d.x * 1.1, d.y));
-            on = dash * (hash2(float2(slot.w, cell_y) * 3.0 + floor(t / 0.4)) < 0.8 ? 1.0 : 0.35);
+            on = dash * (hash2(float2(slot.w, cell_y) * 3.0 + floor(t / DATA_FLICKER)) < 0.8 ? 1.0 : 0.35);
         }
         float trail = in_packet ? 1.0 - behind / DATA_TRAIL : 0.0;
         float lit = on * max(trail, channel) * seen * fade_top;
