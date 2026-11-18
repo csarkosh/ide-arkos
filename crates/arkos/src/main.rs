@@ -391,9 +391,6 @@ pub struct Root {
     /// had the keys (Cyrus, 2026-11-17, in place of Ctrl+Tab). Left and Right move between its
     /// tabs, Enter or Down go into the tab shown, Escape leaves.
     pub tab_ring: Option<PaneId>,
-    /// The title bar's ring was put on a popover by a click (not the keys), so it goes when the
-    /// popover closes and the keys go back where they were.
-    pub bar_by_mouse: bool,
     /// Each session's reminder, by its page (sessions hold grids spec, section 4). Saved with
     /// the workspace.
     pub reminders: HashMap<tree::PageKey, reminder::Reminder>,
@@ -968,7 +965,6 @@ impl Root {
             session_list_focused: false,
             session_cursor: None,
             tab_ring: None,
-            bar_by_mouse: false,
             dock_badge: 0,
             held: None,
             session_submenu: None,
@@ -1109,19 +1105,13 @@ impl Root {
         self.click_popover(chrome::Popover::Doctor, cx);
     }
 
-    /// A click on a bar icon: its popover opens or closes, and an open one takes the keys, its
-    /// rows unmarked until an arrow marks one (Cyrus, 2026-11-17: the menus "must support
-    /// keyboard navigation too"). When the keyboard's ring was there already, it stays the keys'.
+    /// A click on a bar icon: its popover opens or closes, its rows unmarked, and the keys stay
+    /// where they were (Cyrus, 2026-11-18: "When I click on a notification, setting, doctor, etc,
+    /// I don't expect my focus to change"); the mouse works the menu. When the keyboard's ring was
+    /// there already, the keys stay the ring's, as the keyboard left them.
     fn click_popover(&mut self, which: chrome::Popover, cx: &mut Context<Self>) {
         self.toggle_popover(which, cx);
         if self.popover.value() == Some(&which) && self.bar_ring.is_none() {
-            self.session_list_focused = false;
-            self.switcher_focused = false;
-            self.sidebar_focused = false;
-            self.wt_focused = false;
-            self.header_ring = None;
-            self.bar_ring = Some(which);
-            self.bar_by_mouse = true;
             self.popover_mark = usize::MAX;
         }
     }
@@ -1156,10 +1146,6 @@ impl Root {
 
     /// Closes the popover; true when one was open. Closing the bell marks its notices read.
     pub fn close_popovers(&mut self, now: Instant) -> bool {
-        // A ring a click put there goes with the popover: the keys go back where they were.
-        if std::mem::take(&mut self.bar_by_mouse) {
-            self.bar_ring = None;
-        }
         let was_bell = self.popover.value() == Some(&chrome::Popover::Bell);
         let closed = self.popover.hide(now);
         if closed && was_bell {
@@ -2628,7 +2614,6 @@ impl Root {
         self.wt_focused = false;
         self.header_ring = None;
         self.bar_ring = Some(chrome::Popover::Bell);
-        self.bar_by_mouse = false;
         cx.notify();
     }
 
@@ -6442,7 +6427,7 @@ impl Render for Root {
         }
         // The dots breathe with the focused pane's glow, on its clock; a window not in front rests.
         let breath = if self.window_active { self.breath.glow(now, crate::motion::reduce_motion()) } else { 0.0 };
-        let right = chrome::Right { bell_dot: self.notices.dot(), doctor_dot: self.doctor_needs_fix() > 0, open: self.popover.value().copied().unwrap_or_default(), hover: self.icon_hover, breath, ring: if self.bar_by_mouse { chrome::Popover::Closed } else { self.bar_ring.unwrap_or_default() } };
+        let right = chrome::Right { bell_dot: self.notices.dot(), doctor_dot: self.doctor_needs_fix() > 0, open: self.popover.value().copied().unwrap_or_default(), hover: self.icon_hover, breath, ring: self.bar_ring.unwrap_or_default() };
         let hover = |which: chrome::Popover| {
             Box::new(cx.listener(move |root, on: &bool, _, cx| {
                 let next = if *on { which } else { chrome::Popover::Closed };
@@ -6475,6 +6460,9 @@ impl Render for Root {
         )
         // The icons take the keys when the keyboard's ring is on them (Chrome keys spec).
         .track_focus(&self.bar_focus)
+        // A press on the bar leaves the keys where they were: gpui would focus the bar until the
+        // next render put them back (as Pane 0's column, `sidebar::render`).
+        .capture_any_mouse_down(|_ev: &gpui::MouseDownEvent, window, _cx| window.prevent_default())
         .key_context("TitleBar")
         .on_key_down(cx.listener(|root, ev: &KeyDownEvent, _window, cx| root.bar_key_down(&ev.keystroke, cx)));
         let family = self.ui_family();

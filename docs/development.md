@@ -1133,8 +1133,11 @@ Things only a person at the screen can check, in order of value:
   menu bar's Help items), on the cog the Settings window; Down goes back to the switcher;
   hovering an icon shows a tooltip naming its menu and what is in it, but not while that icon's
   own menu is open; a click on the question mark opens Help with nothing marked and no ring on the
-  icon, Down marks Keyboard Navigation, Enter opens it, and Escape instead closes the menu with
-  the keys back in the pane
+  icon, the keys left in the pane (arrows and typing reach it), and Escape closes the menu
+- bar clicks: typing in Claude, click the bell: its menu opens, the glow stays on the pane,
+  typing reaches Claude, a click on a row works it, Escape closes the menu without reaching
+  Claude; the same for the doctor and Help; Cmd+0, Up to the bell, Enter: the menu takes the
+  keys as before
 - watercolor gallery: under Lavender Watercolor with room under the sidebar's rows, a painter's loft
   fills the bottom of Pane 0 in the theme's colours, its edges melting into the sidebar (no frame
   round it): window onto rooftops and a water tower, brick, floorboards, lamp, table, plant, and the
