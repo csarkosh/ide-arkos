@@ -1640,6 +1640,68 @@ mod tests {
         assert!(wash.contains("col = water_tower_at("), "drawn in the tower loop");
     }
 
+    /// Manhole k (two a block), as the wash's `steam_vent` places it: x across the road and z in
+    /// the world, if it breathes steam.
+    fn steam_vent(k: i32) -> Option<(f32, f32)> {
+        let block = CROSS_EVERY * GRID_Z;
+        let fj = k as f32;
+        let j = (fj * 0.5).floor();
+        let half = fj - 2.0 * j;
+        if hash2(fj, 97.0) >= runic_constant("STEAM_SHARE") {
+            return None;
+        }
+        let side = if hash2(fj, 101.0) < 0.5 { -1.0 } else { 1.0 };
+        let x = side * (0.15 + 0.4 * hash2(fj, 83.0));
+        let z = j * block + GRID_Z + WALK_AT + 0.3 + (half + hash2(fj, 89.0)) * 0.5 * (block - GRID_Z - 2.0 * WALK_AT - 0.6);
+        Some((x, z))
+    }
+
+    #[test]
+    fn most_blocks_breathe_steam_from_a_manhole_or_two() {
+        // Cyrus, 2026-11-18, of what would make the city feel more like New York: "do 1, 2 and 3",
+        // the second being steam from the manholes.
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        for line in [
+            "    if (hash2(float2(fj, 97.0)) >= STEAM_SHARE) {",
+            "    float side = hash2(float2(fj, 101.0)) < 0.5 ? -1.0 : 1.0;",
+            "    float x = side * (0.15 + 0.4 * hash2(float2(fj, 83.0)));",
+            "    float z = j * block + GRID_Z + WALK_AT + 0.3 + (half_k + hash2(float2(fj, 89.0))) * 0.5 * (block - GRID_Z - 2.0 * WALK_AT - 0.6);",
+        ] {
+            assert!(wash.contains(line), "wash.metal lacks {line}");
+        }
+        let n = (0..800).filter(|k| steam_vent(*k).is_some()).count();
+        assert!((480..640).contains(&n), "{n} of 800 manholes");
+        let none = (0..400).filter(|j| steam_vent(2 * j).is_none() && steam_vent(2 * j + 1).is_none()).count();
+        assert!(none < 60, "{none} of 400 blocks without steam");
+        assert!(wash.contains("col = steam_at("), "drawn in the city");
+    }
+
+    #[test]
+    fn steam_rises_from_a_traffic_lane_never_a_crosswalk_or_a_bike_lane() {
+        let block = CROSS_EVERY * GRID_Z;
+        let bike = runic_constant("BIKE_LANE") * 0.9;
+        let reach = runic_constant("STEAM_W1") * 0.5 + runic_constant("STEAM_DRIFT");
+        for k in 0..800 {
+            let j = k / 2;
+            if let Some((x, z)) = steam_vent(k) {
+                assert!(x.abs() + runic_constant("STEAM_W0") * 0.5 < bike - 0.05, "block {j}: its manhole by the bike lane");
+                assert!(x.abs() + reach < 0.9, "block {j}: its plume over the sidewalk");
+                let local = z - j as f32 * block;
+                // The crosswalks: WALK_W wide, WALK_AT past either side of the cross street.
+                let (near, far) = (GRID_Z + WALK_AT + WALK_W * 0.5, block - WALK_AT - WALK_W * 0.5);
+                assert!(local - runic_constant("STEAM_W0") > near && local + runic_constant("STEAM_W0") < far, "block {j}: over a crosswalk");
+            }
+        }
+    }
+
+    #[test]
+    fn steam_rises_about_two_stories_so_it_reads_at_the_sidebar_s_size() {
+        // At three people tall (0.48) a plume halfway up the road was four points high.
+        let (h, p) = (runic_constant("STEAM_H"), runic_constant("PERSON_H"));
+        assert!(h >= 5.0 * p && h <= 6.5 * p, "{h} high");
+        assert!(runic_constant("STEAM_LIGHT") >= 0.5, "seen at the sidebar's size");
+    }
+
     #[test]
     fn about_half_the_sheds_have_scaffolding_never_above_the_roof() {
         let (mut sheds, mut scaffolds) = (0, 0);

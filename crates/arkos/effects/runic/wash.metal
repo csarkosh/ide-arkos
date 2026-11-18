@@ -669,6 +669,15 @@ constant float SHED_DECK_FILL = 0.32;
 constant float SCAFFOLD_NET = 0.22;
 constant float SCAFFOLD_FLOOR = 0.25;
 constant float SCAFFOLD_FLOORS = 4.0;
+// Steam (Cyrus, 2026-11-18, "do 1, 2 and 3"): each half of a block, between its crosswalks, has a
+// manhole in a lane of the road at STEAM_SHARE, breathing a plume STEAM_W0 wide at the street, swelling to
+// STEAM_W1 at STEAM_H high and drifting STEAM_DRIFT aside, lit at STEAM_LIGHT.
+constant float STEAM_SHARE = 0.7;
+constant float STEAM_H = 0.9;
+constant float STEAM_W0 = 0.08;
+constant float STEAM_W1 = 0.45;
+constant float STEAM_DRIFT = 0.1;
+constant float STEAM_LIGHT = 0.7;
 // Rooftop water towers (Cyrus, 2026-11-18, "do 1, 2 and 3"): WT_SHARE of the towers between WT_MIN
 // and WT_MAX tall wear one, as Manhattan's walk-ups and mid-rises do and its tallest towers do
 // not: a barrel WT_R round on legs WT_LEGS tall, its tank WT_TANK tall under a cone WT_CONE tall.
@@ -1608,6 +1617,48 @@ float3 shed_at(float2 p, float sx, float fx, float z0, float z1, float top, floa
     return light_on(col, mix(green, white_c, 0.25), lit * seen, u.dark);
 }
 
+// Manhole k (two a block, the first in its near half): its x across the road, its z in the world,
+// 1 if it breathes steam (0 if it has none) and its own phase. It lies in a traffic lane, clear of
+// the bike lanes and the crosswalks.
+float4 steam_vent(int k) {
+    float block = float(CROSS_EVERY) * GRID_Z;
+    float fj = float(k);
+    float j = floor(fj * 0.5);
+    float half_k = fj - 2.0 * j;
+    if (hash2(float2(fj, 97.0)) >= STEAM_SHARE) {
+        return float4(0.0);
+    }
+    float side = hash2(float2(fj, 101.0)) < 0.5 ? -1.0 : 1.0;
+    float x = side * (0.15 + 0.4 * hash2(float2(fj, 83.0)));
+    float z = j * block + GRID_Z + WALK_AT + 0.3 + (half_k + hash2(float2(fj, 89.0))) * 0.5 * (block - GRID_Z - 2.0 * WALK_AT - 0.6);
+    return float4(x, z, 1.0, hash2(float2(fj, 103.0)) * 6.283);
+}
+
+// A manhole's plume at p over col: the manhole at x across and depth z in view. It swells and
+// drifts as it rises, its noise rising through it, and puffs harder and softer over a few seconds;
+// what is behind it shows dimmed through it.
+float3 steam_at(float2 p, float x, float z, float ph, float t, float cx, float yh, float f, float seen, float3 bg, float3 green, float3 white_c, constant ArkosInputs& u, float3 col) {
+    float sc = f / z;
+    float base = yh + sc;
+    float hpx = STEAM_H * sc;
+    float v = (base - p.y) / hpx;
+    if (v < -0.02 || v > 1.0) {
+        return col;
+    }
+    float rise = max(v, 0.0);
+    float mid = cx + (x + STEAM_DRIFT * pow(rise, 1.5) * (0.7 + 0.3 * sin(t * 0.3 + ph))) * sc;
+    float half_w = 0.5 * mix(STEAM_W0, STEAM_W1, sqrt(rise)) * sc + 0.5;
+    float a = (p.x - mid) / half_w;
+    if (abs(a) > 1.0) {
+        return col;
+    }
+    float body = (1.0 - a * a) * smoothstep(-0.02, 0.08, v) * pow(1.0 - rise, 0.8);
+    float n = fbm(float2(a * 1.5 + ph, rise * 2.5 - t * 0.9));
+    float puff = 0.6 + 0.4 * sin(t * 0.7 + ph);
+    float d = clamp(body * (0.6 + 1.2 * n) * puff * 1.5, 0.0, 1.0) * seen;
+    return light_on(mix(col, bg, d * 0.25), mix(green, white_c, 0.5), d * STEAM_LIGHT, u.dark);
+}
+
 // A water tower on a roof th high at p over col: its barrel round wx at depth wz. A pixel inside
 // the tower's front face (inside) is behind it, so a tower above the eye hides the legs' feet.
 float3 water_tower_at(float2 p, float wx, float wz, float th, bool inside, float cx, float yh, float f, float seen, float3 bg, float3 green, float3 white_c, constant ArkosInputs& u, float3 col) {
@@ -2232,6 +2283,20 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
             float2 b = bike_end_on(q, foot, sc, t, hash2(key + 7.0), moving);
             col = light_on(col, mix(green, white_c, 0.3), b.x * 0.8 * seen, u.dark);
             col = light_on(col, lane == 0 ? head_c : tail_c, b.y * seen, u.dark);
+        }
+    }
+    // Steam from the road's manholes, after its traffic (a car's lights dim inside it) and before
+    // the towers (a nearer one covers it).
+    if (q.y > yh) {
+        int k0 = 2 * int(floor((run + Z_NEAR) / block));
+        for (int k = k0; k < k0 + 8; k++) {
+            float4 vent = steam_vent(k);
+            float zs = vent.y - run;
+            if (vent.z <= 0.0 || zs < Z_NEAR + 0.1 || zs > Z_FAR * 0.6) {
+                continue;
+            }
+            float seen = (1.0 - smoothstep(Z_FAR * 0.4, Z_FAR * 0.6, zs)) * smoothstep(Z_NEAR + 0.1, Z_NEAR + 0.6, zs);
+            col = steam_at(q, vent.x, zs, vent.w, t, cx, yh, f, seen, bg, green, white_c, u, col);
         }
     }
     // The city, farthest row first so nearer towers hide farther ones: each cell's tower stands
