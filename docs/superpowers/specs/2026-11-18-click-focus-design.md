@@ -45,3 +45,15 @@ icons reached by keys.
 
 Which pane a Neighbor click picks when a preview tab of the file is already open elsewhere
 (reuse that tab, as `plan_open_in` with `reuse` does). Tests first, one per bullet above.
+
+## Menus always have a background
+
+Cyrus, 2026-11-18: "the menu for 'Remind me in --> Custom...' has no background for almost every
+theme. Menus should always have a background and they should always open in the front-center of
+its respective IDE window." Under an effect that paints the menus (most presets), a menu's own fill
+is clear and its backdrop comes from the effect, through `chrome::menu_report`. The reminder picker
+(and its Time and Repeat lists), the code language menu, the slash menu, the outline's hover card
+and the update toast never reported, so they had none. Now each does, and a test holds every file
+that frames a menu to report as many. The picker already opens over everything, centred in its
+window, over a faint scrim. Menus that belong to a place (a right-click menu, the bar's menus, the
+slash menu at the caret) keep opening there.

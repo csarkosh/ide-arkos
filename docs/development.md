@@ -1134,6 +1134,11 @@ Things only a person at the screen can check, in order of value:
   hovering an icon shows a tooltip naming its menu and what is in it, but not while that icon's
   own menu is open; a click on the question mark opens Help with nothing marked and no ring on the
   icon, the keys left in the pane (arrows and typing reach it), and Escape closes the menu
+- menu backgrounds: on The Matrix, Tokyo Rain, Lavender Watercolor and a theme with no effect,
+  right-click a session row, Remind me in, Custom...: the picker opens in the window's centre
+  over a faint scrim with a solid background, and its Time and Repeat lists have one too; the
+  same for a markdown code block's language menu, the "/" menu, the outline's hover card and the
+  update toast
 - session names: right-click a session row, Rename: the row's name becomes an editor with the
   keys in it, Enter keeps the name and the session's tab keeps its own title; double-click the
   tab and rename it: the row keeps its name; a blank row name follows Claude's topic again; both

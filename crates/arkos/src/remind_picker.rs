@@ -328,7 +328,7 @@ pub fn render(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     let repeat = field("remind-repeat", "Repeat", div().child(repeat_name).into_any_element(), Drop::Repeat, cx);
     // The open dropdown's list, under its field.
     let list = |rows: Vec<(String, bool, Box<dyn Fn(&mut Picker, u64)>)>, scroll: Option<gpui::ScrollHandle>, cx: &mut Context<Root>| {
-        let mut l = div().id("remind-list").absolute().left(px(LABEL_W)).top(px(28.0)).min_w(px(7.0 * CELL - LABEL_W)).max_h(px(7.5 * ROW_H)).overflow_y_scroll().rounded(px(6.0)).whitespace_nowrap().map(|d| crate::chrome::menu_frame(d, &theme, &style)).occlude();
+        let mut l = div().id("remind-list").absolute().left(px(LABEL_W)).top(px(28.0)).min_w(px(7.0 * CELL - LABEL_W)).max_h(px(7.5 * ROW_H)).overflow_y_scroll().rounded(px(6.0)).whitespace_nowrap().map(|d| crate::chrome::menu_frame(d, &theme, &style)).when(style.menu_edges, |d| d.child(crate::chrome::menu_report(0x1a, opacity, cx))).occlude();
         if let Some(scroll) = scroll {
             l = l.track_scroll(&scroll);
         }
@@ -397,6 +397,10 @@ pub fn render(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
         .gap(px(8.0))
         .rounded(px(10.0))
         .map(|d| crate::chrome::menu_frame(d, &theme, &style))
+        // Under an effect that paints the menus, its backdrop first, under everything in it
+        // (Cyrus, 2026-11-18: it "has no background for almost every theme").
+        .relative()
+        .when(style.menu_edges, |d| d.child(crate::chrome::menu_report(0x19, opacity, cx)))
         .font_family(root.ui_family())
         .text_size(ui(12.0))
         .text_color(text)

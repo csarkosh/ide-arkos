@@ -740,6 +740,35 @@ pub fn popover_card(which: Popover, window_w: f32, opacity: f32, live: bool, the
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_menu_framed_by_menu_frame_paints_a_backdrop_under_an_effect() {
+        // Cyrus, 2026-11-18: "the menu for 'Remind me in --> Custom...' has no background for
+        // almost every theme. Menus should always have a background." Under an effect that
+        // paints the menus, `menu_frame` fills nothing and `menu_report` paints the backdrop, so
+        // every file that frames a menu reports as many. The title bar's popover card is framed
+        // here and reported where main.rs draws it.
+        let files: &[(&str, &str)] = &[
+            ("lang_menu.rs", include_str!("lang_menu.rs")),
+            ("link_menu.rs", include_str!("link_menu.rs")),
+            ("new_tab_menu.rs", include_str!("new_tab_menu.rs")),
+            ("md_menu.rs", include_str!("md_menu.rs")),
+            ("remind_picker.rs", include_str!("remind_picker.rs")),
+            ("outline_rail.rs", include_str!("outline_rail.rs")),
+            ("slash_menu.rs", include_str!("slash_menu.rs")),
+            ("sidebar.rs", include_str!("sidebar.rs")),
+            ("sessions_list.rs", include_str!("sessions_list.rs")),
+            ("update_toast.rs", include_str!("update_toast.rs")),
+        ];
+        for (name, src) in files {
+            let framed = src.matches("chrome::menu_frame(").count();
+            let reported = src.matches("chrome::menu_report(").count();
+            assert!(framed > 0, "{name} frames no menu: drop it from this list");
+            assert!(reported >= framed, "{name} frames {framed} menus but reports {reported}");
+        }
+        let main = include_str!("main.rs");
+        assert!(main.contains("chrome::menu_report(0x15"), "the title bar's popover card reports itself");
+    }
+
     use super::*;
 
     #[test]

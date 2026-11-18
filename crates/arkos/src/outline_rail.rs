@@ -608,6 +608,8 @@ pub fn render_hover(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
         .py(px(if h.preview { 8.0 } else { 3.0 }))
         .rounded(px(6.0))
         .map(|d| crate::chrome::menu_frame(d, &theme, &style))
+        // Under an effect that paints the menus, its backdrop first, under the lines.
+        .when(style.menu_edges, |d| d.child(crate::chrome::menu_report(0x20, o, cx)))
         .font_family(root.ui_family())
         .text_size(px(root.ui_size(12.0)))
         .text_color(c.text_dim.hsla());

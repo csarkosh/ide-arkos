@@ -13,7 +13,7 @@ const WIDTH: f32 = 280.0;
 
 /// The panel: its rows from `first`, the selected one marked, each running or opening on a click.
 #[allow(clippy::too_many_arguments)]
-fn panel(root: &Root, viewer: &Entity<Viewer>, rows: &[crate::md_slash::Entry], selected: usize, sub_of: Option<usize>, row_h: Pixels) -> Div {
+fn panel(root: &Root, viewer: &Entity<Viewer>, rows: &[crate::md_slash::Entry], selected: usize, sub_of: Option<usize>, row_h: Pixels, backdrop: Option<gpui::AnyElement>) -> Div {
     let style = root.effect_style();
     let c = &root.theme.chrome;
     let hover = crate::chrome::menu_colors(&root.theme, style.menus).hover;
@@ -25,6 +25,9 @@ fn panel(root: &Root, viewer: &Entity<Viewer>, rows: &[crate::md_slash::Entry], 
         .flex_col()
         .py(px(4.0))
         .map(|d| crate::chrome::menu_frame(d, &root.theme, &style))
+        // Under an effect that paints the menus, its backdrop first, under the rows.
+        .relative()
+        .children(backdrop)
         .font_family(root.ui_family())
         .text_size(px(root.ui_size(12.0)))
         .text_color(c.text.hsla())
@@ -93,10 +96,13 @@ pub fn render_slash_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div>
     let (at, line_h) = v.slash_at?;
     let rows = s.rows();
     let row_h = px(root.ui_size(12.0) * 1.9);
-    let main = panel(root, &viewer, &rows, s.selected, None, row_h);
+    let edges = root.effect_style().menu_edges;
+    let backdrop = edges.then(|| crate::chrome::menu_report(0x1d, 1.0, cx).into_any_element());
+    let main = panel(root, &viewer, &rows, s.selected, None, row_h, backdrop);
+    let sub_backdrop = (edges && s.sub.is_some()).then(|| crate::chrome::menu_report(0x1e, 1.0, cx).into_any_element());
     let sub = s.sub.and_then(|i| rows.get(i).map(|e| (i, e.submenu.clone()))).map(|(i, items)| {
         let top = row_h * (i - s.selected.saturating_sub(ROWS - 1)) as f32;
-        div().pt(top).child(panel(root, &viewer, &items, s.sub_selected, Some(i), row_h))
+        div().pt(top).child(panel(root, &viewer, &items, s.sub_selected, Some(i), row_h, sub_backdrop))
     });
     Some(div().absolute().left(at.x).top(at.y + line_h + px(4.0)).flex().flex_row().items_start().gap(px(4.0)).child(main).children(sub))
 }

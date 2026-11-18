@@ -42,6 +42,8 @@ pub fn render(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
             .px(px(12.0))
             .py(px(10.0))
             .map(|d| crate::chrome::menu_frame(d, &root.theme, &style))
+            // Under an effect that paints the menus, its backdrop first, under the words.
+            .when(style.menu_edges, |d| d.child(crate::chrome::menu_report(0x1f, opacity, cx)))
             .font_family(root.ui_family())
             .text_size(px(root.ui_size(12.0)))
             .text_color(text)
