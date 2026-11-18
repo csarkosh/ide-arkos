@@ -678,6 +678,21 @@ constant float STEAM_W0 = 0.08;
 constant float STEAM_W1 = 0.45;
 constant float STEAM_DRIFT = 0.1;
 constant float STEAM_LIGHT = 0.7;
+// Subway entrances (Cyrus, 2026-11-18, "do 1, 2 and 3"): at ENTRANCE_SHARE of the corners where a
+// cross street meets the road, on a lot with no sidewalk shed and a tower face clear of it, a
+// stair at the curb ENTRANCE_W wide, from ENTRANCE_AT past the cross street's curb for
+// ENTRANCE_LEN, a railing ENTRANCE_RAIL high round it, open toward the cross street, with a globe
+// ENTRANCE_LAMP up at each side of the opening, red (exit only) for ENTRANCE_RED of them. The
+// road's people beside one are pressed aside, easing over ENTRANCE_EASE, to ENTRANCE_CLEAR past it.
+constant float ENTRANCE_SHARE = 0.6;
+constant float ENTRANCE_AT = 0.9;
+constant float ENTRANCE_LEN = 0.32;
+constant float ENTRANCE_W = 0.09;
+constant float ENTRANCE_RAIL = 0.1;
+constant float ENTRANCE_LAMP = 0.26;
+constant float ENTRANCE_RED = 0.25;
+constant float ENTRANCE_EASE = 0.15;
+constant float ENTRANCE_CLEAR = 0.03;
 // Rooftop water towers (Cyrus, 2026-11-18, "do 1, 2 and 3"): WT_SHARE of the towers between WT_MIN
 // and WT_MAX tall wear one, as Manhattan's walk-ups and mid-rises do and its tallest towers do
 // not: a barrel WT_R round on legs WT_LEGS tall, its tank WT_TANK tall under a cone WT_CONE tall.
@@ -1129,6 +1144,7 @@ float2 road_walker_at(float dir, float2 key, float t);
 float4 road_crosser_at(float2 key, float side, float cw, float t);
 float bike_swerve(float x, float zw, float t);
 bool lot_built(int kx, int m);
+float sidewalk_x(float side, float ax, float zw);
 bool lot_empty(int kx, int m);
 bool lot_in_park(int kx, int m);
 
@@ -1168,8 +1184,9 @@ float4 data_end(float seed, float t, float t0) {
         float dir = hash2(key + 1.0) < 0.5 ? 1.0 : -1.0;
         float2 at = road_walker_at(dir, key, t);
         float edge_x = float(ROAD_CELLS) * GRID_X + 0.06;
-        float x = side * edge_x + side * (hash2(key + 7.0) - 0.22) * WALKER_SPREAD;
-        return float4(x, wrap_view(at.x - run), PERSON_H, 1.0);
+        float z = wrap_view(at.x - run);
+        float x = sidewalk_x(side, edge_x + (hash2(key + 7.0) - 0.22) * WALKER_SPREAD, z + run);
+        return float4(x, z, PERSON_H, 1.0);
     }
     if (c < DATA_CAR) {
         float2 key = float2(floor(pick * float(ROAD_CARS)), side > 0.0 ? 13.0 + 31.0 : 31.0);
@@ -1243,8 +1260,9 @@ float4 small_end(float seed, float side, float t, float t0) {
         float2 key = float2(floor(pick * float(PEOPLE)), side > 0.0 ? 17.0 + 61.0 : 61.0);
         float dir = hash2(key + 1.0) < 0.5 ? 1.0 : -1.0;
         float2 at = road_walker_at(dir, key, t);
-        float x = side * (road + 0.06) + side * (hash2(key + 7.0) - 0.22) * WALKER_SPREAD;
-        e = float4(x, wrap_view(at.x - run), PERSON_H, 1.0);
+        float z = wrap_view(at.x - run);
+        float x = sidewalk_x(side, road + 0.06 + (hash2(key + 7.0) - 0.22) * WALKER_SPREAD, z + run);
+        e = float4(x, z, PERSON_H, 1.0);
     } else if (c < SMALL_CAR) {
         float2 key = float2(floor(pick * float(ROAD_CARS)), side > 0.0 ? 13.0 + 31.0 : 31.0);
         e = float4(side * 0.5 * road, wrap_view(road_car_at(side, key, t) - run), 0.1, 1.0);
@@ -1482,6 +1500,64 @@ bool lot_built(int kx, int m) {
     return hash2(float2(float(kx), float(m)) + float2(17.0, 3.0)) <= TOWER_ON;
 }
 
+// The outer side of a subway entrance's railing across the road's sidewalk (|x|); its inner side
+// stands just inside the curb.
+float entrance_out() {
+    return float(ROAD_CELLS) * GRID_X - SIDEWALK_IN + 0.01 + ENTRANCE_W;
+}
+
+// Whether lot (kx, m) beside the road has a subway entrance at its corner: the lot just past a
+// cross street or just before one, with no sidewalk shed and a tower face (if any) clear of it.
+bool entrance_at(int kx, int m) {
+    if (kx != ROAD_CELLS && kx != -ROAD_CELLS - 1) {
+        return false;
+    }
+    int corner = ((m % CROSS_EVERY) + CROSS_EVERY) % CROSS_EVERY;
+    if (corner != 1 && corner != CROSS_EVERY - 1) {
+        return false;
+    }
+    if (hash2(float2(float(kx), float(m)) + float2(97.0, 37.0)) >= ENTRANCE_SHARE) {
+        return false;
+    }
+    if (lot_built(kx, m)) {
+        float2 cell = float2(float(kx), float(m));
+        float tw = GRID_X * (0.5 + 0.35 * hash2(cell + float2(5.0, 11.0)));
+        float tx = (float(kx) + 0.5) * GRID_X;
+        bool shed = hash2(cell + float2(61.0, 13.0)) < SHED_SHARE;
+        if (shed || abs(tx) - tw * 0.5 < entrance_out() + 0.02) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// A corner lot's entrance's railing from z.x to z.y along its lot, ENTRANCE_AT from the cross
+// street's curb: the lot after a cross street starts at its curb, the lot before one ends at it.
+float2 entrance_span(int m) {
+    int corner = ((m % CROSS_EVERY) + CROSS_EVERY) % CROSS_EVERY;
+    return corner == 1 ? float2(ENTRANCE_AT, ENTRANCE_AT + ENTRANCE_LEN) : float2(GRID_Z - ENTRANCE_AT - ENTRANCE_LEN, GRID_Z - ENTRANCE_AT);
+}
+
+// Where across the road a person on its sidewalk on side `side` stands, whose own place across it
+// is ax (|x|), at world depth zw: beside a subway entrance the crowd's places are pressed into the
+// part of the sidewalk past its railing, easing in and out, so no one walks through it.
+float sidewalk_x(float side, float ax, float zw) {
+    int m = int(floor(zw / GRID_Z));
+    int kx = side > 0.0 ? ROAD_CELLS : -ROAD_CELLS - 1;
+    if (!entrance_at(kx, m)) {
+        return side * ax;
+    }
+    float local = zw - float(m) * GRID_Z;
+    float2 span = entrance_span(m);
+    // Fully aside ENTRANCE_CLEAR before the railing starts and until after it ends.
+    float k = smoothstep(span.x - ENTRANCE_CLEAR - ENTRANCE_EASE, span.x - ENTRANCE_CLEAR, local) * (1.0 - smoothstep(span.y + ENTRANCE_CLEAR, span.y + ENTRANCE_CLEAR + ENTRANCE_EASE, local));
+    float edge_x = float(ROAD_CELLS) * GRID_X + 0.06;
+    float lo_w = edge_x - 0.22 * WALKER_SPREAD, hi_w = edge_x + 0.78 * WALKER_SPREAD;
+    float lo = entrance_out() + ENTRANCE_CLEAR;
+    float pressed = max(lo + (ax - lo_w) * (hi_w - lo) / (hi_w - lo_w), lo);
+    return side * mix(ax, pressed, k);
+}
+
 // Whether a cell is a lot (beside the road, not on a cross street) with no tower.
 bool lot_empty(int kx, int m) {
     bool road = kx >= -ROAD_CELLS && kx < ROAD_CELLS;
@@ -1657,6 +1733,55 @@ float3 steam_at(float2 p, float x, float z, float ph, float t, float cx, float y
     float puff = 0.6 + 0.4 * sin(t * 0.7 + ph);
     float d = clamp(body * (0.6 + 1.2 * n) * puff * 1.5, 0.0, 1.0) * seen;
     return light_on(mix(col, bg, d * 0.25), mix(green, white_c, 0.5), d * STEAM_LIGHT, u.dark);
+}
+
+// Lot (kx, m)'s subway entrance at p over col, the lot's near edge at depth zc in view: the stair's
+// hole with its steps going down away from the opening, a railing round three sides, and a globe
+// on a post at each side of the opening, green, or red when it is exit only.
+float3 entrance_draw(float2 p, int kx, int m, float zc, float cx, float yh, float f, float3 bg, float3 green, float3 white_c, constant ArkosInputs& u, float3 col) {
+    float2 span = entrance_span(m) + zc;
+    if (span.x < Z_NEAR || span.x > Z_FAR) {
+        return col;
+    }
+    float sgn = kx < 0 ? -1.0 : 1.0;
+    float ri = sgn * (entrance_out() - ENTRANCE_W), ro = sgn * entrance_out();
+    #define W(x, y, z) world_on_screen(x, y, z, cx, yh, f)
+    float2 a = W(ri, ENTRANCE_LAMP, span.x), b = W(ro, 0.0, span.x), c = W(ri, ENTRANCE_LAMP, span.y), d = W(ro, 0.0, span.y);
+    float2 lo = min(min(a, b), min(c, d)) - 3.0, hi = max(max(a, b), max(c, d)) + 3.0;
+    if (p.x < lo.x || p.x > hi.x || p.y < lo.y || p.y > hi.y) {
+        return col;
+    }
+    float zm = 0.5 * (span.x + span.y);
+    float seen = (1.0 - smoothstep(Z_FAR * 0.55, Z_FAR, zm)) * smoothstep(Z_NEAR, Z_NEAR + 0.6, zm);
+    float2 cell = float2(float(kx), float(m));
+    int corner = ((m % CROSS_EVERY) + CROSS_EVERY) % CROSS_EVERY;
+    // The opening faces the cross street: the near end past one, the far end before one.
+    float open_z = corner == 1 ? span.x : span.y;
+    float shut_z = corner == 1 ? span.y : span.x;
+    // The hole and its steps, on the ground under p.
+    if (p.y > yh) {
+        float zg = f / (p.y - yh);
+        float xg = (p.x - cx) * zg / f;
+        if (zg > span.x && zg < span.y && xg > min(ri, ro) && xg < max(ri, ro)) {
+            float down = abs(zg - open_z) / ENTRANCE_LEN;
+            col = mix(col, bg * 0.3, 0.85 * seen);
+            col = light_on(col, green, grid_line(zg / 0.06) * 0.35 * (1.0 - down) * seen, u.dark);
+        }
+    }
+    float r = ENTRANCE_RAIL;
+    // The railing along both sides and across the shut end, and its posts.
+    float rail = min(min(seg_dist(p, W(ri, r, span.x), W(ri, r, span.y)), seg_dist(p, W(ro, r, span.x), W(ro, r, span.y))), seg_dist(p, W(ri, r, shut_z), W(ro, r, shut_z)));
+    float posts = min(seg_dist(p, W(ri, 0.0, shut_z), W(ri, r, shut_z)), seg_dist(p, W(ro, 0.0, shut_z), W(ro, r, shut_z)));
+    // The lamp posts at the opening, each under its globe.
+    float lamps = min(seg_dist(p, W(ri, 0.0, open_z), W(ri, ENTRANCE_LAMP, open_z)), seg_dist(p, W(ro, 0.0, open_z), W(ro, ENTRANCE_LAMP, open_z)));
+    float lit = max(1.0 - smoothstep(0.0, 1.0, rail), (1.0 - smoothstep(0.0, 1.0, min(posts, lamps))) * 0.75);
+    col = light_on(col, mix(green, white_c, 0.25), lit * 0.8 * seen, u.dark);
+    bool red = hash2(cell + float2(107.0, 41.0)) < ENTRANCE_RED;
+    float3 globe_c = red ? u.colors[ARKOS_ANSI + 1].rgb : mix(green, white_c, 0.45);
+    float gr = clamp(0.05 * f / open_z, 0.9, 3.2);
+    float g = max(car_light(p, W(ri, ENTRANCE_LAMP, open_z), gr), car_light(p, W(ro, ENTRANCE_LAMP, open_z), gr));
+    #undef W
+    return light_on(col, globe_c, g * seen, u.dark);
 }
 
 // A water tower on a roof th high at p over col: its barrel round wx at depth wz. A pixel inside
@@ -2512,6 +2637,14 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
                 }
             }
         }
+        // The subway entrances at this row's corners, after its towers (one nearer the camera
+        // than a tower's front stands in front of it) and before the nearer rows.
+        for (int e = 0; e < 2; e++) {
+            int ekx = e == 0 ? ROAD_CELLS : -ROAD_CELLS - 1;
+            if (entrance_at(ekx, m)) {
+                col = entrance_draw(q, ekx, m, zc, cx, yh, f, bg, green, white_c, u, col);
+            }
+        }
     }
     // Drones drifting over the roofs, each blinking.
     for (int i = 0; i < DRONES; i++) {
@@ -2542,7 +2675,7 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
             float2 at = road_walker_at(dir, key, t);
             float z = wrap_view(at.x - run);
             float seen = (1.0 - smoothstep(Z_FAR * 0.55, Z_FAR, z)) * smoothstep(Z_NEAR, Z_NEAR + 0.6, z);
-            float2 foot = float2(cx + (sx + out_x * (hash2(key + 7.0) - 0.22) * WALKER_SPREAD) * f / z, yh + f / z);
+            float2 foot = float2(cx + sidewalk_x(out_x, edge_x + (hash2(key + 7.0) - 0.22) * WALKER_SPREAD, z + run) * f / z, yh + f / z);
             col = light_on(col, mix(green, white_c, 0.3), person_light(q, foot, PERSON_H * f / z, t, h, at.y > 0.0) * 0.85 * seen, u.dark);
         }
         for (int j = 0; j < STROLLERS; j++) {
@@ -2555,7 +2688,7 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
             float z = wrap_view(at.x - run);
             float seen = (1.0 - smoothstep(Z_FAR * 0.55, Z_FAR, z)) * smoothstep(Z_NEAR, Z_NEAR + 0.6, z) * at.y;
             // Out of a door: nearer the buildings than the walkers keep.
-            float2 foot = float2(cx + (sx + out_x * (0.1 + 0.6 * hash2(key + 7.0)) * WALK_W) * f / z, yh + f / z);
+            float2 foot = float2(cx + sidewalk_x(out_x, edge_x + (0.1 + 0.6 * hash2(key + 7.0)) * WALK_W, z + run) * f / z, yh + f / z);
             col = light_on(col, mix(green, white_c, 0.3), person_light(q, foot, PERSON_H * f / z, t, hash2(key), true) * 0.85 * seen, u.dark);
         }
     }

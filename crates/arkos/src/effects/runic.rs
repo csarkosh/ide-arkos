@@ -1702,6 +1702,145 @@ mod tests {
         assert!(runic_constant("STEAM_LIGHT") >= 0.5, "seen at the sidebar's size");
     }
 
+    /// The curb's line and a subway entrance's railing across the road's sidewalk: (inner, outer)
+    /// |x|.
+    fn entrance_rails() -> (f32, f32) {
+        let ri = 0.9 - runic_constant("SIDEWALK_IN") + 0.01;
+        (ri, ri + runic_constant("ENTRANCE_W"))
+    }
+
+    /// Whether lot (kx, m) has a subway entrance at its corner, as the wash's `entrance_at` works it
+    /// out, and its railing's z span in the lot.
+    fn entrance_at(kx: i32, m: i32) -> Option<(f32, f32)> {
+        let corner = m.rem_euclid(4);
+        if !(kx == 1 || kx == -2) || !(corner == 1 || corner == 3) || hash2(kx as f32 + 97.0, m as f32 + 37.0) >= runic_constant("ENTRANCE_SHARE") {
+            return None;
+        }
+        if tower_built(kx, m) {
+            let (tw, _, _, tx, _) = tower_box(kx, m);
+            if shed_of(kx, m).is_some() || tx.abs() - tw * 0.5 < entrance_rails().1 + 0.02 {
+                return None;
+            }
+        }
+        let (at, len) = (runic_constant("ENTRANCE_AT"), runic_constant("ENTRANCE_LEN"));
+        Some(if corner == 1 { (at, at + len) } else { (1.6 - at - len, 1.6 - at) })
+    }
+
+    /// Where a person whose place across the road's sidewalk is ax stands at world z zw on the
+    /// road's side `side`, as the wash's `sidewalk_x` presses it aside beside an entrance.
+    fn sidewalk_x(side: f32, ax: f32, zw: f32) -> f32 {
+        let m = (zw / 1.6).floor();
+        let local = zw - m * 1.6;
+        let kx = if side > 0.0 { 1 } else { -2 };
+        let Some((z0, z1)) = entrance_at(kx, m as i32) else { return side * ax };
+        let ease = runic_constant("ENTRANCE_EASE");
+        let smooth = |e0: f32, e1: f32, x: f32| {
+            let u = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+            u * u * (3.0 - 2.0 * u)
+        };
+        let clear = runic_constant("ENTRANCE_CLEAR");
+        let k = smooth(z0 - clear - ease, z0 - clear, local) * (1.0 - smooth(z1 + clear, z1 + clear + ease, local));
+        let spread = runic_constant("WALKER_SPREAD");
+        let (lo_w, hi_w) = (0.96 - 0.22 * spread, 0.96 + 0.78 * spread);
+        let lo = entrance_rails().1 + runic_constant("ENTRANCE_CLEAR");
+        let pressed = (lo + (ax - lo_w) * (hi_w - lo) / (hi_w - lo_w)).max(lo);
+        side * (ax + (pressed - ax) * k)
+    }
+
+    #[test]
+    fn about_a_third_of_the_road_s_corners_have_a_subway_entrance_never_under_a_shed() {
+        // Cyrus, 2026-11-18, of what would make the city feel more like New York: "do 1, 2 and 3",
+        // the third being subway entrances.
+        let (mut corners, mut entrances) = (0, 0);
+        for kx in [1, -2] {
+            for m in 0..800 {
+                if m % 4 == 1 || m % 4 == 3 {
+                    corners += 1;
+                    entrances += usize::from(entrance_at(kx, m).is_some());
+                } else {
+                    assert!(entrance_at(kx, m).is_none(), "lot ({kx}, {m}) is no corner");
+                }
+            }
+        }
+        let share = entrances as f32 / corners as f32;
+        assert!((0.25..0.42).contains(&share), "{entrances} of {corners} corners");
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        for line in [
+            "    if (hash2(float2(float(kx), float(m)) + float2(97.0, 37.0)) >= ENTRANCE_SHARE) {",
+            "        bool shed = hash2(cell + float2(61.0, 13.0)) < SHED_SHARE;",
+            "        if (shed || abs(tx) - tw * 0.5 < entrance_out() + 0.02) {",
+        ] {
+            assert!(wash.contains(line), "wash.metal lacks {line}");
+        }
+    }
+
+    #[test]
+    fn a_subway_entrance_stands_at_the_curb_clear_of_the_corner_s_crowd_and_its_tower() {
+        let (ri, ro) = entrance_rails();
+        let curb = 0.9 - runic_constant("SIDEWALK_IN");
+        assert!(ri > curb && ro < curb + runic_constant("SIDEWALK_W") * 0.5, "at the curb: {ri}..{ro}");
+        // The crossers wait up to WALK_AT + WALK_W / 2 + WAIT_ALONG from the cross street's curb.
+        let crowd = WALK_AT + 0.5 * WALK_W + runic_constant("WAIT_ALONG");
+        for kx in [1, -2] {
+            for m in 0..800 {
+                if let Some((z0, z1)) = entrance_at(kx, m) {
+                    let from_curb = if m % 4 == 1 { z0 } else { 1.6 - z1 };
+                    assert!(from_curb > crowd + 0.05, "lot ({kx}, {m}): in the corner's crowd");
+                    let reach = runic_constant("ENTRANCE_EASE") + runic_constant("ENTRANCE_CLEAR");
+                    assert!(z0 - reach > 0.0 && z1 + reach < 1.6, "lot ({kx}, {m}): its crowd's easing out of its lot");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_walker_or_stroller_ever_walks_through_a_subway_entrance() {
+        let (_, ro) = entrance_rails();
+        let clear = runic_constant("ENTRANCE_CLEAR");
+        let edge = 0.9 - runic_constant("SIDEWALK_IN") + runic_constant("SIDEWALK_W");
+        let spread = runic_constant("WALKER_SPREAD");
+        let mut checked = 0;
+        for side in [-1.0f32, 1.0] {
+            let kx = if side > 0.0 { 1 } else { -2 };
+            for m in 0..400 {
+                let Some((z0, z1)) = entrance_at(kx, m) else { continue };
+                checked += 1;
+                for i in 0..=100 {
+                    let h = i as f32 / 100.0;
+                    for ax in [0.96 + (h - 0.22) * spread, 0.96 + (0.1 + 0.6 * h) * WALK_W] {
+                        let mut z = z0 - 0.03;
+                        while z <= z1 + 0.03 {
+                            let x = sidewalk_x(side, ax, m as f32 * 1.6 + z).abs();
+                            assert!(x >= ro + clear - 1e-4 && x < edge, "lot ({kx}, {m}): a person at {x} beside a railing out to {ro}");
+                            z += 0.01;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 50);
+        // Away from an entrance, everyone keeps their own place.
+        assert_eq!(sidewalk_x(1.0, 0.95, 0.1), 0.95);
+    }
+
+    #[test]
+    fn the_city_s_data_lands_on_a_walker_where_it_is_drawn() {
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        assert_eq!(wash.matches("sidewalk_x(").count(), 6, "declared, defined, and used by walkers, strollers, data_end and small_end");
+        assert!(!wash.contains("side * edge_x + side * (hash2(key + 7.0) - 0.22) * WALKER_SPREAD"), "data_end's own walker x is gone");
+        assert!(!wash.contains("side * (road + 0.06) + side * (hash2(key + 7.0) - 0.22) * WALKER_SPREAD"), "small_end's own walker x is gone");
+    }
+
+    #[test]
+    fn most_subway_globes_are_green_some_red() {
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        assert!((0.15..0.35).contains(&runic_constant("ENTRANCE_RED")), "exit only, now and then");
+        assert!(wash.contains("bool red = hash2(cell + float2(107.0, 41.0)) < ENTRANCE_RED;"));
+        assert!(wash.contains("col = entrance_draw("), "drawn in the lot loop");
+        // The globes stand as tall as the lone lots' entrances' and the railing is waist high.
+        assert!((runic_constant("ENTRANCE_LAMP") - 0.26).abs() < 1e-4 && (0.08..0.13).contains(&runic_constant("ENTRANCE_RAIL")));
+    }
+
     #[test]
     fn about_half_the_sheds_have_scaffolding_never_above_the_roof() {
         let (mut sheds, mut scaffolds) = (0, 0);
