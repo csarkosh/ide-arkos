@@ -110,6 +110,10 @@ from recorded bytes instead, because the shoot's typed letters arrive in Arkos a
   the pane). Once its conversation is taller than the pane everything above is in the history.
 - A Claude Code that was killed leaves its agent record, so the shell after it has its screen rows
   cut, not wrapped, when the pane narrows, until the next session starts or ends there.
+- A size mark is in the replay beside the program's output, so a program can print a forged
+  one. A mark is believed only up to 1,000 rows and columns (`protocol::replay::MAX_ROWS`), so the
+  worst a forged one does is misplace the replayed rows of the session that printed it; keeping
+  the marks out of the stream (a list beside the ring) would close that too.
 - 20,000 lines and 16 MiB are not yet measured against a day of classic output.
 
 ## For Cyrus to decide

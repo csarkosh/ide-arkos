@@ -20,6 +20,15 @@ const END: u8 = 0x07;
 /// Four numbers of at most five digits and three semicolons: no mark's body is longer.
 const BODY_MAX: usize = 4 * 5 + 3;
 
+/// The most rows and columns a mark may name. A mark is in the replay beside the program's own
+/// output, so a program can print one that the daemon never wrote, and a window that believed
+/// any size would make a grid of it: 65,535 columns across a whole history is gigabytes, at
+/// every relaunch. No pane is this large (a 6K display at the smallest text is under 900
+/// columns), so a mark beyond it is not one of ours and stays output, which a terminal ignores.
+/// A forged mark within it can only misplace the replayed rows of the session that printed it.
+pub const MAX_ROWS: u16 = 1000;
+pub const MAX_COLS: u16 = 1000;
+
 /// The mark for a resize from `from` to `to`.
 pub fn resize_mark(from: Size, to: Size) -> Vec<u8> {
     let mut m = HEAD.to_vec();
@@ -92,6 +101,10 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 fn parse(body: &[u8]) -> Option<(Option<Size>, Size)> {
     let text = std::str::from_utf8(body).ok()?;
     let numbers: Vec<u16> = text.split(';').map(|n| n.parse::<u16>().ok().filter(|&n| n > 0)).collect::<Option<_>>()?;
+    // Rows and columns alternate; each is within what a pane can be.
+    if numbers.iter().enumerate().any(|(i, &n)| n > if i % 2 == 0 { MAX_ROWS } else { MAX_COLS }) {
+        return None;
+    }
     match numbers[..] {
         [rows, cols] => Some((None, (rows, cols))),
         [from_rows, from_cols, rows, cols] => Some((Some((from_rows, from_cols)), (rows, cols))),
@@ -140,6 +153,17 @@ mod tests {
         let p = pieces(&replay);
         let output: Vec<u8> = p.pieces.iter().filter_map(|p| if let Piece::Output(b) = p { Some(b.to_vec()) } else { None }).flatten().collect();
         assert_eq!(output, b"\x1b[31mred");
+    }
+
+    #[test]
+    fn a_mark_naming_a_size_no_pane_has_is_not_believed() {
+        for forged in [&b"\x1b]7711;size;24;80;60000;80\x07"[..], b"\x1b]7711;size;24;80;24;60000\x07", b"\x1b]7711;size;1001;80\x07", b"\x1b]7711;size;24;1001\x07", b"\x1b]7711;size;65535;65535;24;80\x07"] {
+            let p = pieces(forged);
+            assert_eq!(p.start, None, "{:?}", String::from_utf8_lossy(forged));
+            assert_eq!(p.pieces, vec![Piece::Output(forged)]);
+        }
+        let largest = resize_mark((24, 80), (MAX_ROWS, MAX_COLS));
+        assert_eq!(pieces(&largest).pieces, vec![Piece::Resize((MAX_ROWS, MAX_COLS))]);
     }
 
     #[test]
