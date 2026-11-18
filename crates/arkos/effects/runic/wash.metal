@@ -595,6 +595,14 @@ constant float STOP_BACK = 0.4;
 constant float CROSS_STOP = 0.42;
 constant float WALK_AT = 0.18;
 constant float WALK_W = 0.24;
+// The sidewalks (Cyrus, 2026-11-17: "I want the sidewalks more prominent"): paved bands where the
+// people walk, SIDEWALK_W wide, along the road from SIDEWALK_IN inside its edge and along both sides
+// of every cross street from its curb; lighter than the floor at SIDEWALK_FILL, jointed, and a lit
+// curb where each meets a street at SIDEWALK_CURB_LIGHT.
+constant float SIDEWALK_IN = 0.02;
+constant float SIDEWALK_W = 0.32;
+constant float SIDEWALK_FILL = 0.45;
+constant float SIDEWALK_CURB_LIGHT = 0.6;
 // People: PEOPLE walkers and STROLLERS strollers on each of the road's sidewalks, CROSS_PEOPLE on
 // each of a cross street's two,
 // PERSON_H camera heights tall, their legs swinging STEPS times a second while they walk.
@@ -1448,6 +1456,24 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
         bool over_cross = local < GRID_Z && abs(abs(xw) - road_e - 0.08) < WALK_W * 0.5;
         float stripe = over_road ? grid_line(xw / 0.16) : (over_cross ? grid_line(local / 0.16) : 0.0);
         col = light_on(col, green, stripe * 0.25 * near, u.dark);
+        // The sidewalks: along the road outside its edge, and along both sides of each cross street
+        // outside the road, paved lighter than the floor, with joints, and a lit curb.
+        float ax = abs(xw);
+        float curb_x = road_e - SIDEWALK_IN;
+        bool off_cross = local >= GRID_Z;
+        bool by_road = ax > curb_x && ax < curb_x + SIDEWALK_W;
+        bool by_cross = ax > curb_x && (local < GRID_Z + SIDEWALK_W || local > blk - SIDEWALK_W);
+        if (off_cross && (by_road || by_cross)) {
+            // A soft wash of the city's green: the paving stands up off the dark floor.
+            col = light_on(col, green, SIDEWALK_FILL * 0.32 * (0.55 + 0.45 * near), u.dark);
+            float joints = max(grid_line(local / 0.16), grid_line(ax / 0.16));
+            col = light_on(col, green, joints * 0.12 * near, u.dark);
+        }
+        float wx = max(fwidth(xw), 1e-5);
+        float wz = max(fwidth(local), 1e-5);
+        float curb_road = (1.0 - smoothstep(wx, 2.5 * wx, abs(ax - curb_x))) * (off_cross ? 1.0 : 0.0);
+        float curb_cross = (1.0 - smoothstep(wz, 2.5 * wz, min(abs(local - GRID_Z), abs(local - blk)))) * (ax > curb_x ? 1.0 : 0.0);
+        col = light_on(col, green, max(curb_road, curb_cross) * SIDEWALK_CURB_LIGHT * (0.3 + 0.7 * near), u.dark);
     }
     // The horizon's line, and its glow either side.
     float hd = abs(q.y - yh);

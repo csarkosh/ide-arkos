@@ -218,3 +218,11 @@ GPU: the focused pane's frame lit over another's, the sidebar's frame with the k
 cursor in the waiting colour, the two scenes differing, and the dim text over the scene never
 below what the rain alone leaves (the rain has always fallen behind the sidebar's names).
 Stills for review: `ARKOS_STILLS=<dir> cargo test -p arkos effects::stills -- --ignored`.
+
+## Sidewalks
+
+Cyrus, 2026-11-17: "I want the sidewalks more prominent". The floor is paved where the people walk:
+a band 0.32 wide along the road from just inside its edge, and 0.32 along both sides of every
+cross street from its curb (the crosswalks over the road already continue them). The paving is a
+soft wash of the city's green over the dark floor with faint joints, and a lit curb runs where
+each sidewalk meets a street. A test holds every walker's and stroller's place inside the paving.

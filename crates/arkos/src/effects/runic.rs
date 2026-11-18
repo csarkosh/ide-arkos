@@ -726,4 +726,38 @@ mod tests {
             assert!(wash.contains(line), "wash.metal lacks {line}");
         }
     }
+
+    /// A shader constant's value, read from the runic wash's text.
+    fn runic_constant(name: &str) -> f32 {
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        let line = wash.lines().find(|l| l.starts_with(&format!("constant float {name} = "))).unwrap_or_else(|| panic!("no {name}"));
+        line.rsplit("= ").next().unwrap().trim_end_matches(';').parse().unwrap()
+    }
+
+    #[test]
+    fn every_walker_keeps_to_a_paved_sidewalk() {
+        // Cyrus, 2026-11-17: "I want the sidewalks more prominent". The wash paves where the people
+        // walk: along the road from just inside its edge, and along both sides of each cross street
+        // from its curb.
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        let road_e = 1.0 * 0.9; // ROAD_CELLS * GRID_X
+        assert!(wash.contains("constant int ROAD_CELLS = 1;") && wash.contains("constant float GRID_X = 0.9;"));
+        let (inset, width) = (runic_constant("SIDEWALK_IN"), runic_constant("SIDEWALK_W"));
+        let (lo, hi) = (road_e - inset, road_e - inset + width);
+        // The road's walkers: edge_x plus (h - 0.3) * WALK_W, h from 0 to 1; its strollers: edge_x
+        // plus (0.1 + 0.6 h) * WALK_W.
+        let edge_x = road_e + 0.06;
+        for h in [0.0f32, 0.5, 1.0] {
+            for x in [edge_x + (h - 0.3) * WALK_W, edge_x + (0.1 + 0.6 * h) * WALK_W] {
+                assert!(x > lo && x < hi, "a walker at {x} off the road's sidewalk {lo}..{hi}");
+            }
+        }
+        // The cross streets' walkers: WALK_AT from the curb, spread 0.3 WALK_W either way.
+        for off in [-0.3f32, 0.0, 0.3] {
+            let at = WALK_AT + off * WALK_W;
+            assert!(at > 0.0 && at < width, "a cross street's walker {at} off its sidewalk 0..{width}");
+        }
+        assert!(runic_constant("SIDEWALK_FILL") >= 0.3 && runic_constant("SIDEWALK_CURB_LIGHT") >= 0.4, "prominent: a lit curb and a paved fill");
+    }
+
 }
