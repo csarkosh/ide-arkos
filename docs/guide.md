@@ -686,7 +686,8 @@ entrance with its green globes and people going down and coming up, a food cart 
 umbrella with its queue, or a basketball court with players running, drones
 blinking over the roofs, and the city's data as its rain: streams of code from
 half the sidebar's height falling onto walkers, cars, cyclists, windows and food carts as they
-download and rising out of them as they upload, each following its sender as it moves. Material
+download and rising out of them as they upload, each following its sender as it moves, and under the street, seen dimly through the ground, a
+subway train running its tunnel without a stop. Material
 and Lavender Material come with `material`: the
 title bar, sidebar and status bar are one pale frame with a search bar round the title, each pane
 is a card in the theme's page colour with rounded corners floating on it (white under Material), the pane's key ("⌘1") sits on a coloured pill

@@ -635,6 +635,24 @@ constant float DATA_TRAIL = 14.0;
 // How strongly the whole channel shows while its transfer runs, against the packet's 1.
 constant float DATA_CHANNEL = 0.3;
 constant float RAIN_COL_W = 0.22;
+// The subway (Cyrus, 2026-11-17: "a subway train ... it should appear dimmer because it runs
+// underground and it should be obvious to the user that the train is underground. The subway train
+// should move faster and without stop"): a tunnel under the road, its walls SUB_HALF to either side
+// and its roof SUB_ROOF below the street, its floor SUB_FLOOR below; a train of SUB_CARS cars, each
+// SUB_CAR long, every SUB_PERIOD seconds, coming on and going away in turn at SUB_SPEED world
+// units a second without a stop, seen through the ground at SUB_DIM: under the street's grid, the
+// tunnel's walls dashed.
+constant float SUB_HALF = 0.36;
+constant float SUB_ROOF = 0.18;
+constant float SUB_FLOOR = 0.62;
+constant float SUB_TRAIN_TOP = 0.24;
+constant float SUB_TRAIN_HALF = 0.24;
+constant int SUB_CARS = 5;
+constant float SUB_CAR = 1.1;
+constant float SUB_GAP = 0.08;
+constant float SUB_SPEED = 4.0;
+constant float SUB_PERIOD = 14.0;
+constant float SUB_DIM = 0.38;
 
 float hash2(float2 c) {
     uint ux = uint(int(c.x) + 1048576);
@@ -1562,6 +1580,75 @@ float grid_line(float phase) {
 // towers either side of a road, coming on with it: traffic on the road and the cross streets,
 // lit windows, drones over the roofs and people walking the sidewalks. (The sky's code rain is
 // drawn by the caller.) The clock's zero (Reduce Motion) holds it all still.
+// The train at t: the depth of its front and of its back in view (x, y), and whether it runs (z 1).
+// A pass comes on toward the viewer, the next goes away, and so on, at SUB_SPEED, never stopping.
+float3 subway_at(float t) {
+    float len = float(SUB_CARS) * SUB_CAR + float(SUB_CARS - 1) * SUB_GAP;
+    float k = floor(max(t, 0.0) / SUB_PERIOD);
+    float u = max(t, 0.0) - k * SUB_PERIOD;
+    float span = Z_FAR + len - Z_NEAR + 2.0;
+    if (u * SUB_SPEED > span) {
+        return float3(0.0);
+    }
+    bool coming = fmod(k, 2.0) < 0.5;
+    // Coming on: its front from beyond the far end toward the viewer; going away: from behind the
+    // viewer out to the far end.
+    float front = coming ? Z_FAR + 1.0 - u * SUB_SPEED : Z_NEAR - len - 1.0 + u * SUB_SPEED + len;
+    float back = coming ? front + len : front - len;
+    return float3(front, back, 1.0);
+}
+
+// The subway seen through the ground at q: the tunnel's dashed walls and the train's roof with its
+// lit windows and its headlight, all at SUB_DIM, over col (the floor before its grid).
+float3 subway_seen(float2 q, float yh, float cx, float f, float t, float3 green, float3 white_c, float3 col, constant ArkosInputs& u) {
+    float dy = q.y - yh;
+    if (dy <= 0.5) {
+        return col;
+    }
+    float dim = SUB_DIM;
+    // The tunnel's walls: lines along it at its roof's height, dashed as the ground hides them.
+    for (int w = 0; w < 2; w++) {
+        float depth = w == 0 ? SUB_ROOF : SUB_FLOOR;
+        float z = f * (1.0 + depth) / dy;
+        if (z < Z_NEAR || z > Z_FAR) {
+            continue;
+        }
+        float xw = (q.x - cx) * z / f;
+        float wx = max(fwidth(xw), 1e-5);
+        float wall = 1.0 - smoothstep(wx, 2.0 * wx, abs(abs(xw) - SUB_HALF));
+        float dash = step(0.45, fract(z / 0.5 + t * GRID_SPEED * GRID_Z / 0.5));
+        col = light_on(col, green, wall * dash * dim * (w == 0 ? 0.7 : 0.45), u.dark);
+    }
+    float3 tr = subway_at(t);
+    if (tr.z < 0.5) {
+        return col;
+    }
+    // The train's roof: SUB_TRAIN_TOP below the street, SUB_TRAIN_HALF to either side.
+    float z = f * (1.0 + SUB_TRAIN_TOP) / dy;
+    float xw = (q.x - cx) * z / f;
+    float near_end = min(tr.x, tr.y), far_end = max(tr.x, tr.y);
+    if (z < near_end || z > far_end || abs(xw) > SUB_TRAIN_HALF || z < Z_NEAR) {
+        // Its headlight, a soft glow ahead of its front in the tunnel.
+        float ahead = (tr.x < tr.y) ? tr.x - z : z - tr.x;
+        float beam = (ahead > 0.0 && ahead < 2.5 && abs(xw) < SUB_HALF) ? (1.0 - ahead / 2.5) * (1.0 - abs(xw) / SUB_HALF) : 0.0;
+        return light_on(col, mix(green, white_c, 0.5), beam * dim * 0.6, u.dark);
+    }
+    float along = (z - near_end);
+    float pitch = SUB_CAR + SUB_GAP;
+    float in_car = fract(along / pitch) * pitch;
+    if (in_car > SUB_CAR) {
+        return col;
+    }
+    // The car's roof, dim, its edges lit; two rows of windows down its sides.
+    float wx = max(fwidth(xw), 1e-5);
+    float wz = max(fwidth(z), 1e-5);
+    float edge = max(1.0 - smoothstep(wx, 2.0 * wx, SUB_TRAIN_HALF - abs(xw)), 1.0 - smoothstep(wz, 2.0 * wz, min(in_car, SUB_CAR - in_car)));
+    col = mix(col, green * 0.35, 0.5 * dim);
+    col = light_on(col, green, edge * dim, u.dark);
+    float win = (abs(abs(xw) - SUB_TRAIN_HALF * 0.7) < SUB_TRAIN_HALF * 0.14 && fract(in_car / 0.16) < 0.6 && in_car > 0.08 && in_car < SUB_CAR - 0.08) ? 1.0 : 0.0;
+    return light_on(col, mix(green, white_c, 0.6), win * dim * 1.1, u.dark);
+}
+
 float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 green, float3 white_c, float3 sb) {
     float3 bg = u.colors[ARKOS_WINDOW_BG].rgb;
     float3 col = sb;
@@ -1575,6 +1662,9 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
         float z = f / max(dy, 0.5);
         float xw = (q.x - cx) * z / f;
         col = mix(col, bg * 0.7, 0.6);
+        // The subway under the street, seen through the ground before the street's grid is laid
+        // over it.
+        col = subway_seen(q, yh, cx, f, t, green, white_c, col, u);
         float near = saturate(dy / (sz.y - yh));
         float lines = max(grid_line(z / GRID_Z + t * GRID_SPEED), grid_line(xw / GRID_X + 0.5));
         col = light_on(col, green, lines * (0.18 + 0.5 * near), u.dark);

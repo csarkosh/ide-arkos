@@ -804,4 +804,50 @@ mod tests {
         assert!(runic_constant("DATA_TRAVEL_MIN") >= 1.5 && runic_constant("DATA_TRAVEL_MAX") <= 5.0);
     }
 
+
+    /// The train as the wash's `subway_at` places it: its front's and back's depths, and whether
+    /// it runs.
+    fn subway_at(t: f32) -> (f32, f32, bool) {
+        let (cars, car, gap) = (5.0f32, runic_constant("SUB_CAR"), runic_constant("SUB_GAP"));
+        let (speed, period) = (runic_constant("SUB_SPEED"), runic_constant("SUB_PERIOD"));
+        let (z_near, z_far) = (0.7f32, 30.0f32);
+        let len = cars * car + (cars - 1.0) * gap;
+        let k = (t / period).floor();
+        let u = t - k * period;
+        if u * speed > z_far + len - z_near + 2.0 {
+            return (0.0, 0.0, false);
+        }
+        let coming = k % 2.0 < 0.5;
+        let front = if coming { z_far + 1.0 - u * speed } else { z_near - 1.0 + u * speed };
+        (front, if coming { front + len } else { front - len }, true)
+    }
+
+    #[test]
+    fn the_subway_runs_underground_faster_than_the_traffic_and_never_stops() {
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        assert!(wash.contains("constant int SUB_CARS = 5;") && wash.contains("constant float Z_NEAR = 0.7;") && wash.contains("constant float Z_FAR = 30.0;"));
+        // Underground: its roof below the street, the tunnel's roof above it, drawn dim and under
+        // the street's grid.
+        assert!(runic_constant("SUB_ROOF") > 0.0 && runic_constant("SUB_TRAIN_TOP") > runic_constant("SUB_ROOF") && runic_constant("SUB_FLOOR") > runic_constant("SUB_TRAIN_TOP"));
+        assert!(runic_constant("SUB_DIM") <= 0.45, "dimmer than the street's lights");
+        let scene = &wash[wash.find("float3 code_scene(").unwrap()..];
+        assert!(scene.find("subway_seen(").unwrap() < scene.find("float lines = max(grid_line(").unwrap(), "the street's grid over it");
+        // Faster: a road car averages a block (6.4) a signal cycle (12 s).
+        assert!(runic_constant("SUB_SPEED") >= 4.0 * 6.4 / 12.0, "several times the cars' pace");
+        // Never stopping: through every pass its front moves at its speed every moment.
+        let mut t = 0.0f32;
+        while t < 120.0 {
+            let (a, _, on_a) = subway_at(t);
+            let (b, _, on_b) = subway_at(t + 0.05);
+            if on_a && on_b && (t / runic_constant("SUB_PERIOD")).floor() == ((t + 0.05) / runic_constant("SUB_PERIOD")).floor() {
+                assert!(((b - a).abs() - runic_constant("SUB_SPEED") * 0.05).abs() < 1e-3, "at {t} it moved {}", (b - a).abs());
+            }
+            t += 0.05;
+        }
+        // It comes on and goes away in turn, and is seen every period.
+        let (f0, b0, _) = subway_at(1.0);
+        let (f1, b1, _) = subway_at(runic_constant("SUB_PERIOD") + 1.0);
+        assert!(b0 > f0 && b1 < f1, "one pass comes on, the next goes away");
+    }
+
 }

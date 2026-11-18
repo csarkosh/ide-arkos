@@ -242,3 +242,16 @@ the thing for a download, up out of it for an upload, crossing in 2.2 to 3.6 sec
 flickering as a download lands or an upload leaves. The glyphs are the rain's; a column too narrow
 for them shows lit dashes. `effects::runic` mirrors the slots: eight to thirteen at once, never
 fewer than three.
+
+## The subway
+
+Cyrus, 2026-11-17: "a subway train ... it should appear dimmer because it runs underground and it
+should be obvious to the user that the train is underground. The subway train should move faster
+and without stop since it doesn't need to follow traffic laws." A tunnel runs under the road, seen
+through the ground: its walls dashed lines 0.36 to either side, at its roof (0.18 below the street)
+and its floor (0.62). Every 14 seconds a train of five cars, each 1.1 long, runs through it at 4
+world units a second (a road car averages about 0.53), never stopping, one coming on and the next
+going away: its roof 0.24 below the street, lit at its edges, two rows of lit windows down its
+sides and a headlight glowing ahead of it in the tunnel, all at 0.38 and drawn before the street's
+grid, which lies over it. `effects::runic` mirrors its passes: never a stop, coming and going in
+turn.
