@@ -1,4 +1,4 @@
-# Handoff: scroll up through a whole Claude Code session (2026-11-17)
+# Handoff (2026-11-17): scroll up through a whole Claude Code session, and The Matrix's city
 
 Cyrus: "The main objective of this IDE is to be durable. This fails if I cannot scroll back in the
 message history when Claude or this IDE is having some sort of issue." And: "From a user's
@@ -83,8 +83,35 @@ of scrolling up past a compaction.
 - Release only on "push to main and release" (release gate in memory: rebase on origin/main, ff,
   push, HEAD check, then `gh workflow run release-notarized`).
 
-## Other open work (not part of this)
+## The Matrix's Pane 0 city (built, unreleased, part of this handoff)
 
-- Unreleased stack on 0.8.50: `matrix-sidewalks` (3122ed7) → `matrix-data-rain` (be21896) →
-  `matrix-subway` (ea3480a) → `matrix-jaywalk` (a2e4284). Release only when asked.
+Cyrus's requests for the `runic` effect under the `matrix` theme (Pane 0's city), each done in
+`crates/arkos/effects/runic/wash.metal` with Rust mirrors and tests in
+`crates/arkos/src/effects/runic.rs`, documented in
+`docs/superpowers/specs/2026-11-17-runic-world-design.md` (one section each) and the Matrix passage of
+`docs/guide.md`. They are a stack of local branches on top of 0.8.50 (`e85c216`), each built on the
+one before; `matrix-jaywalk` holds all four:
+
+| Request (his words) | Branch, commit | What it does |
+|---|---|---|
+| "I want the sidewalks more prominent in the pane 0 graphics" | `matrix-sidewalks` 3122ed7 | Paved green-wash sidewalks with joints and a lit curb (SIDEWALK_* constants). |
+| "the runic rain comes from users uploading and download data ... can move in the reverse direction ... goes to and originates from pedestrians, bicyclists, cars, food carts, and buildings." Chose: "All rain is data", "Direction only", "A steady trickle". | `matrix-data-rain` be21896 | Ambient rain removed. 14 slots each run a transfer every 5 to 9 s between the sky and a walker, car, cyclist, tower window or food cart, following it; channel shows faintly (DATA_CHANNEL 0.3), a bright packet runs down (download) or up (upload). Test: 8 to 13 at once. |
+| "a subway train ... should appear dimmer because it runs underground and it should be obvious to the user that the train is underground. The subway train should move faster and without stop" | `matrix-subway` ea3480a | Dashed tunnel walls under the road; a five-car train every 14 s at 4 units/s (about 7x the cars), never stopping, alternating coming and going, drawn at SUB_DIM 0.38 before the street grid so the grid lies over it. |
+| "in NYC, bicyclists never obey traffic laws. So allow them to break the traffic laws as long as another car does not hit them ... will run a red light even if they barely avoid an accident." Then: "Same thing with pedestrians." | `matrix-jaywalk` a2e4284 | Cyclists never stop: reach each stop line just after the last cross car clears (CLEAR_AFTER 9.4 s into the 12 s cycle) and ride through the red. JAYWALK 0.6 of walkers step off against the light in the same window. Cars keep every law. Test: no cyclist or walker is ever within reach of a moving cross car over six minutes; reds run thousands of times. |
+
+State: all 257 `effects::` tests pass, no warnings, the runic wash is 3.0 ms a frame (bench), and
+`arkos theme contrast matrix --effect runic` is clear. Checked only in off-screen stills
+(`ARKOS_STILLS=<dir> ARKOS_STILLS_T=<t> ARKOS_STILLS_PAIRS=runic:matrix nice -n 15 cargo test -p arkos effects::stills::tests::stills -- --ignored`,
+crop the Pane 0 city at (8,400,246,632) of the 1000x640 `matrix-sidebar.ppm`). Still to do:
+
+- **Look at it moving in a real window** (sandbox with `theme use matrix`, or a throwaway shoot):
+  the near-misses at the red, the train's speed, the rain's flow. Cyrus has not seen any of it yet.
+- **Data rain density:** stills show only a few streams standing out at a moment though 8 to 13
+  run; many are far or faint. If it reads sparse live, raise brightness or bias the targets nearer.
+- Offer Cyrus a look in the sandbox, then release only on "push to main and release": rebase the
+  stack (`matrix-jaywalk`) on origin/main and follow the release gate. If `classic-scrollback` lands
+  first, rebase the stack on it.
+
+## Other open work
+
 - apps.csarko.sh still shows 0.8.49; the remote branch `reshoot-0849` was left on GitHub.
