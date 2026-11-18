@@ -193,6 +193,14 @@ the held screen goes into the history above the frame, as before. A screen still
 erase, at a resize or after 64 KiB of output is kept. Checked on his saved session (the question
 once, the logo once) and on the recorded compaction (the screen before it kept).
 
+Then: "/clear still causes the double print issue". The frame after a `/clear` or a compaction
+begins with the command typed (`❯ /clear`, `❯ /compact`), and the held screen ended with the same
+command under its spinner, prompt box and status lines; all of it was kept, so the command, the box
+and the status lines showed twice. The held screen is now kept down to the last row the frame
+echoes as typed at the prompt (a row of `❯ ` and text among the frame's first written rows), and
+its blank rows under that: the conversation is in the history once and the box not at all. Checked
+on his saved session (`Cooked for 18s`, then the new frame's `❯ /clear`, once).
+
 ## Known limits
 
 - The frame on screen when a compaction or `/clear` erases it goes to the history with its
