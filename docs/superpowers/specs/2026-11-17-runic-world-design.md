@@ -398,30 +398,42 @@ for a cart further out. Stepping up and the first walking off with their food go
 
 Cyrus, 2026-11-18, asked what else would make the city feel like New York and chose three of
 the ideas offered: rooftop water towers, steam from manholes and subway entrances ("do 1, 2 and
-3"), approving this design ("approved, go with your recommendation").
+3"), approving the design ("approved, go with your recommendation"). The sizes below are the
+built ones; the approved design had them nearer life size, and stills at the sidebar's size showed
+each too small to read, as the sheds had been.
 
-Water towers. About 45 in 100 towers of middling height (0.9 to 3.0 tall; TOWER_MAX is 4.8) wear
-one, as Manhattan's walk-ups and mid-rises do and its tallest towers do not: a barrel 0.09 across
-on legs 0.05 tall, its tank 0.09 tall with two hoops, under a cone roof 0.04 tall, standing at a
-place on the roof drawn for the tower and never over its edge. It is drawn with its tower, after
-the tower's own lines, its tank filled dark so the lines behind it are hidden, its outline lit as a
-tower's edges are, and nearer towers still cover it.
+Water towers. About 60 in 100 towers of middling height (0.9 to 3.0 tall; TOWER_MAX is 4.8) wear
+one, as Manhattan's walk-ups and mid-rises do and its tallest towers do not: a barrel 0.16 across
+on three legs 0.07 tall, its tank 0.15 tall with two hoops, under a cone roof 0.07 tall, standing
+at a place on the roof drawn for the tower and never over its edge. It is drawn with its tower,
+after the tower's own lines, its tank and roof filled dark so the lines behind them are hidden, its
+outline lit as a tower's edges are; where a roof is above the eye the tower's front face hides the
+legs' feet, and nearer towers still cover it. At 0.09 across (the first cut) it drew two points
+wide in the sidebar.
 
-Steam. About seven blocks in ten have a manhole in the road between its crosswalks, in a traffic
-lane (0.15 to 0.6 from the road's middle, clear of the bike lanes), breathing a soft plume: 0.08
-wide at the street, swelling to 0.3 at 0.5 high (about three people tall) and drifting aside, its
-noise rising through it, puffing harder and softer over a few seconds. It is drawn after the road's
-traffic and before the towers, so a car's lights dim inside it and a nearer tower still covers it.
-The orange and white Con Ed stacks were left out: one would stand in a lane the cars drive through.
+Steam. Each half of a block between its crosswalks has a manhole breathing steam at 70 in 100, in
+a traffic lane (0.15 to 0.55 from the road's middle, clear of the bike lanes): a soft plume 0.08
+wide at the street, swelling to 0.45 at 0.9 high (about two stories) and drifting up to 0.1 aside,
+so it never reaches the sidewalk, its noise rising through it and puffing harder and softer over a
+few seconds, lit at 0.7. It is drawn after the road's traffic and before the towers, so a car's
+lights dim inside it and a nearer tower covers it. The first cut, three people tall with one
+manhole a block, drew four points high halfway up the road and its density came out at 0.2 to 0.4
+in a false-colour still. The orange and white Con Ed stacks were left out: one would stand in a
+lane the cars drive through.
 
-Subway entrances. About a third of the corners where a cross street meets the road have one, at
-the road's curb, 0.9 to 1.14 past the cross street's curb (clear of the people waiting at the
-corner and the crossers stepping off it) on a lot that wears no sidewalk shed: a railing 0.08 high
-round the stair, 0.07 wide from the curb, open toward the cross street, faint steps going down
-inside, and a lamp post 0.22 high at each side of the opening under a glowing globe, green (open
-all hours) or for one in four red (exit only). The design first put it at the buildings' side of
-the sidewalk; the walkers spread across the whole sidewalk and the towers' faces stand at its back,
-so it went to the curb, where New York's entrances mostly are. The road's walkers and strollers keep
-out of it: beside an entrance (with 0.15 either end to ease in and out) their place across the
-sidewalk is pressed into the part beside the railing, at least 0.03 clear of it, and the city's data
-lands on them where they are drawn.
+Subway entrances. About a third of the corners where a cross street meets the road have one (60 in
+100 before those under a sidewalk shed, or where the tower's face would stand within 0.02 of the
+railing, are left out), at the road's curb, 0.9 to 1.22 past the cross street's curb, clear of the
+people waiting at the corner and the crossers stepping off it: the stair's dark hole with its steps
+going down away from the opening, a railing 0.1 high round three sides, 0.09 wide from just inside
+the curb, open toward the cross street, and a lamp post at each side of the opening under a globe
+0.26 up (as tall as the lone lots' entrances'), green (open all hours) or for one in four red (exit
+only). The design first put it at the buildings' side of the sidewalk; the walkers spread across
+the whole sidewalk and the towers' faces stand at its back, so it went to the curb, where New
+York's entrances mostly are. The road's walkers and strollers keep out of it (`sidewalk_x`): beside
+an entrance their places across the sidewalk are pressed into the part past the railing, at least
+0.03 clear of it, fully aside 0.03 before it starts and after it ends and easing in and out over
+0.15, and the city's data lands on them where they are drawn. Drawn after its row's towers and
+before the nearer rows.
+
+The wash measured 4.76 ms a frame at 1200 by 800 on the Matrix theme before and 4.74 ms after.
