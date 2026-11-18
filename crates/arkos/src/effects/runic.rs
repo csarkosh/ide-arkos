@@ -1388,6 +1388,57 @@ mod tests {
         *constants.get(name).unwrap_or_else(|| panic!("no {name}"))
     }
 
+    /// Where the food cart's line has person `i` on lot column `kx`, as the wash's `small_lot_at`
+    /// works it out: across (x) and along from the lot's near edge (z), `step` of the way through
+    /// stepping up and the first `leave` of the way through walking off with their food.
+    fn cart_line_at(kx: i32, i: i32, step: f32, leave: f32) -> (f32, f32) {
+        let xm = (kx as f32 + 0.5) * 0.9;
+        let side = if kx < 0 { 1.0 } else { -1.0 };
+        let wz = 0.5 * 1.6 + 0.1;
+        let qx = xm + side * (runic_constant("CART_W") + runic_constant("CART_FRONT"));
+        let qz = wz - 0.05 + (i as f32 - step) * runic_constant("CART_GAP") - leave * 0.5;
+        (qx, qz)
+    }
+
+    #[test]
+    fn the_food_cart_s_line_stays_on_the_sidewalk_by_the_road() {
+        // Cyrus, 2026-11-18: "the line of people waiting for the food cart stretches into the
+        // street. It should stay within the sidewalk."
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        for line in [
+            "            float qx = xm + side * (CART_W + CART_FRONT);",
+            "            float qz = wz - 0.05 + (float(i) - step) * CART_GAP - leave * 0.5;",
+        ] {
+            assert!(wash.contains(line), "wash.metal lacks {line}");
+        }
+        let curb = 0.9 - runic_constant("SIDEWALK_IN");
+        let back = curb + runic_constant("SIDEWALK_W");
+        for kx in [1, -2] {
+            for i in 0..4 {
+                for k in 0..=20 {
+                    let step = k as f32 / 20.0;
+                    let (x, _) = cart_line_at(kx, i, step, if i == 0 { step } else { 0.0 });
+                    assert!(x.abs() > curb + 0.03 && x.abs() < back, "lot {kx}, person {i}: {x} off the sidewalk {curb}..{back}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_food_cart_s_line_stays_in_its_lot_further_out() {
+        for kx in (2..=6).chain(-7..=-3) {
+            let x0 = kx as f32 * 0.9;
+            for i in 0..4 {
+                for k in 0..=20 {
+                    let step = k as f32 / 20.0;
+                    let (x, z) = cart_line_at(kx, i, step, if i == 0 { step } else { 0.0 });
+                    assert!(x > x0 && x < x0 + 0.9, "lot {kx}, person {i}: {x} outside {x0}..");
+                    assert!(z > 0.0 && z < 1.6, "lot {kx}, person {i}: {z} off the lot along the road");
+                }
+            }
+        }
+    }
+
     #[test]
     fn every_walker_keeps_to_a_paved_sidewalk() {
         // Cyrus, 2026-11-17: "I want the sidewalks more prominent". The wash paves where the people

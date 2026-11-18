@@ -644,6 +644,12 @@ constant float SIDEWALK_IN = 0.02;
 constant float SIDEWALK_W = 0.32;
 constant float SIDEWALK_FILL = 0.45;
 constant float SIDEWALK_CURB_LIGHT = 0.6;
+// A food cart (Cyrus, 2026-11-18: its line "should stay within the sidewalk"): CART_W either side
+// of its middle, its line CART_FRONT off its road side and running along the sidewalk from there,
+// CART_GAP from one person to the next.
+constant float CART_W = 0.16;
+constant float CART_FRONT = 0.1;
+constant float CART_GAP = 0.13;
 // People: PEOPLE walkers and STROLLERS strollers on each of the road's sidewalks, CROSS_PEOPLE on
 // each of a cross street's two,
 // PERSON_H camera heights tall, their legs swinging STEPS times a second while they walk.
@@ -1575,16 +1581,17 @@ float3 small_lot_at(float2 p, int kx, int m, float zc, float cx, float yh, float
         // A food cart under a striped umbrella, a queue at it: now and then the first walks off
         // with their food and the rest step up.
         float wz = zm + 0.1;
-        float cw = 0.16;
+        float cw = CART_W;
         float3 warm = u.colors[ARKOS_ANSI + 3].rgb;
-        // The queue, toward the sidewalk, nearest first in the line drawn farthest first.
+        // The queue at the cart's road side, running along the sidewalk (beside the road, the
+        // road's own sidewalk; further out, inside the lot), farthest first.
         float side = kx < 0 ? 1.0 : -1.0;
         float ph = fract(t / 4.0 + hash2(cell + float2(3.0, 9.0)));
         float step = smoothstep(0.75, 1.0, ph);
         for (int i = 3; i >= 0; i--) {
-            float qx = xm + side * (cw + 0.12 + (float(i) - step) * 0.13);
             float leave = i == 0 ? step : 0.0;
-            float qz = wz - 0.05 - leave * 0.5;
+            float qx = xm + side * (CART_W + CART_FRONT);
+            float qz = wz - 0.05 + (float(i) - step) * CART_GAP - leave * 0.5;
             if (qz < Z_NEAR) {
                 continue;
             }
