@@ -1195,7 +1195,10 @@ impl TerminalCore {
     /// Nothing at the live bottom, for a shell, when the screen shows no input box (a question
     /// or a menu in its place), or when the box would take more than half the pane.
     pub fn pinned_frame(&self) -> Option<PinnedFrame> {
-        if self.display_offset() == 0 || !self.program_redraws() {
+        // Scrolled by whole rows or by any part of one: the view moves by pixels, and in the
+        // first row of a scroll the box would otherwise slide with the conversation, then snap.
+        let scrolled = self.display_offset() > 0 || self.scroll.current > 0.0;
+        if !scrolled || !self.program_redraws() {
             return None;
         }
         let screen = self.term.screen_lines();
@@ -2445,6 +2448,18 @@ mod tests {
         t.set_display_offset(6);
         let text: Vec<String> = t.pinned_frame().unwrap().rows.iter().map(|r| text_of(r)).collect();
         assert_eq!(text, at_bottom[box_top..], "the box's rows to the foot of the screen, blank ones too");
+    }
+
+    #[test]
+    fn the_box_is_pinned_from_the_first_pixel_of_a_scroll() {
+        // Cyrus, 2026-11-18: "There's still a bit of a jump". The view scrolls by pixels; for
+        // the first part of a row it is still at the live bottom by whole rows, and the box
+        // slid with the conversation until a whole row had gone by, then snapped back.
+        let (mut t, _) = classic(40, 80, 24);
+        t.scroll.current = 0.3;
+        assert!(t.pinned_frame().is_some(), "a third of a row up, the box already holds its place");
+        t.scroll.current = 0.0;
+        assert!(t.pinned_frame().is_none());
     }
 
     #[test]
