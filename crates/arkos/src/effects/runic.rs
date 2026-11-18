@@ -468,17 +468,46 @@ mod tests {
         }
     }
 
+    const CLEAR_AFTER: f32 = 9.4;
+    const JAYWALK: f32 = 0.6;
+
     fn road_bike_at(dir: f32, key: (f32, f32), t: f32) -> f32 {
         let block = CROSS_EVERY * GRID_Z;
         let h = |d: f32| hash2(key.0 + d, key.1 + d);
-        let dur = 8.5 + 3.0 * h(1.0);
-        let delta = 0.8 * h(2.0);
+        let blocks = if h(5.0) < 0.5 { 2.0 } else { 1.0 };
+        let speed = blocks * block / SIG_CYCLE;
+        let phase = CLEAR_AFTER + h(2.0);
         let j0 = (h(3.0) * 8.0).floor();
-        let k = (t / SIG_CYCLE).floor();
-        let x = ((t - k * SIG_CYCLE - delta) / dur).clamp(0.0, 1.0);
-        let j = j0 + dir * k;
-        let stop_line = if dir > 0.0 { j * block - STOP_BACK } else { j * block + GRID_Z + STOP_BACK };
-        stop_line + dir * block * x * x * (3.0 - 2.0 * x)
+        let stop0 = if dir > 0.0 { j0 * block - STOP_BACK } else { j0 * block + GRID_Z + STOP_BACK };
+        stop0 + dir * speed * (t - phase)
+    }
+
+    /// A cross street's car across the road at a moment `sig` into the cycle, as the wash places
+    /// it: the cross street's row m, its lane (dl 0 going +x, 1 going -x) and its place in the queue.
+    fn cross_car_x(m: f32, dl: f32, qn: f32, sig: f32) -> (f32, bool) {
+        let dir = if dl == 0.0 { 1.0 } else { -1.0 };
+        let key = (m * 2.0 + dl, qn + 91.0);
+        let v = 2.2 + 1.0 * hash2(key.0, key.1);
+        let arrive = 3.0 + 3.0 * hash2(key.0 + 1.0, key.1 + 1.0);
+        let edge = 0.9;
+        let stop_x = -dir * (edge + 0.42 + qn * 0.5);
+        let go = ROAD_GREEN + 0.5 + qn * 0.6;
+        // Before its green it is behind its stop line, waiting or rolling up to it; only then does
+        // it cross the road.
+        if sig < go { (stop_x - dir * v * (arrive - sig).max(0.0), false) } else { (stop_x + dir * v * (sig - go), true) }
+    }
+
+    /// Whether anything at x across, in a cross street's lane band at a moment `sig` into the
+    /// cycle, would be hit by one of that cross street's cars (any row's, as a wrapped view may
+    /// show any): a moving car, 0.28 long, with a cyclist or a walker taking 0.12 either side. A
+    /// car standing at its stop line hits nobody.
+    fn cross_car_hits(x: f32, lane: f32, sig: f32) -> bool {
+        (0..40).any(|row| {
+            (0..2).any(|qn| {
+                let (cx, moving) = cross_car_x(row as f32 * CROSS_EVERY, lane, qn as f32, sig);
+                moving && (cx - x).abs() < 0.14 + 0.12
+            })
+        })
     }
 
     #[test]
@@ -504,9 +533,17 @@ mod tests {
             "constant float QUEUE_START = 0.25;",
             "constant int ROAD_CARS = 24;",
             "            float z = wrap_view(road_car_at(dir, float2(float(j), float(lane) * 13.0 + 31.0), t) - run);",
-            "    float dur = mix(8.5, 11.5, hash2(key + 1.0));",
-            "    float delta = 0.8 * hash2(key + 2.0);",
-            "    return stop_line + dir * block * x * x * (3.0 - 2.0 * x);",
+            "    float blocks = hash2(key + 5.0) < 0.5 ? 2.0 : 1.0;",
+            "    float phase = CLEAR_AFTER + hash2(key + 2.0);",
+            "    return stop0 + dir * speed * (t - phase);",
+            "constant float CLEAR_AFTER = 9.4;",
+            "constant float JAYWALK = 0.6;",
+            "                    float v = mix(2.2, 3.2, hash2(key));",
+            "                    float arrive = mix(3.0, 6.0, hash2(key + 1.0));",
+            "                    float stop_x = -dir * (edge + CROSS_STOP + float(qn) * 0.5);",
+            "                    float go = cross_on + float(qn) * 0.6;",
+            "                    float2 key = float2(float(m) * 2.0 + float(dl), float(qn) + 91.0);",
+            "                float zl = zc + (dl == 0 ? 0.3 : 0.7) * GRID_Z;",
             "            float2 key = float2(float(j), float(lane) * 13.0 + 141.0);",
             "constant int ROAD_BIKES = 3;",
         ] {
@@ -524,12 +561,8 @@ mod tests {
             let local = w - (w / block).floor() * block;
             local < GRID_Z + reach || local > block - reach
         };
-        // The road's cars (five a lane) and its cyclists (three), each as the wash places them.
-        let riders = [(0.0f32, -1.0f32), (1.0, 1.0)].into_iter().flat_map(|(lane, dir)| {
-            let cars = (0..24).map(move |j| (lane, dir, (j as f32, lane * 13.0 + 31.0), false));
-            let bikes = (0..3).map(move |j| (lane, dir, (j as f32, lane * 13.0 + 141.0), true));
-            cars.chain(bikes)
-        });
+        // The road's cars, each as the wash places them (its cyclists break the law: below).
+        let riders = [(0.0f32, -1.0f32), (1.0, 1.0)].into_iter().flat_map(|(lane, dir)| (0..24).map(move |j| (lane, dir, (j as f32, lane * 13.0 + 31.0), false)));
         for (lane, dir, key, bike) in riders {
             {
                 let j = key.0;
@@ -570,7 +603,8 @@ mod tests {
         let laps = if brisk { 1.0 } else { 2.0 };
         let period = laps * SIG_CYCLE;
         let late = (ROAD_GREEN - AMBER).min(ROAD_GREEN - cross / v);
-        let c = (h(3.0) * laps).floor() * SIG_CYCLE + late * h(4.0);
+        let jay = h(8.0) < JAYWALK;
+        let c = (h(3.0) * laps).floor() * SIG_CYCLE + if jay { CLEAR_AFTER + 0.8 * h(4.0) } else { late * h(4.0) };
         let k = ((t - c) / period).floor();
         let x = (v * (t - c - k * period)).min(block);
         let j = (h(5.0) * 8.0).floor() + dir * k;
@@ -621,6 +655,56 @@ mod tests {
     const STROLLERS: usize = 48;
 
     #[test]
+    fn cyclists_run_the_reds_and_walkers_cross_against_the_light_but_no_car_ever_hits_one() {
+        // Cyrus, 2026-11-17: "bicyclists never obey traffic laws ... as long as another car does
+        // not hit them", "Same thing with pedestrians".
+        let block = CROSS_EVERY * GRID_Z;
+        // In a cross street's lane: its near lane at 0.3 of its width, its far one at 0.7; a car
+        // there reaches 0.2 to either side, and the rider or walker 0.12 more.
+        let lane_of = |w: f32| -> Option<f32> {
+            let local = w - (w / block).floor() * block;
+            [(0.0f32, 0.3f32), (1.0, 0.7)].into_iter().find(|(_, at)| (local - at * GRID_Z).abs() < 0.32).map(|(dl, _)| dl)
+        };
+        let (mut red_runs, mut jaywalks) = (0, 0);
+        let mut t = 0.0f32;
+        while t < 360.0 {
+            let sig = t - (t / SIG_CYCLE).floor() * SIG_CYCLE;
+            for (lane, dir) in [(0.0f32, -1.0f32), (1.0, 1.0)] {
+                for j in 0..3 {
+                    let key = (j as f32, lane * 13.0 + 141.0);
+                    let w = road_bike_at(dir, key, t);
+                    let x = dir * 0.78 * 0.9;
+                    if let Some(dl) = lane_of(w) {
+                        assert!(!cross_car_hits(x, dl, sig), "cyclist {j} of lane {lane} hit at {t} ({sig} into the cycle)");
+                        if sig >= ROAD_GREEN {
+                            red_runs += 1;
+                        }
+                    }
+                }
+            }
+            for side in [0.0f32, 1.0] {
+                let (walkers, _) = sidewalk(side);
+                for (dir, key) in walkers {
+                    let (w, walking) = road_walker_at(dir, key, t);
+                    if !walking {
+                        continue;
+                    }
+                    let out = if side == 0.0 { -1.0 } else { 1.0 };
+                    let x = out * (0.96 + (hash2(key.0 + 7.0, key.1 + 7.0) - 0.3) * WALK_W);
+                    if let Some(dl) = lane_of(w) {
+                        assert!(!cross_car_hits(x, dl, sig), "walker {key:?} hit at {t} ({sig} into the cycle)");
+                        if sig >= ROAD_GREEN {
+                            jaywalks += 1;
+                        }
+                    }
+                }
+            }
+            t += 0.05;
+        }
+        assert!(red_runs > 100 && jaywalks > 1000, "they do break the law: {red_runs} {jaywalks}");
+    }
+
+    #[test]
     fn a_walker_crosses_a_cross_street_only_on_the_road_s_green_and_a_stroller_never_does() {
         let block = CROSS_EVERY * GRID_Z;
         // In a cross street: between its curbs.
@@ -632,7 +716,9 @@ mod tests {
                 while t < 600.0 {
                     let (w, walking) = road_walker_at(dir, key, t);
                     let sig = t - (t / SIG_CYCLE).floor() * SIG_CYCLE;
-                    if in_street(w) {
+                    // Those who wait for the light cross only on the road's green; the rest are
+                    // checked against the cars below.
+                    if in_street(w) && hash2(key.0 + 8.0, key.1 + 8.0) >= JAYWALK {
                         assert!(walking && sig < ROAD_GREEN, "walker {key:?} in a cross street at {t} ({sig} into the cycle)");
                     }
                     t += 0.05;
@@ -709,7 +795,8 @@ mod tests {
             "    bool brisk = hash2(key + 2.0) < 0.65;",
             "    float v = brisk ? mix(0.54, 0.6, hash2(key + 6.0)) : mix(0.31, 0.36, hash2(key + 6.0));",
             "    float late = min(ROAD_GREEN - AMBER, ROAD_GREEN - cross / v);",
-            "    float c = floor(hash2(key + 3.0) * laps) * SIG_CYCLE + late * hash2(key + 4.0);",
+            "    float c = floor(hash2(key + 3.0) * laps) * SIG_CYCLE + (jay ? CLEAR_AFTER + 0.8 * hash2(key + 4.0) : late * hash2(key + 4.0));",
+            "    bool jay = hash2(key + 8.0) < JAYWALK;",
             "    float x = min(v * (t - c - k * period), block);",
             "    float j = floor(hash2(key + 5.0) * 8.0) + dir * k;",
             "    float v = mix(0.36, 0.58, hash2(key + 2.0));",

@@ -595,6 +595,15 @@ constant float STOP_BACK = 0.4;
 constant float CROSS_STOP = 0.42;
 constant float WALK_AT = 0.18;
 constant float WALK_W = 0.24;
+// New York's cyclists and walkers (Cyrus, 2026-11-17: "bicyclists never obey traffic laws. So
+// allow them to break the traffic laws as long as another car does not hit them. They are crazy
+// and will run a red light even if they barely avoid an accident", "Same thing with
+// pedestrians"). Every cross street's cars have crossed the road's bike lanes and the sidewalks'
+// crosswalks by CLEAR_AFTER seconds into the cycle, and none comes back into them till the next
+// cross green: so a cyclist rides through every red from then, just behind the last car, and a
+// JAYWALK share of the walkers step off against the light from then too.
+constant float CLEAR_AFTER = 9.4;
+constant float JAYWALK = 0.6;
 // The sidewalks (Cyrus, 2026-11-17: "I want the sidewalks more prominent"): paved bands where the
 // people walk, SIDEWALK_W wide, along the road from SIDEWALK_IN inside its edge and along both sides
 // of every cross street from its curb; lighter than the floor at SIDEWALK_FILL, jointed, and a lit
@@ -1477,14 +1486,14 @@ float3 small_lot_at(float2 p, int kx, int m, float zc, float cx, float yh, float
 // light turns.
 float road_bike_at(float dir, float2 key, float t) {
     float block = float(CROSS_EVERY) * GRID_Z;
-    float dur = mix(8.5, 11.5, hash2(key + 1.0));
-    float delta = 0.8 * hash2(key + 2.0);
+    // Never stopping: a block a cycle, or two for a messenger, reaching each stop line on the
+    // road's red just after the last cross car has crossed its lane, and riding on through.
+    float blocks = hash2(key + 5.0) < 0.5 ? 2.0 : 1.0;
+    float speed = blocks * block / SIG_CYCLE;
+    float phase = CLEAR_AFTER + hash2(key + 2.0);
     float j0 = floor(hash2(key + 3.0) * 8.0);
-    float k = floor(t / SIG_CYCLE);
-    float x = saturate((t - k * SIG_CYCLE - delta) / dur);
-    float j = j0 + dir * k;
-    float stop_line = dir > 0.0 ? j * block - STOP_BACK : j * block + GRID_Z + STOP_BACK;
-    return stop_line + dir * block * x * x * (3.0 - 2.0 * x);
+    float stop0 = dir > 0.0 ? j0 * block - STOP_BACK : j0 * block + GRID_Z + STOP_BACK;
+    return stop0 + dir * speed * (t - phase);
 }
 
 // Where a walker on the road's sidewalk is along the road, in the world, at t, and whether it is
@@ -1501,7 +1510,9 @@ float2 road_walker_at(float dir, float2 key, float t) {
     float laps = brisk ? 1.0 : 2.0;
     float period = laps * SIG_CYCLE;
     float late = min(ROAD_GREEN - AMBER, ROAD_GREEN - cross / v);
-    float c = floor(hash2(key + 3.0) * laps) * SIG_CYCLE + late * hash2(key + 4.0);
+    // Most cross against the light, just behind the cross street's last car; the rest wait.
+    bool jay = hash2(key + 8.0) < JAYWALK;
+    float c = floor(hash2(key + 3.0) * laps) * SIG_CYCLE + (jay ? CLEAR_AFTER + 0.8 * hash2(key + 4.0) : late * hash2(key + 4.0));
     float k = floor((t - c) / period);
     float x = min(v * (t - c - k * period), block);
     float j = floor(hash2(key + 5.0) * 8.0) + dir * k;

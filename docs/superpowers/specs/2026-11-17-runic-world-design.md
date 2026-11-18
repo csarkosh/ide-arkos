@@ -255,3 +255,16 @@ going away: its roof 0.24 below the street, lit at its edges, two rows of lit wi
 sides and a headlight glowing ahead of it in the tunnel, all at 0.38 and drawn before the street's
 grid, which lies over it. `effects::runic` mirrors its passes: never a stop, coming and going in
 turn.
+
+## New York's cyclists and walkers
+
+Cyrus, 2026-11-17: "in NYC, bicyclists never obey traffic laws. So allow them to break the traffic
+laws as long as another car does not hit them. They are crazy and will run a red light even if they
+barely avoid an accident", and "Same thing with pedestrians". Every cross street's cars have
+crossed the road's bike lanes and crosswalks by 9.4 seconds into the 12-second cycle and none comes
+back till the next cross green. So a cyclist never stops: a block a cycle, or two for a messenger,
+reaching each stop line just after the last cross car has passed (9.4 to 10.4 s, on the road's
+red) and riding straight through. Sixty per cent of the walkers step off the curb against the light
+in that same window, right behind the cars; the rest still wait for the road's green. Cars keep
+every law. `effects::runic` checks every cyclist and walker against every cross street's moving
+cars for six minutes: no one is ever hit, and the reds are run thousands of times.
