@@ -679,12 +679,12 @@ constant float STEAM_W1 = 0.45;
 constant float STEAM_DRIFT = 0.1;
 constant float STEAM_LIGHT = 0.7;
 // Subway entrances (Cyrus, 2026-11-18, "do 1, 2 and 3"): at ENTRANCE_SHARE of the corners where a
-// cross street meets the road, on a lot with no sidewalk shed and a tower face clear of it, a
+// cross street meets the road, beside a tower with no sidewalk shed and its face clear of it, a
 // stair at the curb ENTRANCE_W wide, from ENTRANCE_AT past the cross street's curb for
 // ENTRANCE_LEN, a railing ENTRANCE_RAIL high round it, open toward the cross street, with a globe
 // ENTRANCE_LAMP up at each side of the opening, red (exit only) for ENTRANCE_RED of them. The
 // road's people beside one are pressed aside, easing over ENTRANCE_EASE, to ENTRANCE_CLEAR past it.
-constant float ENTRANCE_SHARE = 0.6;
+constant float ENTRANCE_SHARE = 0.9;
 constant float ENTRANCE_AT = 0.9;
 constant float ENTRANCE_LEN = 0.32;
 constant float ENTRANCE_W = 0.09;
@@ -1507,7 +1507,7 @@ float entrance_out() {
 }
 
 // Whether lot (kx, m) beside the road has a subway entrance at its corner: the lot just past a
-// cross street or just before one, with no sidewalk shed and a tower face (if any) clear of it.
+// cross street or just before one, with a tower, no sidewalk shed, and the tower's face clear of it.
 bool entrance_at(int kx, int m) {
     if (kx != ROAD_CELLS && kx != -ROAD_CELLS - 1) {
         return false;
@@ -1519,16 +1519,16 @@ bool entrance_at(int kx, int m) {
     if (hash2(float2(float(kx), float(m)) + float2(97.0, 37.0)) >= ENTRANCE_SHARE) {
         return false;
     }
-    if (lot_built(kx, m)) {
-        float2 cell = float2(float(kx), float(m));
-        float tw = GRID_X * (0.5 + 0.35 * hash2(cell + float2(5.0, 11.0)));
-        float tx = (float(kx) + 0.5) * GRID_X;
-        bool shed = hash2(cell + float2(61.0, 13.0)) < SHED_SHARE;
-        if (shed || abs(tx) - tw * 0.5 < entrance_out() + 0.02) {
-            return false;
-        }
+    // Only beside a tower: an empty lot may be a park or a lone entrance of its own, which the
+    // crowd pressed aside would walk through.
+    if (!lot_built(kx, m)) {
+        return false;
     }
-    return true;
+    float2 cell = float2(float(kx), float(m));
+    float tw = GRID_X * (0.5 + 0.35 * hash2(cell + float2(5.0, 11.0)));
+    float tx = (float(kx) + 0.5) * GRID_X;
+    bool shed = hash2(cell + float2(61.0, 13.0)) < SHED_SHARE;
+    return !(shed || abs(tx) - tw * 0.5 < entrance_out() + 0.02);
 }
 
 // A corner lot's entrance's railing from z.x to z.y along its lot, ENTRANCE_AT from the cross
@@ -2410,20 +2410,6 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
             col = light_on(col, lane == 0 ? head_c : tail_c, b.y * seen, u.dark);
         }
     }
-    // Steam from the road's manholes, after its traffic (a car's lights dim inside it) and before
-    // the towers (a nearer one covers it).
-    if (q.y > yh) {
-        int k0 = 2 * int(floor((run + Z_NEAR) / block));
-        for (int k = k0; k < k0 + 8; k++) {
-            float4 vent = steam_vent(k);
-            float zs = vent.y - run;
-            if (vent.z <= 0.0 || zs < Z_NEAR + 0.1 || zs > Z_FAR * 0.6) {
-                continue;
-            }
-            float seen = (1.0 - smoothstep(Z_FAR * 0.4, Z_FAR * 0.6, zs)) * smoothstep(Z_NEAR + 0.1, Z_NEAR + 0.6, zs);
-            col = steam_at(q, vent.x, zs, vent.w, t, cx, yh, f, seen, bg, green, white_c, u, col);
-        }
-    }
     // The city, farthest row first so nearer towers hide farther ones: each cell's tower stands
     // on the floor, which comes on at GRID_SPEED rows a second, so the camera has come `run` into
     // it; a row m stands at depth m * GRID_Z - run.
@@ -2644,6 +2630,25 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
             if (entrance_at(ekx, m)) {
                 col = entrance_draw(q, ekx, m, zc, cx, yh, f, bg, green, white_c, u, col);
             }
+        }
+        // Steam from the manholes in this row of the road, after its towers (a plume stands
+        // inside the curb, clear of their faces) so only nearer rows' towers cover it, and after
+        // the road's traffic, so a car's lights dim inside it.
+        int blk = int(floor(float(m) / float(CROSS_EVERY)));
+        for (int k = 2 * blk; k < 2 * blk + 2; k++) {
+            float4 vent = steam_vent(k);
+            if (vent.z <= 0.0) {
+                continue;
+            }
+            if (int(floor(vent.y / GRID_Z)) != m) {
+                continue;
+            }
+            float zs = vent.y - run;
+            if (zs < Z_NEAR + 0.1 || zs > Z_FAR * 0.6) {
+                continue;
+            }
+            float seen = (1.0 - smoothstep(Z_FAR * 0.4, Z_FAR * 0.6, zs)) * smoothstep(Z_NEAR + 0.1, Z_NEAR + 0.6, zs);
+            col = steam_at(q, vent.x, zs, vent.w, t, cx, yh, f, seen, bg, green, white_c, u, col);
         }
     }
     // Drones drifting over the roofs, each blinking.

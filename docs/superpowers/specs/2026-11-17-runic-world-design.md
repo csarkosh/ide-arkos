@@ -415,15 +415,18 @@ Steam. Each half of a block between its crosswalks has a manhole breathing steam
 a traffic lane (0.15 to 0.55 from the road's middle, clear of the bike lanes): a soft plume 0.08
 wide at the street, swelling to 0.45 at 0.9 high (about two stories) and drifting up to 0.1 aside,
 so it never reaches the sidewalk, its noise rising through it and puffing harder and softer over a
-few seconds, lit at 0.7. It is drawn after the road's traffic and before the towers, so a car's
-lights dim inside it and a nearer tower covers it. The first cut, three people tall with one
+few seconds, lit at 0.7. It is drawn with the row of the city its manhole is in, after that row's
+towers (it stands inside the curb, clear of their faces) and after the road's traffic, so a car's
+lights dim inside it and only nearer rows' towers cover it; drawn before the whole city at first,
+farther towers' faces cut its upper half out. The first cut, three people tall with one
 manhole a block, drew four points high halfway up the road and its density came out at 0.2 to 0.4
 in a false-colour still. The orange and white Con Ed stacks were left out: one would stand in a
 lane the cars drive through.
 
-Subway entrances. About a third of the corners where a cross street meets the road have one (60 in
-100 before those under a sidewalk shed, or where the tower's face would stand within 0.02 of the
-railing, are left out), at the road's curb, 0.9 to 1.22 past the cross street's curb, clear of the
+Subway entrances. About a third of the corners where a cross street meets the road have one (90 in
+100 of the corners beside a tower with no sidewalk shed and its face at least 0.02 clear of the
+railing; never beside an empty lot, which may be a park or hold a lone entrance of its own that the
+crowd pressed aside would walk through), at the road's curb, 0.9 to 1.22 past the cross street's curb, clear of the
 people waiting at the corner and the crossers stepping off it: the stair's dark hole with its steps
 going down away from the opening, a railing 0.1 high round three sides, 0.09 wide from just inside
 the curb, open toward the cross street, and a lamp post at each side of the opening under a globe

@@ -1716,11 +1716,12 @@ mod tests {
         if !(kx == 1 || kx == -2) || !(corner == 1 || corner == 3) || hash2(kx as f32 + 97.0, m as f32 + 37.0) >= runic_constant("ENTRANCE_SHARE") {
             return None;
         }
-        if tower_built(kx, m) {
-            let (tw, _, _, tx, _) = tower_box(kx, m);
-            if shed_of(kx, m).is_some() || tx.abs() - tw * 0.5 < entrance_rails().1 + 0.02 {
-                return None;
-            }
+        if !tower_built(kx, m) {
+            return None;
+        }
+        let (tw, _, _, tx, _) = tower_box(kx, m);
+        if shed_of(kx, m).is_some() || tx.abs() - tw * 0.5 < entrance_rails().1 + 0.02 {
+            return None;
         }
         let (at, len) = (runic_constant("ENTRANCE_AT"), runic_constant("ENTRANCE_LEN"));
         Some(if corner == 1 { (at, at + len) } else { (1.6 - at - len, 1.6 - at) })
@@ -1767,8 +1768,8 @@ mod tests {
         let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
         for line in [
             "    if (hash2(float2(float(kx), float(m)) + float2(97.0, 37.0)) >= ENTRANCE_SHARE) {",
-            "        bool shed = hash2(cell + float2(61.0, 13.0)) < SHED_SHARE;",
-            "        if (shed || abs(tx) - tw * 0.5 < entrance_out() + 0.02) {",
+            "    bool shed = hash2(cell + float2(61.0, 13.0)) < SHED_SHARE;",
+            "    return !(shed || abs(tx) - tw * 0.5 < entrance_out() + 0.02);",
         ] {
             assert!(wash.contains(line), "wash.metal lacks {line}");
         }
@@ -1839,6 +1840,33 @@ mod tests {
         assert!(wash.contains("col = entrance_draw("), "drawn in the lot loop");
         // The globes stand as tall as the lone lots' entrances' and the railing is waist high.
         assert!((runic_constant("ENTRANCE_LAMP") - 0.26).abs() < 1e-4 && (0.08..0.13).contains(&runic_constant("ENTRANCE_RAIL")));
+    }
+
+    #[test]
+    fn a_plume_is_drawn_with_its_own_row_so_only_nearer_towers_cover_it() {
+        // A plume drawn before the whole city was covered by farther towers' faces too (the
+        // review of 2026-11-18): its upper half cut out in a distant building's shape.
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        let city = wash.find("    // The city, farthest row first").unwrap();
+        let steam = wash.find("col = steam_at(").unwrap();
+        let entrances = wash.find("col = entrance_draw(").unwrap();
+        assert!(steam > city && steam > entrances, "drawn in the row loop, after the row's towers and entrances");
+        assert!(wash.contains("            if (int(floor(vent.y / GRID_Z)) != m) {"), "each plume in the row holding its manhole");
+    }
+
+    #[test]
+    fn a_subway_entrance_stands_only_beside_a_tower_never_in_an_empty_lot() {
+        // An empty corner lot may be a park or a lone subway entrance of its own, which the crowd
+        // pressed aside would walk through (the review of 2026-11-18).
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        assert!(wash.contains("    if (!lot_built(kx, m)) {\n        return false;\n    }"), "entrance_at refuses an empty lot");
+        for kx in [1, -2] {
+            for m in 0..800 {
+                if entrance_at(kx, m).is_some() {
+                    assert!(tower_built(kx, m), "lot ({kx}, {m}) is empty");
+                }
+            }
+        }
     }
 
     #[test]
