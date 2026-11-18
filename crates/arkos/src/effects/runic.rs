@@ -468,16 +468,18 @@ mod tests {
         }
     }
 
-    const CLEAR_AFTER: f32 = 9.4;
     const JAYWALK: f32 = 0.85;
-    const JAY_SPREAD: f32 = 1.8;
+
+    /// The cross streets' cyclists ride at 1.7 to 2.2 a second; a road cyclist rides in its bike
+    /// lane this far out from the road's middle.
+    const ROAD_BIKE_X: f32 = 0.78 * 0.9;
 
     fn road_bike_at(dir: f32, key: (f32, f32), t: f32) -> f32 {
         let block = CROSS_EVERY * GRID_Z;
         let h = |d: f32| hash2(key.0 + d, key.1 + d);
         let blocks = if h(5.0) < 0.5 { 2.0 } else { 1.0 };
         let speed = blocks * block / SIG_CYCLE;
-        let phase = CLEAR_AFTER + h(2.0);
+        let phase = runic_constant("BIKE_GO") + runic_constant("BIKE_SPREAD") * h(2.0);
         let j0 = (h(3.0) * 8.0).floor();
         let stop0 = if dir > 0.0 { j0 * block - STOP_BACK } else { j0 * block + GRID_Z + STOP_BACK };
         stop0 + dir * speed * (t - phase)
@@ -535,13 +537,12 @@ mod tests {
             "constant int ROAD_CARS = 24;",
             "            float z = wrap_view(road_car_at(dir, float2(float(j), float(lane) * 13.0 + 31.0), t) - run);",
             "    float blocks = hash2(key + 5.0) < 0.5 ? 2.0 : 1.0;",
-            "    float phase = CLEAR_AFTER + hash2(key + 2.0);",
+            "    float phase = BIKE_GO + BIKE_SPREAD * hash2(key + 2.0);",
             "    return stop0 + dir * speed * (t - phase);",
-            "constant float CLEAR_AFTER = 9.4;",
             "constant float JAYWALK = 0.85;",
-            "constant float JAY_SPREAD = 1.8;",
-            "constant float CROSS_BIKE_JUMP = 0.1;",
-            "                float go = ROAD_GREEN + CROSS_BIKE_JUMP;",
+            "                float go = CROSS_BIKE_GO;",
+            "                float v = mix(1.7, 2.2, hash2(key));",
+            "                float2 key = float2(float(m) * 2.0 + float(dl), 131.0);",
             "                    float v = mix(2.2, 3.2, hash2(key));",
             "                    float arrive = mix(3.0, 6.0, hash2(key + 1.0));",
             "                    float stop_x = -dir * (edge + CROSS_STOP + float(qn) * 0.5);",
@@ -608,7 +609,7 @@ mod tests {
         let period = laps * SIG_CYCLE;
         let late = (ROAD_GREEN - AMBER).min(ROAD_GREEN - cross / v);
         let jay = h(8.0) < JAYWALK;
-        let c = (h(3.0) * laps).floor() * SIG_CYCLE + if jay { CLEAR_AFTER + JAY_SPREAD * h(4.0) } else { late * h(4.0) };
+        let c = (h(3.0) * laps).floor() * SIG_CYCLE + if jay { runic_constant("WALK_GO") + runic_constant("JAY_SPREAD") * h(4.0) } else { late * h(4.0) };
         let k = ((t - c) / period).floor();
         let x = (v * (t - c - k * period)).min(block);
         let j = (h(5.0) * 8.0).floor() + dir * k;
@@ -670,6 +671,7 @@ mod tests {
             [(0.0f32, 0.3f32), (1.0, 0.7)].into_iter().find(|(_, at)| (local - at * GRID_Z).abs() < 0.32).map(|(dl, _)| dl)
         };
         let (mut red_runs, mut jaywalks) = (0, 0);
+        let cross_go = runic_constant("CROSS_BIKE_GO");
         let mut t = 0.0f32;
         while t < 360.0 {
             let sig = t - (t / SIG_CYCLE).floor() * SIG_CYCLE;
@@ -679,7 +681,7 @@ mod tests {
                     let w = road_bike_at(dir, key, t);
                     let x = dir * 0.78 * 0.9;
                     if let Some(dl) = lane_of(w) {
-                        assert!(!cross_car_hits(x, dl, sig), "cyclist {j} of lane {lane} hit at {t} ({sig} into the cycle)");
+                        assert!(!cross_car_hits(x, dl, sig) && !cross_bike_hits(x, dl, sig, cross_go), "cyclist {j} of lane {lane} hit at {t} ({sig} into the cycle)");
                         if sig >= ROAD_GREEN {
                             red_runs += 1;
                         }
@@ -696,7 +698,7 @@ mod tests {
                     let out = if side == 0.0 { -1.0 } else { 1.0 };
                     let x = out * (0.96 + (hash2(key.0 + 7.0, key.1 + 7.0) - 0.3) * WALK_W);
                     if let Some(dl) = lane_of(w) {
-                        assert!(!cross_car_hits(x, dl, sig), "walker {key:?} hit at {t} ({sig} into the cycle)");
+                        assert!(!cross_car_hits(x, dl, sig) && !cross_bike_hits(x, dl, sig, cross_go), "walker {key:?} hit at {t} ({sig} into the cycle)");
                         if sig >= ROAD_GREEN {
                             jaywalks += 1;
                         }
@@ -712,19 +714,135 @@ mod tests {
         assert!(jaywalks > 30_000, "walkers out against the light only {jaywalks} times");
     }
 
+    /// A cross street's cyclist across the road at a moment `sig` into the cycle, as the wash
+    /// places it, and whether it is moving over the road (before then it rolls up to its stop
+    /// line from outside the road).
+    fn cross_bike_x(m: f32, dl: f32, sig: f32, go: f32) -> (f32, bool) {
+        let dir = if dl == 0.0 { 1.0 } else { -1.0 };
+        let key = (m * 2.0 + dl, 131.0);
+        let v = 1.7 + 0.5 * hash2(key.0, key.1);
+        let stop_x = -dir * (0.9 + runic_constant("CROSS_STOP"));
+        if sig < go { (stop_x, false) } else { (stop_x + dir * v * (sig - go), true) }
+    }
+
+    /// Whether anything at x across, in a cross street's lane band at `sig`, would be hit by one of
+    /// that cross street's cyclists, set off at `go`: 0.14 either side of it, and 0.12 more.
+    fn cross_bike_hits(x: f32, lane: f32, sig: f32, go: f32) -> bool {
+        (0..40).any(|row| {
+            let (cx, moving) = cross_bike_x(row as f32 * CROSS_EVERY, lane, sig, go);
+            moving && (cx - x).abs() < 0.14 + 0.12
+        })
+    }
+
+    /// The last moment in the cycle anything at one of `xs` across a cross street is in the way
+    /// of that street's cars or cyclists: when the traffic has passed it.
+    fn passed(xs: &[f32]) -> f32 {
+        let go = runic_constant("CROSS_BIKE_GO");
+        let mut last = 0.0f32;
+        let mut sig = 0.0f32;
+        while sig < SIG_CYCLE {
+            if xs.iter().any(|&x| (0..2).any(|dl| cross_car_hits(x, dl as f32, sig) || cross_bike_hits(x, dl as f32, sig, go))) {
+                last = sig;
+            }
+            sig += 0.01;
+        }
+        last
+    }
+
+    /// Every place across a walker on the road's sidewalks takes, on either side.
+    fn walker_xs() -> Vec<f32> {
+        (0..=20).flat_map(|i| {
+            let x = 0.96 + (i as f32 / 20.0 - 0.3) * WALK_W;
+            [x, -x]
+        }).collect()
+    }
+
     #[test]
-    fn a_cross_street_cyclist_jumps_its_light_once_the_road_has_stopped_and_is_over_before_the_road_s_cyclists_come() {
-        // Cyrus, 2026-11-18: "make the pedestrians and bicyclists jaywalk more often as long as
-        // they don't get hit". The road's cars stand behind their stop lines from the road's red
-        // (checked above); the road's cyclists come through from CLEAR_AFTER.
-        let go = ROAD_GREEN + runic_constant("CROSS_BIKE_JUMP");
-        let (all_red, cross_stop) = (runic_constant("ALL_RED"), runic_constant("CROSS_STOP"));
-        assert!(go > ROAD_GREEN && go < ROAD_GREEN + all_red, "on the road's red, ahead of its own green: {go}");
-        // It rolls up to its stop line by 6.5 at the latest, and rides over the road at 1.7 at
-        // the slowest, from its stop line to the far one.
-        assert!(6.5 <= go, "at its stop line before it goes");
-        let over = go + 2.0 * (0.9 + cross_stop) / 1.7;
-        assert!(over < CLEAR_AFTER, "still in the road at {over}, when the road's cyclists come");
+    fn a_jaywalker_steps_off_as_soon_as_the_cross_street_s_traffic_has_passed() {
+        // Cyrus, 2026-11-18: "for the pedestrians ... they will cross the street as soon as the
+        // cars have passed".
+        let passed = passed(&walker_xs());
+        let go = runic_constant("WALK_GO");
+        assert!(go >= passed && go - passed < 0.15, "walkers step off at {go}, the traffic passed at {passed}");
+        assert!(runic_constant("JAY_SPREAD") <= 0.3, "and together, not one by one");
+    }
+
+    #[test]
+    fn a_road_cyclist_comes_through_as_soon_as_the_cross_street_s_traffic_has_passed() {
+        // Cyrus, 2026-11-18: "same thing with the bicyclists".
+        let passed = passed(&[ROAD_BIKE_X, -ROAD_BIKE_X]);
+        let go = runic_constant("BIKE_GO");
+        assert!(go >= passed && go - passed < 0.15, "road cyclists reach the stop line at {go}, the traffic passed at {passed}");
+        assert!(runic_constant("BIKE_SPREAD") <= 0.3);
+    }
+
+    /// Whether a cross street's cyclist set off at `go` meets nothing on its way over the road:
+    /// no road car moving in an intersection while it is in the road, no road cyclist where it
+    /// crosses the bike lanes, no walker where it crosses the sidewalks' crosswalks. Every motion
+    /// is locked to the cycle, so two cycles of the walkers (the slow ones take two) say it all.
+    fn a_cross_bike_set_off_then_meets_nothing(go: f32) -> bool {
+        let block = CROSS_EVERY * GRID_Z;
+        let reach = WALK_AT + WALK_W * 0.5;
+        let inside = |w: f32| {
+            let local = w - (w / block).floor() * block;
+            local < GRID_Z + reach || local > block - reach
+        };
+        let in_street = |w: f32| {
+            let local = w - (w / block).floor() * block;
+            local > -0.32 + 0.3 * GRID_Z - 0.0 && local < 0.7 * GRID_Z + 0.32
+        };
+        let span = 2.0 * SIG_CYCLE;
+        let mut t = 0.0f32;
+        while t < span {
+            let sig = t - (t / SIG_CYCLE).floor() * SIG_CYCLE;
+            // Where the cross streets' cyclists are across, any of them, either way.
+            let bikes: Vec<f32> = (0..40).flat_map(|row| (0..2).map(move |dl| (row, dl))).filter_map(|(row, dl)| {
+                let (cx, moving) = cross_bike_x(row as f32 * CROSS_EVERY, dl as f32, sig, go);
+                (moving && cx.abs() < 1.6).then_some(cx)
+            }).collect();
+            if !bikes.is_empty() {
+                let near = |x: f32| bikes.iter().any(|&b| (b - x).abs() < 0.26);
+                let in_road = bikes.iter().any(|&b| b.abs() < 0.9 + 0.26);
+                for (lane, dir) in [(0.0f32, -1.0f32), (1.0, 1.0)] {
+                    for j in 0..24 {
+                        let key = (j as f32, lane * 13.0 + 31.0);
+                        let (w, next) = (road_car_at(dir, key, t), road_car_at(dir, key, t + 0.05));
+                        if in_road && inside(w) && (next - w).abs() > 1e-4 {
+                            return false;
+                        }
+                    }
+                    for j in 0..3 {
+                        let w = road_bike_at(dir, (j as f32, lane * 13.0 + 141.0), t);
+                        if in_street(w) && near(dir * ROAD_BIKE_X) {
+                            return false;
+                        }
+                    }
+                }
+                for side in [0.0f32, 1.0] {
+                    let out = if side == 0.0 { -1.0 } else { 1.0 };
+                    for (dir, key) in sidewalk(side).0 {
+                        let (w, walking) = road_walker_at(dir, key, t);
+                        let x = out * (0.96 + (hash2(key.0 + 7.0, key.1 + 7.0) - 0.3) * WALK_W);
+                        if walking && in_street(w) && near(x) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            t += 0.02;
+        }
+        true
+    }
+
+    #[test]
+    fn a_cross_street_cyclist_sets_off_as_soon_as_nothing_is_in_its_way_over_the_road() {
+        // Cyrus, 2026-11-18: "same thing with the bicyclists", and "as long as they don't get hit
+        // by a car or another bicycle".
+        let go = runic_constant("CROSS_BIKE_GO");
+        assert!(a_cross_bike_set_off_then_meets_nothing(go), "a cross cyclist set off at {go} meets something");
+        let earliest = (0..=((go - 3.0) / 0.05) as usize).map(|i| 3.0 + i as f32 * 0.05).find(|&g| a_cross_bike_set_off_then_meets_nothing(g)).unwrap_or(go);
+        assert!(go - earliest < 0.15, "it could go at {earliest}, not {go}");
+        assert!(go < runic_constant("CROSS_GREEN") + ROAD_GREEN, "ahead of its own green at least");
     }
 
     #[test]
@@ -805,7 +923,10 @@ mod tests {
         // The crowd before (forty walkers all leaving the corners on the green and standing at the
         // next) averaged under three a stretch, a stretch empty a third of the time.
         assert!(empty_share < 0.05, "a stretch empty {empty_share} of the time");
-        assert!(most_standing * 4 <= PEOPLE + STROLLERS, "{most_standing} people standing at once");
+        // The jaywalkers wait at the corners while a cross street's last car goes by and step off
+        // behind it together (Cyrus, 2026-11-18: "they will cross the street as soon as the cars
+        // have passed"): a few a corner then, never most of the sidewalk.
+        assert!(most_standing * 5 <= (PEOPLE + STROLLERS) * 2, "{most_standing} people standing at once");
     }
 
     #[test]
@@ -818,7 +939,7 @@ mod tests {
             "    bool brisk = hash2(key + 2.0) < 0.65;",
             "    float v = brisk ? mix(0.54, 0.6, hash2(key + 6.0)) : mix(0.31, 0.36, hash2(key + 6.0));",
             "    float late = min(ROAD_GREEN - AMBER, ROAD_GREEN - cross / v);",
-            "    float c = floor(hash2(key + 3.0) * laps) * SIG_CYCLE + (jay ? CLEAR_AFTER + JAY_SPREAD * hash2(key + 4.0) : late * hash2(key + 4.0));",
+            "    float c = floor(hash2(key + 3.0) * laps) * SIG_CYCLE + (jay ? WALK_GO + JAY_SPREAD * hash2(key + 4.0) : late * hash2(key + 4.0));",
             "    bool jay = hash2(key + 8.0) < JAYWALK;",
             "    float x = min(v * (t - c - k * period), block);",
             "    float j = floor(hash2(key + 5.0) * 8.0) + dir * k;",

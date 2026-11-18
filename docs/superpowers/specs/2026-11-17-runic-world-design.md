@@ -301,11 +301,14 @@ every law. `effects::runic` checks every cyclist and walker against every cross 
 cars for six minutes: no one is ever hit, and the reds are run thousands of times.
 
 Cyrus, 2026-11-18: "make the pedestrians and bicyclists jaywalk more often as long as they don't
-get hit by a car or another bicycle. NYC people are very aggressive jaywalkers." Now 85 per cent of
-the walkers cross against the light, each stepping off at its own moment in the 1.8 seconds after
-the last cross car (9.4 to 11.2 s), so they trickle out rather than leave as one; their moments in a
-cross street against the light rose from 22,894 to 31,395 in the six-minute check, still with no
-one hit. The cross streets' cyclists jump their light: they set off 0.1 s into the road's red,
-once the road's cars stand behind their stop lines, ahead of their own green and of the cross
-street's cars, and at the slowest are over the road by 8.2 s, before the road's cyclists come
-through at 9.4.
+get hit by a car or another bicycle. NYC people are very aggressive jaywalkers", then "they will
+cross the street as soon as the cars have passed" and "same thing with the bicyclists". Everyone
+now goes the moment their way is clear, and the moments are measured from the traffic in the tests
+rather than chosen: 85 per cent of the walkers step off against the light at 9.1 s, together
+within 0.3 s, right behind the last cross car and cyclist over their crosswalk (passed at 9.04);
+the road's cyclists reach the stop line at 8.9 s and ride through the red behind the same cars; the
+cross streets' cyclists set off over the road at 5.8 s, the first moment no road car is moving in
+the intersection and no road cyclist or walker is where they cross, 1.2 s ahead of their own
+green. The six-minute check now holds every walker and road cyclist against the cross streets'
+cyclists as well as their cars, and nobody is hit. While the last car goes by a few jaywalkers
+stand at each corner, up to 29 of a sidewalk's 88 people at once.
