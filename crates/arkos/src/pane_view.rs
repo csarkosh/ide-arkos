@@ -984,6 +984,11 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
     let t_move = terminal.clone();
     let t_drop = terminal.clone();
     let scrolled_up = terminal.read(cx).core.scrolled_up();
+    let pill_bottom = {
+        let t = terminal.read(cx);
+        let pinned = t.core.pinned_frame().map(|frame| frame.rows.len());
+        jump_pill_bottom(pinned, t.core.screen_lines(), t.cell.map(|c| c.height).unwrap_or(0.0), t.height)
+    };
     let jump_id = ElementId::NamedInteger("jump".into(), terminal.read(cx).session.0 as u64);
     div()
         .size_full()
@@ -1107,7 +1112,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
             div()
                 .id(jump_id)
                 .absolute()
-                .bottom(px(10.0))
+                .bottom(px(pill_bottom))
                 .right(px(14.0))
                 .px(px(10.0))
                 .py(px(4.0))
@@ -1129,6 +1134,18 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| t.update(cx, |t, cx| t.jump_to_bottom(cx))))
         }))
         .children(find::render(&terminal, pane, theme, style, family, find_bars, now, cx))
+}
+
+/// How far over the pane's foot the "jump to bottom" pill sits: 10 px, or with Claude Code's
+/// input box pinned at the foot (`TerminalCore::pinned_frame`, its last `pinned` of `screen`
+/// rows of `cell_h` in a pane `height` tall, the grid hung from the top), 10 px over the box's
+/// top, so the pill covers the conversation and never the box or its status lines.
+pub(crate) fn jump_pill_bottom(pinned: Option<usize>, screen: usize, cell_h: f32, height: f32) -> f32 {
+    const GAP: f32 = 10.0;
+    match pinned {
+        Some(n) if n <= screen => height - (screen - n) as f32 * cell_h + GAP,
+        _ => GAP,
+    }
 }
 
 /// A press on a pill or chip floating over a pane's text: not a click in the text below, so it
@@ -1825,6 +1842,16 @@ fn pane_focus(root: &mut Root, pane: PaneId, cx: &mut Context<Root>) -> FocusHan
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_jump_pill_floats_over_a_pinned_input_box_not_on_it() {
+        // Cyrus, 2026-11-18: "fix the jump to bottom chip overlapping the status line".
+        assert_eq!(jump_pill_bottom(None, 24, 20.0, 490.0), 10.0, "nothing pinned: at the pane's foot");
+        // 24 rows of 20 px in a 490 px pane, the last 5 pinned: the box's top is 19 rows down,
+        // 380 px, which is 110 px over the pane's foot.
+        assert_eq!(jump_pill_bottom(Some(5), 24, 20.0, 490.0), 120.0);
+        assert_eq!(jump_pill_bottom(Some(30), 24, 20.0, 490.0), 10.0, "a box the grid does not hold leaves it be");
+    }
 
     #[test]
     fn the_key_context_adds_sheets_only_for_a_workbook_with_more_than_one_sheet() {

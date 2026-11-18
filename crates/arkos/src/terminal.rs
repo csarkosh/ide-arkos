@@ -1275,6 +1275,9 @@ pub struct Terminal {
     /// Where the element last painted its top left, in window pixels: with `cell` and `frac`,
     /// what maps the pointer to a grid cell.
     pub origin: Option<(f32, f32)>,
+    /// How tall the element last laid out, in pixels: with `cell`, where a pinned input box
+    /// starts, for the pill floating over it.
+    pub height: f32,
     /// The fraction of a row the rows were painted down by at the last paint (a smooth scroll).
     pub frac: f32,
     /// The fraction of a wheel line owed to the program (see `mouse::WheelCarry`).
@@ -1324,6 +1327,7 @@ impl Terminal {
             find: None,
             hovered_link: None,
             origin: None,
+            height: 0.0,
             frac: 0.0,
             wheel_carry: WheelCarry::default(),
             clicks: Clicks::default(),

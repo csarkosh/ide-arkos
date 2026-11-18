@@ -298,6 +298,7 @@ impl Element for TerminalElement {
         let resize_waits = self.terminal.update(cx, |t, _| {
             t.cell = Some(cell);
             t.origin = Some((f32::from(bounds.origin.x), f32::from(bounds.origin.y)));
+            t.height = f32::from(bounds.size.height);
             t.ensure_size(cols, rows)
         });
         // A resize waiting for the pane to settle is made in a later frame.
