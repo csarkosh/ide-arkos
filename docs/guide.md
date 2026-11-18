@@ -182,8 +182,12 @@ Cmd+B shows the sidebar. Its top switches between Sessions (see
 a file tree rooted at the folder, read one directory at a time as you
 expand it, with `.git` hidden and anything `.gitignore` ignores left out (the palette's "Show
 ignored files" lists them dimmed). It follows the file system within a second. A single click
-opens a file in a preview tab in the focused pane, which the next single click replaces; a
-double click, Enter in the tree, or dragging the tab pins it. Right click a file or a folder: New
+opens a file in a preview tab, which the next single click replaces; a double click, Enter in
+the tree, or dragging the tab pins it. Where a click opens it follows Settings, Layout, "A
+session's files open": on Neighbor, while the focused pane shows a terminal, the file opens in
+the pane beside it (a new pane to its right when there is none) and the keys stay in the
+terminal, so you go on typing to Claude; on In place, or from a pane showing a file, it opens in
+the focused pane. Enter in the tree always opens in the focused pane. Right click a file or a folder: New
 File, Reveal in Finder, Copy path, Copy relative path, Open in default app, Delete; right click the
 tree's empty space for the project folder's own menu (it has no Delete). Delete moves the file or
 folder to the Trash, where Finder's Put Back restores it; tabs on the file, or on anything in the
