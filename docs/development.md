@@ -1134,6 +1134,8 @@ Things only a person at the screen can check, in order of value:
   hovering an icon shows a tooltip naming its menu and what is in it, but not while that icon's
   own menu is open; a click on the question mark opens Help with nothing marked and no ring on the
   icon, the keys left in the pane (arrows and typing reach it), and Escape closes the menu
+- row click glow: typing in Claude in Pane 1, click another session's row: the glow stays lit
+  on Pane 1 through the switch, never on Pane 0, never dimming, and typing reaches the new session
 - bar clicks: typing in Claude, click the bell: its menu opens, the glow stays on the pane,
   typing reaches Claude, a click on a row works it, Escape closes the menu without reaching
   Claude; the same for the doctor and Help; Cmd+0, Up to the bell, Enter: the menu takes the

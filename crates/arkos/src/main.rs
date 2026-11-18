@@ -2956,6 +2956,7 @@ impl Root {
     /// when that one calls for the user, else as the user left it.
     pub fn show_row(&mut self, page: tree::PageKey, cx: &mut Context<Self>) {
         let lead = self.page_row(page).filter(|e| e.attention.calls()).and_then(|e| self.tree.find_session(e.session));
+        let before = self.tree.focused;
         if !self.tree.show_page(page) {
             return;
         }
@@ -2968,6 +2969,12 @@ impl Root {
                 let pane = self.tree.focused;
                 self.focus_pane(pane, cx);
             }
+        }
+        // The glow stays lit through the switch (Cyrus, 2026-11-18: "The focus should remain on
+        // Pane 1 the entire time so it feels smooth"): the old page's focused pane hands its glow
+        // to the new one's.
+        if self.tree.focused != before {
+            self.glow.carry(&before, self.tree.focused);
         }
         self.save(cx);
         cx.notify();

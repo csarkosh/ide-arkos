@@ -311,6 +311,17 @@ impl<K: Hash + Eq, T> Fades<K, T> {
         entry.0.current(now)
     }
 
+    /// Moves `from`'s fade to `to` as it stands, when `to` has none of its own: a focus glow
+    /// carried to the pane that takes over the same place, so it neither dims nor fades back in.
+    pub fn carry(&mut self, from: &K, to: K) {
+        if self.map.contains_key(&to) {
+            return;
+        }
+        if let Some(entry) = self.map.remove(from) {
+            self.map.insert(to, entry);
+        }
+    }
+
     /// `key`'s opacity at `now`, 0 to 1, without changing what it wants: 0 for a key never
     /// shown or already gone. For a reader that draws beside the one that syncs (the effect's
     /// wash reads the focus glow's fade to light the focused pane's frame with it).
@@ -522,6 +533,32 @@ mod tests {
         assert_eq!(s.at(t0), 0.0);
         assert!(!s.animating(t0));
         set(false);
+    }
+
+    #[test]
+    fn a_fade_carried_to_another_key_shows_there_at_the_opacity_it_had() {
+        let _g = test_lock(false);
+        let t0 = Instant::now();
+        let mut f: Fades<u32, ()> = Fades::default();
+        f.sync(1, Some(()), t0);
+        let t1 = t0 + ENTER;
+        assert_eq!(f.sync(1, Some(()), t1), Some((&(), 1.0)));
+        f.carry(&1, 2);
+        assert_eq!(f.sync(2, Some(()), t1), Some((&(), 1.0)), "lit at once, no fade in");
+        assert_eq!(f.opacity(&1, t1), 0.0, "the old key keeps nothing");
+    }
+
+    #[test]
+    fn a_fade_is_not_carried_onto_a_key_already_showing() {
+        let _g = test_lock(false);
+        let t0 = Instant::now();
+        let mut f: Fades<u32, ()> = Fades::default();
+        f.sync(1, Some(()), t0);
+        f.sync(2, Some(()), t0 + ENTER);
+        let t1 = t0 + ENTER + MS(50);
+        let before = f.opacity(&2, t1);
+        f.carry(&1, 2);
+        assert_eq!(f.opacity(&2, t1), before);
     }
 
     #[test]
