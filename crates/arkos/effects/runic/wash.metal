@@ -629,8 +629,12 @@ constant float CROSS_ACROSS = 1.0;
 constant float WAIT_ALONG = 0.5;
 constant float CROSS_MERGE = 0.3;
 constant float CROSS_CLEAR = 0.3;
+// A person's reach past its middle, and the room it leaves a cyclist going by.
+constant float PERSON_BODY = 0.06;
+constant float NEAR_MISS = 0.03;
+constant float SWERVE = 0.04;
 constant float LATE_SHARE = 0.3;
-constant float LATE_GO = 10.05;
+constant float LATE_GO = 9.9;
 constant float LATE_SPREAD = 0.5;
 // The sidewalks (Cyrus, 2026-11-17: "I want the sidewalks more prominent"): paved bands where the
 // people walk, SIDEWALK_W wide, along the road from SIDEWALK_IN inside its edge and along both sides
@@ -1078,7 +1082,8 @@ float wrap_view(float z);
 float road_car_at(float dir, float2 key, float t);
 float road_bike_at(float dir, float2 key, float t);
 float2 road_walker_at(float dir, float2 key, float t);
-float4 road_crosser_at(float2 key, float side, float t);
+float4 road_crosser_at(float2 key, float side, float cw, float t);
+float bike_swerve(float x, float zw, float t);
 bool lot_built(int kx, int m);
 bool lot_empty(int kx, int m);
 bool lot_in_park(int kx, int m);
@@ -1691,9 +1696,66 @@ float road_bike_at(float dir, float2 key, float t) {
 // LATE_GO, the latest that keeps them out of every road car's and cyclist's lane (Cyrus,
 // 2026-11-18: "pedestrians should start cross in front of oncoming traffic if they know the light
 // is about to turn red for them").
-float4 road_crosser_at(float2 key, float side, float t) {
+// How long a person crossing the road, its feet at z along the road, must stand at the edge of the
+// bike lane of the way s it is about to step into at time ta, to be in that lane for dur seconds
+// with no road cyclist through its crosswalk meanwhile: it waits for one to pass, by NEAR_MISS
+// (Cyrus, 2026-11-18, of the cyclists and the people crossing: "Both, a near miss"). A cyclist
+// keeps one pace, so it is at z every span / speed seconds, one of its images in the view each time.
+float bike_wait(float s, float z, float ta, float dur) {
+    float block = float(CROSS_EVERY) * GRID_Z;
+    float span = WRAP_BLOCKS * block;
+    float lane = s > 0.0 ? 1.0 : 0.0;
+    float wait = 0.0;
+    for (int look = 0; look < 2; look++) {
+        for (int j = 0; j < ROAD_BIKES; j++) {
+            float2 key = float2(float(j), lane * 13.0 + 141.0);
+            float blocks = hash2(key + 5.0) < 0.5 ? 2.0 : 1.0;
+            float speed = blocks * block / SIG_CYCLE;
+            float phase = BIKE_GO + BIKE_SPREAD * hash2(key + 2.0);
+            float j0 = floor(hash2(key + 3.0) * 8.0);
+            float stop0 = s > 0.0 ? j0 * block - STOP_BACK : j0 * block + GRID_Z + STOP_BACK;
+            float base = phase + (z - stop0) / (s * speed);
+            float per = span / speed;
+            float half_t = (0.09 + PERSON_BODY + NEAR_MISS) / speed;
+            float from = ta + wait;
+            float tk = base + ceil((from - half_t - base) / per) * per;
+            if (tk - half_t < from + dur) {
+                wait = tk + half_t - ta;
+            }
+        }
+    }
+    return wait;
+}
+
+// How far a road cyclist in its lane at x, at zw along the road, eases aside at t: away from
+// anyone crossing who stands at the edge of its lane on the crosswalk it is going through, by up to
+// SWERVE, the other half of a near miss (Cyrus, 2026-11-18: "Both, a near miss").
+float bike_swerve(float x, float zw, float t) {
+    float block = float(CROSS_EVERY) * GRID_Z;
+    float base = floor(zw / block) * block;
+    float off = 0.0;
+    for (int k = 0; k < 2; k++) {
+        float street = base + float(k) * block;
+        for (int w = 0; w < 2; w++) {
+            float cw = w == 0 ? street - WALK_AT : street + GRID_Z + WALK_AT;
+            float near = 1.0 - smoothstep(0.1, 0.45, abs(zw - cw));
+            if (near <= 0.0) {
+                continue;
+            }
+            int m = int(round(street / GRID_Z));
+            for (int j = 0; j < CROSS_PEOPLE; j++) {
+                float4 at = road_crosser_at(float2(float(m) * 3.0 + float(w), float(j) + 71.0), w == 0 ? -1.0 : 1.0, cw, t);
+                if (at.w > 0.0 && at.z <= 0.0 && abs(at.x - x) < 0.25) {
+                    off += sign(x - at.x) * SWERVE * near;
+                }
+            }
+        }
+    }
+    return clamp(off, -SWERVE, SWERVE);
+}
+
+float4 road_crosser_at(float2 key, float side, float cw, float t) {
     float edge = float(ROAD_CELLS) * GRID_X;
-    float cross_on = ROAD_GREEN + ALL_RED;
     float dir = hash2(key + 1.0) < 0.5 ? 1.0 : -1.0;
     bool late = hash2(key + 11.0) < LATE_SHARE;
     float v = late ? mix(0.7, 0.85, hash2(key + 2.0)) : mix(0.46, 0.6, hash2(key + 2.0));
@@ -1719,12 +1781,36 @@ float4 road_crosser_at(float2 key, float side, float t) {
         float wx = start - dir * la + dir * v * min(tau - t0, la / v);
         return float4(wx, waiting, tau - t0 < la / v ? 1.0 : 0.0, smoothstep(t0, t0 + 0.4, tau));
     }
-    float d = v * (tau - tc);
+    // Over the road, standing at the edge of each bike lane while a cyclist goes through.
+    float bx = BIKE_LANE * float(ROAD_CELLS) * GRID_X;
+    float hw = 0.03 + PERSON_BODY + NEAR_MISS;
+    float d1 = edge + 0.08 + back - bx - hw;
+    float d2 = edge + 0.08 + back + bx - hw;
+    float step_off = t - (tau - tc);
+    float e = tau - tc;
+    // A wait only matters once it has reached the lane: before then none is worked out.
+    float w1 = e < d1 / v ? 0.0 : bike_wait(-dir, cw + across, step_off + d1 / v, 2.0 * hw / v);
+    float w2 = e < d2 / v + w1 ? 0.0 : bike_wait(dir, cw + across, step_off + d2 / v + w1, 2.0 * hw / v);
+    float d;
+    bool walking = true;
+    if (e < d1 / v) {
+        d = v * e;
+    } else if (e < d1 / v + w1) {
+        d = d1;
+        walking = false;
+    } else if (e < d2 / v + w1) {
+        d = v * (e - w1);
+    } else if (e < d2 / v + w1 + w2) {
+        d = d2;
+        walking = false;
+    } else {
+        d = v * (e - w1 - w2);
+    }
     if (d > reach) {
         return float4(0.0, across, 0.0, 0.0);
     }
     float onto = mix(waiting, across, smoothstep(0.0, CROSS_MERGE, d));
-    return float4(start + dir * d, onto, 1.0, 1.0 - smoothstep(reach - 0.2, reach, d));
+    return float4(start + dir * d, onto, walking ? 1.0 : 0.0, 1.0 - smoothstep(reach - 0.2, reach, d));
 }
 
 // Where a walker on the road's sidewalk is along the road, in the world, at t, and whether it is
@@ -2007,7 +2093,8 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
             float z = wrap_view(w - run);
             float seen = (1.0 - smoothstep(Z_FAR * 0.55, Z_FAR, z)) * smoothstep(Z_NEAR, Z_NEAR + 0.6, z);
             float sc = f / z;
-            float2 foot = float2(cx + dir * BIKE_LANE * float(ROAD_CELLS) * GRID_X * sc, yh + sc);
+            float bike_x = dir * BIKE_LANE * float(ROAD_CELLS) * GRID_X + bike_swerve(dir * BIKE_LANE * float(ROAD_CELLS) * GRID_X, z + run, t);
+            float2 foot = float2(cx + bike_x * sc, yh + sc);
             float2 b = bike_end_on(q, foot, sc, t, hash2(key + 7.0), moving);
             col = light_on(col, mix(green, white_c, 0.3), b.x * 0.8 * seen, u.dark);
             col = light_on(col, lane == 0 ? head_c : tail_c, b.y * seen, u.dark);
@@ -2123,7 +2210,7 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
                 }
                 for (int j = 0; j < CROSS_PEOPLE; j++) {
                     float2 key = float2(float(m) * 3.0 + float(w), float(j) + 71.0);
-                    float4 at = road_crosser_at(key, w == 0 ? -1.0 : 1.0, t);
+                    float4 at = road_crosser_at(key, w == 0 ? -1.0 : 1.0, float(m) * GRID_Z + (w == 0 ? -WALK_AT : GRID_Z + WALK_AT), t);
                     if (at.w <= 0.0) {
                         continue;
                     }

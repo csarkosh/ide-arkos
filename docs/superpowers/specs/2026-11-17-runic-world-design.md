@@ -349,8 +349,14 @@ before 10.05 s (LATE_GO), the latest that keeps them out of the road's cars as t
 at 12. The road's stop lines moved back from 0.4 to 0.55 before the cross streets (STOP_BACK): a
 car rolling up to one stopped with its nose over the crosswalk's edge, among the people on it.
 
-Open: the road's cyclists and the people crossing the road. A cyclist never stops (a messenger
-passes an intersection every 6 s) and the crosswalks have people on them five seconds in twelve, so
-no timing keeps them apart: every start from 0 to 11.5 s left 12 to 223 of 384 crossers in a
-cyclist's way, as it has been since the cyclists came. Either the cyclists slow for people on the
-crosswalk or the people stop short for a cyclist; that is Cyrus's call.
+The road's cyclists and the people crossing the road: a cyclist never stops (a messenger passes
+an intersection every 6 s) and the crosswalks have people on them five seconds in twelve, so no
+timing kept them apart (every start from 0 to 11.5 s left 12 to 223 of 384 crossers in a cyclist's
+way, as it had been since the cyclists came). Cyrus chose "Both, a near miss". A crosser about to
+step into a bike lane works out, from the cyclists' steady pace, whether one will go through its
+crosswalk while it is in the lane (`bike_wait`), and if so stands at the lane's edge until it has,
+NEAR_MISS (0.03) clear of it; a cyclist going through a crosswalk where someone stands at its
+lane's edge eases up to SWERVE (0.04) away from them (`bike_swerve`, drawing only). The tests now
+hold every crosser against the road's cyclists as well as its cars, and nobody is in either's way;
+the late crossers, held up now and then by a cyclist, step off by 9.9 s. It costs the wash about
+0.6 ms a frame at 1200 by 800 under load (4.2 to 4.4 ms before, 4.9 to 5.0 after).
