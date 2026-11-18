@@ -422,7 +422,7 @@ mod tests {
     const CROSS_EVERY: f32 = 4.0;
     const SIG_CYCLE: f32 = 12.0;
     const ROAD_GREEN: f32 = 6.5;
-    const STOP_BACK: f32 = 0.4;
+    const STOP_BACK: f32 = 0.55;
     const WALK_AT: f32 = 0.18;
     const WALK_W: f32 = 0.24;
 
@@ -526,7 +526,7 @@ mod tests {
             "constant int CROSS_EVERY = 4;",
             "constant float SIG_CYCLE = 12.0;",
             "constant float ROAD_GREEN = 6.5;",
-            "constant float STOP_BACK = 0.4;",
+            "constant float STOP_BACK = 0.55;",
             "constant float WALK_AT = 0.18;",
             "constant float WALK_W = 0.24;",
             "    float b = fmod(key.x, WRAP_BLOCKS);",
@@ -972,6 +972,183 @@ mod tests {
         let (early, late) = (early / n as f32, late / n as f32);
         assert!(late < early * 0.6, "they edge up from {early} back to only {late}");
         assert!(past_curb * 4 >= n, "a quarter or more off the curb: {past_curb} of {n}");
+    }
+
+    /// How the road's crossers wait and go (wash.metal's `road_crosser_at`).
+    #[derive(Clone, Copy)]
+    struct Crossing {
+        spread: f32,
+        depth: f32,
+        across: f32,
+        late_share: f32,
+        late_go: f32,
+        late_spread: f32,
+        along: f32,
+        first: f32,
+    }
+
+    impl Crossing {
+        fn from_wash() -> Self {
+            let c = runic_constant;
+            Crossing { spread: c("CROSS_SPREAD"), depth: c("CROSS_WAIT_DEPTH"), across: c("CROSS_ACROSS"), late_share: c("LATE_SHARE"), late_go: c("LATE_GO"), late_spread: c("LATE_SPREAD"), along: c("WAIT_ALONG"), first: c("CROSS_FIRST") }
+        }
+
+        /// As the wash had it before: everyone off within a tenth of a second of the green, from
+        /// one spot at the corner, over six tenths of the crosswalk's width.
+        fn before() -> Self {
+            Crossing { spread: 0.1, depth: 0.0, across: 0.6, late_share: 0.0, late_go: 0.0, late_spread: 0.0, along: 0.0, first: ROAD_GREEN + 0.5 }
+        }
+    }
+
+    /// A road crosser as wash.metal's `road_crosser_at` places it: across, across the
+    /// crosswalk's width, walking, and how much of it shows.
+    fn road_crosser_at(key: (f32, f32), side: f32, t: f32, p: Crossing) -> (f32, f32, bool, f32) {
+        let h = |d: f32| hash2(key.0 + d, key.1 + d);
+        let edge = 0.9;
+        let dir = if h(1.0) < 0.5 { 1.0 } else { -1.0 };
+        let late = h(11.0) < p.late_share;
+        let v = if late { 0.7 + 0.15 * h(2.0) } else { 0.46 + 0.14 * h(2.0) };
+        let tt = t + (h(3.0) * 2.0).floor() * SIG_CYCLE;
+        let tau = tt - (tt / (2.0 * SIG_CYCLE)).floor() * 2.0 * SIG_CYCLE;
+        let back = p.depth * h(9.0);
+        let over = (2.0 * (edge + 0.08) + back) / v;
+        let tc = if late { p.late_go - p.late_spread * h(7.0) } else { p.first + (p.spread * h(7.0)).min(SIG_CYCLE - runic_constant("CROSS_CLEAR") - over - p.first) };
+        let wait = if late { 0.3 * h(4.0) } else { 2.0 * h(4.0) };
+        let start = -dir * (edge + 0.08 + back);
+        let la = (0.5 + 2.5 * h(5.0)).min(v * (tc - wait));
+        let t0 = tc - wait - la / v;
+        let lb = 0.5 + 2.5 * h(6.0);
+        let reach = 2.0 * (edge + 0.08) + back + lb;
+        let across = (h(8.0) - 0.5) * WALK_W * p.across;
+        let waiting = across + side * p.along * h(12.0);
+        let smooth = |e0: f32, e1: f32, x: f32| {
+            let u = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+            u * u * (3.0 - 2.0 * u)
+        };
+        if tau < t0 {
+            return (0.0, waiting, false, 0.0);
+        }
+        if tau < tc {
+            return (start - dir * la + dir * v * (tau - t0).min(la / v), waiting, tau - t0 < la / v, smooth(t0, t0 + 0.4, tau));
+        }
+        let d = v * (tau - tc);
+        if d > reach {
+            return (0.0, across, false, 0.0);
+        }
+        let onto = waiting + (across - waiting) * smooth(0.0, runic_constant("CROSS_MERGE"), d);
+        (start + dir * d, onto, true, 1.0 - smooth(reach - 0.2, reach, d))
+    }
+
+    /// A crosser's reach past its middle every way: about half a body's width.
+    const BODY: f32 = 0.06;
+
+    fn near_a_crosswalk(local: f32) -> bool {
+        let block = CROSS_EVERY * GRID_Z;
+        local > block - 0.7 || (local > GRID_Z - 0.1 && local < GRID_Z + 0.7)
+    }
+
+    /// The road's moving cars near its crosswalks (moving: faster than a tenth of a camera height a
+    /// second; one rolling the last of the way up to its stop line, its nose over the crosswalk's
+    /// edge, has stopped for the people), folded onto the crossers' two cycles at a hundredth of a
+    /// second over thirty cycles (the cars change their pace every cycle): each as (x across, half
+    /// its width, where along its block, half its length).
+    fn road_cars_at_crosswalks() -> Vec<Vec<(f32, f32, f32, f32)>> {
+        let block = CROSS_EVERY * GRID_Z;
+        let fold = 2 * STEPS;
+        let mut at = vec![Vec::new(); fold];
+        for n in 0..30 * STEPS {
+            let t = n as f32 * STEP;
+            for (lane, dir) in [(0.0f32, -1.0f32), (1.0, 1.0)] {
+                for j in 0..24 {
+                    let key = (j as f32, lane * 13.0 + 31.0);
+                    let (w, next) = (road_car_at(dir, key, t), road_car_at(dir, key, t + STEP));
+                    let local = w.rem_euclid(block);
+                    if (next - w).abs() > 0.1 * STEP && near_a_crosswalk(local) {
+                        at[n % fold].push((dir * 0.45, 0.15, local, 0.14));
+                    }
+                }
+            }
+        }
+        at
+    }
+
+    /// Whether no road crosser, going as `p` has it, is ever in a moving road car's or cyclist's
+    /// way.
+    fn crossers_are_safe(p: Crossing, cars: &[Vec<(f32, f32, f32, f32)>], bikes: &[Vec<(f32, f32, f32, f32)>]) -> bool {
+        let block = CROSS_EVERY * GRID_Z;
+        (0..16).all(|street| {
+            let m = street as f32 * CROSS_EVERY;
+            (0..2).all(|w| {
+                let side = if w == 0 { -1.0 } else { 1.0 };
+                (0..12).all(|j| {
+                    let key = (m * 3.0 + w as f32, j as f32 + 71.0);
+                    (0..2 * STEPS).all(|n| {
+                        let (x, across, _, shown) = road_crosser_at(key, side, n as f32 * STEP, p);
+                        let local = if w == 0 { block - WALK_AT } else { GRID_Z + WALK_AT } + across;
+                        shown <= 0.0 || !cars[n].iter().chain(&bikes[n]).any(|&(cx, hw, cz, hl)| (x - cx).abs() < hw + BODY && (local - cz).abs() < hl + BODY)
+                    })
+                })
+            })
+        })
+    }
+
+    #[test]
+    fn road_crossers_are_never_in_a_road_car_s_way() {
+        // The road's cyclists never stop, a messenger at an intersection every six seconds, and
+        // the crosswalks have people on them five seconds in twelve: no timing keeps them apart
+        // (every start from 0 to 11.5 s left 12 to 223 of 384 crossers in a cyclist's way, as the
+        // wash has had it since the cyclists came). Which of them gives way is Cyrus's to say.
+        let none = vec![Vec::new(); 2 * STEPS];
+        assert!(crossers_are_safe(Crossing::from_wash(), &road_cars_at_crosswalks(), &none));
+    }
+
+    #[test]
+    fn late_crossers_hurry_over_in_front_of_the_traffic_as_late_as_is_safe() {
+        // Cyrus, 2026-11-18: "pedestrians should start cross in front of oncoming traffic if they
+        // know the light is about to turn red for them".
+        let cars = road_cars_at_crosswalks();
+        let bikes = vec![Vec::new(); 2 * STEPS];
+        let p = Crossing::from_wash();
+        let latest = (0..=120).map(|i| 14.0 - i as f32 * 0.05).find(|&g| crossers_are_safe(Crossing { late_go: g, ..p }, &cars, &bikes));
+        let latest = latest.expect("no time is safe");
+        eprintln!("late crossers could go up to {latest}");
+        assert!(p.late_go <= latest && latest - p.late_go < 0.15, "late crossers could go up to {latest}, not {}", p.late_go);
+        assert!(p.late_share >= 0.25);
+    }
+
+    /// The share of the road's crossers out (waiting or crossing) standing on another: within a
+    /// person's width across and along.
+    fn crossers_stacked(p: Crossing) -> f32 {
+        let (mut out, mut stacked) = (0usize, 0usize);
+        for street in 0..10 {
+            for w in 0..2 {
+                let side = if w == 0 { -1.0 } else { 1.0 };
+                let mut t = 0.0f32;
+                while t < 2.0 * SIG_CYCLE {
+                    let at: Vec<(f32, f32)> = (0..12).filter_map(|j| {
+                        let (x, across, _, shown) = road_crosser_at((street as f32 * CROSS_EVERY * 3.0 + w as f32, j as f32 + 71.0), side, t, p);
+                        (shown > 0.5).then_some((x, across))
+                    }).collect();
+                    for (i, a) in at.iter().enumerate() {
+                        out += 1;
+                        stacked += usize::from(at.iter().enumerate().any(|(k, b)| k != i && (a.0 - b.0).abs() < 0.06 && (a.1 - b.1).abs() < 0.06));
+                    }
+                    t += 0.25;
+                }
+            }
+        }
+        stacked as f32 / out.max(1) as f32
+    }
+
+    #[test]
+    fn people_crossing_the_road_string_out_rather_than_stand_on_each_other() {
+        // Cyrus, 2026-11-18: "walkers are still stacking on top of eachother when they are making
+        // horizontal street crossings".
+        let (before, now) = (crossers_stacked(Crossing::before()), crossers_stacked(Crossing::from_wash()));
+        eprintln!("road crossers on another: {before} before, {now} now");
+        // Twelve a sidewalk at each corner on a crosswalk a quarter of a camera height wide: some
+        // pass close; none stands on another for long.
+        assert!(now < 0.12 && now * 3.0 < before, "{now} of them on another, {before} before");
     }
 
     #[test]

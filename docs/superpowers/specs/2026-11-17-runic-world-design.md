@@ -332,3 +332,25 @@ moving car's or cyclist's lane, lane by lane, searched at a hundredth of a secon
 crowd up to 0.3 off the curb (GUTTER), short of the cross street's near lane. Under 3 per cent of
 the waiting people overlap another. The searches made the runic tests about ten times slower
 (13 s, in parallel with the rest of the suite).
+
+Then: "walkers are still stacking on top of eachother when they are making horizontal street
+crossings. Also, pedestrians should start cross in front of oncoming traffic if they know the light
+is about to turn red for them." The people crossing the road moved into `road_crosser_at`, with a
+mirror in the tests that never had them before. They used to step off within a tenth of a second
+of their green from one spot, over six tenths of the crosswalk: 39 per cent of them on another.
+Now each waits at its own spot, up to 0.2 back from the corner (CROSS_WAIT_DEPTH) and up to 0.5
+along the road's sidewalk beside the crosswalk (WAIT_ALONG), comes onto the crosswalk in its first
+0.3 (CROSS_MERGE), uses its full width, and steps off at its own moment over 3 s (CROSS_SPREAD)
+from 5.6 s (CROSS_FIRST), the earliest that keeps the crowd out of every road car (the road's cars
+have cleared the intersections by then, 1.4 s before the walkers' green), each still over the road
+0.3 s before the road's green (CROSS_CLEAR) however slow: 10 per cent on another. Three in ten
+(LATE_SHARE) come late and hurry over at 0.7 to 0.85 a second, stepping off in the half second
+before 10.05 s (LATE_GO), the latest that keeps them out of the road's cars as those get their green
+at 12. The road's stop lines moved back from 0.4 to 0.55 before the cross streets (STOP_BACK): a
+car rolling up to one stopped with its nose over the crosswalk's edge, among the people on it.
+
+Open: the road's cyclists and the people crossing the road. A cyclist never stops (a messenger
+passes an intersection every 6 s) and the crosswalks have people on them five seconds in twelve, so
+no timing keeps them apart: every start from 0 to 11.5 s left 12 to 223 of 384 crossers in a
+cyclist's way, as it has been since the cyclists came. Either the cyclists slow for people on the
+crosswalk or the people stop short for a cyclist; that is Cyrus's call.

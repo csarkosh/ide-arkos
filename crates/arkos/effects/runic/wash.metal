@@ -591,7 +591,7 @@ constant float AMBER = 1.0;
 constant float WRAP_BLOCKS = 4.0;
 // A stop line's distance before a cross street's edge (behind the crosswalk), and a cross car's
 // before the road's edge; the crosswalks' place and width, out from a street's edge.
-constant float STOP_BACK = 0.4;
+constant float STOP_BACK = 0.55;
 constant float CROSS_STOP = 0.42;
 constant float WALK_AT = 0.18;
 constant float WALK_W = 0.24;
@@ -618,9 +618,20 @@ constant float GUTTER = 0.3;
 constant float CREEP_T = 2.0;
 // How far apart across its sidewalk the road's walkers keep, nearly its whole width.
 constant float WALKER_SPREAD = 0.3;
-constant float BIKE_GO = 8.2;
+constant float BIKE_GO = 8.05;
 constant float BIKE_SPREAD = 0.3;
-constant float CROSS_BIKE_GO = 5.8;
+constant float CROSS_BIKE_GO = 5.95;
+// The road's crossers (`road_crosser_at`).
+constant float CROSS_FIRST = 5.6;
+constant float CROSS_SPREAD = 3.0;
+constant float CROSS_WAIT_DEPTH = 0.2;
+constant float CROSS_ACROSS = 1.0;
+constant float WAIT_ALONG = 0.5;
+constant float CROSS_MERGE = 0.3;
+constant float CROSS_CLEAR = 0.3;
+constant float LATE_SHARE = 0.3;
+constant float LATE_GO = 10.05;
+constant float LATE_SPREAD = 0.5;
 // The sidewalks (Cyrus, 2026-11-17: "I want the sidewalks more prominent"): paved bands where the
 // people walk, SIDEWALK_W wide, along the road from SIDEWALK_IN inside its edge and along both sides
 // of every cross street from its curb; lighter than the floor at SIDEWALK_FILL, jointed, and a lit
@@ -1067,6 +1078,7 @@ float wrap_view(float z);
 float road_car_at(float dir, float2 key, float t);
 float road_bike_at(float dir, float2 key, float t);
 float2 road_walker_at(float dir, float2 key, float t);
+float4 road_crosser_at(float2 key, float side, float t);
 bool lot_built(int kx, int m);
 bool lot_empty(int kx, int m);
 bool lot_in_park(int kx, int m);
@@ -1664,6 +1676,57 @@ float road_bike_at(float dir, float2 key, float t) {
     return stop0 + dir * speed * (t - phase);
 }
 
+// One of a cross street's people crossing the road, keyed by its street, sidewalk and place in
+// the crowd, at t: across (x), its place across the crosswalk's width (y), whether it is walking
+// (z), and how much of it shows (w, 0 while it is not out). Out of a doorway, to its own spot in
+// the group at the corner, up to CROSS_WAIT_DEPTH back from it, over the road, and into a doorway
+// on the far side. Most step off over the first CROSS_SPREAD seconds of their green, each at its
+// own moment, so the crowd strings out over the road instead of crossing as one; while it waits
+// the group spreads up to WAIT_ALONG along the road's sidewalk beside the crosswalk (`side` is -1
+// for the crosswalk before a cross street, +1 for the one after it, the way the sidewalk runs on),
+// and each comes onto the crosswalk in its first CROSS_MERGE steps (Cyrus,
+// 2026-11-18: "walkers are still stacking on top of eachother when they are making horizontal
+// street crossings"). A LATE_SHARE of them come late and hurry over as their light is about to
+// turn, in front of the road's traffic about to go, stepping off in the LATE_SPREAD seconds before
+// LATE_GO, the latest that keeps them out of every road car's and cyclist's lane (Cyrus,
+// 2026-11-18: "pedestrians should start cross in front of oncoming traffic if they know the light
+// is about to turn red for them").
+float4 road_crosser_at(float2 key, float side, float t) {
+    float edge = float(ROAD_CELLS) * GRID_X;
+    float cross_on = ROAD_GREEN + ALL_RED;
+    float dir = hash2(key + 1.0) < 0.5 ? 1.0 : -1.0;
+    bool late = hash2(key + 11.0) < LATE_SHARE;
+    float v = late ? mix(0.7, 0.85, hash2(key + 2.0)) : mix(0.46, 0.6, hash2(key + 2.0));
+    // A period of two cycles, starting on one or the other.
+    float tt = t + floor(hash2(key + 3.0) * 2.0) * SIG_CYCLE;
+    float tau = tt - floor(tt / (2.0 * SIG_CYCLE)) * 2.0 * SIG_CYCLE;
+    float back = CROSS_WAIT_DEPTH * hash2(key + 9.0);
+    // One on the green is over the road CROSS_CLEAR before the road's green, however slow.
+    float over = (2.0 * (edge + 0.08) + back) / v;
+    float tc = late ? LATE_GO - LATE_SPREAD * hash2(key + 7.0) : CROSS_FIRST + min(CROSS_SPREAD * hash2(key + 7.0), SIG_CYCLE - CROSS_CLEAR - over - CROSS_FIRST);
+    float wait = late ? 0.3 * hash2(key + 4.0) : 2.0 * hash2(key + 4.0);
+    float start = -dir * (edge + 0.08 + back);
+    float la = min(mix(0.5, 3.0, hash2(key + 5.0)), v * (tc - wait));
+    float t0 = tc - wait - la / v;
+    float lb = mix(0.5, 3.0, hash2(key + 6.0));
+    float reach = 2.0 * (edge + 0.08) + back + lb;
+    float across = (hash2(key + 8.0) - 0.5) * WALK_W * CROSS_ACROSS;
+    float waiting = across + side * WAIT_ALONG * hash2(key + 12.0);
+    if (tau < t0) {
+        return float4(0.0, waiting, 0.0, 0.0);
+    }
+    if (tau < tc) {
+        float wx = start - dir * la + dir * v * min(tau - t0, la / v);
+        return float4(wx, waiting, tau - t0 < la / v ? 1.0 : 0.0, smoothstep(t0, t0 + 0.4, tau));
+    }
+    float d = v * (tau - tc);
+    if (d > reach) {
+        return float4(0.0, across, 0.0, 0.0);
+    }
+    float onto = mix(waiting, across, smoothstep(0.0, CROSS_MERGE, d));
+    return float4(start + dir * d, onto, 1.0, 1.0 - smoothstep(reach - 0.2, reach, d));
+}
+
 // Where a walker on the road's sidewalk is along the road, in the world, at t, and whether it is
 // walking (x) or standing at a corner (y 0). It crosses a cross street only on the road's green,
 // stepping off the curb early enough to be over before the green ends: a brisk one (most) a block
@@ -2060,41 +2123,13 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
                 }
                 for (int j = 0; j < CROSS_PEOPLE; j++) {
                     float2 key = float2(float(m) * 3.0 + float(w), float(j) + 71.0);
-                    float h = hash2(key);
-                    float dir = hash2(key + 1.0) < 0.5 ? 1.0 : -1.0;
-                    float v = mix(0.46, 0.6, hash2(key + 2.0));
-                    // A period of two cycles, starting on one or the other.
-                    float tt = t + floor(hash2(key + 3.0) * 2.0) * SIG_CYCLE;
-                    float tau = tt - floor(tt / (2.0 * SIG_CYCLE)) * 2.0 * SIG_CYCLE;
-                    float wait = 2.0 * hash2(key + 4.0);
-                    float la = min(mix(0.5, 3.0, hash2(key + 5.0)), v * (cross_on - wait));
-                    float t0 = cross_on - wait - la / v;
-                    float lb = mix(0.5, 3.0, hash2(key + 6.0));
-                    float tc = cross_on + 0.1 * hash2(key + 7.0);
-                    float corner = -dir * (edge + 0.08);
-                    float wx;
-                    bool walking;
-                    float fade;
-                    if (tau < t0) {
+                    float4 at = road_crosser_at(key, w == 0 ? -1.0 : 1.0, t);
+                    if (at.w <= 0.0) {
                         continue;
-                    } else if (tau < tc) {
-                        wx = corner - dir * la + dir * v * min(tau - t0, la / v);
-                        walking = tau - t0 < la / v;
-                        fade = smoothstep(t0, t0 + 0.4, tau);
-                    } else {
-                        float d = v * (tau - tc);
-                        float reach = 2.0 * (edge + 0.08) + lb;
-                        if (d > reach) {
-                            continue;
-                        }
-                        wx = corner + dir * d;
-                        walking = true;
-                        fade = 1.0 - smoothstep(reach - 0.2, reach, d);
                     }
-                    // Not single file: spread across the sidewalk's width.
-                    float zj = zw + (hash2(key + 8.0) - 0.5) * WALK_W * 0.6;
-                    float2 foot = float2(cx + wx * f / zj, yh + f / zj);
-                    col = light_on(col, mix(green, white_c, 0.3), person_light(q, foot, PERSON_H * f / zj, t, h, walking) * 0.85 * seen * fade, u.dark);
+                    float zj = zw + at.y;
+                    float2 foot = float2(cx + at.x * f / zj, yh + f / zj);
+                    col = light_on(col, mix(green, white_c, 0.3), person_light(q, foot, PERSON_H * f / zj, t, hash2(key), at.z > 0.0) * 0.85 * seen * at.w, u.dark);
                 }
             }
             continue;
