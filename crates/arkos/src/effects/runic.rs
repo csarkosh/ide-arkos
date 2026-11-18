@@ -1552,6 +1552,94 @@ mod tests {
         assert!(runic_constant("SHED_H") >= runic_constant("PERSON_H") + 0.04);
     }
 
+    /// A tower's box as the tower loop works it out: (tw, td, th, tx, zf in its lot).
+    fn tower_box(kx: i32, m: i32) -> (f32, f32, f32, f32, f32) {
+        let (x, y) = (kx as f32, m as f32);
+        let tw = 0.9 * (0.5 + 0.35 * hash2(x + 5.0, y + 11.0));
+        let td = 1.6 * (0.35 + 0.35 * hash2(x + 9.0, y + 2.0));
+        let th = 0.6 + (runic_constant("TOWER_MAX") - 0.6) * hash2(x + 4.0, y + 7.0).powf(1.6);
+        (tw, td, th, (x + 0.5) * 0.9, 0.5 * 1.6 - 0.5 * td)
+    }
+
+    /// The water tower on lot (kx, m), as the tower loop places it: its x, its z in the lot and
+    /// the roof it stands on.
+    fn water_tower_of(kx: i32, m: i32) -> Option<(f32, f32, f32)> {
+        if kx.abs() > 7 || (-1..1).contains(&kx) || !tower_built(kx, m) {
+            return None;
+        }
+        let (tw, td, th, tx, zf) = tower_box(kx, m);
+        let (x, y) = (kx as f32, m as f32);
+        let r = runic_constant("WT_R");
+        if th < runic_constant("WT_MIN") || th > runic_constant("WT_MAX") || hash2(x + 71.0, y + 23.0) >= runic_constant("WT_SHARE") {
+            return None;
+        }
+        let wx = tx + (hash2(x + 73.0, y + 29.0) - 0.5) * (tw - 2.0 * r - 0.04);
+        let wz = zf + r + 0.02 + hash2(x + 79.0, y + 31.0) * (td - 2.0 * r - 0.04);
+        Some((wx, wz, th))
+    }
+
+    #[test]
+    fn about_six_in_ten_middling_towers_wear_a_water_tower_and_no_tall_or_short_one() {
+        // Cyrus, 2026-11-18, of what would make the city feel more like New York: "do 1, 2 and 3",
+        // the first being rooftop water towers.
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        for line in [
+            "                bool water = th >= WT_MIN && th <= WT_MAX && hash2(cell + float2(71.0, 23.0)) < WT_SHARE;",
+            "                float wtx = tx + (hash2(cell + float2(73.0, 29.0)) - 0.5) * (tw - 2.0 * WT_R - 0.04);",
+            "                float wtz = zf + WT_R + 0.02 + hash2(cell + float2(79.0, 31.0)) * (td - 2.0 * WT_R - 0.04);",
+        ] {
+            assert!(wash.contains(line), "wash.metal lacks {line}");
+        }
+        let (mut middling, mut worn) = (0, 0);
+        for kx in (-7..-1).chain(1..7) {
+            for m in 0..300 {
+                if !tower_built(kx, m) {
+                    continue;
+                }
+                let th = tower_box(kx, m).2;
+                let w = water_tower_of(kx, m);
+                if (runic_constant("WT_MIN")..=runic_constant("WT_MAX")).contains(&th) {
+                    middling += 1;
+                    worn += usize::from(w.is_some());
+                } else {
+                    assert!(w.is_none(), "lot ({kx}, {m}): a water tower on a tower {th} tall");
+                }
+            }
+        }
+        let share = worn as f32 / middling as f32;
+        assert!((0.5..0.7).contains(&share), "{worn} of {middling} middling towers");
+        // Manhattan's tallest towers hide theirs; a walk-up or a mid-rise shows it.
+        assert!(runic_constant("WT_MIN") >= 0.8 && runic_constant("WT_MAX") <= 0.65 * runic_constant("TOWER_MAX"));
+    }
+
+    #[test]
+    fn a_water_tower_stands_on_its_roof_never_over_the_edge() {
+        let r = runic_constant("WT_R");
+        for kx in (-7..-1).chain(1..7) {
+            for m in 0..300 {
+                if let Some((wx, wz, _)) = water_tower_of(kx, m) {
+                    let (tw, td, _, tx, zf) = tower_box(kx, m);
+                    assert!((wx - tx).abs() + r <= tw * 0.5, "lot ({kx}, {m}): over the side");
+                    assert!(wz - r >= zf && wz + r <= zf + td, "lot ({kx}, {m}): over the front or back");
+                }
+            }
+        }
+        // A barrel on legs under a cone, drawn about a third of a narrow tower's width across so it
+        // reads at the sidebar's size (at 0.09 across it was two points there).
+        let h = runic_constant("WT_LEGS") + runic_constant("WT_TANK") + runic_constant("WT_CONE");
+        assert!((0.25..0.35).contains(&h) && (0.15..0.2).contains(&(2.0 * r)));
+    }
+
+    #[test]
+    fn a_water_tower_reads_as_a_tower_s_edges_do() {
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        let body = &wash[wash.find("float3 water_tower_at(").expect("a water_tower_at function")..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        assert!(body.contains("bg * 0.75"), "its tank filled as a tower's face is, hiding what is behind");
+        assert!(body.contains("* 0.8 * seen"), "its outline lit as a tower's edges");
+        assert!(wash.contains("col = water_tower_at("), "drawn in the tower loop");
+    }
+
     #[test]
     fn about_half_the_sheds_have_scaffolding_never_above_the_roof() {
         let (mut sheds, mut scaffolds) = (0, 0);

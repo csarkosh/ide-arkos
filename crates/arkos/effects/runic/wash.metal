@@ -669,6 +669,16 @@ constant float SHED_DECK_FILL = 0.32;
 constant float SCAFFOLD_NET = 0.22;
 constant float SCAFFOLD_FLOOR = 0.25;
 constant float SCAFFOLD_FLOORS = 4.0;
+// Rooftop water towers (Cyrus, 2026-11-18, "do 1, 2 and 3"): WT_SHARE of the towers between WT_MIN
+// and WT_MAX tall wear one, as Manhattan's walk-ups and mid-rises do and its tallest towers do
+// not: a barrel WT_R round on legs WT_LEGS tall, its tank WT_TANK tall under a cone WT_CONE tall.
+constant float WT_SHARE = 0.6;
+constant float WT_MIN = 0.9;
+constant float WT_MAX = 3.0;
+constant float WT_R = 0.08;
+constant float WT_LEGS = 0.07;
+constant float WT_TANK = 0.15;
+constant float WT_CONE = 0.07;
 // People: PEOPLE walkers and STROLLERS strollers on each of the road's sidewalks, CROSS_PEOPLE on
 // each of a cross street's two,
 // PERSON_H camera heights tall, their legs swinging STEPS times a second while they walk.
@@ -1598,6 +1608,39 @@ float3 shed_at(float2 p, float sx, float fx, float z0, float z1, float top, floa
     return light_on(col, mix(green, white_c, 0.25), lit * seen, u.dark);
 }
 
+// A water tower on a roof th high at p over col: its barrel round wx at depth wz. A pixel inside
+// the tower's front face (inside) is behind it, so a tower above the eye hides the legs' feet.
+float3 water_tower_at(float2 p, float wx, float wz, float th, bool inside, float cx, float yh, float f, float seen, float3 bg, float3 green, float3 white_c, constant ArkosInputs& u, float3 col) {
+    #define W(x, y, z) world_on_screen(x, y, z, cx, yh, f)
+    float y0 = th + WT_LEGS, y1 = y0 + WT_TANK, apex = y1 + WT_CONE;
+    float2 bl = W(wx - WT_R, y0, wz), tr = W(wx + WT_R, y1, wz), tip = W(wx, apex, wz);
+    float2 foot = W(wx, th, wz);
+    if (inside || p.x < bl.x - 1.5 || p.x > tr.x + 1.5 || p.y < tip.y - 1.5 || p.y > foot.y + 1.0) {
+        return col;
+    }
+    // The tank and its roof filled as a tower's face is, hiding what stands behind them.
+    float eave = 0.006 * f / wz;
+    bool in_tank = p.x > bl.x && p.x < tr.x && p.y > tr.y && p.y < bl.y;
+    float up = (tr.y - p.y) / max(tr.y - tip.y, 1e-3);
+    bool in_cone = p.y <= tr.y && p.y > tip.y && abs(p.x - tip.x) < (1.0 - up) * (tr.x - tip.x + eave);
+    if (in_tank || in_cone) {
+        col = mix(col, bg * 0.75, 0.9 * seen);
+    }
+    // Its outline: the barrel's sides and its foot and head, the cone's two edges, three legs.
+    float edge = min(seg_dist(p, bl, float2(bl.x, tr.y)), seg_dist(p, float2(tr.x, bl.y), tr));
+    edge = min(edge, min(seg_dist(p, bl, float2(tr.x, bl.y)), seg_dist(p, float2(bl.x - eave, tr.y), float2(tr.x + eave, tr.y))));
+    edge = min(edge, min(seg_dist(p, float2(bl.x - eave, tr.y), tip), seg_dist(p, float2(tr.x + eave, tr.y), tip)));
+    for (int k = -1; k <= 1; k++) {
+        float lx = wx + float(k) * 0.8 * WT_R;
+        edge = min(edge, seg_dist(p, W(lx, th, wz), W(lx, y0, wz)));
+    }
+    // Its two hoops, fainter.
+    float hoops = min(seg_dist(p, W(wx - WT_R, y0 + WT_TANK / 3.0, wz), W(wx + WT_R, y0 + WT_TANK / 3.0, wz)), seg_dist(p, W(wx - WT_R, y0 + 2.0 * WT_TANK / 3.0, wz), W(wx + WT_R, y0 + 2.0 * WT_TANK / 3.0, wz)));
+    #undef W
+    float lit = max(1.0 - smoothstep(0.0, 1.0, edge), (1.0 - smoothstep(0.0, 1.0, hoops)) * 0.5);
+    return light_on(col, mix(green, white_c, 0.15), lit * 0.8 * seen, u.dark);
+}
+
 // A lone empty lot (too small for a park; Cyrus, 2026-11-17, chose these three): a subway
 // entrance, a food cart or a basketball court, by the lot. Its near edge is zc in view; f, cx and
 // yh are the scene's projection. Things in it are placed in the world (camera heights) and drawn
@@ -2353,6 +2396,10 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
                     float shed_seen = (1.0 - smoothstep(Z_FAR * 0.55, Z_FAR, zf)) * smoothstep(Z_NEAR, Z_NEAR + 0.6, zf);
                     col = shed_at(q, sx, fx, zf, zf + td, shed_top, cx, yh, f, shed_seen, green, white_c, u, col);
                 }
+                // A water tower on a middling roof, at a place on it drawn for the tower.
+                bool water = th >= WT_MIN && th <= WT_MAX && hash2(cell + float2(71.0, 23.0)) < WT_SHARE;
+                float wtx = tx + (hash2(cell + float2(73.0, 29.0)) - 0.5) * (tw - 2.0 * WT_R - 0.04);
+                float wtz = zf + WT_R + 0.02 + hash2(cell + float2(79.0, 31.0)) * (td - 2.0 * WT_R - 0.04);
                 float base = yh + f / zf;
                 float top = yh + f * (1.0 - th) / zf;
                 float x0 = cx + (tx - tw * 0.5) * f / zf;
@@ -2362,7 +2409,8 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
                 float btop = yh + f * (1.0 - th) / bz;
                 float bx0 = cx + (tx - tw * 0.5) * f / bz;
                 float bx1 = cx + (tx + tw * 0.5) * f / bz;
-                if (q.x < min(x0, bx0) - 1.0 || q.x > max(x1, bx1) + 1.0 || q.y < min(top, btop) - 1.0 || q.y > base + 0.5) {
+                float wt_top = water ? yh + f * (1.0 - (th + WT_LEGS + WT_TANK + WT_CONE)) / wtz : top;
+                if (q.x < min(x0, bx0) - 1.0 || q.x > max(x1, bx1) + 1.0 || q.y < min(min(top, btop), wt_top) - 1.5 || q.y > base + 0.5) {
                     continue;
                 }
                 // Far towers fade up out of the horizon, near ones as they pass.
@@ -2394,6 +2442,9 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
                     s = max(s, (1.0 - smoothstep(0.0, 1.0, back)) * 0.5);
                 }
                 col = light_on(col, mix(green, white_c, 0.15), s * seen, u.dark);
+                if (water) {
+                    col = water_tower_at(q, wtx, wtz, th, inside, cx, yh, f, seen, bg, green, white_c, u, col);
+                }
             }
         }
     }
