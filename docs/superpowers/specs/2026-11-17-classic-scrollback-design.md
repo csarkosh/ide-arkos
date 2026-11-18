@@ -178,6 +178,21 @@ two runs of Claude Code the pane reads as it would after fullscreen, the prompt,
 resume line and the next prompt. Another program on the main screen that sets mode 2031 would get
 the same treatment; none of the shells in use do.
 
+## A repaint of the same screen
+
+Cyrus, 2026-11-18: "it double prints the first Claude session outputs". Claude Code also erases its
+screen unasked in the middle of a turn and prints the same rows again: in his session the spinner
+line under a running web search had wrapped on two rows and took one, and the whole screen was
+printed again from a row higher. The rule that keeps an unasked erase's screen (for compactions
+and `/clear`) kept that one too, so the screen was in the history twice. Now the screen is held at
+the erase, not kept, while the frame after it is printed. If the frame's first written rows hold
+the held screen's first four (allowing the frame to begin up to four rows higher) it was the same
+screen: the held copy goes, and so do the rows the frame printed again above it, which were in the
+history already (the history's oldest rows move up and leave blank rows at its very top). If not,
+the held screen goes into the history above the frame, as before. A screen still held at the next
+erase, at a resize or after 64 KiB of output is kept. Checked on his saved session (the question
+once, the logo once) and on the recorded compaction (the screen before it kept).
+
 ## Known limits
 
 - The frame on screen when a compaction or `/clear` erases it goes to the history with its

@@ -179,7 +179,29 @@ pub struct TerminalCore {
     shell_screen: Option<alacritty_terminal::grid::Grid<alacritty_terminal::term::cell::Cell>>,
     /// The history's limit, for the screen Claude Code is given.
     scrollback: usize,
+    /// The screen as it was when the program erased it unasked, until the frame it prints next
+    /// says whether to keep it (`settle_held`).
+    held: Option<Held>,
 }
+
+/// A screen held at an unasked erase (`TerminalCore::before_the_program_erases_its_screen`).
+struct Held {
+    rows: Vec<alacritty_terminal::grid::Row<alacritty_terminal::term::cell::Cell>>,
+    /// The history's size when it was held: the rows past it scrolled up from the new frame.
+    history_at: usize,
+    /// Output applied since.
+    since: usize,
+}
+
+/// How many of a held screen's first written rows the frame after it must begin with to be the
+/// same screen printed again.
+const HELD_MATCH: usize = 4;
+
+/// How many rows above the held screen's first the frame printed after it may begin.
+const HELD_SLACK: usize = 4;
+
+/// Output after which a held screen is settled whatever the frame shows.
+const HELD_BYTES: usize = 64 * 1024;
 
 /// Cursor home, then erase line: how Claude Code's classic renderer begins erasing its whole
 /// screen, a row at a time, before it prints a frame from the top.
@@ -279,7 +301,7 @@ impl TerminalCore {
         // the key encoding it asked for; see `key_mode`.
         let config = Config { scrolling_history: scrollback, kitty_keyboard: true, ..Config::default() };
         let term = Term::new(config, &TermSize::new(cols, rows), listener.clone());
-        Self { term, parser: Processor::new(), listener, palette: Arc::new(NAVY), scroll: ScrollAnimator::new(), theme_updates: false, csi_tail: Vec::new(), ledger: None, drag_carry: WheelCarry::default(), agent_redraws: false, fresh_rows: 0, repaints_owed: 0, since_resize: 0, erase_matched: 0, shell_screen: None, scrollback }
+        Self { term, parser: Processor::new(), listener, palette: Arc::new(NAVY), scroll: ScrollAnimator::new(), theme_updates: false, csi_tail: Vec::new(), ledger: None, drag_carry: WheelCarry::default(), agent_redraws: false, fresh_rows: 0, repaints_owed: 0, since_resize: 0, erase_matched: 0, shell_screen: None, scrollback, held: None }
     }
 
     pub fn apply_output(&mut self, bytes: &[u8]) -> Wakeup {
@@ -295,6 +317,10 @@ impl TerminalCore {
             let before = self.term.grid().display_offset();
             let history = self.term.grid().history_size();
             self.advance(slice);
+            if let Some(held) = self.held.as_mut() {
+                held.since += slice.len();
+            }
+            self.settle_held(false);
             self.fresh_rows = (self.fresh_rows + self.term.grid().history_size().saturating_sub(history)).min(self.term.grid().history_size());
             // Alacritty raises display_offset as lines arrive while scrolled up; keep the
             // animator in step so the next frame does not pull the view down.
@@ -426,6 +452,7 @@ impl TerminalCore {
             *self.term.grid_mut() = shell;
         }
         // The rows moved under alacritty's feet, so nothing it or this kept of them holds.
+        self.held = None;
         self.term.selection = None;
         self.ledger = None;
         self.fresh_rows = 0;
@@ -465,10 +492,11 @@ impl TerminalCore {
     /// Claude Code's classic renderer erases its whole screen and prints a frame from the top
     /// at a resize, and also when it compacts and at `/clear`. At a resize it prints the same
     /// conversation again, so the erased rows are not kept (`repaints_owed`). Unasked, the new
-    /// frame no longer holds what was on screen, and the erase would be the end of it: the last
-    /// screenful before every compaction, gone from the history. So those rows go to the history
-    /// first, as if the program had scrolled them off. A repaint for a reason unknown here (one
-    /// that prints the same rows again) leaves that screenful in the history twice, never lost.
+    /// frame may no longer hold what was on screen (a compaction, a `/clear`), and the erase would
+    /// be the end of it; or it may hold the same rows again (Cyrus, 2026-11-18: "it double prints
+    /// the first Claude session outputs": its spinner line shrinking under a running tool did it).
+    /// So the screen is held (`held`) while the frame is printed, and kept in the history only
+    /// if the frame does not begin with it (`settle_held`).
     fn before_the_program_erases_its_screen(&mut self) {
         if self.repaints_owed > 0 && self.since_resize <= RESIZE_ANSWER_BYTES {
             self.repaints_owed -= 1;
@@ -476,12 +504,98 @@ impl TerminalCore {
             return;
         }
         self.repaints_owed = 0;
+        // A screen still held when the next erase comes was not printed again: it is kept.
+        self.settle_held(true);
         let Some(last) = self.last_written_row() else { return };
-        let rows = self.term.screen_lines();
-        self.term.grid_mut().scroll_up(&(Line(0)..Line(rows as i32)), last + 1);
+        let grid = self.term.grid();
+        let rows = (0..=last).map(|l| grid[Line(l as i32)].clone()).collect();
+        self.held = Some(Held { rows, history_at: grid.history_size(), since: 0 });
+    }
+
+    /// The first rows with anything on them among `rows`, as text, at most `n`.
+    fn first_written(rows: impl Iterator<Item = Vec<char>>, n: usize) -> Vec<String> {
+        rows.map(|r| r.into_iter().collect::<String>().trim_end().to_string()).filter(|t| !t.trim().is_empty()).take(n).collect()
+    }
+
+    /// Decides what to do with a screen held at an unasked erase, once the frame printed after
+    /// it has as many written rows as the held screen's first few (`HELD_MATCH`), or at once when
+    /// `now`: dropped if the frame begins with the same rows (a repaint of the same screen), else
+    /// put in the history above the frame, where it would have scrolled to.
+    fn settle_held(&mut self, now: bool) {
+        let Some(held) = self.held.as_ref() else { return };
+        let width = self.term.columns();
+        let text = |row: &alacritty_terminal::grid::Row<alacritty_terminal::term::cell::Cell>| (0..width.min(row.len())).map(|c| row[Column(c)].c).collect::<Vec<char>>();
+        let want = Self::first_written(held.rows.iter().map(text), HELD_MATCH);
+        let grid = self.term.grid();
+        let scrolled = grid.history_size().saturating_sub(held.history_at);
+        let printed = (-(scrolled as i32)..grid.screen_lines() as i32).map(|l| self.row_chars(Line(l)));
+        // The frame can begin a few rows above where the screen did: its spinner line, wrapped
+        // on two rows, took one when the frame was printed.
+        let got = Self::first_written(printed, want.len() + HELD_SLACK);
+        let held_too_long = held.since > HELD_BYTES;
+        if !want.is_empty() && got.len() < want.len() && !now && !held_too_long {
+            return;
+        }
+        let held = self.held.take().expect("held");
+        if want.is_empty() {
+            return;
+        }
+        if got.windows(want.len()).any(|w| w == want.as_slice()) {
+            self.drop_rows_printed_twice(&want[0], scrolled);
+            return;
+        }
+        self.keep_above_the_frame(held.rows, scrolled);
+    }
+
+    /// After a repaint of the same screen that began `extra` rows above where the screen did:
+    /// those rows were in the history already, just above where the frame begins (`scrolled`
+    /// rows up), so the older copy goes. The history's older rows move up to close the gap, which
+    /// is left as blank rows at its very top.
+    fn drop_rows_printed_twice(&mut self, first: &str, scrolled: usize) {
+        let grid_lines = self.term.screen_lines() as i32;
+        let start = -(scrolled.min(self.history_size()) as i32);
+        let text = |t: &Self, l: i32| t.row_chars(Line(l)).into_iter().collect::<String>().trim_end().to_string();
+        let Some(at) = (start..grid_lines).find(|&l| text(self, l) == first) else { return };
+        let extra = (at - start) as usize;
+        let oldest = -(self.history_size() as i32);
+        if extra == 0 || start - (extra as i32) < oldest {
+            return;
+        }
+        let same = (0..extra as i32).all(|i| text(self, start - extra as i32 + i) == text(self, start + i));
+        if !same {
+            return;
+        }
+        let cols = self.term.columns();
+        let grid = self.term.grid_mut();
+        for l in (oldest..start - extra as i32).rev() {
+            let row = grid[Line(l)].clone();
+            grid[Line(l + extra as i32)] = row;
+        }
+        for l in oldest..oldest + extra as i32 {
+            grid[Line(l)] = alacritty_terminal::grid::Row::new(cols);
+        }
+        self.term.selection = None;
+    }
+
+    /// Puts `kept` in the history under the newest `scrolled` rows of it (what the frame printed
+    /// after them scrolled up), the screen as it is.
+    fn keep_above_the_frame(&mut self, kept: Vec<alacritty_terminal::grid::Row<alacritty_terminal::term::cell::Cell>>, scrolled: usize) {
+        let n = kept.len();
+        let screen = self.term.screen_lines() as i32;
+        let scrolled = scrolled.min(self.term.grid().history_size()) as i32;
+        let after: Vec<_> = (-scrolled..screen).map(|l| self.term.grid()[Line(l)].clone()).collect();
+        let grid = self.term.grid_mut();
+        grid.scroll_up(&(Line(0)..Line(screen)), n);
+        let top = -scrolled - n as i32;
+        for (i, row) in kept.into_iter().chain(after).enumerate() {
+            let line = Line(top + i as i32);
+            if line.0 >= -(grid.history_size() as i32) {
+                grid[line] = row;
+            }
+        }
         // The grid moved under alacritty's feet, so its selection bookkeeping did not run.
         self.term.selection = None;
-        self.fresh_rows += last + 1;
+        self.fresh_rows += n;
     }
 
     /// The last screen row with anything on it.
@@ -500,6 +614,8 @@ impl TerminalCore {
         if (cols, rows) == (self.columns(), self.screen_lines()) {
             return;
         }
+        // A held screen is settled at the width it was held at.
+        self.settle_held(true);
         if self.program_redraws() {
             self.repaints_owed += 1;
             self.since_resize = 0;
@@ -2435,6 +2551,54 @@ mod tests {
             }
             assert_eq!(all_rows(&t).concat(), format!("{before}{}", program.whole()), "reads of {size}");
         }
+    }
+
+    #[test]
+    fn a_repaint_of_the_same_screen_leaves_one_copy_of_it() {
+        // Cyrus, 2026-11-18: "it double prints the first Claude session outputs". Unasked, Claude
+        // Code erases its screen and prints the same rows again (its spinner line shrinking under
+        // a running tool did it in his session); only a compaction or a `/clear` prints others.
+        let (mut t, mut program) = classic(40, 80, 24);
+        let before = all_rows(&t);
+        let (cols, rows) = (program.cols, program.rows);
+        t.apply_output(&program.resized(cols, rows));
+        assert_eq!(all_rows(&t), before);
+        // The same, its erase in one read and its rows in the next.
+        let repaint = program.resized(cols, rows);
+        let erase_ends = repaint.windows(3).rposition(|w| w == b"\x1b[H").unwrap() + 3;
+        t.apply_output(&repaint[..erase_ends]);
+        t.apply_output(&repaint[erase_ends..]);
+        assert_eq!(all_rows(&t), before);
+    }
+
+    #[test]
+    fn a_repaint_that_begins_a_row_higher_is_still_the_same_screen() {
+        // In Cyrus's session the spinner line had wrapped on two rows and took one in the frame
+        // printed after the erase, so the frame began a row above where the screen had.
+        let (mut t, mut program) = classic(40, 80, 24);
+        let before = all_rows(&t);
+        let (cols, rows) = (program.cols, program.rows);
+        program.rows = rows + 1;
+        let mut repaint = program.resized(cols, rows + 1);
+        program.rows = rows;
+        // Printed into a pane one row shorter than it was written for: its top row scrolls off.
+        repaint.extend(b"\r\n");
+        t.apply_output(&repaint);
+        let after = all_rows(&t);
+        for i in 0..40 {
+            let first = format!("<{i:02}");
+            assert_eq!(after.iter().filter(|r| r.starts_with(&first)).count(), 1, "one copy of {first}: {after:?}");
+        }
+        assert!(before.len() <= after.len());
+    }
+
+    #[test]
+    fn a_short_conversation_repainted_from_its_top_leaves_one_copy() {
+        let (mut t, mut program) = classic(3, 80, 24);
+        let before = all_rows(&t);
+        t.apply_output(&program.resized(80, 24));
+        assert_eq!(all_rows(&t), before);
+        assert_eq!(t.history_size(), 0);
     }
 
     #[test]
