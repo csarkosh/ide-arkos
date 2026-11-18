@@ -159,9 +159,24 @@ Left: a break Claude Code meant is taken for a wrap when the row before it is ne
 the pane and the next sits under its indent (two short code lines after a long one); the text
 is all there, the break is not. A paragraph across the top of the screen at a resize is two
 lines in the history, since its rows were judged at different times. A copy across a wrapped row
-has not been checked. A shell's history keeps alacritty's reflow, and one resized after Claude
-Code left would join these rows with their hidden indents as spaces. And the rows Claude Code
-prints a second time when a pane widens are still there twice.
+has not been checked. And the rows Claude Code prints a second time when a pane widens are still
+there twice.
+
+## A screen of its own
+
+Cyrus, 2026-11-18: "When a claude session begins or ends in /tui fullscreen, all the output on the
+terminal is wiped clean for the Claude Code session. I want this behavior replicated. Without it,
+already-ended Claude Code sessions don't reformat their output when its arkos pane is resized."
+Claude Code sets `CSI ? 2031 h` as it starts (set, reset and set again within its first hundred
+bytes, before it draws) and resets it as it quits, before it prints `Resume this session with:`.
+At the set Arkos puts the shell's grid away, screen, history and cursor, and gives Claude Code an
+empty one with a history of its own; at the reset the shell's grid comes back, reflowed to the
+pane's size if it changed, and Claude Code's is dropped. The switch is made at the byte where the
+sequence ends, within a read, so the replay of a session reads the same. An end heard on the
+alternate screen waits until the program leaves it. Checked on Cyrus's own saved session: after
+two runs of Claude Code the pane reads as it would after fullscreen, the prompt, `claude`, the
+resume line and the next prompt. Another program on the main screen that sets mode 2031 would get
+the same treatment; none of the shells in use do.
 
 ## Known limits
 

@@ -174,6 +174,11 @@ pub struct TerminalCore {
     since_resize: usize,
     /// How much of `SCREEN_ERASE` ends the output applied so far.
     erase_matched: usize,
+    /// The shell's screen and history, put away while Claude Code runs on a screen of its own
+    /// (`open_agent_screen`).
+    shell_screen: Option<alacritty_terminal::grid::Grid<alacritty_terminal::term::cell::Cell>>,
+    /// The history's limit, for the screen Claude Code is given.
+    scrollback: usize,
 }
 
 /// Cursor home, then erase line: how Claude Code's classic renderer begins erasing its whole
@@ -183,20 +188,6 @@ const SCREEN_ERASE: &[u8] = b"\x1b[H\x1b[2K";
 /// A repaint this much output after a resize is not the resize's answer: the program answers at
 /// once, or (its terminal's size unchanged, or two resizes heard as one) not at all.
 const RESIZE_ANSWER_BYTES: usize = 16 * 1024;
-
-/// `bytes` in slices, each after the first beginning with `mark`.
-fn cut_before<'a>(bytes: &'a [u8], mark: &[u8]) -> Vec<&'a [u8]> {
-    let mut slices = Vec::new();
-    let mut from = 0;
-    while let Some(at) = bytes.get(from + 1..).and_then(|rest| rest.windows(mark.len()).position(|w| w == mark)).map(|p| p + from + 1) {
-        slices.push(&bytes[from..at]);
-        from = at;
-    }
-    if from < bytes.len() {
-        slices.push(&bytes[from..]);
-    }
-    slices
-}
 
 /// How much of `SCREEN_ERASE` ends the output once `byte` follows output that ended with
 /// `matched` bytes of it.
@@ -223,6 +214,9 @@ const CSI_TAIL_MAX: usize = 32;
 struct ThemeAsks {
     /// `Some(true)` when mode 2031 was set, `Some(false)` when reset, the last one winning.
     updates: Option<bool>,
+    /// Each set or reset of mode 2031, in order: where in the chunk its sequence ends, and
+    /// whether it was set.
+    switches: Vec<(usize, bool)>,
     /// `CSI ? 996 n`: which theme is this, dark or light?
     query: bool,
 }
@@ -253,7 +247,11 @@ fn scan_theme_asks(tail: &[u8], bytes: &[u8]) -> (ThemeAsks, Vec<u8>) {
         };
         let params = std::str::from_utf8(&rest[3..3 + params_len]).unwrap_or("");
         match end {
-            b'h' | b'l' if params.split(';').any(|p| p == "2031") => asks.updates = Some(end == b'h'),
+            b'h' | b'l' if params.split(';').any(|p| p == "2031") => {
+                asks.updates = Some(end == b'h');
+                // The sequence's last byte is in this chunk: only an unfinished one is carried.
+                asks.switches.push((at + 3 + params_len + 1 - tail.len(), end == b'h'));
+            }
             b'n' if params == "996" => asks.query = true,
             _ => {}
         }
@@ -281,28 +279,38 @@ impl TerminalCore {
         // the key encoding it asked for; see `key_mode`.
         let config = Config { scrolling_history: scrollback, kitty_keyboard: true, ..Config::default() };
         let term = Term::new(config, &TermSize::new(cols, rows), listener.clone());
-        Self { term, parser: Processor::new(), listener, palette: Arc::new(NAVY), scroll: ScrollAnimator::new(), theme_updates: false, csi_tail: Vec::new(), ledger: None, drag_carry: WheelCarry::default(), agent_redraws: false, fresh_rows: 0, repaints_owed: 0, since_resize: 0, erase_matched: 0 }
+        Self { term, parser: Processor::new(), listener, palette: Arc::new(NAVY), scroll: ScrollAnimator::new(), theme_updates: false, csi_tail: Vec::new(), ledger: None, drag_carry: WheelCarry::default(), agent_redraws: false, fresh_rows: 0, repaints_owed: 0, since_resize: 0, erase_matched: 0, shell_screen: None, scrollback }
     }
 
     pub fn apply_output(&mut self, bytes: &[u8]) -> Wakeup {
-        let before = self.term.grid().display_offset();
+        // Claude Code's start and end (`CSI ? 2031 h` and `l`) are read where they fall: the
+        // output up to each is applied as it was before it, then the switch is made.
         let (asks, tail) = scan_theme_asks(&self.csi_tail, bytes);
         self.csi_tail = tail;
-        if let Some(on) = asks.updates {
-            self.theme_updates = on;
+        let ends = asks.switches.iter().map(|&(end, on)| (end, Some(on))).chain([(bytes.len(), None)]);
+        let mut from = 0;
+        for (end, switch) in ends {
+            let slice = &bytes[from..end];
+            from = end;
+            let before = self.term.grid().display_offset();
+            let history = self.term.grid().history_size();
+            self.advance(slice);
+            self.fresh_rows = (self.fresh_rows + self.term.grid().history_size().saturating_sub(history)).min(self.term.grid().history_size());
+            // Alacritty raises display_offset as lines arrive while scrolled up; keep the
+            // animator in step so the next frame does not pull the view down.
+            let after = self.term.grid().display_offset();
+            if after != before {
+                let d = after as f32 - before as f32;
+                self.scroll.current += d;
+                self.scroll.target += d;
+            }
+            if let Some(on) = switch {
+                self.theme_updates = on;
+            }
+            // Also after a piece that left the alternate screen with an end owed.
+            self.follow_the_agent_screen();
         }
-        let history = self.term.grid().history_size();
-        self.advance(bytes);
         self.flush_sync_if_due();
-        self.fresh_rows = (self.fresh_rows + self.term.grid().history_size().saturating_sub(history)).min(self.term.grid().history_size());
-        // Alacritty raises display_offset as lines arrive while scrolled up; keep the animator
-        // in step so the next frame does not pull the view down.
-        let after = self.term.grid().display_offset();
-        if after != before {
-            let d = after as f32 - before as f32;
-            self.scroll.current += d;
-            self.scroll.target += d;
-        }
         let mut w = Wakeup { repaint: !bytes.is_empty(), ..Default::default() };
         if asks.query {
             w.pty_write.extend_from_slice(theme_report(&self.palette));
@@ -393,6 +401,40 @@ impl TerminalCore {
     /// True while a synchronized update is open and its rows are held back.
     pub fn sync_pending(&self) -> bool {
         self.parser.sync_timeout().sync_timeout().is_some()
+    }
+
+    /// Gives Claude Code a screen of its own while it runs, as its fullscreen renderer has on
+    /// the alternate screen (Cyrus, 2026-11-18: "When a claude session begins or ends in /tui
+    /// fullscreen, all the output on the terminal is wiped clean for the Claude Code session. I
+    /// want this behavior replicated."). Its start (`CSI ? 2031 h`) puts the shell's screen and
+    /// history away and starts an empty one with a history of its own; its end brings the
+    /// shell's back, reflowed to the pane's size, and what it wrote is gone, never left behind
+    /// at a width it no longer has. Only on the main screen: an end heard on the alternate screen
+    /// waits until the program leaves it.
+    fn follow_the_agent_screen(&mut self) {
+        if self.term.mode().contains(TermMode::ALT_SCREEN) || self.theme_updates == self.shell_screen.is_some() {
+            return;
+        }
+        let (rows, cols) = (self.term.screen_lines(), self.term.columns());
+        if self.theme_updates {
+            let fresh = alacritty_terminal::grid::Grid::new(rows, cols, self.scrollback);
+            self.shell_screen = Some(std::mem::replace(self.term.grid_mut(), fresh));
+        } else if let Some(mut shell) = self.shell_screen.take() {
+            if (shell.screen_lines(), shell.columns()) != (rows, cols) {
+                shell.resize(true, rows, cols);
+            }
+            *self.term.grid_mut() = shell;
+        }
+        // The rows moved under alacritty's feet, so nothing it or this kept of them holds.
+        self.term.selection = None;
+        self.ledger = None;
+        self.fresh_rows = 0;
+        self.repaints_owed = 0;
+        self.since_resize = 0;
+        self.erase_matched = 0;
+        self.set_display_offset(0);
+        self.scroll.jump_to(0.0);
+        self.scroll.clamp_max(self.history_size() as f32);
     }
 
     /// Feeds output to the terminal. Under a program that redraws its own screen, the output is
@@ -619,20 +661,16 @@ impl TerminalCore {
         let mut out = Wakeup::default();
         for piece in cut.pieces {
             match piece {
-                // A chunk takes the last word on theme pushes for the whole of itself, which is
-                // right for a read of the PTY and wrong for hours of output at once: the output
-                // is cut before each such word, so the program is known as one that redraws from
-                // where it said so until where it left.
+                // `apply_output` reads Claude Code's start and end where they fall, so hours of
+                // output at once are read as the PTY's reads were.
                 Piece::Output(bytes) => {
-                    for slice in cut_before(bytes, b"\x1b[?2031") {
-                        let w = self.apply_output(slice);
-                        out.repaint |= w.repaint;
-                        if w.title.is_some() {
-                            out.title = w.title;
-                        }
-                        out.bell |= w.bell;
-                        out.pty_write.extend_from_slice(&w.pty_write);
+                    let w = self.apply_output(bytes);
+                    out.repaint |= w.repaint;
+                    if w.title.is_some() {
+                        out.title = w.title;
                     }
+                    out.bell |= w.bell;
+                    out.pty_write.extend_from_slice(&w.pty_write);
                 }
                 Piece::Resize((rows, cols)) => self.resize(cols as usize, rows as usize),
             }
@@ -2439,6 +2477,46 @@ mod tests {
     }
 
     #[test]
+    fn claude_code_gets_a_screen_of_its_own_and_leaving_gives_the_shell_its_screen_back() {
+        // Cyrus, 2026-11-18: "When a claude session begins or ends in /tui fullscreen, all the
+        // output on the terminal is wiped clean for the Claude Code session. I want this
+        // behavior replicated."
+        let mut t = TerminalCore::new(40, 6, 100);
+        t.apply_output(b"one\r\ntwo\r\n% claude\r\n");
+        t.apply_output(b"\x1b[?2031h");
+        t.apply_output("an answer\r\n".repeat(10).as_bytes());
+        let rows = all_rows(&t);
+        assert!(!rows.iter().any(|r| r == "one" || r == "% claude"), "the shell's rows are put away: {rows:?}");
+        assert!(t.history_size() > 0, "the conversation has a history of its own");
+        // It leaves, then says how to come back; that line is the shell's.
+        t.apply_output(b"\x1b[?2031l\r\nResume this session with:\r\n% ");
+        assert_eq!(all_rows(&t), ["one", "two", "% claude", "", "Resume this session with:", "%"]);
+        assert_eq!(t.history_size(), 0);
+    }
+
+    #[test]
+    fn the_shell_comes_back_at_the_size_the_pane_has_when_claude_code_leaves() {
+        let mut t = TerminalCore::new(20, 6, 100);
+        t.apply_output(b"a line long enough to wrap\r\n% claude\r\n\x1b[?2031h");
+        t.resize(40, 6);
+        t.apply_output(b"an answer\r\n\x1b[?2031l");
+        assert_eq!((t.columns(), t.screen_lines()), (40, 6));
+        assert_eq!(all_rows(&t)[..2], ["a line long enough to wrap".to_string(), "% claude".to_string()], "rejoined at the wider width");
+    }
+
+    #[test]
+    fn the_start_and_the_end_are_read_where_they_fall_in_the_output() {
+        // Claude Code says it redraws, unsays it and says it again as it starts, in one read;
+        // and a read can end in the middle of the word.
+        let mut t = TerminalCore::new(40, 6, 100);
+        t.apply_output(b"% claude\r\n\x1b[?2031h\x1b[?2031l\x1b[?20");
+        t.apply_output(b"31hthe conversation");
+        assert_eq!(all_rows(&t)[0], "the conversation");
+        t.apply_output(b"\x1b[?2031l\r\nbye");
+        assert_eq!(all_rows(&t)[..3], ["% claude".to_string(), String::new(), "bye".to_string()]);
+    }
+
+    #[test]
     fn the_pinned_box_sits_on_the_rows_it_has_at_the_live_bottom() {
         // Cyrus, 2026-11-18: "Why does height change on the fixed user input footer when I'm
         // scrolled all the way down vs not?" Claude Code leaves a blank row under its status
@@ -2631,28 +2709,23 @@ mod tests {
     /// A replay is hours of output in one piece: the program that redraws is known from where
     /// it asked for theme pushes to where it turned them off, not by the last word in the piece.
     #[test]
-    fn a_replay_that_ends_after_claude_code_left_still_keeps_the_screens_it_erased() {
+    fn a_replay_keeps_the_screens_claude_code_erased_until_it_leaves() {
         let (_, mut program) = classic(40, 80, 24);
         let mut replay = program.start();
         let before = program.whole();
         replay.extend(program.compacted());
         let after = program.whole();
-        replay.extend(b"\x1b[?2031l");
         let mut t = TerminalCore::new(80, 24, 1000);
         t.apply_replay(&replay);
         assert_eq!(all_rows(&t).concat(), format!("{before}{after}"));
+        // A compaction and the end in one piece: the end is read where it is, after the erase.
+        replay.extend(b"\x1b[?2031lbye");
+        let mut t = TerminalCore::new(80, 24, 1000);
+        t.apply_replay(&replay);
+        assert_eq!(all_rows(&t).concat(), "bye", "and its screen goes with it");
         assert!(!t.program_redraws());
     }
 
-    #[test]
-    fn output_is_cut_before_each_mark_and_loses_no_byte() {
-        let cut = |bytes: &'static [u8]| cut_before(bytes, b"ab");
-        assert_eq!(cut(b"xxabyyabzz"), [&b"xx"[..], b"abyy", b"abzz"]);
-        assert_eq!(cut(b"abxab"), [&b"abx"[..], b"ab"]);
-        assert_eq!(cut(b"none"), [&b"none"[..]]);
-        assert!(cut(b"").is_empty());
-        assert_eq!(cut(b"a"), [&b"a"[..]]);
-    }
 
     #[test]
     fn a_replay_without_marks_is_parsed_at_the_panes_size() {
@@ -2799,10 +2872,11 @@ mod tests {
         core.set_palette_quiet(std::sync::Arc::new(Palette { ..NAVY }));
         assert_eq!(core.palette().bg, NAVY.bg, "a quiet swap recolours the paint");
         assert_eq!(core.set_palette(std::sync::Arc::new(light)), Some(&b"\x1b[?997;2n"[..]), "and the end of a fade is heard");
-        // Reset: switches are silent again, and the grid saw only the text.
+        // Reset: switches are silent again. The grid saw only the text: the shell's own, and
+        // what came after the set on the program's own screen, gone with it.
         core.apply_output(b"\x1b[?2031l");
         assert_eq!(core.set_palette(std::sync::Arc::new(Palette { ..NAVY })), None);
-        assert!(text_of(&core.rows_for_paint().visible[0]).starts_with("text more"));
+        assert_eq!(text_of(&core.rows_for_paint().visible[0]), "text");
     }
 
     #[test]
@@ -2810,9 +2884,15 @@ mod tests {
         assert_eq!(scan_theme_asks(b"", b"plain \x1b[1mbold"), (ThemeAsks::default(), Vec::new()));
         assert_eq!(scan_theme_asks(b"", b"end\x1b").1, b"\x1b");
         assert_eq!(scan_theme_asks(b"", b"end\x1b[?99").1, b"\x1b[?99");
-        assert_eq!(scan_theme_asks(b"\x1b[?99", b"6n").0, ThemeAsks { updates: None, query: true });
+        assert_eq!(scan_theme_asks(b"\x1b[?99", b"6n").0, ThemeAsks { updates: None, switches: Vec::new(), query: true });
         assert_eq!(scan_theme_asks(b"", b"\x1b[?2031h\x1b[?2031l").0.updates, Some(false), "the last one wins");
         assert_eq!(scan_theme_asks(b"", b"\x1b[?12031h").0.updates, None, "only 2031 itself");
+    }
+
+    #[test]
+    fn the_theme_scan_says_where_in_the_chunk_each_switch_ends() {
+        assert_eq!(scan_theme_asks(b"", b"ab\x1b[?2004;2031hcd\x1b[?2031l").0.switches, [(15, true), (25, false)]);
+        assert_eq!(scan_theme_asks(b"\x1b[?20", b"31hx").0.switches, [(3, true)], "counted in this chunk");
     }
 
     #[test]

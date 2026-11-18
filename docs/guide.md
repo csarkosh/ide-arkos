@@ -1021,8 +1021,11 @@ Scrolling back through a Claude Code session: Arkos starts every shell with
 `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`, so a `claude` started in a tab draws with its classic
 renderer whatever its `tui` setting says. The conversation is written down the pane, so scrolling
 up (the wheel, the trackpad, a drag past the pane's top edge, Cmd+F) goes back through all of it in
-place: through a compaction, a restart of Claude Code and an update of Arkos, as far as the pane's
-history reaches (`[terminal] scrollback`, 20,000 lines). Claude Code's fullscreen renderer keeps
+place: through a compaction and an update of Arkos, as far as the pane's history reaches
+(`[terminal] scrollback`, 20,000 lines). As in fullscreen, Claude Code gets a screen of its own:
+when it starts the shell's rows are put away, and when it quits its conversation goes and the
+shell's screen comes back, at the pane's size, with the line it prints on leaving (`claude
+--resume …`) under the command that started it. Claude Code's fullscreen renderer keeps
 the conversation in its own memory instead, and after a resume that stops at the last compaction.
 When a pane changes size Claude Code prints its screen again; Arkos leaves that screen to it and
 sends the rows that no longer fit to the history, so a split or a dragged divider loses nothing.
