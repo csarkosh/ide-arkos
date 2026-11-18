@@ -133,6 +133,16 @@ fn sample_blocks(size: (f32, f32), effect: &Effect) -> Vec<Block> {
 /// read back as colours: what the wash paints, for the tests to measure.
 #[cfg(test)]
 pub fn render_frame(wash: &str, theme: &Theme, size: (u32, u32), time: f32, blocks: &[Block]) -> Vec<crate::palette::Rgb> {
+    render_frame_at(wash, theme, size, 1.0, time, blocks)
+}
+
+/// As `render_frame`, the wash drawn at `scale` pixels a point (half a pixel a point is a Matrix
+/// window on a 1x screen: its wash's own scale, 0.5, of one pixel a point): the frame is the
+/// window's size times `scale` each way.
+#[cfg(test)]
+pub fn render_frame_at(wash: &str, theme: &Theme, size: (u32, u32), scale: f32, time: f32, blocks: &[Block]) -> Vec<crate::palette::Rgb> {
+    let points = (size.0 as f32, size.1 as f32);
+    let size = ((points.0 * scale).round() as u32, (points.1 * scale).round() as u32);
     let device = Device::system_default().expect("a Metal device");
     // A built-in wash is drawn with its own images.
     let images: Vec<std::sync::Arc<[u8]>> = super::BUILTIN.iter().find(|b| b.wash == wash).map(|b| super::manifest::load(b.name, std::path::Path::new("/nonexistent")).unwrap().images).unwrap_or_default();
@@ -146,7 +156,7 @@ pub fn render_frame(wash: &str, theme: &Theme, size: (u32, u32), time: f32, bloc
     desc.set_storage_mode(MTLStorageMode::Shared);
     let target = device.new_texture(&desc);
     let queue = device.new_command_queue();
-    let inputs = inputs::build(theme, 1.0, (size.0 as f32, size.1 as f32), 1.0, time, blocks);
+    let inputs = inputs::build(theme, 1.0, points, scale, time, blocks);
     let pass = RenderPassDescriptor::new();
     let att = pass.color_attachments().object_at(0).unwrap();
     att.set_texture(Some(&target));

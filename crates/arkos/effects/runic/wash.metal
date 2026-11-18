@@ -2444,7 +2444,26 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
         if (band.w >= SCENE_MIN_H && inside_box(p, band)) {
             float2 q = p - band.xy;
             // The scene's sky is what is under it, so its top melts into the sidebar.
-            float3 art = u.scene > 0.5 ? code_scene(q, band.zw, u.time, u, green, white_c, col) : city_scene(q, band.zw, u.time, u, green, white_c, col);
+            // The wash is drawn at its manifest's half a pixel a point of the window: one pixel a
+            // point on a Retina screen, half of one on a 1x screen, where each of its pixels is
+            // two points each way and an edge moving through one shows bright, then dim, then
+            // bright again (Cyrus, 2026-11-18: "The Matrix City still has the building edges
+            // flashing on my external monitor. It's smooth on the native Macbook monitor."). So
+            // under one pixel a point the scene is looked at once a point inside each pixel and the
+            // looks are averaged: the city a Retina screen sees, in the 1x screen's pixels. Only
+            // the scene: it moves; the frames and the rain over it do not, or not that finely.
+            float3 art;
+            if (u.scale < 0.75) {
+                float o = 0.25 / u.scale;
+                art = float3(0.0);
+                for (int s = 0; s < 4; s++) {
+                    float2 qs = q + float2((s & 1) == 0 ? -o : o, (s & 2) == 0 ? -o : o);
+                    art += u.scene > 0.5 ? code_scene(qs, band.zw, u.time, u, green, white_c, col) : city_scene(qs, band.zw, u.time, u, green, white_c, col);
+                }
+                art *= 0.25;
+            } else {
+                art = u.scene > 0.5 ? code_scene(q, band.zw, u.time, u, green, white_c, col) : city_scene(q, band.zw, u.time, u, green, white_c, col);
+            }
             float under = p.y < names_end ? 1.0 - UNDER_NAMES : saturate(1.0 - (p.y - names_end) / SOFT_BUFFER) * (1.0 - UNDER_NAMES);
             art = mix(art, col, max(under, 1.0 - saturate(q.y / 60.0)) * (q.y < 60.0 ? 1.0 : 0.0) + under * (q.y >= 60.0 ? 1.0 : 0.0));
             col = mix(col, art, k);

@@ -80,6 +80,77 @@ mod tests {
         }
     }
 
+    /// How many of the sidebar city's pixels blink (go up, down and up again, or down, up and
+    /// down, by more than a quarter of the way from dark to light, over three frames at 60 a
+    /// second, which moving light drawn smooth never does), a frame, for each point of the city's
+    /// area: the wash drawn at `scale` pixels a point, for a second from `t0`.
+    fn city_blinks(scale: f32, t0: f32) -> f32 {
+        let b = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap();
+        let m = crate::effects::manifest::parse(b.manifest).unwrap();
+        let theme = crate::theme::builtin("matrix").unwrap();
+        let blocks = window(m.gap, 1.0);
+        let w = (W as f32 * scale).round() as u32;
+        // The city at the foot of the sidebar, in points.
+        let (x0, x1, y0, y1) = (14.0f32, 236.0f32, 400.0f32, 630.0f32);
+        let px = |v: f32| (v * scale) as u32;
+        let frames: Vec<Vec<i32>> = (0..60).map(|i| {
+            let f = crate::effects::bench::render_frame_at(b.wash, &theme, (W, H), scale, t0 + i as f32 / 60.0, &blocks);
+            (px(y0)..px(y1)).flat_map(|y| (px(x0)..px(x1)).map(move |x| (y, x))).map(|(y, x)| luma(f[(y * w + x) as usize]) as i32).collect()
+        }).collect();
+        let step = 3 * 255 / 4;
+        let mut blinks = 0usize;
+        for k in 2..frames.len() {
+            for p in 0..frames[0].len() {
+                let (a, b2, c) = (frames[k - 2][p], frames[k - 1][p], frames[k][p]);
+                if ((b2 - a > step) && (b2 - c > step)) || ((a - b2 > step) && (c - b2 > step)) {
+                    blinks += 1;
+                }
+            }
+        }
+        // Each pixel stands for 1 / scale squared points.
+        blinks as f32 / (frames.len() - 2) as f32 / ((x1 - x0) * (y1 - y0)) * 1000.0 / (scale * scale)
+    }
+
+    /// How much the sidebar city's pixels jump about from frame to frame beyond moving: the mean
+    /// of a pixel's second difference over three frames at 60 a second (a light moving smoothly
+    /// through a pixel brightens and dims it gently; one flashing makes it big), out of 765, the
+    /// wash drawn at `scale` pixels a point for a second from `t0`.
+    fn city_jitter(scale: f32, t0: f32) -> f32 {
+        let b = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap();
+        let m = crate::effects::manifest::parse(b.manifest).unwrap();
+        let theme = crate::theme::builtin("matrix").unwrap();
+        let blocks = window(m.gap, 1.0);
+        let w = (W as f32 * scale).round() as u32;
+        let px = |v: f32| (v * scale) as u32;
+        let frames: Vec<Vec<i32>> = (0..60).map(|i| {
+            let f = crate::effects::bench::render_frame_at(b.wash, &theme, (W, H), scale, t0 + i as f32 / 60.0, &blocks);
+            (px(400.0)..px(630.0)).flat_map(|y| (px(14.0)..px(236.0)).map(move |x| (y, x))).map(|(y, x)| luma(f[(y * w + x) as usize]) as i32).collect()
+        }).collect();
+        let mut sum = 0u64;
+        for k in 2..frames.len() {
+            for p in 0..frames[0].len() {
+                sum += (frames[k - 2][p] - 2 * frames[k - 1][p] + frames[k][p]).unsigned_abs() as u64;
+            }
+        }
+        sum as f32 / ((frames.len() - 2) * frames[0].len()) as f32
+    }
+
+    #[test]
+    fn on_a_1x_screen_the_city_s_edges_do_not_flash() {
+        // Cyrus, 2026-11-18: "The Matrix City still has the building edges flashing on my external
+        // monitor. It's smooth on the native Macbook monitor." The wash is half a pixel a point
+        // there; before, an edge moving through its two-point pixels went bright, dim and bright
+        // again (0.36 blinks a frame per thousand points, jitter 9.96, against the Retina
+        // screen's 0.64 and 10.26).
+        if !gpu() {
+            return;
+        }
+        let at = |scale: f32| ((city_blinks(scale, 20.0) + city_blinks(scale, 47.0)) / 2.0, (city_jitter(scale, 20.0) + city_jitter(scale, 47.0)) / 2.0);
+        let ((retina_blinks, retina_jitter), (blinks, jitter)) = (at(1.0), at(0.5));
+        assert!(blinks < 0.15 && blinks < retina_blinks, "{blinks} blinks a frame per thousand points (Retina {retina_blinks})");
+        assert!(jitter < retina_jitter, "jitter {jitter} (Retina {retina_jitter})");
+    }
+
     // The runic world (runic world spec), drawn by the real wash on the GPU.
     fn runic_frame(theme: &crate::theme::Theme, t: f32, blocks: &[crate::effects::blocks::Block]) -> Vec<crate::palette::Rgb> {
         let b = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap();

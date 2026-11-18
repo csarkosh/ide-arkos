@@ -810,6 +810,8 @@ Things only a person at the screen can check, in order of value:
 - effects: Matrix, the window's CPU idle in front (debug now; release after the release): write the figure here
 - effects: Matrix, the wash's GPU time on an idle machine: `cargo test -p arkos effects::bench --
   --ignored` passes (the suite skips it, since the time means nothing under load)
+- effects: Matrix on a 1x external screen: the sidebar city's building edges glide as on the
+  MacBook's screen, without flashing bright and dim as they move
 - colours: vim or htop with a 256-colour scheme in Matrix shows green-cast colours, not xterm's
 - colours: Claude Code's colours after a restart in Matrix are the theme's greens
 - effects: Tokyo Rain: the rain, the pane edges and the glowing text in Navy's blue, the hints
