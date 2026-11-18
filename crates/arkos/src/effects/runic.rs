@@ -469,7 +469,8 @@ mod tests {
     }
 
     const CLEAR_AFTER: f32 = 9.4;
-    const JAYWALK: f32 = 0.6;
+    const JAYWALK: f32 = 0.85;
+    const JAY_SPREAD: f32 = 1.8;
 
     fn road_bike_at(dir: f32, key: (f32, f32), t: f32) -> f32 {
         let block = CROSS_EVERY * GRID_Z;
@@ -537,7 +538,10 @@ mod tests {
             "    float phase = CLEAR_AFTER + hash2(key + 2.0);",
             "    return stop0 + dir * speed * (t - phase);",
             "constant float CLEAR_AFTER = 9.4;",
-            "constant float JAYWALK = 0.6;",
+            "constant float JAYWALK = 0.85;",
+            "constant float JAY_SPREAD = 1.8;",
+            "constant float CROSS_BIKE_JUMP = 0.1;",
+            "                float go = ROAD_GREEN + CROSS_BIKE_JUMP;",
             "                    float v = mix(2.2, 3.2, hash2(key));",
             "                    float arrive = mix(3.0, 6.0, hash2(key + 1.0));",
             "                    float stop_x = -dir * (edge + CROSS_STOP + float(qn) * 0.5);",
@@ -604,7 +608,7 @@ mod tests {
         let period = laps * SIG_CYCLE;
         let late = (ROAD_GREEN - AMBER).min(ROAD_GREEN - cross / v);
         let jay = h(8.0) < JAYWALK;
-        let c = (h(3.0) * laps).floor() * SIG_CYCLE + if jay { CLEAR_AFTER + 0.8 * h(4.0) } else { late * h(4.0) };
+        let c = (h(3.0) * laps).floor() * SIG_CYCLE + if jay { CLEAR_AFTER + JAY_SPREAD * h(4.0) } else { late * h(4.0) };
         let k = ((t - c) / period).floor();
         let x = (v * (t - c - k * period)).min(block);
         let j = (h(5.0) * 8.0).floor() + dir * k;
@@ -701,7 +705,26 @@ mod tests {
             }
             t += 0.05;
         }
-        assert!(red_runs > 100 && jaywalks > 1000, "they do break the law: {red_runs} {jaywalks}");
+        assert!(red_runs > 100, "they do break the law: {red_runs}");
+        // Cyrus, 2026-11-18: "NYC people are very aggressive jaywalkers". A walker's moments in a
+        // cross street against the light were 22,894 before (three in five stepping off in the
+        // first 0.8 s after the last car).
+        assert!(jaywalks > 30_000, "walkers out against the light only {jaywalks} times");
+    }
+
+    #[test]
+    fn a_cross_street_cyclist_jumps_its_light_once_the_road_has_stopped_and_is_over_before_the_road_s_cyclists_come() {
+        // Cyrus, 2026-11-18: "make the pedestrians and bicyclists jaywalk more often as long as
+        // they don't get hit". The road's cars stand behind their stop lines from the road's red
+        // (checked above); the road's cyclists come through from CLEAR_AFTER.
+        let go = ROAD_GREEN + runic_constant("CROSS_BIKE_JUMP");
+        let (all_red, cross_stop) = (runic_constant("ALL_RED"), runic_constant("CROSS_STOP"));
+        assert!(go > ROAD_GREEN && go < ROAD_GREEN + all_red, "on the road's red, ahead of its own green: {go}");
+        // It rolls up to its stop line by 6.5 at the latest, and rides over the road at 1.7 at
+        // the slowest, from its stop line to the far one.
+        assert!(6.5 <= go, "at its stop line before it goes");
+        let over = go + 2.0 * (0.9 + cross_stop) / 1.7;
+        assert!(over < CLEAR_AFTER, "still in the road at {over}, when the road's cyclists come");
     }
 
     #[test]
@@ -795,7 +818,7 @@ mod tests {
             "    bool brisk = hash2(key + 2.0) < 0.65;",
             "    float v = brisk ? mix(0.54, 0.6, hash2(key + 6.0)) : mix(0.31, 0.36, hash2(key + 6.0));",
             "    float late = min(ROAD_GREEN - AMBER, ROAD_GREEN - cross / v);",
-            "    float c = floor(hash2(key + 3.0) * laps) * SIG_CYCLE + (jay ? CLEAR_AFTER + 0.8 * hash2(key + 4.0) : late * hash2(key + 4.0));",
+            "    float c = floor(hash2(key + 3.0) * laps) * SIG_CYCLE + (jay ? CLEAR_AFTER + JAY_SPREAD * hash2(key + 4.0) : late * hash2(key + 4.0));",
             "    bool jay = hash2(key + 8.0) < JAYWALK;",
             "    float x = min(v * (t - c - k * period), block);",
             "    float j = floor(hash2(key + 5.0) * 8.0) + dir * k;",

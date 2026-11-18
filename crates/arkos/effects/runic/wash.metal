@@ -601,9 +601,15 @@ constant float WALK_W = 0.24;
 // pedestrians"). Every cross street's cars have crossed the road's bike lanes and the sidewalks'
 // crosswalks by CLEAR_AFTER seconds into the cycle, and none comes back into them till the next
 // cross green: so a cyclist rides through every red from then, just behind the last car, and a
-// JAYWALK share of the walkers step off against the light from then too.
+// JAYWALK share of the walkers step off against the light from then too, each at its own moment
+// in the JAY_SPREAD seconds after (Cyrus, 2026-11-18: "make the pedestrians and bicyclists jaywalk
+// more often as long as they don't get hit", "NYC people are very aggressive jaywalkers"). The
+// cross streets' cyclists jump their light: they set off on the road's red, CROSS_BIKE_JUMP after
+// the road's cars have stopped, and are over the road before the road's cyclists come through.
 constant float CLEAR_AFTER = 9.4;
-constant float JAYWALK = 0.6;
+constant float JAYWALK = 0.85;
+constant float JAY_SPREAD = 1.8;
+constant float CROSS_BIKE_JUMP = 0.1;
 // The sidewalks (Cyrus, 2026-11-17: "I want the sidewalks more prominent"): paved bands where the
 // people walk, SIDEWALK_W wide, along the road from SIDEWALK_IN inside its edge and along both sides
 // of every cross street from its curb; lighter than the floor at SIDEWALK_FILL, jointed, and a lit
@@ -1663,7 +1669,7 @@ float2 road_walker_at(float dir, float2 key, float t) {
     float late = min(ROAD_GREEN - AMBER, ROAD_GREEN - cross / v);
     // Most cross against the light, just behind the cross street's last car; the rest wait.
     bool jay = hash2(key + 8.0) < JAYWALK;
-    float c = floor(hash2(key + 3.0) * laps) * SIG_CYCLE + (jay ? CLEAR_AFTER + 0.8 * hash2(key + 4.0) : late * hash2(key + 4.0));
+    float c = floor(hash2(key + 3.0) * laps) * SIG_CYCLE + (jay ? CLEAR_AFTER + JAY_SPREAD * hash2(key + 4.0) : late * hash2(key + 4.0));
     float k = floor((t - c) / period);
     float x = min(v * (t - c - k * period), block);
     float j = floor(hash2(key + 5.0) * 8.0) + dir * k;
@@ -1998,7 +2004,7 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
                 float v = mix(1.7, 2.2, hash2(key));
                 float arrive = mix(4.0, 6.5, hash2(key + 1.0));
                 float stop_x = -dir * (edge + CROSS_STOP);
-                float go = cross_on + 0.2;
+                float go = ROAD_GREEN + CROSS_BIKE_JUMP;
                 float wx = sig < go ? stop_x - dir * v * max(arrive - sig, 0.0) : stop_x + dir * v * (sig - go);
                 if (abs(wx) > half_w) {
                     continue;
