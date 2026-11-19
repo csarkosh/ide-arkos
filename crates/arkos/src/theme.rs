@@ -99,6 +99,130 @@ pub struct ThemeFont {
     pub grid: Option<f32>,
 }
 
+/// One colour scheme as the Color list shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColorEntry {
+    pub name: String,
+    pub title: String,
+    pub appearance: Option<Appearance>,
+    pub source: Source,
+}
+
+/// The `*.toml` files of `dir` that are not new-form presets, sorted by name, as (stem, theme).
+/// These are the old all-in-one files, such as the ones `theme extract` wrote before 0.8.55.
+fn old_form_presets(dir: &Path) -> Vec<(String, Theme)> {
+    let mut stems: Vec<String> = names(dir).into_iter().filter(|n| dir.join(format!("{n}.toml")).is_file()).collect();
+    stems.sort();
+    stems
+        .into_iter()
+        .filter_map(|stem| {
+            let text = std::fs::read_to_string(dir.join(format!("{stem}.toml"))).ok()?;
+            let new_form = toml::from_str::<toml::Table>(&text).map(|t| t.contains_key("color")).unwrap_or(true);
+            if new_form {
+                return None;
+            }
+            parse_in(&text, Some(dir)).ok().map(|t| (stem, t))
+        })
+        .collect()
+}
+
+/// Every colour scheme to show, each once: the built-in schemes in order (a file of one's own with
+/// a built-in's name listed in its place as a file), the other colour files sorted, then each
+/// old-form preset file of `themes_dir` whose colours match no scheme listed so far, named and
+/// titled as the preset.
+#[cfg_attr(not(test), allow(dead_code))] // The settings view calls it from Task 5 on.
+pub fn colors(themes_dir: &Path) -> Vec<ColorEntry> {
+    use crate::color_schemes as cs;
+    let folder = cs::dir_of(themes_dir);
+    let mut shown: Vec<(ColorEntry, Option<cs::ColorScheme>)> = Vec::new();
+    let push_named = |name: &str, shown: &mut Vec<(ColorEntry, Option<cs::ColorScheme>)>| {
+        let is_file = folder.join(format!("{name}.toml")).is_file();
+        let (scheme, source) = match cs::load(name, themes_dir) {
+            Ok(s) => (Some(s), if is_file { Source::File } else { Source::BuiltIn }),
+            Err(e) => (None, Source::Invalid(e)),
+        };
+        let title = scheme.as_ref().and_then(|s| s.title.clone()).unwrap_or_else(|| title_case(name));
+        let appearance = scheme.as_ref().and_then(|s| s.appearance);
+        shown.push((ColorEntry { name: name.to_string(), title, appearance, source }, scheme));
+    };
+    for (name, _) in cs::BUILTIN {
+        push_named(name, &mut shown);
+    }
+    let mut stems: Vec<String> = std::fs::read_dir(&folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.path().file_stem().filter(|_| e.path().extension().and_then(|x| x.to_str()) == Some("toml")).and_then(|s| s.to_str()).map(String::from))
+        .filter(|n| !cs::BUILTIN.iter().any(|(b, _)| b == n))
+        .collect();
+    stems.sort();
+    for stem in stems {
+        push_named(&stem, &mut shown);
+    }
+    for (_, t) in old_form_presets(themes_dir) {
+        if shown.iter().any(|(_, s)| s.as_ref().is_some_and(|s| s.same_colors(&t))) {
+            continue;
+        }
+        let entry = ColorEntry { title: t.title.clone().unwrap_or_else(|| title_case(&t.name)), name: t.name.clone(), appearance: t.appearance, source: Source::File };
+        let scheme = cs::ColorScheme {
+            name: t.name.clone(),
+            title: t.title.clone(),
+            appearance: t.appearance,
+            chrome: t.chrome.clone(),
+            terminal: t.terminal.clone(),
+            semantic: t.semantic.clone(),
+            tree: t.tree.clone(),
+            viewer: t.viewer.clone(),
+        };
+        shown.push((entry, Some(scheme)));
+    }
+    shown.into_iter().map(|(e, _)| e).collect()
+}
+
+/// One font set as the Font list shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FontEntry {
+    pub name: String,
+    pub title: String,
+    pub font: ThemeFont,
+}
+
+/// Every font set to show, each once: the built-in sets, the other font files sorted (one that
+/// does not parse is left out), then the non-default fonts of each old-form preset file of
+/// `themes_dir` that match no set listed so far, named and titled as the preset.
+#[cfg_attr(not(test), allow(dead_code))] // The settings view calls it from Task 5 on.
+pub fn font_sets(themes_dir: &Path) -> Vec<FontEntry> {
+    use crate::font_sets as fs;
+    let folder = fs::dir_of(themes_dir);
+    let mut out: Vec<FontEntry> = Vec::new();
+    let add = |out: &mut Vec<FontEntry>, name: &str| {
+        if let Ok(set) = fs::load(name, themes_dir) {
+            out.push(FontEntry { name: name.to_string(), title: set.title.clone().unwrap_or_else(|| title_case(name)), font: set.font() });
+        }
+    };
+    for (name, _) in fs::BUILTIN {
+        add(&mut out, name);
+    }
+    let mut stems: Vec<String> = std::fs::read_dir(&folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.path().file_stem().filter(|_| e.path().extension().and_then(|x| x.to_str()) == Some("toml")).and_then(|s| s.to_str()).map(String::from))
+        .filter(|n| !fs::BUILTIN.iter().any(|(b, _)| b == n))
+        .collect();
+    stems.sort();
+    for stem in stems {
+        add(&mut out, &stem);
+    }
+    for (_, t) in old_form_presets(themes_dir) {
+        if t.font.is_default() || out.iter().any(|e| e.font == t.font) {
+            continue;
+        }
+        out.push(FontEntry { title: t.title.clone().unwrap_or_else(|| title_case(&t.name)), name: t.name.clone(), font: t.font.clone() });
+    }
+    out
+}
+
 /// A text size of `size` points on a font's `grid`: the nearest multiple of it, and never under
 /// one step. Without a grid, the size itself.
 pub fn snap_to(grid: Option<f32>, size: f32) -> f32 {
@@ -108,16 +232,19 @@ pub fn snap_to(grid: Option<f32>, size: f32) -> f32 {
     }
 }
 
-/// The fonts a look draws in. `choice` is the custom look's font (`Config::font_choice`): a
-/// theme's name gives that theme's fonts whatever colours show, `config::PLAIN_FONT` none of a
-/// theme's, and no choice the fonts of `theme`, the one showing. A named theme that does not
-/// load is the error.
+/// The fonts a look draws in. `choice` is the custom look's font (`Config::font_choice`): no
+/// choice gives the fonts of `theme`, the one showing; `config::PLAIN_FONT` none of a theme's; a
+/// name gives the font set of that name (a file of one's own, then a built-in), and failing that
+/// the fonts of the preset of that name, which is how a 0.8.54 config naming a preset reads. A
+/// name that is neither is the error.
 pub fn font_for(choice: Option<&str>, theme: &Theme, themes_dir: &Path) -> Result<ThemeFont, String> {
     match choice {
         None => Ok(theme.font.clone()),
         Some(crate::config::PLAIN_FONT) => Ok(ThemeFont::default()),
-        Some(name) if name == theme.name => Ok(theme.font.clone()),
-        Some(name) => load(name, themes_dir).map(|t| t.font),
+        Some(name) => match crate::font_sets::load(name, themes_dir) {
+            Ok(set) => Ok(set.font()),
+            Err(set_err) => load(name, themes_dir).map(|t| t.font).map_err(|preset_err| format!("{set_err}; {preset_err}")),
+        },
     }
 }
 
@@ -374,7 +501,8 @@ pub(crate) fn is_bare_name(name: &str) -> bool {
     !name.is_empty() && !name.contains('/') && !name.contains('\\') && name != "." && name != ".."
 }
 
-/// `dir/<name>.toml` if it exists, else the built-in of that name. The error names both places.
+/// `dir/<name>.toml` if it exists, else the built-in preset of that name, else the colour scheme
+/// of that name as a theme of its colours alone. The error names the preset and the scheme.
 pub fn load(name: &str, dir: &Path) -> Result<Theme, String> {
     if !is_bare_name(name) {
         return Err(format!("theme name {name:?} must be a bare file name"));
@@ -382,9 +510,11 @@ pub fn load(name: &str, dir: &Path) -> Result<Theme, String> {
     let file = dir.join(format!("{name}.toml"));
     match std::fs::read_to_string(&file) {
         Ok(text) => parse_in(&text, Some(dir)).map_err(|e| format!("{}: {e}", file.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            builtin(name).ok_or_else(|| format!("theme {name:?} is not built in and {} does not exist", file.display()))
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => builtin(name).map(Ok).unwrap_or_else(|| {
+            crate::color_schemes::load(name, dir).map(|s| s.to_theme()).map_err(|_| {
+                format!("{name:?} is no theme (not built in and {} does not exist) and no colour scheme", file.display())
+            })
+        }),
         Err(e) => Err(format!("cannot read {}: {e}", file.display())),
     }
 }
@@ -1082,6 +1212,101 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let moved = crate::config::rename_themes("[theme]\ndark = \"navy-runic\"\nlight = \"peach-watercolor\"\n", dir.path()).unwrap();
         assert!(moved.contains("dark = \"tokyo-rain\""), "{moved}");
+    }
+
+    #[test]
+    fn a_0_8_54_custom_colour_naming_a_preset_shows_that_preset_s_colour_scheme() {
+        let dir = tempfile::tempdir().unwrap();
+        let table = [
+            ("navy", "navy"), ("material-ocean", "ocean"), ("material-palenight", "palenight"), ("material-sublime", "sublime"),
+            ("material", "bright"), ("material-solar", "solar"), ("composition-notebook", "solar"), ("lavender-material", "lavender"),
+            ("lavender-watercolor", "lavender"), ("peach-watercolor", "peach"), ("arabia-solar", "peach"), ("timo-purple", "timo-purple"),
+            ("matrix", "matrix"), ("tokyo-rain", "rain"), ("navy-runic", "rain"), ("peach-light", "peach"), ("lavender-light", "lavender"),
+        ];
+        for (old, new) in table {
+            let t = load(old, dir.path()).unwrap_or_else(|e| panic!("{old}: {e}"));
+            assert_eq!(t.color, new, "{old}");
+            assert!(crate::color_schemes::builtin(new).unwrap().same_colors(&t), "{old} draws the colours of {new}");
+        }
+    }
+
+    #[test]
+    fn a_0_8_54_custom_font_naming_a_preset_draws_that_preset_s_font_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let showing = builtin("navy").unwrap();
+        let table = [
+            ("navy", "material"), ("material-ocean", "material"), ("material-palenight", "material"), ("material-sublime", "material"),
+            ("material", "material"), ("material-solar", "material"), ("lavender-material", "lavender"), ("lavender-watercolor", "lavender"),
+            ("peach-watercolor", "peach"), ("composition-notebook", "notebook"), ("timo-purple", "departure"), ("arabia-solar", "departure"),
+        ];
+        for (preset, set) in table {
+            let got = font_for(Some(preset), &showing, dir.path()).unwrap();
+            assert_eq!(got, crate::font_sets::builtin(set).unwrap().font(), "{preset}");
+        }
+        for preset in ["matrix", "tokyo-rain"] {
+            assert_eq!(font_for(Some(preset), &showing, dir.path()).unwrap(), ThemeFont::default(), "{preset}");
+        }
+        assert!(font_for(Some("nowhere"), &showing, dir.path()).is_err());
+    }
+
+    #[test]
+    fn a_colour_name_that_is_no_preset_loads_as_that_scheme_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = load("solar", dir.path()).unwrap();
+        assert!(crate::color_schemes::builtin("solar").unwrap().same_colors(&t));
+        assert_eq!((t.name.as_str(), t.color.as_str()), ("solar", "solar"));
+        assert!(t.font.is_default());
+        assert_eq!(t.effect, None);
+        let e = load("nowhere", dir.path()).unwrap_err();
+        assert!(e.contains("theme") && e.contains("colour scheme"), "{e}");
+    }
+
+    #[test]
+    fn the_colour_list_shows_each_scheme_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let names: Vec<String> = colors(dir.path()).into_iter().map(|c| c.name).collect();
+        let want: Vec<String> = crate::color_schemes::BUILTIN.iter().map(|(n, _)| n.to_string()).collect();
+        assert_eq!(names.len(), 11);
+        assert_eq!(names, want);
+    }
+
+    #[test]
+    fn extracted_copies_of_the_built_in_presets_are_not_listed_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, text) in FIXTURES {
+            std::fs::write(dir.path().join(format!("{name}.toml")), text).unwrap();
+        }
+        assert_eq!(colors(dir.path()).len(), 11);
+        assert_eq!(font_sets(dir.path()).len(), 5);
+        assert_eq!(load("lavender-watercolor", dir.path()).unwrap().font.prose.as_deref(), Some("Avenir Next"));
+    }
+
+    #[test]
+    fn an_old_form_preset_with_colours_of_its_own_is_listed_under_its_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let navy = FIXTURES[0].1;
+        let text = navy.replace("name = \"navy\"", "name = \"mine\"").replace("title = \"Material Navy\"", "title = \"My Navy\"").replace("#16202f", "#16202e");
+        assert_ne!(text, navy);
+        std::fs::write(dir.path().join("mine.toml"), text).unwrap();
+        let listed = colors(dir.path());
+        assert_eq!(listed.len(), 12);
+        let mine = listed.last().unwrap();
+        assert_eq!((mine.name.as_str(), mine.title.as_str()), ("mine", "My Navy"));
+        assert_eq!(mine.source, Source::File);
+    }
+
+    #[test]
+    fn a_font_set_file_is_listed_by_its_title() {
+        let root = tempfile::tempdir().unwrap();
+        let themes = root.path().join("themes");
+        std::fs::create_dir_all(&themes).unwrap();
+        std::fs::create_dir_all(root.path().join("fonts")).unwrap();
+        std::fs::write(root.path().join("fonts").join("mine.toml"), "name = \"mine\"\ntitle = \"My Fonts\"\nprose = \"Georgia\"\n").unwrap();
+        let listed = font_sets(&themes);
+        assert_eq!(listed.len(), 6);
+        let mine = listed.last().unwrap();
+        assert_eq!((mine.name.as_str(), mine.title.as_str()), ("mine", "My Fonts"));
+        assert_eq!(mine.font.prose.as_deref(), Some("Georgia"));
     }
 
     /// The fourteen preset files as 0.8.54 shipped them, all-in-one.
