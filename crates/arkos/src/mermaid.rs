@@ -77,11 +77,6 @@ impl MermaidTheme {
     pub fn from_chrome(chrome: &Chrome) -> MermaidTheme {
         MermaidTheme { primary: chrome.tab_inactive.hex(), text: chrome.text.hex(), line: chrome.text.hex(), secondary: chrome.banner.hex(), tertiary: chrome.window_bg.hex() }
     }
-
-    /// The five values, in order.
-    fn values(&self) -> [&str; 5] {
-        [&self.primary, &self.text, &self.line, &self.secondary, &self.tertiary]
-    }
 }
 
 /// Whether a fenced block's info string makes it a diagram: exactly `mermaid` once trimmed.
@@ -95,15 +90,13 @@ pub fn cache_dir() -> PathBuf {
     crate::cache::root().join("mermaid")
 }
 
-/// A diagram's cache key: the SHA-256 in hex of its source, the theme's five colour values and
-/// the scale. The values, not the theme's name, since a user theme edited in place keeps its name.
+/// A diagram's cache key: the SHA-256 in hex of the whole page it is rendered from (its source,
+/// the theme's five colour values and the script that draws it) and the scale. The values, not
+/// the theme's name, since a user theme edited in place keeps its name; and the script, so a
+/// change to how the page draws renders every diagram again rather than keeping the old picture.
 pub fn cache_key(source: &str, theme: &MermaidTheme, scale: u32) -> String {
     let mut hash = Sha256::new();
-    hash.update(source.as_bytes());
-    for value in theme.values() {
-        hash.update(b"\0");
-        hash.update(value.as_bytes());
-    }
+    hash.update(page(source, theme).as_bytes());
     hash.update(b"\0");
     hash.update(scale.to_string().as_bytes());
     hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
@@ -140,15 +133,45 @@ fn colour(value: &str) -> String {
 /// message>`. The page and the diagram's background are transparent. The page never scrolls: on
 /// a Mac that shows scroll bars always (no trackpad), the baseline gap under the diagram made it
 /// overflow, and the scroll bar took the right edge off the snapshot.
+///
+/// A bar chart's numbers sit on its bars, whose colours the chart may name itself, so mermaid's
+/// one label colour (the theme's text) can vanish on a pale bar in a dark theme. Once drawn, each
+/// number that lies on a bar takes the theme's text or its ground (the window's background),
+/// whichever has the higher contrast with that bar.
 pub fn page(source: &str, theme: &MermaidTheme) -> String {
     let script = format!(
         r#"
 mermaid.initialize({{ startOnLoad: false, theme: 'base', themeVariables: {{ background: 'transparent', primaryColor: '{primary}', primaryTextColor: '{text}', lineColor: '{line}', secondaryColor: '{secondary}', tertiaryColor: '{tertiary}', fontFamily: '-apple-system, system-ui' }} }});
+const ink = '{text}', ground = '{tertiary}';
+function luminance(colour) {{
+  const hex = /^#([0-9a-f]{{6}})$/i.exec(colour);
+  const parts = hex ? [0, 2, 4].map(i => parseInt(hex[1].slice(i, i + 2), 16)) : (colour.match(/[0-9.]+/g) || []).slice(0, 3).map(Number);
+  if (parts.length < 3) return null;
+  const [r, g, b] = parts.map(v => {{ v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }});
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}}
+function contrast(a, b) {{ return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05); }}
+function readableBarLabels(svg) {{
+  const inkL = luminance(ink), groundL = luminance(ground);
+  if (inkL === null || groundL === null) return;
+  for (const group of svg.querySelectorAll('g[class*="bar-plot"]')) {{
+    const bars = [...group.querySelectorAll('rect')].map(r => [r, r.getBBox()]);
+    for (const label of group.querySelectorAll('text')) {{
+      const b = label.getBBox(), x = b.x + b.width / 2, y = b.y + b.height / 2;
+      const hit = bars.find(([, r]) => x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height);
+      if (!hit) continue;
+      const barL = luminance(getComputedStyle(hit[0]).fill);
+      if (barL === null) continue;
+      label.style.fill = contrast(barL, inkL) >= contrast(barL, groundL) ? ink : ground;
+    }}
+  }}
+}}
 (async () => {{
   try {{
     await mermaid.run({{ querySelector: 'pre.mermaid' }});
     const svg = document.querySelector('pre.mermaid svg');
     if (!svg) throw new Error('mermaid drew nothing');
+    readableBarLabels(svg);
     const box = svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width ? svg.viewBox.baseVal : svg.getBoundingClientRect();
     let w = box.width, h = box.height;
     if (w > {MAX_W}) {{ h = h * {MAX_W} / w; w = {MAX_W}; }}
@@ -444,6 +467,33 @@ mod tests {
         assert!(size_from_title("ok 0 10").is_err() && size_from_title("ok 1 2 3").is_err());
         assert!(is_diagram_info("mermaid") && is_diagram_info(" mermaid ") && !is_diagram_info("mermaidjs"));
         assert_eq!(SCRIPT_NAME, format!("mermaid-{VERSION}.min.js"));
+    }
+
+    #[test]
+    fn a_bar_chart_s_numbers_are_drawn_in_the_text_or_the_ground_whichever_reads_better_on_their_bar() {
+        // Cyrus, 2026-11-19: the data analyst's chart drew white numbers on pale blue bars in
+        // every Material dark theme. A chart may name its own bar colours, so each number is
+        // matched to the bar under it once drawn.
+        let t = MermaidTheme { primary: "#2a0062".into(), text: "#f3edff".into(), line: "#f3edff".into(), secondary: "#3b1a86".into(), tertiary: "#330076".into() };
+        let html = page("xychart-beta\n  bar [1, 2]", &t);
+        let script = html.split("<script>").nth(1).and_then(|rest| rest.split("</script>").next()).expect("the inline script");
+        assert!(script.contains("g[class*=\"bar-plot\"]"), "the bars' groups, where mermaid puts their numbers: {script}");
+        assert!(script.contains("const ink = '#f3edff', ground = '#330076';"), "the two colours a number may take: {script}");
+        let run = script.find("await mermaid.run").unwrap();
+        let labels = script.find("readableBarLabels(svg);").expect("the pass is called");
+        let title = script.find("document.title = 'ok '").unwrap();
+        assert!(run < labels && labels < title, "after the chart is drawn and before the snapshot is taken");
+    }
+
+    #[test]
+    fn the_cache_key_is_made_from_the_whole_page_so_a_change_to_how_it_draws_renders_the_diagram_again() {
+        let t = MermaidTheme { primary: "#2a0062".into(), text: "#f3edff".into(), line: "#f3edff".into(), secondary: "#3b1a86".into(), tertiary: "#330076".into() };
+        let mut hash = Sha256::new();
+        hash.update(page("graph TD; A-->B", &t).as_bytes());
+        hash.update(b"\0");
+        hash.update(b"2");
+        let expected: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(cache_key("graph TD; A-->B", &t, 2), expected);
     }
 
     #[test]

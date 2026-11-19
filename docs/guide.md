@@ -506,7 +506,9 @@ a web view of its own that you never see: the page is local, nothing is fetched,
 needs to be installed. The block shows its source until the diagram is ready (a fraction of a
 second) and again if you edit it, then the new diagram replaces it. Results are cached. A diagram
 mermaid cannot read shows its source with mermaid's message, and so does one over 8192 CSS px on
-a side or 64 million pixels.
+a side or 64 million pixels. A bar chart's numbers on its bars are drawn in the theme's text or
+its background colour, whichever reads better on each bar, so a chart that names its own bar
+colours stays readable in a dark theme as in a light one.
 
 Hover a diagram to see its header and its zoom. The header switches it between Diagram (the
 picture), Code (its numbered source) and Split (the source with the picture under it); Arkos
