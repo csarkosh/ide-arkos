@@ -1,7 +1,8 @@
 # The data analyst: the weekly signups report rendered on the left (a table to fill and a bar
 # chart), Claude Code on the right writing the script that computes this week's numbers and
-# putting them into the report, and the raw export below it. Shot in Material: white cards on a
-# cool frame, each pane's number on a chip of its own colour.
+# putting them into the report, and the raw export below it. Shot in Material Navy, and in the
+# Inbox in every Material dark theme (Cyrus, 2026-11-19), each pane's number on a chip of its
+# own colour.
 
 [scene]
 name = "data-analyst"
@@ -18,7 +19,7 @@ height = 860
 preset = "compact"
 sidebar_width = 220
 expanded = ["data"]
-theme = { dark = "material", light = "material" }
+theme = { dark = "navy", light = "navy" }
 
 [[pane]]
 name = "report"
@@ -75,3 +76,23 @@ drag = [[0.188, 0.06], [0.96, 0.72]]
 # room its table needs, so no column header wraps; the session keeps 46%, or the table Claude
 # Code prints in the terminal wraps instead.
 drags = [[[0.6655, 0.72], [0.55, 0.72]]]
+
+# The same Inbox, its panes where the drags left them, in the other Material dark themes, for
+# the apps page's choice of the data analyst's theme.
+[[shot]]
+name = "ocean-inbox"
+theme = "material-ocean"
+layout = "inbox"
+timeout_secs = 60
+
+[[shot]]
+name = "palenight-inbox"
+theme = "material-palenight"
+layout = "inbox"
+timeout_secs = 60
+
+[[shot]]
+name = "sublime-inbox"
+theme = "material-sublime"
+layout = "inbox"
+timeout_secs = 60

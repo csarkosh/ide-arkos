@@ -104,6 +104,27 @@ theme = "dark"
 layout = "inbox"
 timeout_secs = 60
 
+# The same Inbox in the other Rain cities, for the apps page's choice of the multi tasker's
+# theme (Cyrus, 2026-11-19: Tokyo, Seattle, Frisco and London Rain), each looped since its
+# effect moves.
+[[shot]]
+name = "seattle-inbox"
+theme = "seattle-rain"
+layout = "inbox"
+timeout_secs = 60
+
+[[shot]]
+name = "frisco-inbox"
+theme = "frisco-rain"
+layout = "inbox"
+timeout_secs = 60
+
+[[shot]]
+name = "london-inbox"
+theme = "london-rain"
+layout = "inbox"
+timeout_secs = 60
+
 # The same moment in Navy, the theme Arkos starts in (the light slot here), for the apps page's
 # gallery of every theme: `multitasker-navy.png`.
 [[shot]]
