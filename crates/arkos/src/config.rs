@@ -317,6 +317,9 @@ pub struct CustomConfig {
     /// `none`, an effect's name, or `theme` for the colour's own. Unset, the old `effect.name`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effect: Option<EffectChoice>,
+    /// The scene of the custom look's effect, by name. Unset, the scene the colour's preset gave.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scene: Option<String>,
 }
 
 /// Whether arkosd starts at login to bring sessions back after a restart (update-in-place
@@ -406,6 +409,12 @@ impl Config {
             Look::Presets => EffectChoice::Theme,
             Look::Custom => self.custom.effect.clone().unwrap_or_else(|| self.effect.name.clone()),
         }
+    }
+
+    /// The scene the custom look names, while that look is in force. The presets each name their
+    /// own, so a `custom.scene` is ignored under them.
+    pub fn scene_choice(&self) -> Option<&str> {
+        self.custom.scene.as_deref().filter(|_| self.look() == Look::Custom)
     }
 
     /// Whether the theme follows macOS's light and dark: the presets in "system" mode, and a

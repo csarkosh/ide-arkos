@@ -13,6 +13,7 @@ pub mod inputs;
 pub mod layer;
 pub mod manifest;
 pub mod paint;
+pub mod scene;
 /// The overworld wash's layout and timing mirrored in Rust, for its tests alone: the app never
 /// runs it.
 #[cfg(test)]

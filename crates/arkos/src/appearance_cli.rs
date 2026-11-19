@@ -160,7 +160,8 @@ fn use_it(part: Part, args: &[String], env: &Env, out: &mut dyn Write, err: &mut
         Part::Color => "color",
         Part::Font => "font",
     };
-    let mut edits: Vec<(Vec<&'static str>, String)> = crate::settings::look_edits(&cfg, Look::Custom, &shown_name, plain, own.as_deref());
+    let scene = shown.as_ref().and_then(|t| crate::effects::scene::shown_scene(&cfg, t, env.themes, &env.effects_dir()));
+    let mut edits: Vec<(Vec<&'static str>, String)> = crate::settings::look_edits(&cfg, Look::Custom, &shown_name, plain, own.as_deref(), scene.as_deref());
     edits.retain(|(k, _)| k[1] != key);
     // A custom colour already chosen leaves the font to pin when it is next set.
     if part == Part::Color && cfg.custom.font.is_none() && !edits.iter().any(|(k, _)| k[1] == "font") {

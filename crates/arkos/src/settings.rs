@@ -548,9 +548,10 @@ pub fn color_edits(cfg: &Config, color: &str, shown: &str, plain_font: bool) -> 
 
 /// What a click on a look's pill writes: the look itself, and for the custom look, the first
 /// time, what is on screen as its colour, its font and its effect (`shown` the theme showing,
-/// `plain_font` whether it names no fonts, `own` its own effect), so putting it in force changes
+/// `plain_font` whether it names no fonts, `own` its own effect, `scene` the scene it shows when
+/// that effect has scenes), so putting it in force changes
 /// nothing until something is picked.
-pub fn look_edits(cfg: &Config, which: Look, shown: &str, plain_font: bool, own: Option<&str>) -> Vec<(Vec<&'static str>, String)> {
+pub fn look_edits(cfg: &Config, which: Look, shown: &str, plain_font: bool, own: Option<&str>, scene: Option<&str>) -> Vec<(Vec<&'static str>, String)> {
     let mut edits = vec![(vec!["appearance", "look"], if which == Look::Presets { "presets" } else { "custom" }.to_string())];
     if which == Look::Custom {
         if cfg.custom.color.is_none() {
@@ -570,6 +571,11 @@ pub fn look_edits(cfg: &Config, which: Look, shown: &str, plain_font: bool, own:
                 _ => own.unwrap_or("none").to_string(),
             };
             edits.push((vec!["custom", "effect"], on_screen));
+        }
+        if cfg.custom.scene.is_none() {
+            if let Some(scene) = scene {
+                edits.push((vec!["custom", "scene"], scene.to_string()));
+            }
         }
     }
     edits
@@ -1204,7 +1210,7 @@ impl SettingsWindow {
             let current = look == which;
             let mut p = pill(("look", ix), label, current, enabled, c);
             if enabled && !current {
-                let edits: Vec<Edit> = look_edits(cfg, which, &self.theme.name, self.theme.font.is_default(), self.theme.recommended_effect()).into_iter().map(|(keys, value)| edit(&keys, value.as_str())).collect();
+                let edits: Vec<Edit> = look_edits(cfg, which, &self.theme.name, self.theme.font.is_default(), self.theme.recommended_effect(), effects::scene::shown_scene(cfg, &self.theme, &crate::paths::themes_dir(), &effects::effects_dir()).as_deref()).into_iter().map(|(keys, value)| edit(&keys, value.as_str())).collect();
                 p = self.act(p, cx, move |w, _, cx| w.change(edits.clone(), cx));
             }
             looks = looks.child(p);
@@ -1997,24 +2003,34 @@ mod tests {
     }
 
     #[test]
+    fn the_first_click_on_custom_pins_the_scene_showing() {
+        use crate::config::Look;
+        let presets = Config::default();
+        let edits = look_edits(&presets, Look::Custom, "matrix", false, Some("runic"), Some("matrix-city"));
+        assert!(edits.contains(&(vec!["custom", "scene"], "matrix-city".to_string())), "{edits:?}");
+        let pinned = crate::config::parse("[appearance]\nlook = \"presets\"\n[custom]\ncolor = \"matrix\"\neffect = \"runic\"\nscene = \"tokyo\"\n").unwrap();
+        assert!(look_edits(&pinned, Look::Custom, "matrix", false, Some("runic"), Some("matrix-city")).iter().all(|(k, _)| k[1] != "scene"), "a scene already chosen is kept");
+    }
+
+    #[test]
     fn putting_the_custom_look_in_force_starts_from_what_is_on_screen_and_never_loses_either_look() {
         use crate::config::{parse, Look};
         let own = |pairs: &[(&[&'static str], &str)]| -> Vec<(Vec<&'static str>, String)> { pairs.iter().map(|(k, v)| (k.to_vec(), v.to_string())).collect() };
         // From the presets, the first time: the preset showing and its own effect.
         let presets = Config::default();
         assert_eq!(
-            look_edits(&presets, Look::Custom, "timo-purple", false, Some("overworld")),
+            look_edits(&presets, Look::Custom, "timo-purple", false, Some("overworld"), None),
             own(&[(&["appearance", "look"], "custom"), (&["custom", "color"], "timo-purple"), (&["custom", "font"], "timo-purple"), (&["custom", "effect"], "overworld")])
         );
-        assert_eq!(look_edits(&presets, Look::Custom, "navy", true, None)[2..], own(&[(&["custom", "font"], "default"), (&["custom", "effect"], "none")]), "a preset with no fonts and no effect");
+        assert_eq!(look_edits(&presets, Look::Custom, "navy", true, None, None)[2..], own(&[(&["custom", "font"], "default"), (&["custom", "effect"], "none")]), "a preset with no fonts and no effect");
         // A custom look already chosen is put back as it was, and the presets as they were.
         let chosen = parse("[appearance]\nlook = \"presets\"\n[custom]\ncolor = \"matrix\"\neffect = \"material\"\n").unwrap();
-        assert_eq!(look_edits(&chosen, Look::Custom, "timo-purple", false, Some("overworld")), own(&[(&["appearance", "look"], "custom")]));
-        assert_eq!(look_edits(&chosen, Look::Presets, "matrix", true, Some("runic")), own(&[(&["appearance", "look"], "presets")]));
+        assert_eq!(look_edits(&chosen, Look::Custom, "timo-purple", false, Some("overworld"), None), own(&[(&["appearance", "look"], "custom")]));
+        assert_eq!(look_edits(&chosen, Look::Presets, "matrix", true, Some("runic"), None), own(&[(&["appearance", "look"], "presets")]));
         // An older config's one effect over every theme becomes the custom look's effect.
         let old = parse("[effect]\nname = \"material\"\n").unwrap();
         assert_eq!(old.look(), Look::Custom);
-        assert_eq!(look_edits(&old, Look::Custom, "navy", true, None), own(&[(&["appearance", "look"], "custom"), (&["custom", "color"], "navy"), (&["custom", "font"], "default"), (&["custom", "effect"], "material")]));
+        assert_eq!(look_edits(&old, Look::Custom, "navy", true, None, None), own(&[(&["appearance", "look"], "custom"), (&["custom", "color"], "navy"), (&["custom", "font"], "default"), (&["custom", "effect"], "material")]));
     }
 
     #[test]
