@@ -1101,20 +1101,41 @@ float3 rainier_at(float2 q, float2 sz, float3 white_c, float3 col) {
 // Seattle's landmarks: the Space Needle and the Columbia Center.
 float3 seattle_at(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 far_c, float3 near_c, float3 green, float3 white_c, float3 col, thread float& win) {
     float3 edge_c = mix(white_c, green, 0.4);
-    // The Space Needle: a spire, its cap and saucer, and a stalk narrowing to its waist.
+    // The Space Needle, as its silhouette is (Cyrus, 2026-11-19: "make the space needle more
+    // accurate to how it looks"): a thin spire over a small cap; the top house's roof sloping out
+    // to its rim, the widest point; its underside sloping back in more steeply; three pairs of
+    // legs pinching to a waist about a third of the way down and splaying out to a wide foot,
+    // with the 100 foot level's ring low on them. Widths are shares of its height n.
     float cx = sz.x * 0.3, ttop = sz.y * 0.1;
-    float r = (q.y - ttop) / (sz.y - ttop);
-    float hw = r < 0.07 ? 0.6 : r < 0.1 ? 3.0 : r < 0.13 ? mix(4.0, 11.0, (r - 0.1) / 0.03) : r < 0.16 ? mix(11.0, 2.5, (r - 0.13) / 0.03) : (r < 0.6 ? 1.6 + 1.6 * pow((0.6 - r) / 0.44, 2.0) : 1.6 + 5.0 * pow((r - 0.6) / 0.4, 2.0));
+    float n = sz.y - ttop;
+    float r = (q.y - ttop) / n;
+    float rim = 0.075 * n, waist = max(0.009 * n, 1.2), foot = 0.1 * n;
+    float hw = r < 0.1 ? 0.5
+        : r < 0.12 ? mix(0.8, 0.018 * n, (r - 0.1) / 0.02)
+        : r < 0.155 ? mix(0.025 * n, rim, (r - 0.12) / 0.035)
+        : r < 0.205 ? mix(rim, 0.026 * n, (r - 0.155) / 0.05)
+        : r < 0.33 ? mix(0.026 * n, waist, (r - 0.205) / 0.125)
+        : mix(waist, foot, pow((r - 0.33) / 0.67, 1.6));
+    // The 100 foot level's ring.
+    if (abs(r - 0.84) < 0.008) {
+        hw += 0.012 * n;
+    }
     if (landmark_at(q, cx, ttop, sz.y, hw, far_c, near_c, edge_c, 0.85, col)) {
         win = 0.0;
-        // The saucer's rim, lit white.
-        if (abs(r - 0.13) < 0.006) {
-            col = mix(col, white_c, 0.7);
+        // The observation deck's lit band at the rim, and the halo's rim above it.
+        if (abs(r - 0.158) < 0.006) {
+            col = mix(col, mix(white_c, u.colors[ARKOS_ANSI + 3].rgb, 0.3), 0.75);
+        } else if (abs(r - 0.152) < 0.004) {
+            col = mix(col, white_c, 0.6);
+        }
+        // Between the legs below the waist there is sky: the legs are two lines, not a solid.
+        if (r > 0.36 && abs(q.x - cx) < hw - 1.6 && r < 0.995) {
+            col = mix(col, far_c, 0.85);
         }
     }
     col = beacon_at(q, float2(cx, ttop - 1.5), t, u, col);
     // The Columbia Center: the tallest tower, stepped in near its top.
-    float bx = sz.x * 0.74, btop = sz.y * 0.04;
+    float bx = sz.x * 0.74, btop = sz.y * 0.13;
     float br = (q.y - btop) / (sz.y - btop);
     float bhw = br < 0.08 ? 6.0 : br < 0.18 ? 8.0 : 10.0;
     if (landmark_at(q, bx, btop, sz.y, bhw, far_c, near_c, edge_c, 0.7, col)) {

@@ -360,6 +360,16 @@ mod tests {
     }
 
     #[test]
+    fn the_space_needle_and_the_columbia_center_stand_about_as_tall() {
+        // Cyrus, 2026-11-19: "balance the heights better with the Columbia Tower". The Columbia
+        // Center rose from 0.04 of the band, into its faded top, far over the Needle at 0.1.
+        let needle = wash_factor("float cx = sz.x * 0.3, ttop = sz.y * ");
+        let columbia = wash_factor("float bx = sz.x * 0.74, btop = sz.y * ");
+        assert!((needle - columbia).abs() <= 0.05, "the Needle's top at {needle}, the Columbia Center's at {columbia}");
+        assert!(needle >= 0.08 && columbia >= 0.08, "both below the band's faded top");
+    }
+
+    #[test]
     fn rainier_s_foot_is_hidden_behind_the_skylines() {
         // Its base at 0.66 of the band showed a straight cut where a far tower was lower.
         assert_eq!(wash_factor("float px = sz.x * 0.58, py = sz.y * 0.3, base = sz.y * "), 1.0);

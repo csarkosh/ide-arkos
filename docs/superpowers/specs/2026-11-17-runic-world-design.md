@@ -495,3 +495,12 @@ its beacon), the Woolworth Building's Gothic crown and 70 Pine's Art Deco setbac
 8 Spruce Street's rippled sides and 40 Wall Street's pyramid roof to its right, among plainer
 towers. The design's data rain landing on its roofs was left out: the transfers choose among the
 street's own buildings, and the far district is a few points wide.
+
+Then, of Seattle Rain (Cyrus, 2026-11-19): "make the space needle more accurate to how it looks.
+And balance the heights better with the Columbia Tower." The Needle is drawn from its silhouette,
+its widths shares of its height: a thin spire over a small cap, the top house's roof sloping out to
+its rim (the widest point, with the observation deck's lit band) and its underside sloping back in
+more steeply, then its legs tapering in to a waist a third of the way down and splaying out wide
+to the ground in an hourglass, sky between them, the 100 foot level's ring low on them. Its top
+stands at 0.1 of the band and the Columbia Center's at 0.13 (it was 0.04, into the band's faded
+top, far over the Needle), so the two stand about as tall, as they do from the city's south.
