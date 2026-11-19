@@ -1,79 +1,9 @@
 # The schema of every key is in docs/themes.md.
-# The Matrix: a soft sage-mint on a very dark green-grey, designed with the runic effect. Softened
-# on 2026-11-17 (Cyrus: "the green text on black background is too intense for my eyes"): the
-# ground is lifted off pure black, and the text and the greens lose most of their saturation,
-# so the window reads as green without glaring; the text still clears 11:1. The bars, the sidebar
-# and the inactive tabs are a shade lighter than the ground, so the window keeps its shape with
-# the effect off. The ANSI colours keep their meaning, toned down to match, and every colour
-# clears the contrast rules of docs/themes.md.
+# The Matrix: the Matrix colours, drawn with the runic effect and its code scene.
 name = "matrix"
 title = "The Matrix"
-appearance = "dark"
+color = "matrix"
 
 [effect]
 name = "runic"
 scene = "code"
-
-[chrome]
-window_bg = "#0b100d"
-title_bar = "#0f1511"
-status_bar = "#0f1511"
-sidebar = "#0f1511"
-tab_bar = "#0f1511"
-tab_active = "#0b100d"
-tab_inactive = "#0f1511"
-border = "#22362a"
-split_handle = "#22362a"
-split_handle_hover = "#3f6a4b"
-focus_ring = "#8fc98d"
-text = "#a9d1a6"
-text_dim = "#7aa47e"
-banner = "#142019"
-
-[terminal]
-background = "#0b100d"
-foreground = "#a9d1a6"
-cursor = "#a9d1a6"
-selection = "#23402c"
-black = "#1a241d"
-red = "#e8806a"
-green = "#7fb886"
-yellow = "#d6dc86"
-blue = "#7fb2dc"
-magenta = "#c99ad0"
-cyan = "#7fd0bc"
-white = "#c4dcc4"
-bright_black = "#6f9a74"
-bright_red = "#f0a08a"
-bright_green = "#a9d9a0"
-bright_yellow = "#e4e8a2"
-bright_blue = "#a6caec"
-bright_magenta = "#dcb8e2"
-bright_cyan = "#a6e6d4"
-bright_white = "#e4f0e2"
-
-[semantic]
-working = "#8fc98d"
-waiting = "#e8b66a"
-bell = "#d6dc86"
-error_banner = "#2a1410"
-find_match = "#1c3a24"
-find_current = "#4a3f14"
-
-[tree]
-added = "#7fb886"
-modified = "#d6dc86"
-deleted = "#e8806a"
-untracked = "#a6e6d4"
-ignored = "#6f9a74"
-
-[viewer]
-keyword = "#7fd0bc"
-string = "#bcd98a"
-comment = "#6f9a74"
-number = "#d6dc86"
-function = "#a9d9a0"
-type_name = "#8cc8a8"
-constant = "#e8a080"
-operator = "#c4dcc4"
-punctuation = "#9fbfa2"

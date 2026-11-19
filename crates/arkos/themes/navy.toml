@@ -1,83 +1,11 @@
 # The schema of every key is in docs/themes.md.
-# Material Navy: the default dark theme (spec 7, 7.1), with the material effect (Cyrus,
-# 2026-11-17: "change the 'Plain Navy' theme to a 'Material Navy' theme"). Navy's lifted navy
-# and bright grey text, set as Material's dark surfaces: the frame (title bar, sidebar, status
-# bar) a shade darker than the cards (the window and the terminal), so the cards stand up from
-# it as Material's dark elevation has them; every colour at least 4.5:1 against its background.
+# Material Navy: the default dark theme, the navy colours in Material's fonts, drawn with the material effect.
 name = "navy"
 title = "Material Navy"
 group = "Material"
 group_default = true
-appearance = "dark"
+color = "navy"
+font = "material"
 
 [effect]
 name = "material"
-
-[font]
-prose = "DM Sans"
-ui = "DM Sans"
-terminal = "Roboto Mono"
-
-[chrome]
-window_bg = "#16202f"
-title_bar = "#0b111b"
-status_bar = "#0b111b"
-sidebar = "#0b111b"
-tab_bar = "#16202f"
-tab_active = "#16202f"
-tab_inactive = "#16202f"
-border = "#2a3549"
-split_handle = "#2a3549"
-split_handle_hover = "#4d5a78"
-focus_ring = "#8ab4f8"
-text = "#e3e6eb"
-text_dim = "#a3acba"
-banner = "#1f2b3e"
-
-[terminal]
-background = "#16202f"
-foreground = "#e3e6eb"
-cursor = "#e3e6eb"
-selection = "#2c3c58"
-black = "#1b2230"
-red = "#f08c8c"
-green = "#8fd9a8"
-yellow = "#e8c97a"
-blue = "#8ab8f0"
-magenta = "#c9a4e8"
-cyan = "#7fd4d4"
-white = "#c8ccd4"
-bright_black = "#8590a2"
-bright_red = "#f7a8a8"
-bright_green = "#a8e6bd"
-bright_yellow = "#f0d898"
-bright_blue = "#a8ccf5"
-bright_magenta = "#d9bcf0"
-bright_cyan = "#9ee2e2"
-bright_white = "#eef0f4"
-
-[semantic]
-working = "#8ab8f0"
-waiting = "#e8a86a"
-bell = "#e8c97a"
-error_banner = "#3a2230"
-find_match = "#3a4556"
-find_current = "#6b5420"
-
-[tree]
-added = "#8fd9a8"
-modified = "#e8c97a"
-deleted = "#e8a0a8"
-untracked = "#c9b8e8"
-ignored = "#8590a2"
-
-[viewer]
-keyword = "#c9a4e8"
-string = "#8fd9a8"
-comment = "#8590a2"
-number = "#e8c97a"
-function = "#8ab8f0"
-type_name = "#7fd4d4"
-constant = "#f0a8a8"
-operator = "#c8ccd4"
-punctuation = "#a8b0bc"

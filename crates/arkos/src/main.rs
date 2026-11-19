@@ -7606,6 +7606,7 @@ mod tests {
         edited.name = "navy".into();
         edited.appearance = None;
         edited.font = navy.font.clone(); // the blend takes the target's fonts
+        edited.color = navy.color.clone(); // and the name of its colour scheme
         edited.effect = navy.effect.clone(); // and its effect: the edited file keeps navy's space
         // And how it is shown, as the blend takes the target's.
         (edited.title, edited.group, edited.group_default) = (navy.title.clone(), navy.group.clone(), navy.group_default);

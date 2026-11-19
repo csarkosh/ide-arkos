@@ -103,6 +103,7 @@ impl ColorScheme {
             viewer: self.viewer.clone(),
             font: theme::ThemeFont::default(),
             effect: None,
+            color: self.name.clone(),
         }
     }
 

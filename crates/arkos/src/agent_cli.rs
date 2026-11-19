@@ -1080,7 +1080,7 @@ mod tests {
             let (ok, rows) = theme::contrast_report(&theme::builtin(name).unwrap());
             assert!(ok, "{name}: {:?}", rows.iter().filter(|(p, r)| r < &p.needs).map(|(p, _)| &p.what).collect::<Vec<_>>());
         }
-        let text = theme::BUILTIN[0].1.replace("ignored = \"", "ignored = \"#3a3a5a\" # was \"");
+        let text = toml::to_string(&theme::builtin("navy").unwrap()).unwrap().replace("ignored = \"", "ignored = \"#3a3a5a\" # was \"");
         let t = theme::parse(&text).unwrap();
         let (ok, rows) = theme::contrast_report(&t);
         assert!(!ok);
@@ -1147,7 +1147,7 @@ mod tests {
         let navy = theme::builtin("navy").unwrap();
         // The message band (ansi256(234)) is derived a step from the background toward the
         // foreground: a foreground that is the background's twin leaves the text unreadable on it.
-        let text = theme::BUILTIN[0].1.replace(&format!("bright_white = \"{}\"", navy.terminal.bright_white.hex()), &format!("bright_white = \"{}\"", navy.terminal.background.hex()));
+        let text = toml::to_string(&navy).unwrap().replace(&format!("bright_white = \"{}\"", navy.terminal.bright_white.hex()), &format!("bright_white = \"{}\"", navy.terminal.background.hex()));
         let f = dir.path().join("murk.toml");
         std::fs::write(&f, text.replace("name = \"navy\"", "name = \"murk\"")).unwrap();
         let (code, out, _) = contrast_run(&[&f.display().to_string()], dir.path());
@@ -1372,8 +1372,10 @@ mod tests {
     #[test]
     fn the_schema_names_every_key_of_the_builtins_once_and_the_template_prints_a_builtin() {
         let mut from_toml: std::collections::BTreeSet<String> = Default::default();
-        for (_, text) in theme::BUILTIN {
-            let doc: toml::Value = toml::from_str(text).unwrap();
+        // The schema is of the all-in-one form a preset resolves to, which is what a theme
+        // serialises as: the keys of a file that names its colour scheme and font set are not here.
+        for (name, _) in theme::BUILTIN {
+            let doc: toml::Value = toml::from_str(&toml::to_string(&theme::builtin(name).unwrap()).unwrap()).unwrap();
             for (table, v) in doc.as_table().unwrap() {
                 match v.as_table() {
                     Some(t) => {

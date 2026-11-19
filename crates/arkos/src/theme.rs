@@ -36,6 +36,10 @@ pub struct Theme {
     /// Optional: the effect the theme was designed with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effect: Option<ThemeEffect>,
+    /// The name of the colour scheme this theme draws: a new-form preset's `color`, an old-form
+    /// file's own `name`, a scheme loaded alone its own name. Never in a file.
+    #[serde(skip)]
+    pub color: String,
 }
 
 /// A theme's `appearance`: a dark theme (a dark window, light text) or a light one.
@@ -261,7 +265,62 @@ pub fn luminance(c: Rgb) -> f32 {
 /// A theme from its file's text. A declared `appearance` must agree with the window background,
 /// since the contrast rules and Settings' lists go by it.
 pub fn parse(text: &str) -> Result<Theme, String> {
-    let theme: Theme = toml::from_str(text).map_err(|e| e.message().lines().next().unwrap_or("invalid theme").to_string())?;
+    parse_in(text, None)
+}
+
+/// A preset file in the new form: it names a colour scheme and a font set instead of holding
+/// their tables.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PresetFile {
+    name: String,
+    title: Option<String>,
+    group: Option<String>,
+    #[serde(default)]
+    group_default: bool,
+    color: String,
+    font: Option<String>,
+    effect: Option<ThemeEffect>,
+}
+
+/// A theme from its file's text. A text with a top-level `color` key is a preset in the new form,
+/// its colour scheme and font set looked up in the folders beside `themes_dir` and then among the
+/// built-ins (only the built-ins when `themes_dir` is None). Any other text is the old all-in-one
+/// form, a theme whose colour scheme is its own name.
+pub fn parse_in(text: &str, themes_dir: Option<&Path>) -> Result<Theme, String> {
+    let first_line = |e: toml::de::Error| e.message().lines().next().unwrap_or("invalid theme").to_string();
+    let is_new_form = toml::from_str::<toml::Table>(text).map(|t| t.contains_key("color")).unwrap_or(false);
+    if is_new_form {
+        let preset: PresetFile = toml::from_str(text).map_err(first_line)?;
+        let scheme = match themes_dir {
+            Some(dir) => crate::color_schemes::load(&preset.color, dir)?,
+            None => crate::color_schemes::builtin(&preset.color).ok_or_else(|| format!("colour scheme {:?} is not built in", preset.color))?,
+        };
+        let font = match preset.font.as_deref() {
+            None | Some("default") => ThemeFont::default(),
+            Some(set) => match themes_dir {
+                Some(dir) => crate::font_sets::load(set, dir)?,
+                None => crate::font_sets::builtin(set).ok_or_else(|| format!("font set {set:?} is not built in"))?,
+            }
+            .font(),
+        };
+        let mut theme = scheme.to_theme();
+        theme.name = preset.name;
+        theme.title = preset.title;
+        theme.group = preset.group;
+        theme.group_default = preset.group_default;
+        theme.font = font;
+        theme.effect = preset.effect;
+        theme.color = preset.color;
+        return Ok(theme);
+    }
+    let mut theme: Theme = toml::from_str(text).map_err(first_line)?;
+    theme.color = theme.name.clone();
+    old_form_checks(theme)
+}
+
+/// The checks an old-form theme gets: its appearance against its background, its grid in range.
+fn old_form_checks(theme: Theme) -> Result<Theme, String> {
     if let Some(declared) = theme.appearance {
         let by_background = background_kind(theme.chrome.window_bg);
         if declared != by_background {
@@ -322,7 +381,7 @@ pub fn load(name: &str, dir: &Path) -> Result<Theme, String> {
     }
     let file = dir.join(format!("{name}.toml"));
     match std::fs::read_to_string(&file) {
-        Ok(text) => parse(&text).map_err(|e| format!("{}: {e}", file.display())),
+        Ok(text) => parse_in(&text, Some(dir)).map_err(|e| format!("{}: {e}", file.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             builtin(name).ok_or_else(|| format!("theme {name:?} is not built in and {} does not exist", file.display()))
         }
@@ -369,7 +428,7 @@ pub fn extract(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
 /// an error like any other.
 pub fn validate_file(path: &Path) -> Result<String, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    parse(&text).map(|t| t.name)
+    parse_in(&text, path.parent()).map(|t| t.name)
 }
 
 /// Where a listed theme comes from.
@@ -831,6 +890,7 @@ pub fn blend(from: &Theme, to: &Theme, t: f32) -> Theme {
         font: to.font.clone(),
         effect: to.effect.clone(),
         appearance: to.appearance,
+        color: to.color.clone(),
     }
 }
 
@@ -873,7 +933,7 @@ mod tests {
         assert_eq!(load("peach-light", dir.path()).unwrap().name, "peach-watercolor");
         let listed = names(dir.path());
         assert!(!listed.iter().any(|n| n == "peach-light" || n == "lavender-light"), "{listed:?}");
-        std::fs::write(dir.path().join("peach-light.toml"), BUILTIN[0].1.replace("name = \"navy\"", "name = \"peach-light\"")).unwrap();
+        std::fs::write(dir.path().join("peach-light.toml"), FIXTURES[0].1.replace("name = \"navy\"", "name = \"peach-light\"")).unwrap();
         assert_eq!(load("peach-light", dir.path()).unwrap().name, "peach-light", "a user's own file of the old name is theirs");
     }
 
@@ -893,11 +953,11 @@ mod tests {
         let t = builtin("peach-watercolor").unwrap();
         assert_eq!(t.font.prose.as_deref(), Some("Baskerville"));
         assert_eq!(builtin("matrix").unwrap().font, ThemeFont::default(), "the others leave it to the system font");
-        let text = BUILTIN.iter().find(|(n, _)| *n == "matrix").unwrap().1.to_string() + "\n[font]\nprose = \"Georgia\"\n";
+        let text = FIXTURES.iter().find(|(n, _)| *n == "matrix").unwrap().1.to_string() + "\n[font]\nprose = \"Georgia\"\n";
         assert_eq!(parse(&text).unwrap().font.prose.as_deref(), Some("Georgia"));
         assert_eq!(t.font.ui.as_deref(), Some("Optima"));
         assert_eq!(t.font.terminal.as_deref(), Some("PT Mono"));
-        assert!(parse(&(BUILTIN[0].1.to_string() + "\n[font]\nchrome = \"Menlo\"\n")).is_err(), "only prose, ui and terminal are fonts a theme may name");
+        assert!(parse(&(FIXTURES[0].1.to_string() + "\n[font]\nchrome = \"Menlo\"\n")).is_err(), "only prose, ui and terminal are fonts a theme may name");
     }
 
     #[test]
@@ -915,7 +975,7 @@ mod tests {
         assert_eq!(builtin("lavender-watercolor").unwrap().recommended_effect(), Some("watercolor"));
         // A theme with no [effect] table recommends none, and any theme may recommend one: the
         // Matrix's file without its own table, given one.
-        let bare = BUILTIN.iter().find(|(n, _)| *n == "matrix").unwrap().1.replace("[effect]\nname = \"runic\"\nscene = \"code\"\n", "");
+        let bare = FIXTURES.iter().find(|(n, _)| *n == "matrix").unwrap().1.replace("[effect]\nname = \"runic\"\nscene = \"code\"\n", "");
         assert_eq!(parse(&bare).unwrap().recommended_effect(), None);
         let text = bare.clone() + "\n[effect]\nname = \"ink\"\n";
         assert_eq!(parse(&text).unwrap().recommended_effect(), Some("ink"));
@@ -934,7 +994,7 @@ mod tests {
         for (name, _) in BUILTIN {
             assert_eq!(builtin(name).unwrap().font.grid, matches!(name, "timo-purple" | "arabia-solar").then_some(5.5), "{name}");
         }
-        let plain = BUILTIN.iter().find(|(n, _)| *n == "matrix").unwrap().1;
+        let plain = FIXTURES.iter().find(|(n, _)| *n == "matrix").unwrap().1;
         assert_eq!(parse(&(plain.to_string() + "\n[font]\ngrid = 0.5\n")).unwrap_err(), "font.grid must be 1.0 to 24.0 (was 0.5)");
         assert_eq!(parse(&(plain.to_string() + "\n[font]\ngrid = 11\n")).unwrap().font.grid, Some(11.0));
     }
@@ -1006,23 +1066,121 @@ mod tests {
     }
 
     #[test]
-    fn tokyo_rain_keeps_plain_navy_s_colours_with_the_runic_effect() {
-        let (navy, runic) = (builtin("navy").unwrap(), builtin("tokyo-rain").expect("tokyo-rain is built in"));
-        assert_eq!(runic.name, "tokyo-rain");
-        // Plain Navy's colours (Navy became Material Navy on 2026-11-17, its surfaces set as
-        // Material's; Tokyo Rain keeps the colours it was made in), in the system's fonts.
-        assert_eq!((runic.chrome.window_bg, runic.terminal.background), (rgb(0x0e1723), rgb(0x0e1723)));
-        assert_eq!((runic.chrome.sidebar, runic.chrome.focus_ring), (rgb(0x131c2b), rgb(0x3a7bd5)));
-        assert_eq!(runic.palette().ansi, crate::palette::NAVY.ansi);
-        assert_eq!((&runic.font, runic.appearance), (&ThemeFont::default(), navy.appearance));
-        assert_eq!(runic.recommended_effect(), Some("runic"));
-        assert_eq!(navy.recommended_effect(), Some("material"), "navy, the default, is Material Navy");
+    fn tokyo_rain_draws_the_rain_colours_with_the_runic_city() {
+        let rain = builtin("tokyo-rain").expect("tokyo-rain is built in");
+        assert_eq!(rain.name, "tokyo-rain");
+        assert_eq!(rain.color, "rain");
+        assert!(crate::color_schemes::builtin("rain").unwrap().same_colors(&rain));
+        assert_eq!(rain.font, ThemeFont::default(), "in the system's fonts");
+        assert_eq!(rain.appearance, Some(Appearance::Dark));
+        assert_eq!(rain.recommended_effect(), Some("runic"));
+        assert_eq!(rain.effect.as_ref().and_then(|e| e.scene.as_deref()), Some("city"));
+        assert_eq!(builtin("navy").unwrap().recommended_effect(), Some("material"), "navy, the default, is Material Navy");
         // It was `navy-runic`: the old name still loads it, and a config naming it is moved.
         assert_eq!(current_name("navy-runic"), "tokyo-rain");
         assert_eq!(builtin("navy-runic").unwrap().name, "tokyo-rain");
         let dir = tempfile::tempdir().unwrap();
         let moved = crate::config::rename_themes("[theme]\ndark = \"navy-runic\"\nlight = \"peach-watercolor\"\n", dir.path()).unwrap();
         assert!(moved.contains("dark = \"tokyo-rain\""), "{moved}");
+    }
+
+    /// The fourteen preset files as 0.8.54 shipped them, all-in-one.
+    const FIXTURES: [(&str, &str); 14] = [
+        ("navy", include_str!("../tests-data/presets-0.8.54/navy.toml")),
+        ("timo-purple", include_str!("../tests-data/presets-0.8.54/timo-purple.toml")),
+        ("peach-watercolor", include_str!("../tests-data/presets-0.8.54/peach-watercolor.toml")),
+        ("lavender-watercolor", include_str!("../tests-data/presets-0.8.54/lavender-watercolor.toml")),
+        ("lavender-material", include_str!("../tests-data/presets-0.8.54/lavender-material.toml")),
+        ("matrix", include_str!("../tests-data/presets-0.8.54/matrix.toml")),
+        ("tokyo-rain", include_str!("../tests-data/presets-0.8.54/tokyo-rain.toml")),
+        ("composition-notebook", include_str!("../tests-data/presets-0.8.54/composition-notebook.toml")),
+        ("material", include_str!("../tests-data/presets-0.8.54/material.toml")),
+        ("arabia-solar", include_str!("../tests-data/presets-0.8.54/arabia-solar.toml")),
+        ("material-solar", include_str!("../tests-data/presets-0.8.54/material-solar.toml")),
+        ("material-ocean", include_str!("../tests-data/presets-0.8.54/material-ocean.toml")),
+        ("material-palenight", include_str!("../tests-data/presets-0.8.54/material-palenight.toml")),
+        ("material-sublime", include_str!("../tests-data/presets-0.8.54/material-sublime.toml")),
+    ];
+
+    #[test]
+    fn every_built_in_preset_draws_exactly_as_it_did_in_0_8_54() {
+        assert_eq!(FIXTURES.len(), BUILTIN.len());
+        for (name, old_text) in FIXTURES {
+            let old = toml::from_str::<Theme>(old_text).unwrap_or_else(|e| panic!("{name} fixture: {e}"));
+            let new = builtin(name).unwrap_or_else(|| panic!("{name} does not load"));
+            assert_eq!(new.chrome, old.chrome, "{name} chrome");
+            assert_eq!(new.terminal, old.terminal, "{name} terminal");
+            assert_eq!(new.semantic, old.semantic, "{name} semantic");
+            assert_eq!(new.tree, old.tree, "{name} tree");
+            assert_eq!(new.viewer, old.viewer, "{name} viewer");
+            assert_eq!(new.font, old.font, "{name} font");
+            assert_eq!(new.effect, old.effect, "{name} effect");
+            assert_eq!(new.kind(), old.kind(), "{name} kind");
+            assert_eq!(new.appearance, old.appearance, "{name} appearance");
+            assert_eq!(new.title, old.title, "{name} title");
+            assert_eq!(new.group, old.group, "{name} group");
+            assert_eq!(new.group_default, old.group_default, "{name} group_default");
+            assert_eq!(parse(old_text).unwrap().chrome, old.chrome, "{name} still parses in the old form");
+        }
+    }
+
+    #[test]
+    fn every_built_in_preset_is_in_the_new_form() {
+        for (name, text) in BUILTIN {
+            let table: toml::Table = toml::from_str(text).unwrap();
+            assert!(table.contains_key("color"), "{name} names its colour scheme");
+            for old in ["chrome", "terminal", "semantic", "tree", "viewer", "appearance"] {
+                assert!(!table.contains_key(old), "{name} still carries {old}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_preset_in_the_old_all_in_one_form_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = FIXTURES.iter().find(|(n, _)| *n == "lavender-watercolor").unwrap().1.replace("name = \"lavender-watercolor\"", "name = \"mine\"");
+        std::fs::write(dir.path().join("mine.toml"), text).unwrap();
+        let t = load("mine", dir.path()).unwrap();
+        assert_eq!((t.name.as_str(), t.color.as_str()), ("mine", "mine"));
+        assert_eq!(t.font.prose.as_deref(), Some("Avenir Next"));
+    }
+
+    #[test]
+    fn a_preset_naming_a_colour_of_one_s_own_loads_it_from_the_colors_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let themes = root.path().join("themes");
+        let colors = root.path().join("colors");
+        std::fs::create_dir_all(&themes).unwrap();
+        std::fs::create_dir_all(&colors).unwrap();
+        let mine = crate::color_schemes::BUILTIN[0].1.replace("name = \"navy\"", "name = \"mine\"");
+        std::fs::write(colors.join("mine.toml"), mine).unwrap();
+        std::fs::write(themes.join("dusk.toml"), "name = \"dusk\"\ncolor = \"mine\"\nfont = \"lavender\"\n").unwrap();
+        let t = load("dusk", &themes).unwrap();
+        assert_eq!((t.name.as_str(), t.color.as_str()), ("dusk", "mine"));
+        assert!(crate::color_schemes::builtin("navy").unwrap().same_colors(&t));
+        assert_eq!(t.font.prose.as_deref(), Some("Avenir Next"));
+        assert_eq!(t.effect, None);
+    }
+
+    #[test]
+    fn a_preset_naming_a_missing_colour_scheme_is_an_error_naming_it() {
+        let root = tempfile::tempdir().unwrap();
+        let themes = root.path().join("themes");
+        std::fs::create_dir_all(&themes).unwrap();
+        std::fs::write(themes.join("dusk.toml"), "name = \"dusk\"\ncolor = \"nowhere\"\n").unwrap();
+        let e = load("dusk", &themes).unwrap_err();
+        assert!(e.contains("nowhere"), "{e}");
+        let e = validate_file(&themes.join("dusk.toml")).unwrap_err();
+        assert!(e.contains("nowhere"), "{e}");
+        std::fs::write(themes.join("dusk.toml"), "name = \"dusk\"\ncolor = \"navy\"\nfont = \"nofont\"\n").unwrap();
+        assert!(load("dusk", &themes).unwrap_err().contains("nofont"));
+    }
+
+    #[test]
+    fn a_new_form_preset_may_not_set_its_own_appearance() {
+        let e = parse("name = \"x\"\ncolor = \"navy\"\nappearance = \"dark\"\n").unwrap_err();
+        assert!(e.contains("appearance"), "{e}");
+        assert!(parse("name = \"x\"\ncolor = \"navy\"\n[chrome]\nwindow_bg = \"#000000\"\n").is_err());
     }
 
     #[test]
@@ -1039,7 +1197,7 @@ mod tests {
 
     #[test]
     fn a_theme_declaring_the_wrong_appearance_is_refused_and_one_declaring_none_is_classed_by_its_background() {
-        let navy = BUILTIN[0].1;
+        let navy = FIXTURES[0].1;
         assert!(navy.contains("appearance = \"dark\"\n"));
         let e = parse(&navy.replace("appearance = \"dark\"", "appearance = \"light\"")).unwrap_err();
         assert_eq!(e, "appearance = \"light\" but window_bg #16202f is dark; make one of them match the other");
@@ -1047,14 +1205,14 @@ mod tests {
         let none = parse(&navy.replace("appearance = \"dark\"\n", "")).unwrap();
         assert_eq!(none.appearance, None);
         assert_eq!(none.kind(), Appearance::Dark);
-        let peach = parse(&BUILTIN[2].1.replace("appearance = \"light\"\n", "")).unwrap();
+        let peach = parse(&FIXTURES[2].1.replace("appearance = \"light\"\n", "")).unwrap();
         assert_eq!(peach.kind(), Appearance::Light);
     }
 
     #[test]
     fn the_kinds_list_carries_each_theme_s_appearance_and_none_for_a_broken_file() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("mine.toml"), BUILTIN[2].1.replace("name = \"peach-watercolor\"", "name = \"mine\"")).unwrap();
+        std::fs::write(dir.path().join("mine.toml"), FIXTURES[2].1.replace("name = \"peach-watercolor\"", "name = \"mine\"")).unwrap();
         std::fs::write(dir.path().join("broken.toml"), "name = \"broken\"\n").unwrap();
         let k = kinds(dir.path());
         let find = |n: &str| k.iter().find(|(name, _, _)| name == n).map(|(_, _, a)| *a).unwrap();
@@ -1170,11 +1328,11 @@ mod tests {
     fn a_theme_file_must_be_complete_and_known() {
         let e = parse("name = \"x\"\n").unwrap_err();
         assert!(e.contains("chrome"), "{e}");
-        let text = BUILTIN[0].1.replace("window_bg", "window_background");
+        let text = FIXTURES[0].1.replace("window_bg", "window_background");
         let e = parse(&text).unwrap_err();
         assert!(e.contains("window_background") || e.contains("window_bg"), "{e}");
         let bg = builtin("navy").unwrap().chrome.window_bg.hex();
-        let text = BUILTIN[0].1.replace(&bg, &bg[..6]);
+        let text = FIXTURES[0].1.replace(&bg, &bg[..6]);
         assert!(parse(&text).is_err());
     }
 
@@ -1182,12 +1340,12 @@ mod tests {
     fn user_files_win_and_names_are_bare_stems() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(load("navy", dir.path()).unwrap(), builtin("navy").unwrap(), "a missing folder falls back to the built-in");
-        let mut text = BUILTIN[0].1.to_string();
+        let mut text = FIXTURES[0].1.to_string();
         let bg = builtin("navy").unwrap().chrome.window_bg.hex();
         text = text.replace(&format!("window_bg = \"{bg}\""), "window_bg = \"#000000\"");
         std::fs::write(dir.path().join("navy.toml"), &text).unwrap();
         assert_eq!(load("navy", dir.path()).unwrap().chrome.window_bg, rgb(0x000000));
-        std::fs::write(dir.path().join("mine.toml"), BUILTIN[1].1.replace("name = \"timo-purple\"", "name = \"mine\"")).unwrap();
+        std::fs::write(dir.path().join("mine.toml"), FIXTURES[1].1.replace("name = \"timo-purple\"", "name = \"mine\"")).unwrap();
         assert_eq!(load("mine", dir.path()).unwrap().name, "mine");
         assert_eq!(names(dir.path()), vec!["arabia-solar".to_string(), "composition-notebook".to_string(), "lavender-material".to_string(), "lavender-watercolor".to_string(), "material".to_string(), "material-ocean".to_string(), "material-palenight".to_string(), "material-solar".to_string(), "material-sublime".to_string(), "matrix".to_string(), "mine".to_string(), "navy".to_string(), "peach-watercolor".to_string(), "timo-purple".to_string(), "tokyo-rain".to_string()]);
         let e = load("nope", dir.path()).unwrap_err();
