@@ -1,0 +1,5 @@
+name = "peach"
+title = "Baskerville + Optima + PT Mono"
+prose = "Baskerville"
+ui = "Optima"
+terminal = "PT Mono"

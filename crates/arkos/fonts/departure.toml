@@ -1,0 +1,6 @@
+name = "departure"
+title = "Departure Mono"
+prose = "Departure Mono"
+ui = "Departure Mono"
+terminal = "Departure Mono"
+grid = 5.5

@@ -10,6 +10,7 @@ mod cache;
 mod chooser_sessions;
 mod chrome;
 mod color_schemes;
+mod font_sets;
 mod claude_folders;
 mod claude_theme;
 mod client;

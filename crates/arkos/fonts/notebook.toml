@@ -1,0 +1,5 @@
+name = "notebook"
+title = "Chalkboard + Monaspace Radon"
+prose = "Chalkboard SE"
+ui = "Chalkboard SE"
+terminal = "Monaspace Radon"

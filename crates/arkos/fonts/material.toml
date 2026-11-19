@@ -1,0 +1,5 @@
+name = "material"
+title = "DM Sans + Roboto Mono"
+prose = "DM Sans"
+ui = "DM Sans"
+terminal = "Roboto Mono"
