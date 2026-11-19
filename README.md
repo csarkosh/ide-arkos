@@ -12,7 +12,7 @@ from you: needing your input → still at work → quiet or done.
 
 - **Durable:** sessions keep running through a frozen window or an update, and come back with
   their conversations after a restart, a shutdown or a macOS update.
-- **Customizable:** fourteen distinct themes, some of them animated, and layouts you arrange by drag
+- **Customizable:** seventeen distinct themes, some of them animated, and layouts you arrange by drag
   and drop: split a session, move any pane or tab, and start more Claude Code sessions in it.
 - **Keyboard first:** the keys you know from Chrome. Cmd+0 jumps to your sessions, Cmd+1 to 9
   to a pane (each pane wears its key, ⌘1, ⌘2, and pressing it again walks its tabs), and Cmd+T
@@ -31,23 +31,23 @@ brew install --cask csarkosh/tap/arkos-ide
 
 ## Who it's for
 
-Seven ways people use it, each shot in one of the fourteen built-in themes. Every picture is a real
+Seven ways people use it, each shot in one or more of the seventeen built-in themes. Every picture is a real
 session, taken by [`scripts/shoot.sh`](docs/development.md#screenshots).
 
 **The multi tasker** runs Claude Code on unrelated work at once: a rate limiter, an inbox and a
 trip, each with its own subagents. The session list sorts them by what they need: a question
-first, then the answers not yet read, then the ones at work. Shot in Tokyo Rain, and in Material
-Navy, the theme Arkos starts in.
+first, then the answers not yet read, then the ones at work. Shot in Tokyo Rain, Seattle Rain,
+Frisco Rain and London Rain, each with its own skyline at the foot of the session list.
 
 <picture>
-  <img alt="An Arkos IDE window in Tokyo Rain, rain falling behind the text and a night skyline at the foot of the session list: the list on the left, sorted into Needs you (a trip to book), Unread (a budget and a blog post), Working (a rate limiter and a trip), then one scheduled for later and one done; the rate limiter's Claude Code session shown at full size, its three background agents writing the limiter, wiring it into the server and documenting it" src="docs/images/multitasker-dark-inbox.png" width="760">
+  <img alt="An Arkos IDE window in Tokyo Rain, rain falling behind the text and a night skyline at the foot of the session list: the list on the left, sorted into Needs you (a trip to book), Unread (a budget and a blog post), Working (a rate limiter, a trip and an inbox), then one scheduled for later and one done; the rate limiter's Claude Code session shown at full size, its three background agents writing the limiter, wiring it into the server and documenting it" src="docs/images/multitasker-dark-inbox.png" width="760">
 </picture>
 
 **The web developer** keeps a feature branch in a worktree, with Claude Code on it and the app's
-page in a web tab beside the code. Shot in Material Lavender.
+page in a web tab beside the code. Shot in Material Lavender, Material Solar and Material Bright.
 
 <picture>
-  <img alt="An Arkos IDE window in Material Lavender, its panes as rounded near-white cards on a lavender frame: the session list on the left, Claude Code in the middle adding rate limiting to a link shortener and updating its README, and a web tab on the right showing the app's page, served from localhost" src="docs/images/web-developer-dark-inbox.png" width="760">
+  <img alt="An Arkos IDE window in Material Lavender, its panes as rounded near-white cards on a pale frame: the session list on the left, a web tab in the middle showing a link shortener's page, served from localhost, and Claude Code on the right reporting the rate limiting it added to the app and its README" src="docs/images/web-developer-dark-inbox.png" width="760">
 </picture>
 
 **The blogger** lives in markdown: a launch plan rendered in the editor, and Claude Code beside it
@@ -76,18 +76,20 @@ written in by hand.
 </picture>
 
 **The data analyst** owns the weekly numbers: Claude Code runs the script, and the signups report
-fills in, chart and all. Shot in Material Bright.
+fills in, chart and all. Shot in Material Navy, Material Ocean, Material Palenight and Material
+Sublime.
 
 <picture>
-  <img alt="An Arkos IDE window in Material Bright, its panes as white rounded cards on a pale frame: the session list on the left, Claude Code in the middle summing up the week's signups by channel, and the weekly signups report rendered on the right with this week's table filled in and a light blue bar chart" src="docs/images/data-analyst-dark-inbox.png" width="760">
+  <img alt="An Arkos IDE window in Material Navy, its panes as dark rounded cards on a darker frame: the session list on the left, the weekly signups report rendered in the middle with this week's table filled in and a light blue bar chart, and Claude Code on the right summing up the week's signups by channel" src="docs/images/data-analyst-dark-inbox.png" width="760">
 </picture>
 
 **The hacker** has Claude Code audit a file-drop service and harden its sign-in, while a second
 session reads the ssh log for the intruder. Shot in The Matrix, with rune rain behind the panes
-and a city that keeps the traffic laws at the foot of the session list.
+and, at the foot of the session list, a New York street that keeps the traffic laws, Lower
+Manhattan's skyline at its end.
 
 <picture>
-  <img alt="An Arkos IDE window in The Matrix, soft green on dark green-grey with rune rain falling behind the panes and a city's traffic under it at the foot of the session list: the list on the left, a session asking whether to rotate a signing key, and Claude Code at full size hardening a file-drop service's sign-in, its diff in red and green" src="docs/images/hacker-dark-inbox.png" width="760">
+  <img alt="An Arkos IDE window in The Matrix, soft green on dark green-grey with rune rain falling behind the panes and, at the foot of the session list, a New York street's traffic with Lower Manhattan's skyline at its end: the list on the left, a session asking whether to rotate a signing key, and Claude Code at full size hardening a file-drop service's sign-in, its diff in red and green" src="docs/images/hacker-dark-inbox.png" width="760">
 </picture>
 
 ## Privacy
@@ -102,7 +104,7 @@ identifies you or your Mac. [What Arkos sends](docs/telemetry.md) lists every ke
 
 - **[The guide](docs/guide.md)**: sessions and recovery, the sidebar, the markdown editor, the
   browser pane, the video pane, keys, settings and updates.
-- **[Themes](docs/themes.md)**: the fourteen built in, and how to make your own.
+- **[Themes](docs/themes.md)**: the seventeen built in, and how to make your own.
 - **Agents**: run `arkos guide` in an Arkos terminal for how to show the user a video or a
   document and how to change the theme and settings.
 - **[Developing](docs/development.md)**: building from source, tests, releases and status.
