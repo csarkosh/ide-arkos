@@ -11,6 +11,7 @@ mod cache;
 mod chooser_sessions;
 mod chrome;
 mod color_schemes;
+mod bundled_fonts;
 mod font_sets;
 mod claude_folders;
 mod claude_theme;
@@ -6922,6 +6923,8 @@ fn main() {
         gpui::launch_as_accessory();
     }
     Application::new().with_assets(icons::Assets).run(move |cx: &mut App| {
+        // The presets' fonts are registered before any window opens.
+        bundled_fonts::register(cx);
         // gpui installs no menu and no quit binding of its own; the Quit action is handled below,
         // and by the project window once it exists.
         cx.bind_keys(keymap::bindings_for(&config.keybindings));

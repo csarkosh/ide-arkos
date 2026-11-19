@@ -945,7 +945,7 @@ there closes the window. A click hides the ring until the next key.
     presets use them), the dark ones first, each marked dark or light: its colours are used.
     Font lists "Default" (the Text section's family) and each font set once, by
     its title ("DM Sans + Roboto Mono", "Baskerville + Optima + PT Mono", "Departure Mono"); a set this Mac
-    has none of is "(not installed)". The font stays as you change the colour. Colours and fonts
+    has none of is "(not installed)" (the families the presets use ship inside Arkos, so none of the built-in sets is). The font stays as you change the colour. Colours and fonts
     are files in the `colors` and `fonts` folders of the config folder. To offer your own, add a
     colour file with "Add color…" (a preset file works too: its colours are written out as a
     colour file), and put a font file in the fonts folder ("Show fonts folder" opens it). Effect lists "None" and every effect

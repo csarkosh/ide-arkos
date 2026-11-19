@@ -112,6 +112,7 @@ jobs:
           KEY=$(sed -n 's/^ *"\(.*\)",$/\1/p' crates/protocol/src/release_key.rs | head -1)
           target/release/release-tool verify --public "$KEY" dist/manifest.json dist/manifest.json.sig
           [ "$(cat "dist/Arkos IDE.app/Contents/Resources/channel")" = release ] || { echo "the bundle is not on the release channel"; exit 1; }
+          [ -f "dist/Arkos IDE.app/Contents/Resources/Fonts/dm-sans/OFL.txt" ] || { echo "the bundle carries no font licences"; exit 1; }
           GOT=$("dist/Arkos IDE.app/Contents/MacOS/arkosd" --version)
           echo "$GOT"
           case "$GOT" in

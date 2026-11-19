@@ -16,6 +16,9 @@ OUT=$(mktemp -d)
 # nothing it runs ever uploads (bundle.sh writes one only for ARKOS_CHANNEL=release).
 ZIP=$(ARKOS_CHANNEL= sh packaging/bundle.sh "$VERSION" "$BIN" "$OUT")
 [ ! -e "$OUT/Arkos IDE.app/Contents/Resources/channel" ] || { echo "the dev bundle says it is a release"; exit 1; }
+for f in dm-sans/OFL.txt roboto-mono/OFL.txt cascadia-code/LICENSE monaspace-radon/LICENSE departure-mono/LICENSE; do
+  [ -f "$OUT/Arkos IDE.app/Contents/Resources/Fonts/$f" ] || { echo "the bundle lacks the font licence $f"; exit 1; }
+done
 sh packaging/manifest.sh "$VERSION" "$(git rev-parse --short HEAD)" "$ZIP" "file://$ZIP" "$OUT" > /dev/null
 KEYS=$("$BIN/release-tool" keygen)
 SK=$(echo "$KEYS" | sed -n 's/^secret: //p'); PK=$(echo "$KEYS" | sed -n 's/^public: //p')

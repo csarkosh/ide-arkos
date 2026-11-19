@@ -1484,3 +1484,4 @@ Things only a person at the screen can check, in order of value:
   it; the row fades in and out
 - Appearance entities: Settings, Custom: Lavender, Solar and Peach each listed once; a 0.8.54 Custom look (colour and font picked by preset name) looks the same after the update; Add color with a preset file adds its colours; Show fonts folder opens it
 - Runic scenes: Settings, Custom, Effect: Runic is one row "runic tokyo ▾" whose card lists Tokyo and Matrix City; picking Matrix City over Lavender's colours draws the Matrix street; a Custom Matrix look from before keeps the Matrix City
+- Bundled fonts: on a Mac without DM Sans, Roboto Mono, Cascadia Code, Monaspace or Departure Mono installed (Font Book shows none), Material Navy draws DM Sans and Roboto Mono, Watercolor Lavender Cascadia Code, Composition Notebook Monaspace Radon Frozen and Timo Purple Departure Mono; Settings' Font list marks none of them not installed

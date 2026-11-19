@@ -1348,7 +1348,9 @@ mod tests {
             std::fs::write(dir.path().join(format!("{name}.toml")), text).unwrap();
         }
         assert_eq!(colors(dir.path()).len(), 11);
-        assert_eq!(font_sets(dir.path()).len(), 5);
+        // The 0.8.54 notebook copy names "Monaspace Radon", which the built-in set no longer does
+        // (it names the bundled "Monaspace Radon Frozen"), so that one copy is a set of its own.
+        assert_eq!(font_sets(dir.path()).len(), 6);
         assert_eq!(load("lavender-watercolor", dir.path()).unwrap().font.prose.as_deref(), Some("Avenir Next"));
     }
 
@@ -1409,7 +1411,16 @@ mod tests {
             assert_eq!(new.semantic, old.semantic, "{name} semantic");
             assert_eq!(new.tree, old.tree, "{name} tree");
             assert_eq!(new.viewer, old.viewer, "{name} viewer");
-            assert_eq!(new.font, old.font, "{name} font");
+            if name == "composition-notebook" {
+                // The one deliberate font change: Monaspace's licence reserves the name, so the
+                // bundled static files are the family "Monaspace Radon Frozen".
+                let mut expected = old.font.clone();
+                assert_eq!(expected.terminal.as_deref(), Some("Monaspace Radon"));
+                expected.terminal = Some("Monaspace Radon Frozen".into());
+                assert_eq!(new.font, expected, "{name} font");
+            } else {
+                assert_eq!(new.font, old.font, "{name} font");
+            }
             assert_eq!(new.effect.as_ref().map(|e| e.name.as_str()), old.effect.as_ref().map(|e| e.name.as_str()), "{name} effect");
             let scene_of = |t: &Theme| {
                 let e = t.effect.as_ref()?;
@@ -1694,7 +1705,7 @@ mod tests {
         assert!(notebook.is_light());
         assert_eq!(notebook.recommended_effect(), Some("notebook"));
         let font = &notebook.font;
-        assert_eq!((font.ui.as_deref(), font.prose.as_deref(), font.terminal.as_deref()), (Some("Chalkboard SE"), Some("Chalkboard SE"), Some("Monaspace Radon")));
+        assert_eq!((font.ui.as_deref(), font.prose.as_deref(), font.terminal.as_deref()), (Some("Chalkboard SE"), Some("Chalkboard SE"), Some("Monaspace Radon Frozen")));
         assert_eq!(notebook.chrome.focus_ring, notebook.terminal.cursor, "the margin's red is the accent and the cursor");
     }
 

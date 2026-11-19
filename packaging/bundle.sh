@@ -23,6 +23,14 @@ sed "s/@VERSION@/$VERSION/g" "$(dirname "$0")/Info.plist.in" > "$APP/Contents/In
 cp "$BIN/arkos" "$BIN/arkosd" "$APP/Contents/MacOS/"
 chmod 755 "$APP/Contents/MacOS/arkos" "$APP/Contents/MacOS/arkosd"
 if [ -f "$(dirname "$0")/AppIcon.icns" ]; then cp "$(dirname "$0")/AppIcon.icns" "$APP/Contents/Resources/"; fi
+# The bundled fonts are embedded in the binary; their licences travel in the bundle, one folder
+# per family, as the licences require.
+FONTS="$(dirname "$0")/../crates/arkos/fonts/files"
+for family in dm-sans roboto-mono cascadia-code monaspace-radon departure-mono; do
+  mkdir -p "$APP/Contents/Resources/Fonts/$family"
+  cp "$FONTS/$family/OFL.txt" "$FONTS/$family/LICENSE" "$APP/Contents/Resources/Fonts/$family/" 2>/dev/null || true
+  ls "$APP/Contents/Resources/Fonts/$family" | grep -q . || { echo "bundle.sh: no licence for the $family font" >&2; exit 1; }
+done
 case "${ARKOS_CHANNEL:-}" in
   release) echo release > "$APP/Contents/Resources/channel" ;;
   "" | source) ;;
