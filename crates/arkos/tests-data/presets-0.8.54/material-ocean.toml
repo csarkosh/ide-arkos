@@ -1,0 +1,81 @@
+# The schema of every key is in docs/themes.md.
+# Material Ocean: the deep blue-black of the Material Theme's Ocean palette, with the material
+# effect (Cyrus, 2026-11-17: "a couple more popular dark theme options for Material"). Its frame
+# is the palette's contrast shade and its cards the palette's background; its text and comments
+# are lifted from the palette's so every colour clears the contrast rules of docs/themes.md.
+name = "material-ocean"
+title = "Material Ocean"
+group = "Material"
+appearance = "dark"
+
+[effect]
+name = "material"
+
+[font]
+prose = "DM Sans"
+ui = "DM Sans"
+terminal = "Roboto Mono"
+
+[chrome]
+window_bg = "#0f111a"
+title_bar = "#090b10"
+status_bar = "#090b10"
+sidebar = "#090b10"
+tab_bar = "#0f111a"
+tab_active = "#0f111a"
+tab_inactive = "#0f111a"
+border = "#232637"
+split_handle = "#232637"
+split_handle_hover = "#464b5d"
+focus_ring = "#84ffff"
+text = "#d5d9ee"
+text_dim = "#9aa0bd"
+banner = "#1a1c25"
+
+[terminal]
+background = "#0f111a"
+foreground = "#c8cde8"
+cursor = "#c8cde8"
+selection = "#28304a"
+black = "#1a1c25"
+red = "#f07178"
+green = "#c3e88d"
+yellow = "#ffcb6b"
+blue = "#82aaff"
+magenta = "#c792ea"
+cyan = "#89ddff"
+white = "#c8cde8"
+bright_black = "#7b81a6"
+bright_red = "#ff8b92"
+bright_green = "#ddffa7"
+bright_yellow = "#ffe585"
+bright_blue = "#9cc4ff"
+bright_magenta = "#e1acff"
+bright_cyan = "#a3f7ff"
+bright_white = "#eef0ff"
+
+[semantic]
+working = "#82aaff"
+waiting = "#f78c6c"
+bell = "#ffcb6b"
+error_banner = "#3a1a22"
+find_match = "#2b3350"
+find_current = "#5a4a14"
+
+[tree]
+added = "#c3e88d"
+modified = "#ffcb6b"
+deleted = "#f07178"
+untracked = "#89ddff"
+ignored = "#7b81a6"
+
+[viewer]
+keyword = "#c792ea"
+string = "#c3e88d"
+comment = "#7b81a6"
+number = "#f78c6c"
+function = "#82aaff"
+type_name = "#ffcb6b"
+constant = "#f78c6c"
+operator = "#89ddff"
+punctuation = "#89ddff"
