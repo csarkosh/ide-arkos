@@ -304,6 +304,48 @@ mod tests {
         assert!(differ > 2000, "only {differ} points differ");
     }
 
+    /// The sidebar's foot of Tokyo Rain's colours drawn with runic's scene `scene`, at t.
+    fn scene_frame(scene: &str, t: f32) -> Vec<crate::palette::Rgb> {
+        let mut theme = crate::theme::builtin("tokyo-rain").unwrap();
+        theme.effect.as_mut().unwrap().scene = Some(scene.into());
+        runic_frame(&theme, t, &window(gap(), 0.0))
+    }
+
+    /// How many points of the sidebar's scene band differ between two frames.
+    fn band_differ(a: &[crate::palette::Rgb], b: &[crate::palette::Rgb]) -> usize {
+        (20..220).flat_map(|x| (H - 220..H - 20).map(move |y| (x, y))).filter(|&(x, y)| at(a, x as f32, y as f32) != at(b, x as f32, y as f32)).count()
+    }
+
+    #[test]
+    fn on_the_gpu_the_new_cities_are_rainy_skylines_not_the_matrix_street() {
+        // The wash drew the Matrix street for any scene over 0.5; Seattle, San Francisco and
+        // London (2, 3 and 4) must be the rainy skyline with their own landmarks.
+        if !gpu() {
+            return;
+        }
+        let (tokyo, street) = (scene_frame("tokyo", 0.0), scene_frame("matrix-city", 0.0));
+        let apart = band_differ(&tokyo, &street);
+        for city in ["seattle", "san-francisco", "london"] {
+            let d = band_differ(&tokyo, &scene_frame(city, 0.0));
+            assert!(d * 2 < apart, "{city} differs from Tokyo in {d} points, as much as the street does ({apart})");
+        }
+    }
+
+    #[test]
+    fn on_the_gpu_each_rainy_city_draws_its_own_landmarks() {
+        if !gpu() {
+            return;
+        }
+        let cities = ["tokyo", "seattle", "san-francisco", "london"];
+        let frames: Vec<_> = cities.iter().map(|c| scene_frame(c, 0.0)).collect();
+        for i in 0..cities.len() {
+            for j in i + 1..cities.len() {
+                let d = band_differ(&frames[i], &frames[j]);
+                assert!(d > 800, "{} and {} differ in only {d} points", cities[i], cities[j]);
+            }
+        }
+    }
+
     #[test]
     fn on_the_gpu_the_scene_under_the_names_never_makes_the_dim_text_harder_to_read_than_the_rain() {
         if !gpu() {
@@ -318,8 +360,12 @@ mod tests {
         let worst = |frame: &[crate::palette::Rgb], dim: crate::palette::Rgb, y0: f32, y1: f32| {
             (14..226u32).flat_map(|x| (y0 as u32..y1 as u32).map(move |y| (x, y))).map(|(x, y)| contrast(dim, at(frame, x as f32, y as f32))).fold(f64::MAX, f64::min)
         };
-        for name in ["tokyo-rain", "matrix"] {
-            let theme = crate::theme::builtin(name).unwrap();
+        for name in ["tokyo-rain", "matrix", "seattle", "san-francisco", "london"] {
+            // The three rainy cities over Tokyo Rain's colours, as their presets will draw them.
+            let mut theme = crate::theme::builtin(if ["tokyo-rain", "matrix"].contains(&name) { name } else { "tokyo-rain" }).unwrap();
+            if !["tokyo-rain", "matrix"].contains(&name) {
+                theme.effect.as_mut().unwrap().scene = Some(name.into());
+            }
             let dim = theme.chrome.text_dim;
             for t in [0.0f32, 14.669] {
                 let frame = runic_frame(&theme, t, &window_to(gap(), 0.0, names_end));

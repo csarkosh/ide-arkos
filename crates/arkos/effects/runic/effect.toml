@@ -39,7 +39,8 @@ chrome_alpha = 0.0            # 0.0 to 1.0; the bars and the sidebar over the wa
 active_tab_alpha = 0.0        # 0.0 to 1.0; the active tab over the wash: clear, the wash paints
                               # it as a doorway with its line and its lamp
 text_contrast = 0.0           # 0.0 to 1.0; how far the text moves towards ink while the effect is on
-scenes = ["tokyo", "matrix-city"]  # the sidebar's scene a theme names with `[effect] scene`: a
-                              # rainy Tokyo skyline (Tokyo Rain), or a digital horizon (The Matrix)
-scene_titles = ["Tokyo", "Matrix City"]  # the names people see, in the order of scenes
+scenes = ["tokyo", "matrix-city", "seattle", "san-francisco", "london"]  # the sidebar's scene a
+                              # theme names with `[effect] scene`: a rainy city skyline (Tokyo,
+                              # Seattle, San Francisco, London) or the Matrix City's street
+scene_titles = ["Tokyo", "Matrix City", "Seattle", "San Francisco", "London"]  # the names people see
 scene_aliases = { city = "tokyo", code = "matrix-city" }  # the names a theme used before, which still work

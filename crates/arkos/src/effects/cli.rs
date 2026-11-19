@@ -575,7 +575,7 @@ mod tests {
         assert_eq!(
             out,
             format!(
-                "watercolor (built in)\nrunic (built in): tokyo (Tokyo), matrix-city (Matrix City)\nmaterial (built in)\nnotebook (built in)\noverworld (built in)\nbroken (folder, invalid: {}: scale must be 0.1 to 1.0 (was 2.0))\nneon (folder)\n",
+                "watercolor (built in)\nrunic (built in): tokyo (Tokyo), matrix-city (Matrix City), seattle (Seattle), san-francisco (San Francisco), london (London)\nmaterial (built in)\nnotebook (built in)\noverworld (built in)\nbroken (folder, invalid: {}: scale must be 0.1 to 1.0 (was 2.0))\nneon (folder)\n",
                 effects.join("broken").join("effect.toml").display()
             )
         );
@@ -583,7 +583,7 @@ mod tests {
         assert_eq!(code, 0);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v[0], serde_json::json!({ "name": "watercolor", "source": "built-in", "scenes": [] }));
-        assert_eq!(v[1], serde_json::json!({ "name": "runic", "source": "built-in", "scenes": [{ "name": "tokyo", "title": "Tokyo" }, { "name": "matrix-city", "title": "Matrix City" }] }));
+        assert_eq!(v[1], serde_json::json!({ "name": "runic", "source": "built-in", "scenes": [{ "name": "tokyo", "title": "Tokyo" }, { "name": "matrix-city", "title": "Matrix City" }, { "name": "seattle", "title": "Seattle" }, { "name": "san-francisco", "title": "San Francisco" }, { "name": "london", "title": "London" }] }));
         assert_eq!(v[2], serde_json::json!({ "name": "material", "source": "built-in", "scenes": [] }));
         assert_eq!(v[3], serde_json::json!({ "name": "notebook", "source": "built-in", "scenes": [] }));
         assert_eq!(v[4], serde_json::json!({ "name": "overworld", "source": "built-in", "scenes": [] }));
@@ -882,7 +882,7 @@ mod tests {
         let (_, out, _) = run(&["list", "--json"], &env);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         let runic = v.as_array().unwrap().iter().find(|r| r["name"] == "runic").unwrap();
-        assert_eq!(runic["scenes"], serde_json::json!([{ "name": "tokyo", "title": "Tokyo" }, { "name": "matrix-city", "title": "Matrix City" }]));
+        assert_eq!(runic["scenes"], serde_json::json!([{ "name": "tokyo", "title": "Tokyo" }, { "name": "matrix-city", "title": "Matrix City" }, { "name": "seattle", "title": "Seattle" }, { "name": "san-francisco", "title": "San Francisco" }, { "name": "london", "title": "London" }]));
     }
 
     #[test]

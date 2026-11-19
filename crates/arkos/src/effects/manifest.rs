@@ -480,9 +480,19 @@ mod tests {
     }
 
     #[test]
+    fn runic_has_five_scenes_in_order_with_their_titles() {
+        // Cyrus, 2026-11-18: Seattle, Frisco and London rain beside Tokyo, each with its iconic
+        // skyline; the wash numbers scenes in this order (1 is the Matrix street).
+        let m = runic();
+        assert_eq!(m.scenes, ["tokyo", "matrix-city", "seattle", "san-francisco", "london"]);
+        let titles: Vec<String> = (0..5).map(|i| m.scene_title(i)).collect();
+        assert_eq!(titles, ["Tokyo", "Matrix City", "Seattle", "San Francisco", "London"]);
+    }
+
+    #[test]
     fn runic_s_scenes_are_tokyo_and_matrix_city_titled_for_people() {
         let m = runic();
-        assert_eq!(m.scenes, ["tokyo", "matrix-city"]);
+        assert_eq!(&m.scenes[..2], ["tokyo", "matrix-city"]);
         assert_eq!((m.scene_title(0), m.scene_title(1)), ("Tokyo".to_string(), "Matrix City".to_string()));
         assert_eq!(m.scene_name("code"), Some("matrix-city"));
         assert_eq!(m.scene_name("tokyo"), Some("tokyo"));
@@ -840,7 +850,7 @@ mod tests {
         let m = parse(b.manifest).unwrap();
         assert_eq!((m.frame_rate, m.scale, m.ui_text_bump), (30, 0.5, 0.0), "a pixel a point on a Retina display: full size cost 11 to 14 ms a frame there");
         assert_eq!((m.gap, m.title_pad, m.sidebar_pad, m.bar_end_clear), (16.0, 8.0, 2.0, 48.0), "room for the frames, the plates, the chevron and the lamp left of the +");
-        assert_eq!(m.scenes, ["tokyo", "matrix-city"]);
+        assert_eq!(m.scenes, ["tokyo", "matrix-city", "seattle", "san-francisco", "london"]);
         assert!(m.sidebar_margin, "the sidebar keeps a pane's margins, so it is framed as one");
         assert_eq!(m.menu_paper_alpha(), 0.92, "a menu's rows read over the rain, though the panes' paper lets the wash through");
         assert_eq!(m.edge_gap, Some(11.0), "6 points of ground between a frame and the window's edge, as between two frames");

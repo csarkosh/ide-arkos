@@ -850,6 +850,17 @@ float window_lit(float2 q, int layer, float t) {
     return lit;
 }
 
+// Whether scene number `scene` is the Matrix City's street (scene 1 in runic's `effect.toml`);
+// every other number is a rainy city skyline (0 Tokyo, 2 Seattle, 3 San Francisco, 4 London).
+bool street_scene(float scene) {
+    return abs(scene - 1.0) < 0.5;
+}
+
+// Which rainy city scene number `scene` is: 0 Tokyo, 2 Seattle, 3 San Francisco, 4 London.
+int rain_city(float scene) {
+    return int(scene + 0.5);
+}
+
 // A landmark's half width at depth r (0 at its top, 1 at its foot): Tokyo Tower's flared lattice
 // or the Skytree's slender spire, decks wider.
 float tower_half(float r, int which) {
@@ -893,7 +904,7 @@ float3 through(float3 bg, float3 want) {
 float3 pane_night(constant ArkosInputs& u, float2 at, float to_foot, float seed, float t, float3 green) {
     float3 bg = u.colors[ARKOS_TERMINAL_BG].rgb;
     float3 dim_c = u.colors[ARKOS_TEXT_DIM].rgb;
-    bool city = u.scene < 0.5;
+    bool city = !street_scene(u.scene);
     float3 want = bg;
     if (at.y < BODY_TOP_H) {
         float f = 1.0 - at.y / BODY_TOP_H;
@@ -947,7 +958,7 @@ float3 pane_night(constant ArkosInputs& u, float2 at, float to_foot, float seed,
 // that changes now and then, in the code. Returns `tab` where neither is.
 float3 tab_lamp(constant ArkosInputs& u, float2 p, float4 r, float t, float seed, float3 green, float3 tab) {
     float2 q = p - float2(r.x + TAB_LAMP_IN, r.y + r.w * 0.5 + 0.5);
-    if (u.scene < 0.5) {
+    if (!street_scene(u.scene)) {
         float3 red = u.colors[ARKOS_ANSI + 1].rgb;
         float gutter = 0.85 + 0.15 * sin(t * TAB_LAMP_FLICKERS * 6.2832 + seed * 3.0) * sin(t * 2.3 + seed);
         float e = length(q / float2(3.2, 4.2));
@@ -1039,6 +1050,210 @@ float3 storm_clouds(float2 p, float top, float bottom, float x0, float w, float 
 
 // The city's scene at q (points into the band, band sz), over the sky colour sky: clouds, a bolt
 // now and then, the far and near skyline with Tokyo Tower and the Skytree, lit windows, rain.
+float seg_dist(float2 p, float2 a, float2 b);
+
+// A profile landmark at p over col: its axis at cx, its top at ttop, its foot at the band's foot
+// (h); hw is its half width at p's depth. Filled between the two skylines' shades, its outline lit
+// in the city's pale light. Returns whether p is on it, so the windows behind are put out.
+bool landmark_at(float2 p, float cx, float ttop, float h, float hw, float3 far_c, float3 near_c, float3 edge_c, float edge_k, thread float3& col) {
+    if (p.y < ttop || p.y > h) {
+        return false;
+    }
+    float dx = abs(p.x - cx);
+    if (dx > hw) {
+        return false;
+    }
+    col = mix(far_c, near_c, 0.4);
+    col = mix(col, edge_c, (dx > hw - 0.9 ? 1.0 : 0.0) * edge_k);
+    return true;
+}
+
+// A beacon on a landmark's top at (x, y), blinking red as Tokyo's do.
+float3 beacon_at(float2 p, float2 at, float t, constant ArkosInputs& u, float3 col) {
+    float bd = length(p - at);
+    if (bd < 2.2) {
+        float on = fract(t * 0.7) < 0.5 ? 1.0 : 0.25;
+        col = light_on(col, u.colors[ARKOS_ANSI + 1].rgb, (1.0 - bd / 2.2) * on, u.dark);
+    }
+    return col;
+}
+
+// Mount Rainier, faint and snow-capped behind Seattle's far skyline.
+float3 rainier_at(float2 q, float2 sz, float3 white_c, float3 col) {
+    float px = sz.x * 0.58, py = sz.y * 0.3, base = sz.y * 0.66;
+    float slope = (base - py) / (sz.x * 0.5);
+    // A little unevenness along its slopes, so it reads as a mountain rather than a triangle.
+    float rough = 1.5 * sin(q.x * 0.21) + 0.8 * sin(q.x * 0.57 + 1.3);
+    float edge = py + abs(q.x - px) * slope + rough;
+    if (q.y < edge || q.y > base) {
+        return col;
+    }
+    float3 c = mix(col, white_c, 0.07);
+    // Its snow: the upper third, its line ragged.
+    float snow = py + (base - py) * (0.36 + 0.05 * sin(q.x * 0.35));
+    if (q.y < snow) {
+        c = mix(col, white_c, 0.16);
+    }
+    // Its ridge lit faintly.
+    return mix(c, white_c, (q.y - edge < 0.9 ? 0.12 : 0.0));
+}
+
+// Seattle's landmarks: the Space Needle and the Columbia Center.
+float3 seattle_at(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 far_c, float3 near_c, float3 green, float3 white_c, float3 col, thread float& win) {
+    float3 edge_c = mix(white_c, green, 0.4);
+    // The Space Needle: a spire, its cap and saucer, and a stalk narrowing to its waist.
+    float cx = sz.x * 0.3, ttop = sz.y * 0.1;
+    float r = (q.y - ttop) / (sz.y - ttop);
+    float hw = r < 0.07 ? 0.6 : r < 0.1 ? 3.0 : r < 0.13 ? mix(4.0, 11.0, (r - 0.1) / 0.03) : r < 0.16 ? mix(11.0, 2.5, (r - 0.13) / 0.03) : (r < 0.6 ? 1.6 + 1.6 * pow((0.6 - r) / 0.44, 2.0) : 1.6 + 5.0 * pow((r - 0.6) / 0.4, 2.0));
+    if (landmark_at(q, cx, ttop, sz.y, hw, far_c, near_c, edge_c, 0.85, col)) {
+        win = 0.0;
+        // The saucer's rim, lit white.
+        if (abs(r - 0.13) < 0.006) {
+            col = mix(col, white_c, 0.7);
+        }
+    }
+    col = beacon_at(q, float2(cx, ttop - 1.5), t, u, col);
+    // The Columbia Center: the tallest tower, stepped in near its top.
+    float bx = sz.x * 0.74, btop = sz.y * 0.04;
+    float br = (q.y - btop) / (sz.y - btop);
+    float bhw = br < 0.08 ? 6.0 : br < 0.18 ? 8.0 : 10.0;
+    if (landmark_at(q, bx, btop, sz.y, bhw, far_c, near_c, edge_c, 0.7, col)) {
+        win = window_lit(q, 0, t) * 0.7;
+        // Its steps' ledges, lit.
+        if (abs(br - 0.08) < 0.004 || abs(br - 0.18) < 0.004) {
+            col = mix(col, edge_c, 0.7);
+        }
+    }
+    return beacon_at(q, float2(bx, btop - 1.5), t, u, col);
+}
+
+// San Francisco's landmarks: the Transamerica Pyramid, Salesforce Tower with its lit crown, and
+// a Golden Gate tower pair at the right edge with the cable's curve, in the theme's red.
+float3 san_francisco_at(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 far_c, float3 near_c, float3 green, float3 white_c, float3 col, thread float& win) {
+    float3 edge_c = mix(white_c, green, 0.4);
+    // The Golden Gate first, farthest: its two towers, the deck and the cable between.
+    float3 orange = mix(u.colors[ARKOS_ANSI + 1].rgb, u.colors[ARKOS_ANSI + 3].rgb, 0.25);
+    float deck = sz.y * 0.68, gtop = sz.y * 0.24;
+    float g0 = sz.x * 0.86, g1 = sz.x * 1.08;
+    float bridge = 0.0;
+    if (q.y > gtop - 2.0 && q.y < sz.y) {
+        for (int k = 0; k < 2; k++) {
+            float gx = k == 0 ? g0 : g1;
+            // Two legs and the cross bars between them.
+            float legs = min(abs(q.x - (gx - 4.0)), abs(q.x - (gx + 4.0)));
+            if (q.y > gtop && legs < 0.9) {
+                bridge = max(bridge, 0.85);
+            }
+            float rr = (q.y - gtop) / (deck - gtop);
+            bool bar = abs(q.x - gx) < 4.0 && (rr > -0.01 && (abs(rr - 0.0) < 0.025 || abs(rr - 0.3) < 0.02 || abs(rr - 0.6) < 0.02));
+            if (bar) {
+                bridge = max(bridge, 0.75);
+            }
+        }
+        // The cable: sagging between the towers, and down to the deck to the left.
+        float mid = 0.5 * (g0 + g1), half_span = 0.5 * (g1 - g0);
+        float cy = q.x > g0 ? gtop + (deck - 4.0 - gtop) * (1.0 - pow((q.x - mid) / half_span, 2.0)) : gtop + (deck - gtop) * saturate((g0 - q.x) / (sz.x * 0.28));
+        if (q.x > g0 - sz.x * 0.28 && abs(q.y - cy) < 0.7) {
+            bridge = max(bridge, 0.7);
+        }
+        // The suspenders, faint, from the cable down to the deck.
+        if (q.x > g0 - sz.x * 0.28 && q.y > cy && q.y < deck && fract(q.x / 4.0) < 0.15) {
+            bridge = max(bridge, 0.25);
+        }
+        // The deck.
+        if (q.x > g0 - sz.x * 0.3 && abs(q.y - deck) < 0.8) {
+            bridge = max(bridge, 0.8);
+        }
+    }
+    col = mix(col, orange, bridge);
+    // The Transamerica Pyramid: a tall thin pyramid, its wings a little out from its sides.
+    float cx = sz.x * 0.28, ttop = sz.y * 0.06;
+    float r = (q.y - ttop) / (sz.y - ttop);
+    float hw = r < 0.06 ? 0.5 : 0.5 + 9.0 * r + ((r > 0.42 && r < 0.6) ? 2.2 : 0.0);
+    if (landmark_at(q, cx, ttop, sz.y, hw, far_c, near_c, edge_c, 0.85, col)) {
+        win = 0.0;
+    }
+    col = beacon_at(q, float2(cx, ttop - 1.5), t, u, col);
+    // Salesforce Tower: rounding to its top, its crown a lattice of light.
+    float sx = sz.x * 0.6, stop = sz.y * 0.02;
+    float sr = (q.y - stop) / (sz.y - stop);
+    float shw = sr < 0.1 ? 7.0 * sqrt(max(sr, 0.0) / 0.1) : 7.0 + 1.5 * (sr - 0.1);
+    if (landmark_at(q, sx, stop, sz.y, shw, far_c, near_c, edge_c, 0.7, col)) {
+        win = sr > 0.12 ? window_lit(q, 0, t) * 0.6 : 0.0;
+        if (sr > 0.01 && sr < 0.1) {
+            float3 crown = mix(white_c, u.colors[ARKOS_FOCUS_RING].rgb, 0.5);
+            float lattice = (fract((q.x - sx) / 2.5) < 0.35 || fract(q.y / 2.5) < 0.35) ? 0.55 : 0.2;
+            col = mix(col, crown, lattice * (0.75 + 0.25 * sin(t * 0.8)));
+        }
+    }
+    return col;
+}
+
+// London's landmarks: the Elizabeth Tower with its lit clock face, the London Eye turning slowly,
+// the Shard, and the Gherkin.
+float3 london_at(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 far_c, float3 near_c, float3 green, float3 white_c, float3 col, thread float& win) {
+    float3 edge_c = mix(white_c, green, 0.4);
+    // The London Eye, farthest: its rim, spokes, pods turning, and the legs it stands on.
+    float ex = sz.x * 0.4, ey = sz.y * 0.42, er = sz.y * 0.17;
+    float2 d = q - float2(ex, ey);
+    float dist = length(d);
+    float eye = 0.0;
+    if (dist < er + 2.0) {
+        eye = max(eye, (1.0 - smoothstep(0.0, 1.0, abs(dist - er))) * 0.8);
+        float ang = atan2(d.y, d.x) + t * 0.03;
+        float spoke = abs(fract(ang / (6.2832 / 16.0) + 0.5) - 0.5) * (6.2832 / 16.0) * dist;
+        if (dist < er) {
+            eye = max(eye, (1.0 - smoothstep(0.0, 0.7, spoke)) * 0.3);
+        }
+        // The pods, on the rim, turning with it.
+        float pod = abs(fract(ang / (6.2832 / 24.0) + 0.5) - 0.5) * (6.2832 / 24.0) * er;
+        if (abs(dist - er - 1.2) < 1.3 && pod < 1.2) {
+            eye = max(eye, 0.85);
+        }
+    }
+    float legs = min(seg_dist(q, float2(ex, ey), float2(ex - er * 0.45, sz.y)), seg_dist(q, float2(ex, ey), float2(ex + er * 0.45, sz.y)));
+    eye = max(eye, (1.0 - smoothstep(0.0, 0.9, legs)) * 0.6);
+    col = mix(col, edge_c, eye);
+    // The Elizabeth Tower: its spire, belfry, clock stage and shaft.
+    float cx = sz.x * 0.17, ttop = sz.y * 0.1;
+    float r = (q.y - ttop) / (sz.y - ttop);
+    float hw = r < 0.1 ? 0.4 + 5.0 * r / 0.1 : r < 0.18 ? 5.5 : r < 0.32 ? 6.5 : 5.5;
+    if (landmark_at(q, cx, ttop, sz.y, hw, far_c, near_c, edge_c, 0.85, col)) {
+        win = 0.0;
+    }
+    // Its clock face, lit warm, with its hands.
+    float2 clock = float2(cx, ttop + (sz.y - ttop) * 0.25);
+    float cd = length(q - clock);
+    if (cd < 4.6) {
+        float3 warm = mix(u.colors[ARKOS_ANSI + 3].rgb, white_c, 0.45);
+        col = mix(col, warm, cd > 3.7 ? 0.9 : 0.55);
+        float a = t * 0.1;
+        float hands = min(seg_dist(q, clock, clock + 2.6 * float2(sin(a), -cos(a))), seg_dist(q, clock, clock + 1.8 * float2(sin(a / 12.0 + 1.0), -cos(a / 12.0 + 1.0))));
+        col = mix(col, near_c, (1.0 - smoothstep(0.0, 0.6, hands)) * 0.8);
+    }
+    // The Shard: a tall glass pyramid, broken into splinters at its tip, its facets faint.
+    float sx = sz.x * 0.63, stop = sz.y * 0.0;
+    float sr = (q.y - stop) / (sz.y - stop);
+    float shw = sr < 0.07 ? 0.6 + 1.6 * step(0.5, fract(q.y / 3.0 + q.x / 5.0)) : 0.3 + 11.0 * sr;
+    if (landmark_at(q, sx, stop, sz.y, shw, far_c, near_c, edge_c, 0.8, col)) {
+        win = 0.0;
+        float facets = min(abs(q.x - sx), min(abs(q.x - (sx - shw * 0.45)), abs(q.x - (sx + shw * 0.45))));
+        col = mix(col, edge_c, (1.0 - smoothstep(0.0, 0.7, facets)) * 0.25);
+    }
+    col = beacon_at(q, float2(sx, stop + 1.5), t, u, col);
+    // The Gherkin: a rounded bullet, its spiral bands darker.
+    float gx = sz.x * 0.86, gtop = sz.y * 0.3;
+    float gr = (q.y - gtop) / (sz.y - gtop);
+    float ghw = gr < 0.38 ? 8.5 * pow(sin(saturate(gr / 0.38) * 1.5708), 0.55) : 8.5 * (1.0 - 0.2 * (gr - 0.38) / 0.62);
+    if (landmark_at(q, gx, gtop, sz.y, ghw, far_c, near_c, edge_c, 0.75, col)) {
+        win = 0.0;
+        if (fract((q.x - gx) / 4.0 + q.y / 4.0) < 0.3) {
+            col = mix(col, near_c, 0.5);
+        }
+    }
+    return col;
+}
+
 float3 city_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 green, float3 white_c, float3 sb) {
     float3 bg = u.colors[ARKOS_WINDOW_BG].rgb;
     // The sky: what is under it (sb), lit low by the city's glow.
@@ -1076,12 +1291,23 @@ float3 city_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
     float3 far_c = mix(mix(sb, bg, 0.6), green, 0.05);
     float3 near_c = bg * 0.55;
     float win = 0.0;
+    int city = rain_city(u.scene);
+    if (city == 2) {
+        col = rainier_at(q, sz, white_c, col);
+    }
     if (q.y > tower_top(q.x, sz.y, 0)) {
         col = far_c;
         win = window_lit(q, 0, t) * 0.6;
     }
+    if (city == 2) {
+        col = seattle_at(q, sz, t, u, far_c, near_c, green, white_c, col, win);
+    } else if (city == 3) {
+        col = san_francisco_at(q, sz, t, u, far_c, near_c, green, white_c, col, win);
+    } else if (city == 4) {
+        col = london_at(q, sz, t, u, far_c, near_c, green, white_c, col, win);
+    }
     // Tokyo Tower, a little left of the middle, and the Skytree to the right.
-    for (int which = 0; which < 2; which++) {
+    for (int which = 0; which < (city == 0 ? 2 : 0); which++) {
         float cx = sz.x * (which == 0 ? 0.3 : 0.78);
         float ttop = sz.y * (which == 0 ? 0.2 : 0.02);
         float r = (q.y - ttop) / (sz.y - ttop);
@@ -2372,7 +2598,6 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
     float3 tail_c = mix(u.colors[ARKOS_ANSI + 1].rgb, green, 0.15);
     float floor_v = GRID_SPEED * GRID_Z;
     float run = t * floor_v;
-    float block = float(CROSS_EVERY) * GRID_Z;
     float sig = t - floor(t / SIG_CYCLE) * SIG_CYCLE;
     float cross_on = ROAD_GREEN + ALL_RED;
     // Only near the road at p's depth (its lights sit just above the floor) can a car light p.
@@ -2671,7 +2896,6 @@ float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 
     // Only the sidewalk on p's side of the road can have a person on p.
     int near_side = q.x < cx ? 0 : 1;
     for (int side = near_side; side < (by_walk ? near_side + 1 : near_side); side++) {
-        float sx = (side == 0 ? -1.0 : 1.0) * edge_x;
         float out_x = side == 0 ? -1.0 : 1.0;
         for (int j = 0; j < PEOPLE; j++) {
             float2 key = float2(float(j), float(side) * 17.0 + 61.0);
@@ -2816,11 +3040,11 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
                 art = float3(0.0);
                 for (int s = 0; s < 4; s++) {
                     float2 qs = q + float2((s & 1) == 0 ? -o : o, (s & 2) == 0 ? -o : o);
-                    art += u.scene > 0.5 ? code_scene(qs, band.zw, u.time, u, green, white_c, col) : city_scene(qs, band.zw, u.time, u, green, white_c, col);
+                    art += street_scene(u.scene) ? code_scene(qs, band.zw, u.time, u, green, white_c, col) : city_scene(qs, band.zw, u.time, u, green, white_c, col);
                 }
                 art *= 0.25;
             } else {
-                art = u.scene > 0.5 ? code_scene(q, band.zw, u.time, u, green, white_c, col) : city_scene(q, band.zw, u.time, u, green, white_c, col);
+                art = street_scene(u.scene) ? code_scene(q, band.zw, u.time, u, green, white_c, col) : city_scene(q, band.zw, u.time, u, green, white_c, col);
             }
             float under = p.y < names_end ? 1.0 - UNDER_NAMES : saturate(1.0 - (p.y - names_end) / SOFT_BUFFER) * (1.0 - UNDER_NAMES);
             art = mix(art, col, max(under, 1.0 - saturate(q.y / 60.0)) * (q.y < 60.0 ? 1.0 : 0.0) + under * (q.y >= 60.0 ? 1.0 : 0.0));
@@ -2828,7 +3052,7 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
         }
         // The city's data, from half the sidebar's height (or the scene's top, if higher) down to
         // the things it joins, softened under the names as the scene is.
-        if (u.scene > 0.5 && band.w >= SCENE_MIN_H && p.y < band.y + band.w) {
+        if (street_scene(u.scene) && band.w >= SCENE_MIN_H && p.y < band.y + band.w) {
             float top = min(side.y + side.w * 0.5, band.y);
             float3 rained = data_rain(p, top, band.y + band.w * HZ_AT, band.x + band.z * 0.5, band.z * 0.9, u.time, green, white_c, col, u);
             float under = p.y < names_end ? 1.0 - UNDER_NAMES : saturate(1.0 - (p.y - names_end) / SOFT_BUFFER) * (1.0 - UNDER_NAMES);
@@ -2836,7 +3060,7 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
         }
         // The city's storm clouds, from half the sidebar's height (or the scene's top, if higher)
         // down into the scene, softened under the names as the scene is.
-        if (u.scene < 0.5 && band.w >= SCENE_MIN_H) {
+        if (!street_scene(u.scene) && band.w >= SCENE_MIN_H) {
             float top = min(side.y + side.w * 0.5, band.y);
             float bottom = band.y + band.w * CLOUD_FOOT;
             uint bkey = 0u;
