@@ -5,7 +5,7 @@
 use crate::chrome::{self, TITLE_BAR_H, UI_FONT};
 use crate::config::{self, AppearanceMode, Config, EffectChoice, FontConfig, Look, PageWidth, StartAtLogin, WideTables};
 use crate::theme::{self, Theme};
-use crate::{aux, effects, keymap, paths, telemetry_cli};
+use crate::{aux, color_schemes, effects, font_sets, keymap, paths, telemetry_cli};
 use ::telemetry::visits_app::{Crashes, Mode, Usage};
 use gpui::{
     div, prelude::*, px, size, AnyElement, App, Bounds, ClipboardItem, Context, ElementId, FocusHandle, Hsla, KeyDownEvent, PathPromptOptions, SharedString,
@@ -442,18 +442,17 @@ pub struct Row {
 /// The custom look's Color list: every theme, the dark ones first, each saying which it is; a
 /// file that does not load is marked and not clickable; a colour named that is not installed is
 /// listed first, so the list always shows what is in force.
-pub fn color_rows(themes: &[(String, theme::Source, Option<theme::Appearance>)], shown: &std::collections::BTreeMap<String, theme::Shown>, current: &str) -> Vec<Row> {
-    let title = |name: &str| shown.get(name).map_or_else(|| theme::title_case(name), |s| s.title.clone());
+pub fn color_rows(colors: &[theme::ColorEntry], current: &str) -> Vec<Row> {
     let mut rows = Vec::new();
-    if !themes.iter().any(|(name, _, _)| name == current) {
+    if !colors.iter().any(|e| e.name == current) {
         rows.push(Row { label: format!("{current} (not installed)"), value: None, current: true });
     }
     for slot in [Some(theme::Appearance::Dark), Some(theme::Appearance::Light), None] {
-        for (name, source, kind) in themes {
-            let broken = matches!(source, theme::Source::Invalid(_)) || kind.is_none();
+        for e in colors {
+            let broken = matches!(e.source, theme::Source::Invalid(_)) || e.appearance.is_none();
             match (slot, broken) {
-                (None, true) => rows.push(Row { label: format!("{} (invalid)", title(name)), value: None, current: name == current }),
-                (Some(k), false) if *kind == Some(k) => rows.push(Row { label: format!("{} ({})", title(name), k.word()), value: Some(name.clone()), current: name == current }),
+                (None, true) => rows.push(Row { label: format!("{} (invalid)", e.title), value: None, current: e.name == current }),
+                (Some(k), false) if e.appearance == Some(k) => rows.push(Row { label: format!("{} ({})", e.title, k.word()), value: Some(e.name.clone()), current: e.name == current }),
                 _ => {}
             }
         }
@@ -501,30 +500,30 @@ pub fn families(font: &theme::ThemeFont) -> Vec<&str> {
 /// is the custom look's own (`custom.font`); with none the fonts in force are `shown`, those of
 /// the theme showing. A set none of whose families `has` finds is marked and not clickable; a
 /// theme named that is not installed is listed first, so the list always shows what is in force.
-pub fn font_rows(fonts: &[(String, theme::ThemeFont)], choice: Option<&str>, shown: &theme::ThemeFont, plain: &str, has: &dyn Fn(&str) -> bool) -> Vec<Row> {
+pub fn font_rows(fonts: &[theme::FontEntry], choice: Option<&str>, shown: &theme::ThemeFont, plain: &str, has: &dyn Fn(&str) -> bool) -> Vec<Row> {
     let none = theme::ThemeFont::default();
     let in_force: Option<&theme::ThemeFont> = match choice {
         None => Some(shown),
         Some(config::PLAIN_FONT) => Some(&none),
-        Some(name) => fonts.iter().find(|(n, _)| n == name).map(|(_, f)| f),
+        Some(name) => fonts.iter().find(|e| e.name == name).map(|e| &e.font),
     };
     let mut rows = Vec::new();
     if let (None, Some(name)) = (in_force, choice) {
         rows.push(Row { label: format!("{name} (not installed)"), value: None, current: true });
     }
     rows.push(Row { label: format!("Default ({plain})"), value: Some(config::PLAIN_FONT.into()), current: in_force.is_some_and(|f| f.is_default()) });
-    let mut seen: Vec<&theme::ThemeFont> = Vec::new();
-    for (name, font) in fonts {
-        if font.is_default() || seen.contains(&font) {
+    for e in fonts {
+        if e.font.is_default() {
             continue;
         }
-        seen.push(font);
-        let named = families(font);
-        let (label, current) = (named.join(", "), in_force == Some(font));
-        rows.push(if named.iter().any(|f| has(f)) {
-            Row { label, value: Some(name.clone()), current }
+        let current = match choice {
+            Some(name) => e.name == name,
+            None => in_force == Some(&e.font),
+        };
+        rows.push(if families(&e.font).iter().any(|f| has(f)) {
+            Row { label: e.title.clone(), value: Some(e.name.clone()), current }
         } else {
-            Row { label: format!("{label} (not installed)"), value: None, current }
+            Row { label: format!("{} (not installed)", e.title), value: None, current }
         });
     }
     rows
@@ -625,7 +624,8 @@ pub struct SettingsWindow {
     /// The effects folder and the built-ins, as `effects::manifest::list` reads them.
     effects: Vec<(String, effects::manifest::Source)>,
     /// Every theme that loads with its fonts (`theme::fonts`), for the custom look's Font list.
-    theme_fonts: Vec<(String, theme::ThemeFont)>,
+    theme_fonts: Vec<theme::FontEntry>,
+    theme_colors: Vec<theme::ColorEntry>,
     /// Every family installed, to mark a font set this Mac has none of.
     families: std::collections::HashSet<String>,
     fonts: Vec<String>,
@@ -734,7 +734,8 @@ pub fn open(cx: &mut App, over: Option<Retained<NSWindow>>, shown: Shown, theme:
                 open_group: None,
                 group_closed_at: None,
                 effects: effects::manifest::list(&effects::effects_dir()),
-                theme_fonts: theme::fonts(&paths::themes_dir()),
+                theme_fonts: theme::font_sets(&paths::themes_dir()),
+                theme_colors: theme::colors(&paths::themes_dir()),
                 families: cx.text_system().all_font_names().into_iter().collect(),
                 fonts,
                 import_error: None,
@@ -907,7 +908,8 @@ impl SettingsWindow {
         self.privacy.forget();
         self.themes = theme::kinds(&paths::themes_dir());
         self.theme_shown = theme::shown(&paths::themes_dir());
-        self.theme_fonts = theme::fonts(&paths::themes_dir());
+        self.theme_fonts = theme::font_sets(&paths::themes_dir());
+        self.theme_colors = theme::colors(&paths::themes_dir());
         self.effects = effects::manifest::list(&effects::effects_dir());
         cx.notify();
     }
@@ -964,13 +966,15 @@ impl SettingsWindow {
         self.import_error = None;
         let (copied, named) = match adding {
             Adding::Effect => (effects::manifest::import_folder(&src, &effects::effects_dir(), replace), effects::manifest::load_folder(&src).map(|e| e.manifest.name)),
+            Adding::Color => (color_schemes::import_file(&src, &paths::themes_dir(), replace).map(|(name, _)| name), theme::validate_file(&src).or_else(|e| color_schemes::parse(&std::fs::read_to_string(&src).unwrap_or_default()).map(|s| s.name).map_err(|_| e))),
             _ => (theme::import_file(&src, &paths::themes_dir(), replace).map(|(name, _)| name), theme::validate_file(&src)),
         };
         match copied {
             Ok(name) => {
                 self.themes = theme::kinds(&paths::themes_dir());
                 self.theme_shown = theme::shown(&paths::themes_dir());
-                self.theme_fonts = theme::fonts(&paths::themes_dir());
+                self.theme_fonts = theme::font_sets(&paths::themes_dir());
+                self.theme_colors = theme::colors(&paths::themes_dir());
                 self.effects = effects::manifest::list(&effects::effects_dir());
                 let edits = match adding {
                     Adding::Preset => vec![edit(&["theme", theme_key_for(self.shown.config.appearance.mode, system_is_dark)], name.as_str())],
@@ -1417,11 +1421,25 @@ impl SettingsWindow {
         // own, the preset the mode picks. A new colour pins the fonts on screen the first time.
         let (shown, plain_font) = (self.theme.name.clone(), self.theme.font.is_default());
         let pinned = cfg.clone();
-        let colors = color_rows(&self.themes, &self.theme_shown, cfg.custom.color.as_deref().unwrap_or(&self.theme.name)).into_iter().map(|r| Row { label: in_theme_list(&r.label), ..r }).collect();
+        // `custom.color` may name a preset (a 0.8.54 config); the row checked is its scheme.
+        let current = match cfg.custom.color.as_deref() {
+            Some(name) if !self.theme_colors.iter().any(|e| e.name == name) => theme::load(name, &paths::themes_dir()).map_or_else(|_| name.to_string(), |t| t.color),
+            Some(name) => name.to_string(),
+            None => self.theme.color.clone(),
+        };
+        let colors = color_rows(&self.theme_colors, &current).into_iter().map(|r| Row { label: in_theme_list(&r.label), ..r }).collect();
         let color = self.rows_list("Color", "custom-color", colors, enabled, c, cx, move |value| {
             color_edits(&pinned, value, &shown, plain_font).into_iter().map(|(keys, value)| edit(&keys, value.as_str())).collect()
         });
-        let font_rows = font_rows(&self.theme_fonts, cfg.custom.font.as_deref(), &self.theme.font, &cfg.font.family, &|f| self.families.contains(f));
+        // `custom.font` may name a preset (a 0.8.54 config); the row checked is its font set.
+        let font_choice = match cfg.custom.font.as_deref() {
+            Some(name) if name != config::PLAIN_FONT && !self.theme_fonts.iter().any(|e| e.name == name) => theme::font_for(Some(name), &self.theme, &paths::themes_dir())
+                .ok()
+                .and_then(|f| self.theme_fonts.iter().find(|e| e.font == f).map(|e| e.name.clone()))
+                .or_else(|| Some(name.to_string())),
+            other => other.map(str::to_string),
+        };
+        let font_rows = font_rows(&self.theme_fonts, font_choice.as_deref(), &self.theme.font, &cfg.font.family, &|f| self.families.contains(f));
         let font = self.rows_list("Font", "custom-font", font_rows, enabled, c, cx, |value| vec![edit(&["custom", "font"], value)]);
         let effect_rows = custom_effect_rows(&cfg.effect_choice(), self.theme.recommended_effect(), &self.effects);
         let effect = self.rows_list("Effect", "custom-effect", effect_rows, enabled, c, cx, |value| vec![edit(&["custom", "effect"], value)]);
@@ -1434,7 +1452,8 @@ impl SettingsWindow {
                 .pt(px(6.0))
                 .flex()
                 .gap(px(6.0))
-                .child(self.folder_pill("colors-folder", "Show colors folder", paths::themes_dir(), enabled, c, cx))
+                .child(self.folder_pill("colors-folder", "Show colors folder", color_schemes::dir_of(&paths::themes_dir()), enabled, c, cx))
+                .child(self.folder_pill("fonts-folder", "Show fonts folder", font_sets::dir_of(&paths::themes_dir()), enabled, c, cx))
                 .child(self.folder_pill("effects-folder", "Show effects folder", effects::effects_dir(), enabled, c, cx))
                 .into_any_element(),
         );
@@ -1947,19 +1966,20 @@ mod tests {
         use crate::config::EffectChoice;
         use crate::effects::manifest::Source;
         use crate::theme::{Appearance, Source as ThemeSource};
+        let entry = |name: &str, title: &str, source: ThemeSource, appearance: Option<Appearance>| theme::ColorEntry { name: name.into(), title: title.into(), appearance, source };
         let themes = vec![
-            ("navy".to_string(), ThemeSource::BuiltIn, Some(Appearance::Dark)),
-            ("arabia-solar".to_string(), ThemeSource::BuiltIn, Some(Appearance::Light)),
-            ("tokyo-rain".to_string(), ThemeSource::BuiltIn, Some(Appearance::Dark)),
-            ("broken".to_string(), ThemeSource::Invalid("bad".into()), None),
+            entry("navy", "Material Navy", ThemeSource::BuiltIn, Some(Appearance::Dark)),
+            entry("peach", "Solar Arabia", ThemeSource::BuiltIn, Some(Appearance::Light)),
+            entry("rain", "Tokyo Rain", ThemeSource::BuiltIn, Some(Appearance::Dark)),
+            entry("broken", "Broken", ThemeSource::Invalid("bad".into()), None),
         ];
         let row = |label: &str, value: Option<&str>, current: bool| Row { label: label.to_string(), value: value.map(str::to_string), current };
         assert_eq!(
-            color_rows(&themes, &theme::shown(std::path::Path::new("/nonexistent")), "tokyo-rain"),
-            vec![row("Material Navy (dark)", Some("navy"), false), row("Tokyo Rain (dark)", Some("tokyo-rain"), true), row("Solar Arabia (light)", Some("arabia-solar"), false), row("Broken (invalid)", None, false)]
+            color_rows(&themes, "rain"),
+            vec![row("Material Navy (dark)", Some("navy"), false), row("Tokyo Rain (dark)", Some("rain"), true), row("Solar Arabia (light)", Some("peach"), false), row("Broken (invalid)", None, false)]
         );
         // A colour that is not installed is still shown as the one in force.
-        assert_eq!(color_rows(&themes, &theme::shown(std::path::Path::new("/nonexistent")), "gone")[0], row("gone (not installed)", None, true));
+        assert_eq!(color_rows(&themes, "gone")[0], row("gone (not installed)", None, true));
         let listed = vec![
             ("watercolor".to_string(), Source::BuiltIn),
             ("overworld".to_string(), Source::BuiltIn),
@@ -2004,31 +2024,75 @@ mod tests {
         let row = |label: &str, value: Option<&str>, current: bool| Row { label: label.into(), value: value.map(str::to_string), current };
         let set = |prose: &str, ui: &str, terminal: &str| ThemeFont { prose: Some(prose.into()), ui: Some(ui.into()), terminal: Some(terminal.into()), grid: None };
         let (pixel, serif, hand) = (set("Departure Mono", "Departure Mono", "Departure Mono"), set("Baskerville", "Optima", "PT Mono"), set("Chalkboard SE", "Chalkboard SE", "Monaspace Radon"));
-        let fonts = vec![
-            ("navy".to_string(), ThemeFont::default()),
-            ("timo-purple".to_string(), pixel.clone()),
-            ("peach-watercolor".to_string(), serif.clone()),
-            ("arabia-solar".to_string(), pixel.clone()),
-            ("composition-notebook".to_string(), hand),
-        ];
+        let entry = |name: &str, title: &str, font: ThemeFont| theme::FontEntry { name: name.into(), title: title.into(), font };
+        let fonts = vec![entry("pixel", "Pixel", pixel.clone()), entry("serif", "Serif", serif.clone()), entry("hand", "Hand", hand)];
         let has = |f: &str| !f.starts_with("Chalkboard") && !f.starts_with("Monaspace");
-        // The pixel face is one row though two themes name it, and a set this Mac has none of
-        // is marked and cannot be picked.
+        // Each set is a row labelled by its title, and a set this Mac has none of is marked and
+        // cannot be picked.
         assert_eq!(
-            font_rows(&fonts, Some("arabia-solar"), &serif, "Menlo", &has),
-            vec![
-                row("Default (Menlo)", Some("default"), false),
-                row("Departure Mono", Some("timo-purple"), true),
-                row("Baskerville, Optima, PT Mono", Some("peach-watercolor"), false),
-                row("Chalkboard SE, Monaspace Radon (not installed)", None, false),
-            ]
+            font_rows(&fonts, Some("pixel"), &serif, "Menlo", &has),
+            vec![row("Default (Menlo)", Some("default"), false), row("Pixel", Some("pixel"), true), row("Serif", Some("serif"), false), row("Hand (not installed)", None, false)]
         );
-        // `default`, and a theme that names no fonts, are the plain family.
+        // `default` is the plain family.
         assert!(font_rows(&fonts, Some("default"), &serif, "Menlo", &has)[0].current);
-        assert!(font_rows(&fonts, Some("navy"), &serif, "Menlo", &has)[0].current);
         // With no font of its own the custom look draws in the fonts of the theme showing.
         assert!(font_rows(&fonts, None, &serif, "Menlo", &has)[2].current);
         assert_eq!(font_rows(&fonts, Some("gone"), &serif, "Menlo", &has)[0], row("gone (not installed)", None, true));
+    }
+
+    #[test]
+    fn the_custom_colour_list_shows_lavender_once() {
+        let colors = theme::colors(std::path::Path::new("/nonexistent"));
+        let rows = color_rows(&colors, "navy");
+        assert_eq!(rows.iter().filter(|r| r.label.starts_with("Lavender")).count(), 1);
+        assert_eq!(rows.len(), 11);
+    }
+
+    #[test]
+    fn the_custom_colour_row_checked_is_the_scheme_showing_for_an_old_preset_name() {
+        let dir = std::path::Path::new("/nonexistent");
+        let shown = theme::load("lavender-watercolor", dir).unwrap();
+        let rows = color_rows(&theme::colors(dir), &shown.color);
+        let checked: Vec<_> = rows.iter().filter(|r| r.current).collect();
+        assert_eq!(checked.len(), 1);
+        assert_eq!(checked[0].value.as_deref(), Some("lavender"));
+    }
+
+    #[test]
+    fn the_custom_font_list_labels_each_set_by_its_title() {
+        let fonts = theme::font_sets(std::path::Path::new("/nonexistent"));
+        let rows = font_rows(&fonts, None, &theme::ThemeFont::default(), "Menlo", &|_| true);
+        let labels: Vec<&str> = rows.iter().skip(1).map(|r| r.label.as_str()).collect();
+        let titles: Vec<&str> = fonts.iter().filter(|f| !f.font.is_default()).map(|f| f.title.as_str()).collect();
+        assert_eq!(labels, titles);
+    }
+
+    #[test]
+    fn adding_a_preset_as_a_colour_writes_its_colours_out_as_a_colour_file() {
+        let root = tempfile::tempdir().unwrap();
+        let themes = root.path().join("themes");
+        std::fs::create_dir_all(&themes).unwrap();
+        let src = root.path().join("src.toml");
+        std::fs::write(&src, theme::BUILTIN.iter().find(|(n, _)| *n == "peach-watercolor").unwrap().1).unwrap();
+        let (name, replaced) = crate::color_schemes::import_file(&src, &themes, false).unwrap();
+        assert_eq!((name.as_str(), replaced), ("peach-watercolor", false));
+        let written = crate::color_schemes::load("peach-watercolor", &themes).unwrap();
+        assert!(written.same_colors(&theme::load("peach-watercolor", std::path::Path::new("/nonexistent")).unwrap()));
+        assert!(crate::color_schemes::dir_of(&themes).join("peach-watercolor.toml").is_file());
+        assert_eq!(crate::color_schemes::import_file(&src, &themes, false), Err("exists".to_string()));
+        assert_eq!(crate::color_schemes::import_file(&src, &themes, true).map(|(_, r)| r), Ok(true));
+    }
+
+    #[test]
+    fn adding_a_colour_file_copies_it_into_the_colors_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let themes = root.path().join("themes");
+        let src = root.path().join("mine.toml");
+        let text = crate::color_schemes::BUILTIN.iter().find(|(n, _)| *n == "solar").unwrap().1.replace("name = \"solar\"", "name = \"mine\"");
+        std::fs::write(&src, &text).unwrap();
+        let (name, replaced) = crate::color_schemes::import_file(&src, &themes, false).unwrap();
+        assert_eq!((name.as_str(), replaced), ("mine", false));
+        assert_eq!(std::fs::read_to_string(crate::color_schemes::dir_of(&themes).join("mine.toml")).unwrap(), text);
     }
 
     #[test]

@@ -79,6 +79,7 @@ impl FontSet {
     }
 
     /// The name a person reads: the `title`, else the set's name in title case.
+    #[cfg_attr(not(test), allow(dead_code))] // Only the tests read it; the lists use `FontEntry::title`.
     pub fn title(&self) -> String {
         self.title.clone().unwrap_or_else(|| theme::title_case(&self.name))
     }

@@ -86,6 +86,39 @@ pub fn load(name: &str, themes_dir: &Path) -> Result<ColorScheme, String> {
     }
 }
 
+/// Adds a colour scheme to the user's colours folder from `src`: a colour file is copied under
+/// its own name, a preset file (either form) has its colours written out as a colour file named
+/// after the preset. Returns the scheme's name and whether it replaced a file. A name already
+/// there is `Err("exists")` unless `replace`.
+pub fn import_file(src: &Path, themes_dir: &Path, replace: bool) -> Result<(String, bool), String> {
+    if src.extension().and_then(|e| e.to_str()) != Some("toml") {
+        return Err("only .toml colour files can be added".into());
+    }
+    let text = std::fs::read_to_string(src).map_err(|e| format!("cannot read {}: {e}", src.display()))?;
+    let (scheme, text) = match parse(&text) {
+        Ok(scheme) => (scheme, text),
+        Err(_) => {
+            let t = theme::parse_in(&text, Some(themes_dir))?;
+            let scheme = ColorScheme { name: t.name.clone(), title: t.title.clone(), appearance: t.appearance, chrome: t.chrome, terminal: t.terminal, semantic: t.semantic, tree: t.tree, viewer: t.viewer };
+            let out = toml::to_string_pretty(&scheme).map_err(|e| format!("cannot write the colours out: {e}"))?;
+            (scheme, out)
+        }
+    };
+    let name = scheme.name;
+    if !theme::is_bare_name(&name) || name.starts_with('.') {
+        return Err(format!("colour scheme name {name:?} must be a bare file name that does not start with a dot"));
+    }
+    let dir = dir_of(themes_dir);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let dest = dir.join(format!("{name}.toml"));
+    let existed = dest.exists();
+    if (existed || BUILTIN.iter().any(|(b, _)| *b == name)) && !replace {
+        return Err("exists".into());
+    }
+    std::fs::write(&dest, text).map_err(|e| format!("cannot write {}: {e}", dest.display()))?;
+    Ok((name, existed))
+}
+
 impl ColorScheme {
     /// A theme of this scheme's colours alone: its name, title and appearance, no font, no
     /// effect and no group.

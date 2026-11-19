@@ -130,7 +130,6 @@ fn old_form_presets(dir: &Path) -> Vec<(String, Theme)> {
 /// a built-in's name listed in its place as a file), the other colour files sorted, then each
 /// old-form preset file of `themes_dir` whose colours match no scheme listed so far, named and
 /// titled as the preset.
-#[cfg_attr(not(test), allow(dead_code))] // The settings view calls it from Task 5 on.
 pub fn colors(themes_dir: &Path) -> Vec<ColorEntry> {
     use crate::color_schemes as cs;
     let folder = cs::dir_of(themes_dir);
@@ -190,7 +189,6 @@ pub struct FontEntry {
 /// Every font set to show, each once: the built-in sets, the other font files sorted (one that
 /// does not parse is left out), then the non-default fonts of each old-form preset file of
 /// `themes_dir` that match no set listed so far, named and titled as the preset.
-#[cfg_attr(not(test), allow(dead_code))] // The settings view calls it from Task 5 on.
 pub fn font_sets(themes_dir: &Path) -> Vec<FontEntry> {
     use crate::font_sets as fs;
     let folder = fs::dir_of(themes_dir);
@@ -250,6 +248,7 @@ pub fn font_for(choice: Option<&str>, theme: &Theme, themes_dir: &Path) -> Resul
 
 /// Every theme that loads, of `themes_dir` and the built-ins in `list`'s order, with its fonts:
 /// what a custom look's font may be picked from.
+#[cfg(test)]
 pub fn fonts(themes_dir: &Path) -> Vec<(String, ThemeFont)> {
     list(themes_dir).into_iter().filter_map(|(name, _)| load(&name, themes_dir).ok().map(|t| (name, t.font))).collect()
 }
