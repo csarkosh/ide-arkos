@@ -1,7 +1,10 @@
 # The schema of every key is in docs/themes.md.
 # Tokyo Rain (it was `navy-runic`, and that name still loads it): the Rain colours, drawn with the runic effect and its Tokyo scene.
+# It is the default of the Rain group, which also holds Seattle, Frisco and London Rain.
 name = "tokyo-rain"
 color = "rain"
+group = "Rain"
+group_default = true
 
 [effect]
 name = "runic"

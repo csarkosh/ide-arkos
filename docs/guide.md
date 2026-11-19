@@ -654,9 +654,9 @@ config or `arkos effect use space` still draws it. It is a calm night sky of twi
 nebula, a planet drifting across over several minutes, and a shooting star every ten seconds
 or so; pane edges, videos and
 tables outlined in glowing lines with soft bars of light sweeping along them every few seconds, the highlights glowing softly, and the text as a still
-holo display (a cool tint, faint scanlines and a soft glow), emoji with it. Matrix and Tokyo Rain come
+holo display (a cool tint, faint scanlines and a soft glow), emoji with it. Matrix and the Rain presets (Tokyo, Seattle, Frisco and London Rain) come
 with `runic`: faint columns of runes falling at different speeds behind everything, pane edges in
-thin lines of the theme's accent (green under Matrix, blue under Tokyo Rain), and the text as glowing type; now and then a letter flickers, mirrored
+thin lines of the theme's accent (green under Matrix, blue under the Rain presets), and the text as glowing type; now and then a letter flickers, mirrored
 and brighter for a tenth of a second. In a terminal, a cell whose text changes scrambles through
 random characters for a moment before it settles (longer while Claude is working), and fresh
 text starts brighter and cools over a second and a half. Each pane wears a neon frame in the
@@ -675,6 +675,9 @@ frame is. The sidebar keeps the same margins as a pane, framed as one, and every
 keeps the same narrow ground round it, to the window's edges and between frames. The
 title bar is a strip of storm clouds, its words and icons on plates, and a chevron marks the
 sidebar's selected row. At the sidebar's foot, below the names, stands the theme's scene:
+Seattle Rain, Frisco Rain and London Rain draw their own cities in the same rain: Seattle with the Space Needle,
+the Columbia Center and Mount Rainier faint behind; San Francisco with the Transamerica Pyramid, Salesforce Tower's lit crown and the Golden Gate's red towers
+and cable at the right edge; London with the Elizabeth Tower's lit clock face, the Shard, the London Eye turning slowly and the Gherkin.
 Tokyo Rain's is Tokyo at night in the rain (Tokyo Tower in orange lattice, the Skytree, lit
 windows, storm clouds, and now and then a soft bolt of lightning made of runes that glows up, lights
 the clouds and fades over a second);
@@ -721,7 +724,7 @@ carry any effect, since an effect reads the theme's colours. A theme with its ow
 preset, and the presets are one of the two looks Settings, Appearance offers; the other, Custom,
 puts any theme's colours in any theme's fonts under any effect or none (see [Config](#config)). `arkos effect use
 <name>` does the same from a shell. Each preset's own effect: `watercolor`
-for Peach Watercolor and Lavender Watercolor, `runic` for Matrix and Tokyo Rain, `material` for the Material themes (Material Navy, the default dark theme, Material Ocean, Material Palenight and Material Sublime; Material Solar, Material Bright and Material Lavender), `notebook` for Composition Notebook, `overworld` for Timo Purple and Solar Arabia.
+for Peach Watercolor and Lavender Watercolor, `runic` for Matrix and Tokyo, Seattle, Frisco and London Rain, `material` for the Material themes (Material Navy, the default dark theme, Material Ocean, Material Palenight and Material Sublime; Material Solar, Material Bright and Material Lavender), `notebook` for Composition Notebook, `overworld` for Timo Purple and Solar Arabia.
 Effects stay out of About, Settings, Keybindings and the chooser, which keep their plain look.
 Under Reduce Motion the wash holds still and draws only when something changes, no letter
 glitches, a changed cell settles at once, and a hidden,
@@ -926,7 +929,7 @@ there closes the window. A click hides the ring until the next key.
     presets folder". Each preset reads by its title, in lower case (material navy, the matrix,
     tokyo rain…), and a group is one row that reads as its group and its choice, "watercolor
     lavender ▾": in the dark list Material (Navy, the default, Ocean, Palenight or Sublime, Sublime Text's
-    classic Monokai), in the light
+    classic Monokai) and Rain (Tokyo, the default, Seattle, Frisco or London), in the light
     list Watercolor (Lavender, the default, or Peach) and Material (Solar, the default, Bright or
     Lavender); the dark and the light Material rows keep their own picks. Both lists are in alphabetical order, a group by its name. A group's row keeps its last pick: choosing Material Solar leaves the Watercolor
     row on Watercolor Peach if that is what you chose there, and the row shows the group's default
@@ -947,7 +950,7 @@ there closes the window. A click hides the ring until the next key.
     colour file with "Add color…" (a preset file works too: its colours are written out as a
     colour file), and put a font file in the fonts folder ("Show fonts folder" opens it). Effect lists "None" and every effect
     installed, built in or a folder; an effect with scenes is one row, so Runic reads "runic
-    tokyo ▾" and opens a card listing Tokyo and Matrix City with a check on the current one, and
+    tokyo ▾" and opens a card listing Tokyo, Matrix City, Seattle, San Francisco and London with a check on the current one, and
     the scene is chosen with the effect, whatever the colour (Matrix City over Lavender's colours
     draws the Matrix street; a Custom look saved before keeps the scene its colour gave); one that does not load is "(invalid)" and one named that
     is missing "(not installed)". The custom look is one look: it does not follow macOS's
@@ -1161,7 +1164,7 @@ theme sets every key Claude Code documents, on the `dark-ansi` base:
 | `rainbow_violet_shimmer` | text | `ansi:white` | the `ultrathink` rainbow, shimmer |
 
 Themes are one TOML file each in `~/.config/arkos/themes/`; `navy`,
-`timo-purple` (deep violet with cyan accents, set in the pixel face Departure Mono, recommending `overworld`), `arabia-solar` (Timo Purple by day: Peach Watercolor's sand and cream with a burnt-orange accent, the same pixel face and the same `overworld`, which on a light theme draws a desert kingdom of the old tales: a domed palace with minarets, palms, dunes and a carpet riding the air, under a sun, and has new terminal text gather out of blown sand, gold then orange then ink), `peach-watercolor` (warm cream and peach, recommending `watercolor`; it was `peach-light`, and `peach-material` in 0.8.11), `lavender-watercolor` (a VS Code lavender look, recommending `watercolor`; it was `lavender-light`), `lavender-material` (the same colours and fonts, recommending `material`; the old names still load, and a config naming one is moved to the new name at launch), `matrix` (a soft sage-mint on a very dark green-grey), `tokyo-rain` (Navy's colours with rune rain in Navy's blue), the last two recommending the `runic` effect, `composition-notebook` (ruled off-white pages in blue-black ballpoint, Chalkboard SE and Monaspace Radon, recommending `notebook`) and `material` (white cards on a pale cool frame with a deep blue accent, DM Sans and Roboto Mono, recommending `material`) are built in. Each theme says whether it is dark or light, and Settings lists the dark ones under Dark theme and the light ones under Light theme. [themes.md](themes.md) documents every key;
+`timo-purple` (deep violet with cyan accents, set in the pixel face Departure Mono, recommending `overworld`), `arabia-solar` (Timo Purple by day: Peach Watercolor's sand and cream with a burnt-orange accent, the same pixel face and the same `overworld`, which on a light theme draws a desert kingdom of the old tales: a domed palace with minarets, palms, dunes and a carpet riding the air, under a sun, and has new terminal text gather out of blown sand, gold then orange then ink), `peach-watercolor` (warm cream and peach, recommending `watercolor`; it was `peach-light`, and `peach-material` in 0.8.11), `lavender-watercolor` (a VS Code lavender look, recommending `watercolor`; it was `lavender-light`), `lavender-material` (the same colours and fonts, recommending `material`; the old names still load, and a config naming one is moved to the new name at launch), `matrix` (a soft sage-mint on a very dark green-grey), `tokyo-rain` (Navy's colours with rune rain in Navy's blue), with `seattle-rain`, `frisco-rain` and `london-rain` (the same colours and rain over Seattle, San Francisco and London; the four are the Rain group in the dark presets list, Tokyo Rain its default), the last five recommending the `runic` effect, `composition-notebook` (ruled off-white pages in blue-black ballpoint, Chalkboard SE and Monaspace Radon, recommending `notebook`) and `material` (white cards on a pale cool frame with a deep blue accent, DM Sans and Roboto Mono, recommending `material`) are built in. Each theme says whether it is dark or light, and Settings lists the dark ones under Dark theme and the light ones under Light theme. [themes.md](themes.md) documents every key;
 `arkos theme list` names the available themes and `arkos theme validate <file>` checks one
 (`ok: {name}`, or the error and exit status 1).
 "Extract built-in themes" in the palette writes the built-ins there to copy from. A theme chosen

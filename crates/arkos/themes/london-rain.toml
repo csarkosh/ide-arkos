@@ -1,0 +1,9 @@
+# The schema of every key is in docs/themes.md.
+# London Rain: the Rain colours, drawn with the runic effect and its London scene.
+name = "london-rain"
+color = "rain"
+group = "Rain"
+
+[effect]
+name = "runic"
+scene = "london"

@@ -373,7 +373,7 @@ pub struct ViewerColors {
 }
 
 /// The embedded themes: (name, file text). Extracted verbatim by `extract`.
-pub const BUILTIN: [(&str, &str); 14] = [
+pub const BUILTIN: [(&str, &str); 17] = [
     ("navy", include_str!("../themes/navy.toml")),
     ("timo-purple", include_str!("../themes/timo-purple.toml")),
     ("peach-watercolor", include_str!("../themes/peach-watercolor.toml")),
@@ -381,6 +381,9 @@ pub const BUILTIN: [(&str, &str); 14] = [
     ("lavender-material", include_str!("../themes/lavender-material.toml")),
     ("matrix", include_str!("../themes/matrix.toml")),
     ("tokyo-rain", include_str!("../themes/tokyo-rain.toml")),
+    ("seattle-rain", include_str!("../themes/seattle-rain.toml")),
+    ("frisco-rain", include_str!("../themes/frisco-rain.toml")),
+    ("london-rain", include_str!("../themes/london-rain.toml")),
     ("composition-notebook", include_str!("../themes/composition-notebook.toml")),
     ("material", include_str!("../themes/material.toml")),
     ("arabia-solar", include_str!("../themes/arabia-solar.toml")),
@@ -1260,7 +1263,7 @@ mod tests {
         assert_eq!(m.terminal.background, m.chrome.window_bg);
         assert_eq!(m.terminal.foreground, Rgb { r: 0xa9, g: 0xd1, b: 0xa6 });
         assert_eq!(m.recommended_effect(), Some("runic"));
-        assert_eq!(BUILTIN.len(), 14);
+        assert_eq!(BUILTIN.len(), 17);
     }
 
     #[test]
@@ -1397,7 +1400,7 @@ mod tests {
 
     #[test]
     fn every_built_in_preset_draws_exactly_as_it_did_in_0_8_54() {
-        assert_eq!(FIXTURES.len(), BUILTIN.len());
+        assert_eq!(FIXTURES.len() + 3, BUILTIN.len(), "the three Rain cities are new since 0.8.54");
         for (name, old_text) in FIXTURES {
             let old = toml::from_str::<Theme>(old_text).unwrap_or_else(|e| panic!("{name} fixture: {e}"));
             let new = builtin(name).unwrap_or_else(|| panic!("{name} does not load"));
@@ -1417,8 +1420,10 @@ mod tests {
             assert_eq!(new.kind(), old.kind(), "{name} kind");
             assert_eq!(new.appearance, old.appearance, "{name} appearance");
             assert_eq!(new.title, old.title, "{name} title");
-            assert_eq!(new.group, old.group, "{name} group");
-            assert_eq!(new.group_default, old.group_default, "{name} group_default");
+            if name != "tokyo-rain" {
+                assert_eq!(new.group, old.group, "{name} group");
+                assert_eq!(new.group_default, old.group_default, "{name} group_default");
+            }
             assert_eq!(parse(old_text).unwrap().chrome, old.chrome, "{name} still parses in the old form");
         }
     }
@@ -1491,7 +1496,7 @@ mod tests {
             assert_eq!(t.kind(), declared, "{name}");
         }
         let dark: Vec<&str> = BUILTIN.iter().filter(|(n, _)| builtin(n).unwrap().kind() == Appearance::Dark).map(|(n, _)| *n).collect();
-        assert_eq!(dark, ["navy", "timo-purple", "matrix", "tokyo-rain", "material-ocean", "material-palenight", "material-sublime"]);
+        assert_eq!(dark, ["navy", "timo-purple", "matrix", "tokyo-rain", "seattle-rain", "frisco-rain", "london-rain", "material-ocean", "material-palenight", "material-sublime"]);
     }
 
     #[test]
@@ -1646,7 +1651,7 @@ mod tests {
         assert_eq!(load("navy", dir.path()).unwrap().chrome.window_bg, rgb(0x000000));
         std::fs::write(dir.path().join("mine.toml"), FIXTURES[1].1.replace("name = \"timo-purple\"", "name = \"mine\"")).unwrap();
         assert_eq!(load("mine", dir.path()).unwrap().name, "mine");
-        assert_eq!(names(dir.path()), vec!["arabia-solar".to_string(), "composition-notebook".to_string(), "lavender-material".to_string(), "lavender-watercolor".to_string(), "material".to_string(), "material-ocean".to_string(), "material-palenight".to_string(), "material-solar".to_string(), "material-sublime".to_string(), "matrix".to_string(), "mine".to_string(), "navy".to_string(), "peach-watercolor".to_string(), "timo-purple".to_string(), "tokyo-rain".to_string()]);
+        assert_eq!(names(dir.path()), vec!["arabia-solar".to_string(), "composition-notebook".to_string(), "frisco-rain".to_string(), "lavender-material".to_string(), "lavender-watercolor".to_string(), "london-rain".to_string(), "material".to_string(), "material-ocean".to_string(), "material-palenight".to_string(), "material-solar".to_string(), "material-sublime".to_string(), "matrix".to_string(), "mine".to_string(), "navy".to_string(), "peach-watercolor".to_string(), "seattle-rain".to_string(), "timo-purple".to_string(), "tokyo-rain".to_string()]);
         let e = load("nope", dir.path()).unwrap_err();
         assert!(e.contains("nope") && e.contains(&dir.path().display().to_string()), "{e}");
         assert!(load("../navy", dir.path()).is_err());
@@ -1661,7 +1666,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("themes");
         let wrote = extract(&sub).unwrap();
-        assert_eq!(wrote.len(), 14);
+        assert_eq!(wrote.len(), 17);
         assert_eq!(std::fs::read_to_string(sub.join("navy.toml")).unwrap(), BUILTIN[0].1);
         std::fs::write(sub.join("navy.toml"), "edited").unwrap();
         assert!(extract(&sub).unwrap().is_empty(), "nothing to write the second time");
@@ -1729,6 +1734,28 @@ mod tests {
     }
 
     #[test]
+    fn the_rain_group_holds_tokyo_seattle_frisco_and_london_rain_with_tokyo_its_default() {
+        let members: Vec<&str> = BUILTIN.iter().map(|(n, _)| *n).filter(|n| builtin(n).unwrap().group.as_deref() == Some("Rain")).collect();
+        assert_eq!(members, ["tokyo-rain", "seattle-rain", "frisco-rain", "london-rain"]);
+        let defaults: Vec<&str> = members.iter().copied().filter(|n| builtin(n).unwrap().group_default).collect();
+        assert_eq!(defaults, ["tokyo-rain"]);
+        assert!(members.iter().all(|n| builtin(n).unwrap().kind() == Appearance::Dark));
+        let titles: Vec<String> = members.iter().map(|n| builtin(n).unwrap().title.unwrap_or_else(|| title_case(n))).collect();
+        assert_eq!(titles, ["Tokyo Rain", "Seattle Rain", "Frisco Rain", "London Rain"]);
+    }
+
+    #[test]
+    fn each_rain_preset_draws_the_rain_colours_and_its_own_city() {
+        for (name, scene) in [("tokyo-rain", "tokyo"), ("seattle-rain", "seattle"), ("frisco-rain", "san-francisco"), ("london-rain", "london")] {
+            let t = builtin(name).unwrap_or_else(|| panic!("{name} is built in"));
+            assert_eq!(t.color, "rain", "{name}");
+            assert!(t.font.is_default(), "{name} has no font of its own");
+            let e = t.effect.as_ref().unwrap_or_else(|| panic!("{name} has an effect"));
+            assert_eq!((e.name.as_str(), e.scene.as_deref()), ("runic", Some(scene)), "{name}");
+        }
+    }
+
+    #[test]
     fn timo_purple_recommends_the_overworld_effect() {
         assert_eq!(builtin("timo-purple").unwrap().recommended_effect(), Some("overworld"));
     }
@@ -1749,7 +1776,7 @@ mod tests {
         // every built-in through `contrast_pairs`.
         let t = builtin("timo-purple").expect("ships");
         assert_eq!(t.name, "timo-purple");
-        assert_eq!(BUILTIN.len(), 14);
+        assert_eq!(BUILTIN.len(), 17);
         assert_eq!(t.chrome.focus_ring, t.terminal.cyan, "the accent is the cyan");
         assert_eq!(t.terminal.cursor, t.terminal.cyan);
     }
@@ -1768,15 +1795,16 @@ mod tests {
         assert_eq!(l[4], ("lavender-material".into(), Source::BuiltIn));
         assert_eq!(l[5], ("matrix".into(), Source::BuiltIn));
         assert_eq!(l[6], ("tokyo-rain".into(), Source::BuiltIn));
-        assert_eq!(l[7], ("composition-notebook".into(), Source::BuiltIn));
-        assert_eq!(l[8], ("material".into(), Source::BuiltIn));
-        assert_eq!(l[9], ("arabia-solar".into(), Source::BuiltIn));
-        assert_eq!(l[10], ("material-solar".into(), Source::BuiltIn));
-        assert_eq!(l[11], ("material-ocean".into(), Source::BuiltIn));
-        assert_eq!(l[12], ("material-palenight".into(), Source::BuiltIn));
-        assert_eq!(l[13], ("material-sublime".into(), Source::BuiltIn));
-        assert!(matches!(&l[14], (n, Source::Invalid(e)) if n == "broken" && !e.is_empty()));
-        assert_eq!(l[15], ("mine".into(), Source::File));
+        assert_eq!((l[7].0.as_str(), l[8].0.as_str(), l[9].0.as_str()), ("seattle-rain", "frisco-rain", "london-rain"));
+        assert_eq!(l[10], ("composition-notebook".into(), Source::BuiltIn));
+        assert_eq!(l[11], ("material".into(), Source::BuiltIn));
+        assert_eq!(l[12], ("arabia-solar".into(), Source::BuiltIn));
+        assert_eq!(l[13], ("material-solar".into(), Source::BuiltIn));
+        assert_eq!(l[14], ("material-ocean".into(), Source::BuiltIn));
+        assert_eq!(l[15], ("material-palenight".into(), Source::BuiltIn));
+        assert_eq!(l[16], ("material-sublime".into(), Source::BuiltIn));
+        assert!(matches!(&l[17], (n, Source::Invalid(e)) if n == "broken" && !e.is_empty()));
+        assert_eq!(l[18], ("mine".into(), Source::File));
         assert_eq!(validate_file(&dir.path().join("mine.toml")), Ok("mine".into()));
         assert!(validate_file(&dir.path().join("broken.toml")).is_err());
         assert!(validate_file(&dir.path().join("none.toml")).is_err());
@@ -1790,15 +1818,16 @@ mod tests {
         assert_eq!(lines[4], "lavender-material (built in, light)");
         assert_eq!(lines[5], "matrix (built in, dark)");
         assert_eq!(lines[6], "tokyo-rain (built in, dark)");
-        assert_eq!(lines[7], "composition-notebook (built in, light)");
-        assert_eq!(lines[8], "material (built in, light)");
-        assert_eq!(lines[9], "arabia-solar (built in, light)");
-        assert_eq!(lines[10], "material-solar (built in, light)");
-        assert_eq!(lines[11], "material-ocean (built in, dark)");
-        assert_eq!(lines[12], "material-palenight (built in, dark)");
-        assert_eq!(lines[13], "material-sublime (built in, dark)");
-        assert!(lines[14].starts_with("broken (file, invalid: "));
-        assert_eq!(lines[15], "mine (file, dark)");
+        assert_eq!((lines[7], lines[8], lines[9]), ("seattle-rain (built in, dark)", "frisco-rain (built in, dark)", "london-rain (built in, dark)"));
+        assert_eq!(lines[10], "composition-notebook (built in, light)");
+        assert_eq!(lines[11], "material (built in, light)");
+        assert_eq!(lines[12], "arabia-solar (built in, light)");
+        assert_eq!(lines[13], "material-solar (built in, light)");
+        assert_eq!(lines[14], "material-ocean (built in, dark)");
+        assert_eq!(lines[15], "material-palenight (built in, dark)");
+        assert_eq!(lines[16], "material-sublime (built in, dark)");
+        assert!(lines[17].starts_with("broken (file, invalid: "));
+        assert_eq!(lines[18], "mine (file, dark)");
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["validate".into(), dir.path().join("mine.toml").display().to_string()], dir.path(), &mut out, &mut err), 0);
         assert_eq!(std::str::from_utf8(&out).unwrap(), "ok: mine\n");
@@ -1812,12 +1841,12 @@ mod tests {
         assert_eq!(v[0], serde_json::json!({ "name": "navy", "source": "file", "appearance": "dark", "path": dir.path().join("navy.toml").display().to_string() }));
         assert_eq!(v[1], serde_json::json!({ "name": "timo-purple", "source": "built-in", "appearance": "dark" }));
         assert_eq!(v[2]["appearance"], "light");
-        assert_eq!((v[7]["name"].as_str(), v[8]["name"].as_str(), v[8]["appearance"].as_str()), (Some("composition-notebook"), Some("material"), Some("light")));
-        assert_eq!((v[9]["name"].as_str(), v[9]["appearance"].as_str()), (Some("arabia-solar"), Some("light")));
-        assert_eq!((v[10]["name"].as_str(), v[10]["appearance"].as_str()), (Some("material-solar"), Some("light")));
-        assert_eq!((v[11]["name"].as_str(), v[12]["name"].as_str()), (Some("material-ocean"), Some("material-palenight")));
-        assert_eq!(v[13]["name"].as_str(), Some("material-sublime"));
-        assert_eq!((v[14]["source"].as_str(), v[14]["error"].is_string(), v[14].get("appearance")), (Some("invalid"), true, None));
+        assert_eq!((v[10]["name"].as_str(), v[11]["name"].as_str(), v[11]["appearance"].as_str()), (Some("composition-notebook"), Some("material"), Some("light")));
+        assert_eq!((v[12]["name"].as_str(), v[12]["appearance"].as_str()), (Some("arabia-solar"), Some("light")));
+        assert_eq!((v[13]["name"].as_str(), v[13]["appearance"].as_str()), (Some("material-solar"), Some("light")));
+        assert_eq!((v[14]["name"].as_str(), v[15]["name"].as_str()), (Some("material-ocean"), Some("material-palenight")));
+        assert_eq!(v[16]["name"].as_str(), Some("material-sublime"));
+        assert_eq!((v[17]["source"].as_str(), v[17]["error"].is_string(), v[17].get("appearance")), (Some("invalid"), true, None));
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["validate".into(), dir.path().join("broken.toml").display().to_string(), "--json".into()], dir.path(), &mut out, &mut err), 1);
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();

@@ -1,0 +1,9 @@
+# The schema of every key is in docs/themes.md.
+# Frisco Rain: the Rain colours, drawn with the runic effect and its San Francisco scene.
+name = "frisco-rain"
+color = "rain"
+group = "Rain"
+
+[effect]
+name = "runic"
+scene = "san-francisco"

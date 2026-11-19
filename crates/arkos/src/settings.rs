@@ -2194,6 +2194,32 @@ mod tests {
     }
 
     #[test]
+    fn the_dark_presets_list_shows_one_rain_row_with_tokyo_rain_its_default_and_remembers_its_pick() {
+        use theme::Appearance::Dark;
+        let themes: Vec<(String, theme::Source, Option<theme::Appearance>)> = theme::BUILTIN.iter().map(|(n, _)| (n.to_string(), theme::Source::BuiltIn, theme::builtin(n).map(|t| t.kind()))).collect();
+        let shown: std::collections::BTreeMap<String, theme::Shown> = theme::BUILTIN
+            .iter()
+            .map(|(n, _)| {
+                let t = theme::builtin(n).unwrap();
+                (n.to_string(), theme::Shown { title: t.title.clone().unwrap_or_else(|| theme::title_case(n)), group: t.group.clone(), group_default: t.group_default })
+            })
+            .collect();
+        let rain_rows = |current: &str, picks: &GroupPicks| -> Vec<PresetRow> { preset_list_with(&themes, &shown, Dark, current, picks).into_iter().filter(|r| matches!(r, PresetRow::Group { name, .. } if name == "Rain")).collect() };
+        let ix = |n: &str| themes.iter().position(|(t, _, _)| t == n).unwrap();
+        let rows = rain_rows("navy", &GroupPicks::new());
+        assert_eq!(rows.len(), 1, "one Rain row in the dark list");
+        let PresetRow::Group { members, pick, .. } = &rows[0] else { unreachable!() };
+        assert_eq!(members.len(), 4);
+        assert_eq!(*pick, ix("tokyo-rain"), "Tokyo Rain is the default");
+        let mut picks = GroupPicks::new();
+        assert!(remember_pick(&mut picks, &shown, "london-rain", Dark));
+        let rows = rain_rows("navy", &picks);
+        assert!(matches!(&rows[0], PresetRow::Group { pick, .. } if *pick == ix("london-rain")), "the row remembers London Rain");
+        let rows = rain_rows("seattle-rain", &picks);
+        assert!(matches!(&rows[0], PresetRow::Group { pick, .. } if *pick == ix("seattle-rain")), "the one in force is the pick");
+    }
+
+    #[test]
     fn runic_is_one_group_row_with_tokyo_and_matrix_city() {
         let rows = custom_effect_rows(&EffectChoice::None, None, None, &effects_listed(), &runic_scenes(), &runic_aliases(), &GroupPicks::new());
         assert_eq!(rows.len(), 3, "None, Material and one Runic row: {rows:?}");

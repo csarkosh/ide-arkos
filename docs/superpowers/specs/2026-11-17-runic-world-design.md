@@ -440,3 +440,36 @@ an entrance their places across the sidewalk are pressed into the part past the 
 before the nearer rows.
 
 The wash measured 4.76 ms a frame at 1200 by 800 on the Matrix theme before and 4.74 ms after.
+
+## Seattle, San Francisco and London
+
+Cyrus, 2026-11-18, asked for "seattle rain", "frisco rain" and "london rain", each with "their
+iconic cityline". Runic's scenes are now `tokyo`, `matrix-city`, `seattle`, `san-francisco` and
+`london`, and three presets draw them: Seattle Rain, Frisco Rain and London Rain, in one Rain
+group with Tokyo Rain (its default). Each is the Rain colours with the runic effect and its scene,
+and has no font of its own. Scene 1, the Matrix street, is drawn exactly as before; scenes 2, 3 and
+4 never draw it, and Tokyo's two towers stay Tokyo's alone.
+
+Each city is the sidebar foot's far skyline with its landmarks drawn among it (`seattle_at`,
+`san_francisco_at` and `london_at` in `wash.metal`), lit as Tokyo's towers are: edges in the white
+and green of the theme, a red beacon on the tallest, colours from the theme only.
+
+- Seattle: the Space Needle at about 0.3 of the width (a spire, the cap, the saucer with its rim
+  lit white, a stalk narrowing to the waist), the Columbia Center at about 0.74 (the tallest tower,
+  stepped in near its top, its ledges lit), and Mount Rainier faint behind the far skyline
+  (`rainier_at`: a low snow-capped peak with a ragged snow line and a faintly lit ridge).
+- San Francisco: the Transamerica Pyramid at about 0.28 (a tall thin pyramid with its wings),
+  Salesforce Tower at about 0.6 (rounding to its top, the crown a lattice of light that breathes),
+  and at the right edge a Golden Gate tower pair with the deck, the cable's curve and its
+  suspenders, drawn in the theme's red mixed a little toward its yellow.
+- London: the Elizabeth Tower at about 0.17 (spire, belfry, clock stage and shaft) with a lit warm
+  clock face and its hands, the Shard at about 0.63 (a glass pyramid broken into splinters at the
+  tip, its facets faint), the London Eye at about 0.4 (its rim, spokes and pods turning slowly,
+  and its legs) behind them, and the Gherkin at about 0.86 (a rounded bullet with spiral bands).
+
+Cost, the runic wash at 1200 by 800 on the development MacBook Air (`effects::bench`, one session,
+with the bench pointed at each preset in turn): Tokyo Rain 1.863 ms, Seattle Rain 1.751 ms, Frisco
+Rain 1.755 ms and London Rain 1.771 ms, each the best of four runs. The runs on this machine swing
+between about 1.8 and 4.7 ms from one to the next whichever scene is drawn (Tokyo Rain's own ran
+1.86 to 4.73), so only the best of several is comparable; by that measure no city is more than
+0.3 ms over Tokyo, and none costs more than it.

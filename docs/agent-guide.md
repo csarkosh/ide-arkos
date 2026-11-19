@@ -653,7 +653,7 @@ An effect is a pair of Metal shaders that paint the project window: a wash drawn
 surface, and optionally the text itself. Six are built in: Peach Watercolor and Lavender Watercolor recommend `watercolor`
 (still ink glyphs), `space` is hidden (recommended by no theme and left out of Settings and
 `arkos effect list`, though `arkos effect use space` and a config naming it still draw it: a night
-sky with glowing edges and still holo text), Matrix and Tokyo Rain recommend `runic` (faint rune rain, emissive text in the theme's
+sky with glowing edges and still holo text), Matrix and the four Rain presets (Tokyo, Seattle, Frisco and London Rain) recommend `runic` (faint rune rain, emissive text in the theme's
 accent that glitches now and then, and a terminal that decodes its changed cells; it was called
 `matrix` before 0.7.20, and that name still draws it), Material and Lavender Material recommend `material` (the
 panes as rounded cards in the theme's page colour on a frame of its sidebar colour, underlined active tabs, a pill on the selected
@@ -913,7 +913,7 @@ window open; `bench` and `current` ask the running windows, and `use` asks them 
 
 - `arkos effect list [--json]`: every effect, the built-ins first, then the folders sorted:
   `{name} (built in)`, `{name} (folder)` or `{name} (folder, invalid: {error})`, followed for an
-  effect with scenes by `: tokyo (Tokyo), matrix-city (Matrix City)`. JSON
+  effect with scenes by `: tokyo (Tokyo), matrix-city (Matrix City), seattle (Seattle), san-francisco (San Francisco), london (London)`. JSON
   `[{ "name", "source": "built-in" | "folder" | "invalid", "scenes": [{ "name", "title" }], "path"?, "error"? }]`.
 - `arkos effect contract [--glyphs]`: the wash's contract, or with `--glyphs` gpui's sprite
   declarations and the line naming the glyph shader's two functions. No JSON.
