@@ -393,3 +393,50 @@ road the cart stands at the sidewalk's back edge, so its third and fourth people
 curb. Now the first stands at the cart's road side and the line runs along the sidewalk from
 there, everyone at that one place across it: on the road's sidewalk beside the road, inside the lot
 for a cart further out. Stepping up and the first walking off with their food go along it too.
+
+## Water towers, steam and subway entrances
+
+Cyrus, 2026-11-18, asked what else would make the city feel like New York and chose three of
+the ideas offered: rooftop water towers, steam from manholes and subway entrances ("do 1, 2 and
+3"), approving the design ("approved, go with your recommendation"). The sizes below are the
+built ones; the approved design had them nearer life size, and stills at the sidebar's size showed
+each too small to read, as the sheds had been.
+
+Water towers. About 60 in 100 towers of middling height (0.9 to 3.0 tall; TOWER_MAX is 4.8) wear
+one, as Manhattan's walk-ups and mid-rises do and its tallest towers do not: a barrel 0.16 across
+on three legs 0.07 tall, its tank 0.15 tall with two hoops, under a cone roof 0.07 tall, standing
+at a place on the roof drawn for the tower and never over its edge. It is drawn with its tower,
+after the tower's own lines, its tank and roof filled dark so the lines behind them are hidden, its
+outline lit as a tower's edges are; where a roof is above the eye the tower's front face hides the
+legs' feet, and nearer towers still cover it. At 0.09 across (the first cut) it drew two points
+wide in the sidebar.
+
+Steam. Each half of a block between its crosswalks has a manhole breathing steam at 70 in 100, in
+a traffic lane (0.15 to 0.55 from the road's middle, clear of the bike lanes): a soft plume 0.08
+wide at the street, swelling to 0.45 at 0.9 high (about two stories) and drifting up to 0.1 aside,
+so it never reaches the sidewalk, its noise rising through it and puffing harder and softer over a
+few seconds, lit at 0.7. It is drawn with the row of the city its manhole is in, after that row's
+towers (it stands inside the curb, clear of their faces) and after the road's traffic, so a car's
+lights dim inside it and only nearer rows' towers cover it; drawn before the whole city at first,
+farther towers' faces cut its upper half out. The first cut, three people tall with one
+manhole a block, drew four points high halfway up the road and its density came out at 0.2 to 0.4
+in a false-colour still. The orange and white Con Ed stacks were left out: one would stand in a
+lane the cars drive through.
+
+Subway entrances. About a third of the corners where a cross street meets the road have one (90 in
+100 of the corners beside a tower with no sidewalk shed and its face at least 0.02 clear of the
+railing; never beside an empty lot, which may be a park or hold a lone entrance of its own that the
+crowd pressed aside would walk through), at the road's curb, 0.9 to 1.22 past the cross street's curb, clear of the
+people waiting at the corner and the crossers stepping off it: the stair's dark hole with its steps
+going down away from the opening, a railing 0.1 high round three sides, 0.09 wide from just inside
+the curb, open toward the cross street, and a lamp post at each side of the opening under a globe
+0.26 up (as tall as the lone lots' entrances'), green (open all hours) or for one in four red (exit
+only). The design first put it at the buildings' side of the sidewalk; the walkers spread across
+the whole sidewalk and the towers' faces stand at its back, so it went to the curb, where New
+York's entrances mostly are. The road's walkers and strollers keep out of it (`sidewalk_x`): beside
+an entrance their places across the sidewalk are pressed into the part past the railing, at least
+0.03 clear of it, fully aside 0.03 before it starts and after it ends and easing in and out over
+0.15, and the city's data lands on them where they are drawn. Drawn after its row's towers and
+before the nearer rows.
+
+The wash measured 4.76 ms a frame at 1200 by 800 on the Matrix theme before and 4.74 ms after.

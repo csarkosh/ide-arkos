@@ -820,6 +820,11 @@ Things only a person at the screen can check, in order of value:
   sidewalk (a deck above the people, its posts at the curb, never in the road), some with
   scaffolding a few floors up their road side; the food cart's line runs along the sidewalk,
   never into the street; both smooth on a 1x external screen
+- Matrix New York: in the sidebar's city, water towers (barrel, legs, cone) stand on many middling
+  roofs and never hang over an edge; steam rises and drifts from manholes in the road's lanes,
+  cars' lights dimming through it, never over a crosswalk or the sidewalk; subway entrances at
+  some corners by the curb, a railing round a dark stair and a green or red globe each side of its
+  opening, people stepping round them, never through; all smooth on a 1x external screen
 - effects: Matrix on a 1x external screen: the sidebar city's building edges glide as on the
   MacBook's screen, without flashing bright and dim as they move
 - colours: vim or htop with a 256-colour scheme in Matrix shows green-cast colours, not xterm's
