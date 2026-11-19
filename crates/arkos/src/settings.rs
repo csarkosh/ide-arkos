@@ -447,7 +447,7 @@ pub struct Row {
     pub current: bool,
 }
 
-/// The custom look's Color list: every theme, the dark ones first, each saying which it is; a
+/// The custom look's Color list: every colour scheme by its title, in alphabetical order; a
 /// file that does not load is marked and not clickable; a colour named that is not installed is
 /// listed first, so the list always shows what is in force.
 pub fn color_rows(colors: &[theme::ColorEntry], current: &str) -> Vec<Row> {
@@ -455,16 +455,20 @@ pub fn color_rows(colors: &[theme::ColorEntry], current: &str) -> Vec<Row> {
     if !colors.iter().any(|e| e.name == current) {
         rows.push(Row { label: format!("{current} (not installed)"), value: None, current: true });
     }
-    for slot in [Some(theme::Appearance::Dark), Some(theme::Appearance::Light), None] {
-        for e in colors {
+    let mut listed: Vec<Row> = colors
+        .iter()
+        .map(|e| {
             let broken = matches!(e.source, theme::Source::Invalid(_)) || e.appearance.is_none();
-            match (slot, broken) {
-                (None, true) => rows.push(Row { label: format!("{} (invalid)", e.title), value: None, current: e.name == current }),
-                (Some(k), false) if e.appearance == Some(k) => rows.push(Row { label: format!("{} ({})", e.title, k.word()), value: Some(e.name.clone()), current: e.name == current }),
-                _ => {}
+            let current = e.name == current;
+            if broken {
+                Row { label: format!("{} (invalid)", e.title), value: None, current }
+            } else {
+                Row { label: e.title.clone(), value: Some(e.name.clone()), current }
             }
-        }
-    }
+        })
+        .collect();
+    listed.sort_by_key(|r| r.label.to_lowercase());
+    rows.extend(listed);
     rows
 }
 
@@ -492,7 +496,8 @@ pub fn remember_scene_pick(picks: &mut GroupPicks, effect: &str, scene: &str) ->
     picks.insert(effect_pick_key(effect), scene.to_string()).as_deref() != Some(scene)
 }
 
-/// The custom look's Effect list: "None", then every effect installed, built in or a folder; one
+/// The custom look's Effect list: "None", then every effect installed, built in or a folder, in
+/// alphabetical order; one
 /// that does not load is marked and not clickable; one named that is not installed is listed
 /// last. `choice` is the custom look's own, and `theme` is the colour's own effect (`own`).
 /// An effect with two or more scenes (`manifests`, by effect: each scene's name and title) is one
@@ -528,6 +533,10 @@ pub fn custom_effect_rows(choice: &EffectChoice, own: Option<&str>, own_scene: O
             _ => EffectRow::One(Row { label: name.clone(), value: Some(name.clone()), current }),
         });
     }
+    rows[1..].sort_by_key(|r| match r {
+        EffectRow::One(r) => r.label.to_lowercase(),
+        EffectRow::Group { title, .. } => title.to_lowercase(),
+    });
     if let Some(name) = named.filter(|n| !listed.iter().any(|(l, _)| l == n)) {
         rows.push(EffectRow::One(Row { label: format!("{name} (not installed)"), value: None, current: true }));
     }
@@ -600,7 +609,8 @@ pub fn families(font: &theme::ThemeFont) -> Vec<&str> {
 }
 
 /// The custom look's Font list: "Default" (the config's own family, `plain`), then each distinct
-/// set of fonts the themes name, by its families, under the first theme that names it. `choice`
+/// set of fonts the themes name, by its families, under the first theme that names it, in
+/// alphabetical order. `choice`
 /// is the custom look's own (`custom.font`); with none the fonts in force are `shown`, those of
 /// the theme showing. A set none of whose families `has` finds is marked and not clickable; a
 /// theme named that is not installed is listed first, so the list always shows what is in force.
@@ -616,6 +626,7 @@ pub fn font_rows(fonts: &[theme::FontEntry], choice: Option<&str>, shown: &theme
         rows.push(Row { label: format!("{name} (not installed)"), value: None, current: true });
     }
     rows.push(Row { label: format!("Default ({plain})"), value: Some(config::PLAIN_FONT.into()), current: in_force.is_some_and(|f| f.is_default()) });
+    let first = rows.len();
     for e in fonts {
         if e.font.is_default() {
             continue;
@@ -630,6 +641,7 @@ pub fn font_rows(fonts: &[theme::FontEntry], choice: Option<&str>, shown: &theme
             Row { label: format!("{} (not installed)", e.title), value: None, current }
         });
     }
+    rows[first..].sort_by_key(|r| r.label.to_lowercase());
     rows
 }
 
@@ -2161,7 +2173,7 @@ mod tests {
     }
 
     #[test]
-    fn the_custom_look_lists_every_colour_dark_first_and_every_effect_after_none() {
+    fn the_custom_look_lists_every_colour_and_every_effect_after_none() {
         use crate::config::EffectChoice;
         use crate::effects::manifest::Source;
         use crate::theme::{Appearance, Source as ThemeSource};
@@ -2175,7 +2187,7 @@ mod tests {
         let row = |label: &str, value: Option<&str>, current: bool| Row { label: label.to_string(), value: value.map(str::to_string), current };
         assert_eq!(
             color_rows(&themes, "rain"),
-            vec![row("Material Navy (dark)", Some("navy"), false), row("Tokyo Rain (dark)", Some("rain"), true), row("Solar Arabia (light)", Some("peach"), false), row("Broken (invalid)", None, false)]
+            vec![row("Broken (invalid)", None, false), row("Material Navy", Some("navy"), false), row("Solar Arabia", Some("peach"), false), row("Tokyo Rain", Some("rain"), true)]
         );
         // A colour that is not installed is still shown as the one in force.
         assert_eq!(color_rows(&themes, "gone")[0], row("gone (not installed)", None, true));
@@ -2191,11 +2203,11 @@ mod tests {
         };
         assert_eq!(
             rows(&EffectChoice::Named("neon".into()), Some("overworld")),
-            vec![row("None", Some("none"), false), row("watercolor", Some("watercolor"), false), row("overworld", Some("overworld"), false), row("neon", Some("neon"), true), row("broken (invalid)", None, false)]
+            vec![row("None", Some("none"), false), row("broken (invalid)", None, false), row("neon", Some("neon"), true), row("overworld", Some("overworld"), false), row("watercolor", Some("watercolor"), false)]
         );
         assert!(rows(&EffectChoice::None, Some("overworld"))[0].current);
         // `theme` is the colour's own effect, or none when it has none.
-        assert!(rows(&EffectChoice::Theme, Some("overworld"))[2].current);
+        assert!(rows(&EffectChoice::Theme, Some("overworld"))[3].current);
         assert!(rows(&EffectChoice::Theme, None)[0].current);
         assert_eq!(rows(&EffectChoice::Named("gone".into()), None)[5], row("gone (not installed)", None, true));
     }
@@ -2356,13 +2368,39 @@ mod tests {
         // cannot be picked.
         assert_eq!(
             font_rows(&fonts, Some("pixel"), &serif, "Menlo", &has),
-            vec![row("Default (Menlo)", Some("default"), false), row("Pixel", Some("pixel"), true), row("Serif", Some("serif"), false), row("Hand (not installed)", None, false)]
+            vec![row("Default (Menlo)", Some("default"), false), row("Hand (not installed)", None, false), row("Pixel", Some("pixel"), true), row("Serif", Some("serif"), false)]
         );
         // `default` is the plain family.
         assert!(font_rows(&fonts, Some("default"), &serif, "Menlo", &has)[0].current);
         // With no font of its own the custom look draws in the fonts of the theme showing.
-        assert!(font_rows(&fonts, None, &serif, "Menlo", &has)[2].current);
+        assert!(font_rows(&fonts, None, &serif, "Menlo", &has)[3].current);
         assert_eq!(font_rows(&fonts, Some("gone"), &serif, "Menlo", &has)[0], row("gone (not installed)", None, true));
+    }
+
+    #[test]
+    fn each_custom_list_is_in_alphabetical_order_under_none_and_the_colours_name_no_appearance() {
+        // Cyrus, 2026-11-19: "drop the (dark) and (light) suffixes from the color names. Sort each
+        // custom appearance option alphabetically except for "None" which stays on top."
+        let dir = std::path::Path::new("/nonexistent");
+        let colors: Vec<String> = color_rows(&theme::colors(dir), "navy").into_iter().map(|r| r.label).collect();
+        assert!(colors.iter().all(|l| !l.contains("(dark)") && !l.contains("(light)")), "{colors:?}");
+        let mut sorted = colors.clone();
+        sorted.sort_by_key(|l| l.to_lowercase());
+        assert_eq!(colors, sorted);
+        let fonts: Vec<String> = font_rows(&theme::font_sets(dir), Some("default"), &theme::ThemeFont::default(), "Menlo", &|_| true).into_iter().map(|r| r.label).collect();
+        assert_eq!(fonts[0], "Default (Menlo)", "the plain family stays on top");
+        let mut sorted = fonts[1..].to_vec();
+        sorted.sort_by_key(|l| l.to_lowercase());
+        assert_eq!(fonts[1..], sorted[..]);
+        let listed: Vec<(String, effects::manifest::Source)> = ["watercolor", "runic", "material", "overworld"].iter().map(|n| (n.to_string(), effects::manifest::Source::BuiltIn)).collect();
+        let effects: Vec<String> = custom_effect_rows(&EffectChoice::None, None, None, &listed, &runic_scenes(), &runic_aliases(), &GroupPicks::new())
+            .into_iter()
+            .map(|r| match r {
+                EffectRow::One(r) => r.label,
+                EffectRow::Group { title, .. } => title,
+            })
+            .collect();
+        assert_eq!(effects, vec!["None", "material", "overworld", "Runic", "watercolor"]);
     }
 
     #[test]
@@ -2403,7 +2441,8 @@ mod tests {
         let fonts = theme::font_sets(std::path::Path::new("/nonexistent"));
         let rows = font_rows(&fonts, None, &theme::ThemeFont::default(), "Menlo", &|_| true);
         let labels: Vec<&str> = rows.iter().skip(1).map(|r| r.label.as_str()).collect();
-        let titles: Vec<&str> = fonts.iter().filter(|f| !f.font.is_default()).map(|f| f.title.as_str()).collect();
+        let mut titles: Vec<&str> = fonts.iter().filter(|f| !f.font.is_default()).map(|f| f.title.as_str()).collect();
+        titles.sort_by_key(|t| t.to_lowercase());
         assert_eq!(labels, titles);
     }
 

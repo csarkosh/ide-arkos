@@ -942,14 +942,14 @@ there closes the window. A click hides the ring until the next key.
     configured preset that is neither built in nor a file is listed first as "(not installed)".
   - Custom: Color on the left, Font and under it Effect on the right, each chosen apart. Color
     lists every colour scheme once (Lavender, Solar and Peach are each one row, however many
-    presets use them), the dark ones first, each marked dark or light: its colours are used.
-    Font lists "Default" (the Text section's family) and each font set once, by
-    its title ("DM Sans + Roboto Mono", "Baskerville + Optima + PT Mono", "Departure Mono"); a set this Mac
+    presets use them), by name in alphabetical order: its colours are used.
+    Font lists "Default" (the Text section's family) and under it each font set once, by
+    its title in alphabetical order ("DM Sans + Roboto Mono", "Baskerville + Optima + PT Mono", "Departure Mono"); a set this Mac
     has none of is "(not installed)" (the families the presets use ship inside Arkos, so none of the built-in sets is). The font stays as you change the colour. Colours and fonts
     are files in the `colors` and `fonts` folders of the config folder. To offer your own, add a
     colour file with "Add color…" (a preset file works too: its colours are written out as a
-    colour file), and put a font file in the fonts folder ("Show fonts folder" opens it). Effect lists "None" and every effect
-    installed, built in or a folder; an effect with scenes is one row, so Runic reads "runic
+    colour file), and put a font file in the fonts folder ("Show fonts folder" opens it). Effect lists "None" and under it every effect
+    installed, built in or a folder, in alphabetical order; an effect with scenes is one row, so Runic reads "runic
     tokyo ▾" and opens a card listing Tokyo, Matrix City, Seattle, San Francisco and London with a check on the current one, and
     the scene is chosen with the effect, whatever the colour (Matrix City over Lavender's colours
     draws the Matrix street; a Custom look saved before keeps the scene its colour gave); one that does not load is "(invalid)" and one named that
