@@ -941,12 +941,15 @@ there closes the window. A click hides the ring until the next key.
     lists every colour scheme once (Lavender, Solar and Peach are each one row, however many
     presets use them), the dark ones first, each marked dark or light: its colours are used.
     Font lists "Default" (the Text section's family) and each font set once, by
-    its families ("Baskerville, Optima, PT Mono"; the pixel face Departure Mono); a set this Mac
+    its title ("DM Sans + Roboto Mono", "Baskerville + Optima + PT Mono", "Departure Mono"); a set this Mac
     has none of is "(not installed)". The font stays as you change the colour. Colours and fonts
     are files in the `colors` and `fonts` folders of the config folder. To offer your own, add a
     colour file with "Add color…" (a preset file works too: its colours are written out as a
     colour file), and put a font file in the fonts folder ("Show fonts folder" opens it). Effect lists "None" and every effect
-    installed, built in or a folder; one that does not load is "(invalid)" and one named that
+    installed, built in or a folder; an effect with scenes is one row, so Runic reads "runic
+    tokyo ▾" and opens a card listing Tokyo and Matrix City with a check on the current one, and
+    the scene is chosen with the effect, whatever the colour (Matrix City over Lavender's colours
+    draws the Matrix street; a Custom look saved before keeps the scene its colour gave); one that does not load is "(invalid)" and one named that
     is missing "(not installed)". The custom look is one look: it does not follow macOS's
     light and dark. The first time it is put in force it starts as what is on screen. "Add
     color…" takes a theme's `.toml` file and "Add effect…" an effect's folder (copied into the

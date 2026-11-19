@@ -521,7 +521,7 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
   scheme's name, or a preset's, which must load: a preset gives its colours), `custom.font` (a
   font set's name, or a preset's for its fonts, or `default` for none, so the config's
   `font.family`; never set, the fonts are those of the colour showing),
-  `custom.effect` (theme, none, or an installed effect's name), `theme.dark`, `theme.light`, `font.family`, `font.preset`,
+  `custom.effect` (theme, none, or an installed effect's name), `custom.scene` (one of the custom effect's scenes, by name or an old name, written by its own name; ignored while the presets are in force), `theme.dark`, `theme.light`, `font.family`, `font.preset`,
   `layout.placement` (inplace, neighbor: where a plain `arkos open` from a session lands on
   that session's own page),
   `font.presets.<name>.size` (8 to 48), `font.presets.<name>.line_height` (1.0 to 2.5),
@@ -912,8 +912,9 @@ Exit codes, `--json` and the window lines are as in section 5. Every command wor
 window open; `bench` and `current` ask the running windows, and `use` asks them to reload.
 
 - `arkos effect list [--json]`: every effect, the built-ins first, then the folders sorted:
-  `{name} (built in)`, `{name} (folder)` or `{name} (folder, invalid: {error})`. JSON
-  `[{ "name", "source": "built-in" | "folder" | "invalid", "path"?, "error"? }]`.
+  `{name} (built in)`, `{name} (folder)` or `{name} (folder, invalid: {error})`, followed for an
+  effect with scenes by `: tokyo (Tokyo), matrix-city (Matrix City)`. JSON
+  `[{ "name", "source": "built-in" | "folder" | "invalid", "scenes": [{ "name", "title" }], "path"?, "error"? }]`.
 - `arkos effect contract [--glyphs]`: the wash's contract, or with `--glyphs` gpui's sprite
   declarations and the line naming the glyph shader's two functions. No JSON.
 - `arkos effect template --as <new-name> [<built-in>]`: writes a copy of the built-in (default
@@ -939,14 +940,17 @@ window open; `bench` and `current` ask the running windows, and `use` asks them 
   verdict `within budget`, `heavy` or `too heavy`. Exit 1 when the effect does not load or
   compile. JSON `{ "name", "ms", "size": [w, h], "theme", "frame_rate", "share", "verdict" }`,
   `share` in percent.
-- `arkos effect use <name|none|theme> [--json]`: an effect's name must load (else its error,
+- `arkos effect use <name|none|theme> [--scene <scene>] [--json]`, or
+  `arkos effect use <name>:<scene> [--json]`: with a scene it also writes `custom.scene` (an old name such as `city` is
+  written as its scene's own name); an unknown scene exits 2 listing the effect's scenes and
+  writes nothing; without one the saved scene stays. An effect's name must load (else its error,
   exit 1, nothing written); then it is `arkos settings set effect.name <value>`: a name or
   `none` puts the custom look in force with that effect, over its own colour or, when it has
   none, over the theme showing, and `theme` puts the presets back in force, each theme with
   its own effect. Its lines,
   exit codes and JSON `{ "key": "effect.name", "value", "saved", "windows", "missing", "too_old" }`:
   `window {pid} ({project}): effect.name applied`, or `saved; no window running`.
-- `arkos effect current [--json]`: `config: effect {theme|none|name}, intensity {i}`, then per
+- `arkos effect current [--json]`: `config: effect {theme|none|name}, scene {scene}, intensity {i}` (the scene only for the custom look on an effect with scenes; JSON `config.scene`, null otherwise), then per
   window `window {pid} ({project}): {name}, {ms} ms per frame`, `{name}, not measured yet` (the
   cost is read every sixtieth frame), `none`, or `too old to report its effect`, then the
   `no answer` and `too old for this command` lines. Exit 0 with no window; 1 when the daemon is

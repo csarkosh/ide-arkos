@@ -131,7 +131,7 @@ Optional. A shader effect drawn under the window's text.
 | Key | What it sets |
 | --- | --- |
 | `name` | The effect the theme was designed with; as a preset it draws with this one; the custom look (Settings, Appearance, or `arkos effect use`) puts any effect over its colours. `peach-watercolor` and `lavender-watercolor` set `watercolor`, `matrix` and `tokyo-rain` set `runic`, `composition-notebook` sets `notebook`, `timo-purple` and `arabia-solar` set `overworld`, and `navy` (Material Navy, the default), `material-ocean`, `material-palenight`, `material-sublime`, `material`, `material-solar` and `lavender-material` set `material`, which draws a dark theme's sidebar colour as the frame and its window colour as the cards, so a dark Material theme keeps its sidebar the darker. |
-| `scene` | Optional: which of the effect's scenes the theme shows, by a name the effect's manifest lists in `scenes`. The runic effect has `tokyo` (a rainy skyline at the sidebar's foot, Tokyo Rain's) and `matrix-city` (a digital horizon, The Matrix's); the older names `city` and `code` still work. Absent, the effect's first. |
+| `scene` | Optional: which of the effect's scenes the theme shows, by a name the effect's manifest lists in `scenes`. The runic effect has `tokyo` (a rainy skyline at the sidebar's foot, Tokyo Rain's) and `matrix-city` (a digital horizon, The Matrix's); the older names `city` and `code` still work. Absent, the effect's first. The scene is the effect's choice as much as the colour's: under the custom look, `custom.scene` in `config.toml` (or `arkos effect use runic --scene matrix-city`) picks it over any colours, and a custom look saved before that key keeps the scene its colour's preset named. |
 
 ## Colour files, font files and presets
 
@@ -147,7 +147,7 @@ allowed. Arkos ships eleven: `navy`, `ocean`, `palenight`, `sublime`, `bright`, 
 
 A **font file** is `<name>.toml` in the `fonts` folder (`~/.config/arkos/fonts/`). It holds `name`,
 `title`, `prose`, `ui`, `terminal` and `grid`, which mean what they do under `[font]` above; `grid`
-is 1.0 to 24.0. Nothing else is allowed. Arkos ships `lavender`, `peach`, `notebook` and
+is 1.0 to 24.0. Nothing else is allowed. Arkos ships `lavender`, `peach`, `notebook`, `material` and
 `departure`.
 
 A **preset file** in the new form, in the themes folder, names its parts: `name`, `title`, `group`,

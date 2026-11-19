@@ -66,6 +66,7 @@ pub const SETTABLE: &[&str] = &[
     "custom.color",
     "custom.font",
     "custom.effect",
+    "custom.scene",
     "theme.dark",
     "theme.light",
     "font.family",
@@ -944,6 +945,8 @@ pub fn typed_value(key: &str, raw: &str) -> Result<toml_edit::Value, String> {
         "appearance.look" => one_of(key, raw, &["presets", "custom"]),
         "custom.effect" if raw == "theme" || raw == "none" || crate::theme::is_bare_name(raw) => Ok(raw.into()),
         "custom.effect" => Err(format!("custom.effect must be theme, none or an effect's bare name, not {raw:?}")),
+        "custom.scene" if crate::theme::is_bare_name(raw) => Ok(raw.into()),
+        "custom.scene" => Err(format!("custom.scene must be a scene's bare name, not {raw:?}")),
         "viewer.wide_tables" => one_of(key, raw, &["wrap", "scroll"]),
         "viewer.page_width" => one_of(key, raw, &["full", "letter"]),
         "layout.placement" => one_of(key, raw, &["inplace", "neighbor"]),
@@ -999,10 +1002,18 @@ fn settings_set(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn W
         }
         return 2;
     }
-    let value = match typed_value(key, raw) {
+    let mut value = match typed_value(key, raw) {
         Ok(v) => v,
         Err(e) => return fail(err, &e),
     };
+    // A scene is checked against the custom effect's scenes when it has some, and written by its
+    // own name (an old name becomes the scene's current one).
+    if *key == "custom.scene" {
+        match scene_for_custom(raw, env) {
+            Ok(own) => value = own.as_str().into(),
+            Err(e) => return fail(err, &e),
+        }
+    }
     // A name that must be a theme that loads; the custom font may also be none of a theme's.
     if matches!(*key, "theme.dark" | "theme.light" | "custom.color") {
         let loaded = if *key == "custom.color" { load_name(raw, env.themes) } else { load_preset_name(raw, env.themes) };
@@ -1098,6 +1109,17 @@ fn settings_set(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn W
         base["cleared"] = json!(cleared);
     }
     reload_after_save(env, json, base, &judge, out, err)
+}
+
+/// `raw` as the scene's own name in the custom look's effect, when that effect has scenes; an
+/// unknown one is an error listing them. With no named effect, or one with no scenes, `raw` stays.
+fn scene_for_custom(raw: &str, env: &Env) -> Result<String, String> {
+    let named = std::fs::read_to_string(env.config).ok().and_then(|t| config::parse(&t).ok()).and_then(|c| match c.effect_choice() {
+        config::EffectChoice::Named(n) => Some(n),
+        _ => None,
+    });
+    let Some(m) = named.and_then(|n| crate::effects::manifest::load(&n, &env.effects_dir()).ok()).map(|e| e.manifest).filter(|m| !m.scenes.is_empty()) else { return Ok(raw.to_string()) };
+    m.scene_name(raw).map(str::to_string).ok_or_else(|| format!("no scene {raw:?} in {}; its scenes are {}", m.name, m.scenes.join(", ")))
 }
 
 /// `arkos config reload` against `env`.

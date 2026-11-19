@@ -24,7 +24,8 @@ usage: arkos effect list [--json]
        arkos effect template --as <new-name> [<built-in>]
        arkos effect check <folder> [--json]
        arkos effect bench <folder-or-name> [--seconds N] [--json]
-       arkos effect use <name|none|theme> [--json]
+       arkos effect use <name|none|theme> [--scene <scene>] [--json]
+       arkos effect use <name>:<scene> [--json]
        arkos effect current [--json]
 see: arkos guide
 ";
@@ -82,22 +83,34 @@ fn list(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) ->
         let rows: Vec<Json> = listed
             .into_iter()
             .map(|(name, source)| match source {
-                Source::BuiltIn => json!({ "name": name, "source": "built-in" }),
-                Source::Folder(path) => json!({ "name": name, "source": "folder", "path": path }),
+                Source::BuiltIn => json!({ "name": name, "source": "built-in", "scenes": scenes_json(&name, &dir) }),
+                Source::Folder(path) => json!({ "name": name, "source": "folder", "path": path, "scenes": scenes_json(&name, &dir) }),
                 Source::Invalid(e) => json!({ "name": name, "source": "invalid", "error": e, "path": dir.join(&name) }),
             })
             .collect();
         let _ = writeln!(out, "{}", Json::Array(rows));
     } else {
         for (name, source) in listed {
+            let scenes = scenes_text(&name, &dir);
             let _ = match source {
-                Source::BuiltIn => writeln!(out, "{name} (built in)"),
-                Source::Folder(_) => writeln!(out, "{name} (folder)"),
+                Source::BuiltIn => writeln!(out, "{name} (built in){scenes}"),
+                Source::Folder(_) => writeln!(out, "{name} (folder){scenes}"),
                 Source::Invalid(e) => writeln!(out, "{name} (folder, invalid: {e})"),
             };
         }
     }
     0
+}
+
+/// An effect's scenes as `{name, title}` objects; empty for one with none or that does not load.
+fn scenes_json(name: &str, dir: &Path) -> Vec<Json> {
+    manifest::load(name, dir).map(|e| e.manifest).map(|m| m.scenes.iter().enumerate().map(|(i, s)| json!({ "name": s, "title": m.scene_title(i) })).collect()).unwrap_or_default()
+}
+
+/// The text `list` adds after an effect with scenes: ": tokyo (Tokyo), matrix-city (Matrix City)".
+fn scenes_text(name: &str, dir: &Path) -> String {
+    let rows: Vec<String> = scenes_json(name, dir).iter().map(|r| format!("{} ({})", r["name"].as_str().unwrap_or_default(), r["title"].as_str().unwrap_or_default())).collect();
+    if rows.is_empty() { String::new() } else { format!(": {}", rows.join(", ")) }
 }
 
 fn contract(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
@@ -297,20 +310,75 @@ fn bench_command(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn 
     0
 }
 
-/// `use <name|none|theme>`: an effect by name must load; then `settings set effect.name`.
+/// `use <name|none|theme> [--scene <scene>]` or `use <name>:<scene>`: an effect by name must
+/// load, and a scene must be one of its scenes; then `settings set effect.name`, and
+/// `custom.scene` when a scene was named. Without a scene the one saved stays.
 fn use_effect(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
-    let Some(a) = split(args, &[]) else { return usage(err, EFFECT_USAGE) };
-    let [name] = a.words.as_slice() else { return usage(err, EFFECT_USAGE) };
-    if !matches!(*name, "theme" | "none") {
-        if let Err(e) = manifest::load(name, &env.effects_dir()) {
-            return fail(err, &e);
+    let Ok((scene, rest)) = take_value(args, "--scene") else { return usage(err, EFFECT_USAGE) };
+    let Some(a) = split(&rest, &[]) else { return usage(err, EFFECT_USAGE) };
+    let [word] = a.words.as_slice() else { return usage(err, EFFECT_USAGE) };
+    let (name, inline) = match word.split_once(':') {
+        Some((n, s)) => (n, Some(s.to_string())),
+        None => (*word, None),
+    };
+    if scene.is_some() && inline.is_some() {
+        return usage(err, EFFECT_USAGE);
+    }
+    let scene = scene.or(inline);
+    let theme_or_none = matches!(name, "theme" | "none");
+    if scene.is_some() && theme_or_none {
+        return usage(err, EFFECT_USAGE);
+    }
+    let mut own = None;
+    if !theme_or_none {
+        let m = match manifest::load(name, &env.effects_dir()) {
+            Ok(e) => e.manifest,
+            Err(e) => return fail(err, &e),
+        };
+        if let Some(wanted) = &scene {
+            match m.scene_name(wanted) {
+                Some(n) => own = Some(n.to_string()),
+                None => {
+                    let _ = writeln!(err, "no scene {wanted:?} in {name}; its scenes are {}", if m.scenes.is_empty() { "none".to_string() } else { m.scenes.join(", ") });
+                    return 2;
+                }
+            }
         }
     }
+    let json = a.has("--json");
     let mut set = vec!["set".to_string(), "effect.name".to_string(), name.to_string()];
-    if a.has("--json") {
+    if json && own.is_none() {
         set.push("--json".into());
     }
-    agent_cli::settings_cli_to(&set, env, out, err)
+    let Some(own) = own else { return agent_cli::settings_cli_to(&set, env, out, err) };
+    // The effect first, unheard, so the scene is checked against it; the scene's answer is the
+    // command's.
+    let code = agent_cli::settings_cli_to(&set, env, &mut std::io::sink(), err);
+    if code != 0 {
+        return code;
+    }
+    let mut scene_set = vec!["set".to_string(), "custom.scene".to_string(), own];
+    if json {
+        scene_set.push("--json".into());
+    }
+    agent_cli::settings_cli_to(&scene_set, env, out, err)
+}
+
+/// The scene the custom look shows, by its own name, when its effect has scenes. The presets'
+/// scenes belong to the theme each window shows, which only a window knows.
+fn scene_in_force(cfg: &config::Config, env: &Env) -> Option<String> {
+    let config::EffectChoice::Named(name) = cfg.effect_choice() else { return None };
+    if cfg.look() != config::Look::Custom {
+        return None;
+    }
+    let m = manifest::load(&name, &env.effects_dir()).ok()?.manifest;
+    if m.scenes.is_empty() {
+        return None;
+    }
+    // The theme only stands in for a custom look with no colour of its own.
+    let stand_in = theme::BUILTIN.first().and_then(|(n, _)| theme::builtin(n))?;
+    let raw = crate::effects::scene::look_scene(cfg, &stand_in, env.themes);
+    Some(raw.as_deref().and_then(|s| m.scene_name(s)).unwrap_or(&m.scenes[0]).to_string())
 }
 
 pub(crate) fn choice_name(choice: &EffectChoice) -> &str {
@@ -361,14 +429,17 @@ fn current(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
     let shown = answer.as_ref().unwrap_or(&empty);
     if a.has("--json") {
         let config = match &file {
-            Ok(c) => json!({ "name": choice_name(&c.effect_choice()), "intensity": agent_cli::tidy(c.effect.intensity) }),
+            Ok(c) => json!({ "name": choice_name(&c.effect_choice()), "scene": scene_in_force(c, env), "intensity": agent_cli::tidy(c.effect.intensity) }),
             Err(e) => json!({ "error": e }),
         };
         let windows: Vec<Json> = shown.outcomes.iter().map(|(o, d)| window_json(o, d)).collect();
         let _ = writeln!(out, "{}", json!({ "config": config, "windows": windows, "missing": shown.missing, "too_old": shown.too_old }));
     } else {
         let _ = match &file {
-            Ok(c) => writeln!(out, "config: effect {}, intensity {}", choice_name(&c.effect_choice()), c.effect.intensity),
+            Ok(c) => {
+                let scene = scene_in_force(c, env).map(|s| format!(", scene {s}")).unwrap_or_default();
+                writeln!(out, "config: effect {}{scene}, intensity {}", choice_name(&c.effect_choice()), c.effect.intensity)
+            }
             Err(e) => writeln!(out, "config: {e}"),
         };
         for (o, detail) in &shown.outcomes {
@@ -500,21 +571,21 @@ mod tests {
         assert_eq!(
             out,
             format!(
-                "watercolor (built in)\nrunic (built in)\nmaterial (built in)\nnotebook (built in)\noverworld (built in)\nbroken (folder, invalid: {}: scale must be 0.1 to 1.0 (was 2.0))\nneon (folder)\n",
+                "watercolor (built in)\nrunic (built in): tokyo (Tokyo), matrix-city (Matrix City)\nmaterial (built in)\nnotebook (built in)\noverworld (built in)\nbroken (folder, invalid: {}: scale must be 0.1 to 1.0 (was 2.0))\nneon (folder)\n",
                 effects.join("broken").join("effect.toml").display()
             )
         );
         let (code, out, _) = run(&["list", "--json"], &env);
         assert_eq!(code, 0);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v[0], serde_json::json!({ "name": "watercolor", "source": "built-in" }));
-        assert_eq!(v[1], serde_json::json!({ "name": "runic", "source": "built-in" }));
-        assert_eq!(v[2], serde_json::json!({ "name": "material", "source": "built-in" }));
-        assert_eq!(v[3], serde_json::json!({ "name": "notebook", "source": "built-in" }));
-        assert_eq!(v[4], serde_json::json!({ "name": "overworld", "source": "built-in" }));
+        assert_eq!(v[0], serde_json::json!({ "name": "watercolor", "source": "built-in", "scenes": [] }));
+        assert_eq!(v[1], serde_json::json!({ "name": "runic", "source": "built-in", "scenes": [{ "name": "tokyo", "title": "Tokyo" }, { "name": "matrix-city", "title": "Matrix City" }] }));
+        assert_eq!(v[2], serde_json::json!({ "name": "material", "source": "built-in", "scenes": [] }));
+        assert_eq!(v[3], serde_json::json!({ "name": "notebook", "source": "built-in", "scenes": [] }));
+        assert_eq!(v[4], serde_json::json!({ "name": "overworld", "source": "built-in", "scenes": [] }));
         assert_eq!((v[5]["name"].as_str(), v[5]["source"].as_str()), (Some("broken"), Some("invalid")));
         assert!(v[5]["error"].as_str().unwrap().contains("scale must be 0.1 to 1.0"));
-        assert_eq!(v[6], serde_json::json!({ "name": "neon", "source": "folder", "path": effects.join("neon") }));
+        assert_eq!(v[6], serde_json::json!({ "name": "neon", "source": "folder", "path": effects.join("neon"), "scenes": [] }));
         assert_eq!(run(&["list", "extra"], &env).0, 2);
     }
 
@@ -757,6 +828,72 @@ mod tests {
         assert_eq!(run(&["use"], &alone).0, 2);
     }
 
+    /// Writes `edits` into the setup's config file.
+    fn write_config(s: &Setup, edits: &[(&[&str], toml_edit::Value)]) {
+        config::set_values(&s.path("config.toml"), edits).unwrap();
+    }
+
+    #[test]
+    fn effect_use_with_a_scene_writes_both() {
+        let s = Setup::new();
+        let alone = env!(s, s.path("none.sock"));
+        assert_eq!(run(&["use", "runic", "--scene", "matrix-city"], &alone).0, 0);
+        let saved = config::load(&s.path("config.toml")).unwrap();
+        assert_eq!((saved.custom.effect.clone(), saved.custom.scene.as_deref()), (Some(config::EffectChoice::Named("runic".into())), Some("matrix-city")));
+        // An alias is written as its scene's own name.
+        assert_eq!(run(&["use", "runic", "--scene", "city"], &alone).0, 0);
+        assert_eq!(config::load(&s.path("config.toml")).unwrap().custom.scene.as_deref(), Some("tokyo"));
+        // Without a scene, the one saved stays.
+        assert_eq!(run(&["use", "runic"], &alone).0, 0);
+        assert_eq!(config::load(&s.path("config.toml")).unwrap().custom.scene.as_deref(), Some("tokyo"));
+    }
+
+    #[test]
+    fn effect_use_runic_colon_matrix_city_is_the_same() {
+        let s = Setup::new();
+        let alone = env!(s, s.path("none.sock"));
+        assert_eq!(run(&["use", "runic:matrix-city"], &alone).0, 0);
+        let saved = config::load(&s.path("config.toml")).unwrap();
+        assert_eq!((saved.custom.effect.clone(), saved.custom.scene.as_deref()), (Some(config::EffectChoice::Named("runic".into())), Some("matrix-city")));
+    }
+
+    #[test]
+    fn an_unknown_scene_exits_2_listing_the_scenes() {
+        let s = Setup::new();
+        let alone = env!(s, s.path("none.sock"));
+        let (code, _, err) = run(&["use", "runic", "--scene", "paris"], &alone);
+        assert_eq!(code, 2);
+        assert!(err.contains("paris") && err.contains("tokyo") && err.contains("matrix-city"), "{err}");
+        assert_eq!(config::load(&s.path("config.toml")).unwrap().custom.scene, None, "nothing is written");
+        assert_eq!(run(&["use", "runic:paris"], &alone).0, 2);
+    }
+
+    #[test]
+    fn effect_list_shows_runic_s_scenes() {
+        let s = Setup::new();
+        let env = env!(s, s.path("none.sock"));
+        let (code, out, _) = run(&["list"], &env);
+        assert_eq!(code, 0);
+        assert!(out.lines().any(|l| l.starts_with("runic") && l.contains("tokyo (Tokyo), matrix-city (Matrix City)")), "{out}");
+        let (_, out, _) = run(&["list", "--json"], &env);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let runic = v.as_array().unwrap().iter().find(|r| r["name"] == "runic").unwrap();
+        assert_eq!(runic["scenes"], serde_json::json!([{ "name": "tokyo", "title": "Tokyo" }, { "name": "matrix-city", "title": "Matrix City" }]));
+    }
+
+    #[test]
+    fn effect_current_says_the_scene() {
+        let s = Setup::new();
+        write_config(&s, &[(&["appearance", "look"], "custom".into()), (&["custom", "effect"], "runic".into()), (&["custom", "scene"], "matrix-city".into())]);
+        let alone = env!(s, s.path("none.sock"));
+        let (code, out, _) = run(&["current"], &alone);
+        assert_eq!(code, 0);
+        assert_eq!(out, "config: effect runic, scene matrix-city, intensity 1\n");
+        let (_, out, _) = run(&["current", "--json"], &alone);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["config"]["scene"].as_str(), Some("matrix-city"));
+    }
+
     #[test]
     fn effect_current_prints_the_choice_then_what_each_window_draws_and_its_cost() {
         let s = Setup::new();
@@ -792,7 +929,7 @@ mod tests {
         let (code, out, _) = run(&["current", "--json"], &env);
         assert_eq!(code, 0);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v["config"], serde_json::json!({ "name": "theme", "intensity": 1.0 }));
+        assert_eq!(v["config"], serde_json::json!({ "name": "theme", "scene": null, "intensity": 1.0 }));
         let w = &v["windows"][0];
         assert_eq!((w["pid"].as_u64(), w["effect"].as_str(), w["size"].clone()), (Some(7), Some("watercolor"), serde_json::json!([1200.0, 800.0])));
         assert!((w["gpu_ms"].as_f64().unwrap() - 2.734).abs() < 1e-4);
