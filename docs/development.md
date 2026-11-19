@@ -835,7 +835,7 @@ Things only a person at the screen can check, in order of value:
 - colours: Claude Code's colours after a restart in Matrix are the theme's greens
 - effects: Tokyo Rain: the rain, the pane edges and the glowing text in Navy's blue, the hints
   and comments plain; a config with `effect.name = "matrix"` still draws the runic effect
-- effects: Rain cities: Presets, dark list: one Rain row; Seattle Rain shows the Space Needle, the Columbia Center and Rainier faint behind; Frisco Rain the Transamerica Pyramid, Salesforce Tower's lit crown and the Golden Gate's red towers; London Rain the Elizabeth Tower's lit clock, the Shard, the London Eye turning and the Gherkin; each in the rain, smooth on a 1x screen
+- effects: Rain cities: Presets, dark list: one Rain row; Seattle Rain shows the skyline as from Kerry Park: the Space Needle at the left in front (its sloped top house, lit deck and hourglass legs), downtown crowding just to its right with the dark Columbia Center reaching about to the Needle's top house and 1201 Third Avenue's pointed crown, and Mount Rainier broad and snowy on the right; Frisco Rain the Transamerica Pyramid, Salesforce Tower's lit crown and the Golden Gate's red towers; London Rain the Elizabeth Tower's lit clock, the Shard, the London Eye turning and the Gherkin; each in the rain, smooth on a 1x screen
 - themes: Settings, Appearance, Presets: Dark preset lists navy, timo-purple, matrix and the Rain row (tokyo-rain, seattle-rain, frisco-rain, london-rain), Light
   preset lists peach-watercolor, lavender-watercolor, lavender-material, composition-notebook and
   material; a dark theme set under `[theme] light` shows there

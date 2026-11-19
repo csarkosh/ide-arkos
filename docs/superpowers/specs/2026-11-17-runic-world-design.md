@@ -504,3 +504,13 @@ more steeply, then its legs tapering in to a waist a third of the way down and s
 to the ground in an hourglass, sky between them, the 100 foot level's ring low on them. Its top
 stands at 0.1 of the band and the Columbia Center's at 0.13 (it was 0.04, into the band's faded
 top, far over the Needle), so the two stand about as tall, as they do from the city's south.
+
+Then Cyrus sent a photograph of the skyline from Kerry Park as the one he likes, and Seattle was
+recomposed to it: the Space Needle at the left (0.17 of the band) and in front, its top at 0.1;
+downtown crowding just to its right (0.22 to 0.58), a band of glass towers with lit windows among
+which the dark Columbia Center (0.31, its top at 0.2, about level with the Needle's top house,
+stepped in near its top, its beacon), Two Union Square's notched top and 1201 Third Avenue's
+pointed, lit crown stand out; and Mount Rainier broad and snowy on the right (its peak at 0.82 of
+the width and 0.36 of the height, its flanks falling a third of the width either side, a shoulder
+to its left, the upper part of what shows above the city under snow with a softly ragged line).
+The towers show through between the Needle's legs.

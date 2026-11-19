@@ -360,19 +360,27 @@ mod tests {
     }
 
     #[test]
-    fn the_space_needle_and_the_columbia_center_stand_about_as_tall() {
-        // Cyrus, 2026-11-19: "balance the heights better with the Columbia Tower". The Columbia
-        // Center rose from 0.04 of the band, into its faded top, far over the Needle at 0.1.
-        let needle = wash_factor("float cx = sz.x * 0.3, ttop = sz.y * ");
-        let columbia = wash_factor("float bx = sz.x * 0.74, btop = sz.y * ");
-        assert!((needle - columbia).abs() <= 0.05, "the Needle's top at {needle}, the Columbia Center's at {columbia}");
-        assert!(needle >= 0.08 && columbia >= 0.08, "both below the band's faded top");
+    fn seattle_stands_as_seen_from_kerry_park() {
+        // Cyrus, 2026-11-19, of Seattle Rain: "balance the heights better with the Columbia
+        // Tower", then a photograph of the skyline from Kerry Park: the Needle at the left and
+        // tallest, downtown clustered just to its right with the Columbia Center reaching about
+        // to the Needle's top house, and Mount Rainier broad and snowy on the right.
+        let needle_x = wash_factor("float cx = sz.x * ");
+        let needle = wash_factor(&format!("float cx = sz.x * {needle_x}, ttop = sz.y * "));
+        let columbia_x = wash_factor("float bx = sz.x * ");
+        let columbia = wash_factor(&format!("float bx = sz.x * {columbia_x}, btop = sz.y * "));
+        let rainier_x = wash_factor("float px = sz.x * ");
+        assert!(needle_x < 0.3, "the Needle at the left ({needle_x})");
+        assert!(columbia_x > needle_x && columbia_x < 0.5, "downtown just right of the Needle ({columbia_x})");
+        assert!(rainier_x > 0.65, "Rainier on the right ({rainier_x})");
+        assert!(columbia > needle && columbia < needle + 0.16, "the Columbia Center's top ({columbia}) about at the Needle's top house, below its spire ({needle})");
+        assert!(needle >= 0.08, "below the band's faded top");
     }
 
     #[test]
     fn rainier_s_foot_is_hidden_behind_the_skylines() {
         // Its base at 0.66 of the band showed a straight cut where a far tower was lower.
-        assert_eq!(wash_factor("float px = sz.x * 0.58, py = sz.y * 0.3, base = sz.y * "), 1.0);
+        assert_eq!(wash_factor("float px = sz.x * 0.82, py = sz.y * 0.36, base = sz.y * "), 1.0);
     }
 
     #[test]
