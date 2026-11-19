@@ -374,6 +374,24 @@ mod tests {
     }
 
     #[test]
+    fn the_matrix_street_looks_south_to_lower_manhattan() {
+        // Cyrus, 2026-11-19: "for the Matrix City, I want a cityline in Manhattan looking south at
+        // FiDi in the background". A far silhouette at the street's end, drawn before the street's
+        // buildings so they cover it: One World Trade Center in the middle, the Woolworth
+        // Building, 40 Wall Street, 70 Pine and 8 Spruce Street among plainer towers.
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        let scene = &wash[wash.find("float3 code_scene(").unwrap()..];
+        let call = scene.find("col = fidi_at(").expect("code_scene draws Lower Manhattan");
+        assert!(call < scene.find("// The horizon's line").unwrap(), "before the horizon's line and the street's buildings");
+        let fidi = &wash[wash.find("float3 fidi_at(").expect("a fidi_at function")..];
+        let fidi = &fidi[..fidi.find("\n}\n").unwrap()];
+        for landmark in ["One World Trade Center", "Woolworth", "40 Wall Street", "70 Pine", "8 Spruce Street"] {
+            assert!(fidi.contains(landmark), "fidi_at draws {landmark}");
+        }
+        assert!(fidi.contains("beacon_at("), "One World Trade Center's beacon");
+    }
+
+    #[test]
     fn on_the_gpu_each_rainy_city_draws_its_own_landmarks() {
         if !gpu() {
             return;

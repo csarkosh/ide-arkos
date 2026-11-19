@@ -820,6 +820,10 @@ Things only a person at the screen can check, in order of value:
   sidewalk (a deck above the people, its posts at the curb, never in the road), some with
   scaffolding a few floors up their road side; the food cart's line runs along the sidewalk,
   never into the street; both smooth on a 1x external screen
+- Matrix Lower Manhattan: at the far end of the sidebar's Matrix street, a faint silhouette of the
+  Financial District stands on the horizon: One World Trade Center tallest in the middle with its
+  blinking beacon, the Woolworth Building, 70 Pine, 8 Spruce Street and 40 Wall Street beside it,
+  covered by the street's own buildings; smooth on a 1x external screen
 - Matrix New York: in the sidebar's city, water towers (barrel, legs, cone) stand on many middling
   roofs and never hang over an edge; steam rises and drifts from manholes in the road's lanes,
   cars' lights dimming through it, never over a crosswalk or the sidewalk; subway entrances at

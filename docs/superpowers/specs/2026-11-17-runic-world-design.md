@@ -481,3 +481,17 @@ narrow sidebar. The pair now stands at 0.8 and 0.95 of the band's width (inside 
 up), Salesforce's top at 0.16 of the band's height and the Shard's at 0.07 with its beacon above
 its tip, Rainier's slopes run down to the band's foot behind both skylines, and the Eye's radius is
 the smaller of 0.17 of the band's height and 0.12 of its width.
+
+## Lower Manhattan down the street
+
+Cyrus, 2026-11-19: "for the Matrix City, I want a cityline in Manhattan looking south at FiDi in
+the background", approving the design offered. The street runs south: at its far end a hazy
+silhouette of the Financial District stands on the horizon (`fidi_at`), drawn before the street's
+own buildings so they cover it, in the far skyline's shade with its outlines lit faintly and a few
+windows. Between the street's two rows only about 15 points either side of the vanishing point
+are open sky, so the district is drawn there, as an avenue sees it: One World Trade Center in the
+middle and tallest (its faceted taper to the roof at 0.55 of the sky's height, its spire to 0.66,
+its beacon), the Woolworth Building's Gothic crown and 70 Pine's Art Deco setbacks to its left,
+8 Spruce Street's rippled sides and 40 Wall Street's pyramid roof to its right, among plainer
+towers. The design's data rain landing on its roofs was left out: the transfers choose among the
+street's own buildings, and the far district is a few points wide.
