@@ -1,5 +1,6 @@
 mod about;
 mod agent_cli;
+mod appearance_cli;
 mod agent_probe;
 mod app_nap;
 mod aux;
@@ -6830,6 +6831,8 @@ fn main() {
         Some("worktrees") => std::process::exit(worktrees_cli::worktrees_cli(&args[2..])),
         Some("theme") => std::process::exit(agent_cli::theme_cli(&args[2..])),
         Some("effect") => std::process::exit(agent_cli::effect_cli(&args[2..])),
+        Some("color") => std::process::exit(agent_cli::color_cli(&args[2..])),
+        Some("font") => std::process::exit(agent_cli::font_cli(&args[2..])),
         Some("settings") => std::process::exit(agent_cli::settings_cli(&args[2..])),
         Some("config") => std::process::exit(agent_cli::config_cli(&args[2..])),
         Some("telemetry") => std::process::exit(telemetry_cli::telemetry_cli(&args[2..])),

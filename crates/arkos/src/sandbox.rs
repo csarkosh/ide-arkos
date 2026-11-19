@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// The first words `arkos sandbox` hands to the ordinary command with the sandbox's variables.
-pub const COMMANDS: &[&str] = &["open", "video", "panes", "theme", "effect", "settings", "config", "guide", "doctor", "telemetry", "hooks", "notify"];
+pub const COMMANDS: &[&str] = &["open", "video", "panes", "theme", "effect", "color", "font", "settings", "config", "guide", "doctor", "telemetry", "hooks", "notify"];
 
 pub const SANDBOX_USAGE: &str = "usage: arkos sandbox [<folder>]\n       arkos sandbox <command> ...   any arkos command, aimed at the sandbox\n       arkos sandbox status | stop | reset\nsee: arkos guide\n";
 

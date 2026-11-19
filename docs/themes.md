@@ -133,6 +133,38 @@ Optional. A shader effect drawn under the window's text.
 | `name` | The effect the theme was designed with; as a preset it draws with this one; the custom look (Settings, Appearance, or `arkos effect use`) puts any effect over its colours. `peach-watercolor` and `lavender-watercolor` set `watercolor`, `matrix` and `tokyo-rain` set `runic`, `composition-notebook` sets `notebook`, `timo-purple` and `arabia-solar` set `overworld`, and `navy` (Material Navy, the default), `material-ocean`, `material-palenight`, `material-sublime`, `material`, `material-solar` and `lavender-material` set `material`, which draws a dark theme's sidebar colour as the frame and its window colour as the cards, so a dark Material theme keeps its sidebar the darker. |
 | `scene` | Optional: which of the effect's scenes the theme shows, by a name the effect's manifest lists in `scenes`. The runic effect has `city` (a rainy Tokyo skyline at the sidebar's foot, Tokyo Rain's) and `code` (a digital horizon, The Matrix's). Absent, the effect's first. |
 
+## Colour files, font files and presets
+
+A look is three parts that are files of their own: a colour scheme, a font set and an effect. A
+theme in this document, with colours and fonts together, is the all-in-one form; the newer form
+splits it, and both load.
+
+A **colour file** is `<name>.toml` in the `colors` folder (`~/.config/arkos/colors/`, beside the
+themes folder). It holds `name`, `title`, `appearance` and the five colour tables `[chrome]`,
+`[terminal]`, `[semantic]`, `[tree]` and `[viewer]`, with the same keys as above; nothing else is
+allowed. Arkos ships eleven: `navy`, `ocean`, `palenight`, `sublime`, `bright`, `solar`,
+`lavender`, `peach`, `timo-purple`, `matrix` and `rain`.
+
+A **font file** is `<name>.toml` in the `fonts` folder (`~/.config/arkos/fonts/`). It holds `name`,
+`title`, `prose`, `ui`, `terminal` and `grid`, which mean what they do under `[font]` above; `grid`
+is 1.0 to 24.0. Nothing else is allowed. Arkos ships `lavender`, `peach`, `notebook` and
+`departure`.
+
+A **preset file** in the new form, in the themes folder, names its parts: `name`, `title`, `group`,
+`group_default`, `color` (a colour file's name, required), `font` (a font file's name or
+`default`; absent means `default`) and an optional `[effect]` table. It carries no `appearance`,
+colour table or font table: its appearance is its colour's. A `color` that does not exist is an
+error naming it, and the window keeps the theme it had. The old form, one file with the colour
+tables and `[font]`, still loads, so the copies `theme extract` wrote before 0.8.55 keep working;
+their colours and fonts count as the same scheme or set as a built-in's when identical, so Custom
+lists each once.
+
+A file of your own with a built-in's name shadows the built-in, in all three folders. A name that
+is no preset but is a colour scheme loads as that scheme's colours alone: `arkos theme contrast
+mine` checks a colour file of that name, and `custom.color` may name it.
+
+`arkos color list|use|current` and `arkos font list|use|current` work with these from a shell.
+
 ## Adding a theme
 
 1. Copy a built-in as a starting point. "Extract built-in themes" in the command palette writes them into the themes folder (`~/.config/arkos/themes/`), or copy one from `crates/arkos/themes/`.

@@ -1472,3 +1472,4 @@ Things only a person at the screen can check, in order of value:
   the tree: the row opens at the top; `a/b/c.txt` makes the folders, which expand; an existing name
   gives the notice "already exists" and keeps the row; Escape closes it; a click on a pane closes
   it; the row fades in and out
+- Appearance entities: Settings, Custom: Lavender, Solar and Peach each listed once; a 0.8.54 Custom look (colour and font picked by preset name) looks the same after the update; Add color with a preset file adds its colours; Show fonts folder opens it

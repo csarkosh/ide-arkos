@@ -26,6 +26,8 @@ usage: arkos guide                  how an agent shows the user a file and chang
        arkos sandbox [<folder> | <command> ...]   a second Arkos with its own config, to try a theme or effect in
        arkos theme <command> ...    list, validate, template, contrast, add, use, preview, current
        arkos effect <command> ...   list, contract, template, check, bench, use, current
+       arkos color <command> ...    list, use, current: the colour schemes the Custom look picks from
+       arkos font <command> ...     list, use, current: the font sets the Custom look picks from
        arkos settings get|set ...   read the config, or set a key on the allow-list
        arkos config reload          ask every window to read its config again now
        arkos telemetry <command>    status, on, off, local, view, crashes: what Arkos sends
@@ -209,6 +211,16 @@ pub fn effect_cli(args: &[String]) -> i32 {
     with_real_env(crate::effects::cli::effect_cli_to, args)
 }
 
+/// `arkos color ...` with the real paths and the process's streams.
+pub fn color_cli(args: &[String]) -> i32 {
+    with_real_env(crate::appearance_cli::color_cli_to, args)
+}
+
+/// `arkos font ...` with the real paths and the process's streams.
+pub fn font_cli(args: &[String]) -> i32 {
+    with_real_env(crate::appearance_cli::font_cli_to, args)
+}
+
 /// `arkos config ...` with the real paths and the process's streams.
 pub fn config_cli(args: &[String]) -> i32 {
     with_real_env(config_cli_to, args)
@@ -319,7 +331,7 @@ fn schema_json() -> Json {
 /// A theme by name (`unknown theme: {name}` when it is neither a file in the folder nor built
 /// in; a broken file's own error otherwise).
 pub(crate) fn load_name(name: &str, themes: &Path) -> Result<theme::Theme, String> {
-    if theme::is_bare_name(name) && !themes.join(format!("{name}.toml")).exists() && theme::builtin(name).is_none() {
+    if theme::is_bare_name(name) && !themes.join(format!("{name}.toml")).exists() && theme::builtin(name).is_none() && crate::color_schemes::load(name, themes).is_err() {
         return Err(format!("unknown theme: {name}"));
     }
     theme::load(name, themes)
@@ -338,8 +350,12 @@ fn theme_text(target: &str, themes: &Path) -> Result<String, String> {
     }
 }
 
-/// A theme given as a path ending in `.toml` or as a name, parsed.
+/// A theme given as a path ending in `.toml` or as a name, parsed. A name that is no preset but
+/// is a colour scheme gives that scheme's colours alone.
 fn load_target(target: &str, themes: &Path) -> Result<theme::Theme, String> {
+    if !target.ends_with(".toml") && !themes.join(format!("{target}.toml")).exists() && theme::builtin(target).is_none() {
+        return load_name(target, themes);
+    }
     let text = theme_text(target, themes)?;
     theme::parse(&text).map_err(|e| format!("{target}: {e}"))
 }
@@ -546,7 +562,7 @@ struct Verdict {
     result: Result<(String, String), String>,
 }
 
-type Judge<'a> = dyn Fn(&Report) -> Result<String, String> + 'a;
+pub(crate) type Judge<'a> = dyn Fn(&Report) -> Result<String, String> + 'a;
 
 fn verdicts(answer: &Answer, judge: &Judge) -> Vec<Verdict> {
     let judged = |o: &CustomizeOutcome| match &o.result {
@@ -599,7 +615,7 @@ fn print_verdicts(answer: &Answer, judge: &Judge, json: bool, mut base: Json, ou
 /// answer. No daemon or no window is `saved; no window running`, exit 0; silent and too old
 /// windows print their lines and do not fail the command, and when none answered at all
 /// `saved; no window answered` comes first.
-fn reload_after_save(env: &Env, json: bool, mut base: Json, judge: &Judge, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+pub(crate) fn reload_after_save(env: &Env, json: bool, mut base: Json, judge: &Judge, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     let none = Answer { outcomes: Vec::new(), missing: Vec::new(), too_old: Vec::new() };
     match customize(env.socket, CustomizeAction::ReloadConfig, env.wait) {
         Err(Reach::NoWindow) => saved_alone(json, base, &none, out),
@@ -684,7 +700,7 @@ fn preview(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
 }
 
 /// `presets` or `custom`, as the config spells the look.
-fn look_name(look: config::Look) -> &'static str {
+pub(crate) fn look_name(look: config::Look) -> &'static str {
     match look {
         config::Look::Presets => "presets",
         config::Look::Custom => "custom",
@@ -735,7 +751,7 @@ fn report_line(r: &Report) -> String {
 }
 
 /// A window's whole report with its `pid` and `project`, or its `error`.
-fn report_json(o: &CustomizeOutcome) -> Json {
+pub(crate) fn report_json(o: &CustomizeOutcome) -> Json {
     match &o.result {
         Ok(r) => {
             let mut v = serde_json::to_value(r).unwrap_or_else(|_| json!({}));
@@ -748,14 +764,14 @@ fn report_json(o: &CustomizeOutcome) -> Json {
 }
 
 /// Every window's `ReportState`; no daemon or no window is an empty answer.
-fn reports(env: &Env) -> Result<Answer, Reach> {
+pub(crate) fn reports(env: &Env) -> Result<Answer, Reach> {
     match customize(env.socket, CustomizeAction::ReportState, env.wait) {
         Err(Reach::NoWindow) => Ok(Answer { outcomes: Vec::new(), missing: Vec::new(), too_old: Vec::new() }),
         other => other,
     }
 }
 
-fn report_lines(answer: &Answer, out: &mut dyn Write) {
+pub(crate) fn report_lines(answer: &Answer, out: &mut dyn Write) {
     for o in &answer.outcomes {
         let text = match &o.result {
             Ok(r) => report_line(r),
@@ -966,8 +982,16 @@ fn settings_set(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn W
         Err(e) => return fail(err, &e),
     };
     // A name that must be a theme that loads; the custom font may also be none of a theme's.
-    if matches!(*key, "theme.dark" | "theme.light" | "custom.color") || (*key == "custom.font" && *raw != config::PLAIN_FONT) {
+    if matches!(*key, "theme.dark" | "theme.light" | "custom.color") {
         if let Err(e) = load_name(raw, env.themes) {
+            return fail(err, &e);
+        }
+    }
+    // The custom font is a font set's name, a preset's (an older config), or `default`.
+    if *key == "custom.font" && *raw != config::PLAIN_FONT {
+        // The theme is only the fallback for no choice, which this is not.
+        let shown = theme::BUILTIN.first().and_then(|(n, _)| theme::builtin(n)).expect("a built-in theme");
+        if let Err(e) = theme::font_for(Some(raw), &shown, env.themes) {
             return fail(err, &e);
         }
     }

@@ -21,6 +21,8 @@ for you, so never write the file by hand when a command exists.
 
 - The config: `~/.config/arkos/config.toml` (`$ARKOS_CONFIG_DIR` when that is set, else `$XDG_CONFIG_HOME/arkos`, else `~/.config/arkos`).
 - Theme files: `~/.config/arkos/themes/<name>.toml`. A file shadows a built-in of the same name.
+- Colour files: `~/.config/arkos/colors/<name>.toml`, and font files: `~/.config/arkos/fonts/<name>.toml`.
+  A file shadows a built-in of the same name; the keys are in `docs/themes.md`.
 - Effects: `~/.config/arkos/effects/<name>/`, a folder each. A folder shadows a built-in of the
   same name.
 - The daemon's socket: `~/Library/Application Support/arkos/arkosd.sock`.
@@ -496,6 +498,17 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
   plus `, preview {name}`, `, config error: {text}` and `, theme error: {text}` when set. Exit 0
   with no window. JSON `{ "config": { "dark", "light", "mode", "look": "presets" | "custom", "custom": { "color", "font", "effect" } } | { "error" }, "windows": [...], "missing", "too_old" }`,
   each window `{ "pid", "project", "theme", "dark", "system_is_dark", "preset", "family", "preview", "config_error", "theme_error" }`.
+- `arkos color list [--json]`, `arkos color use <name> [--json]` and `arkos color current [--json]`:
+  the colour schemes the Custom look picks from. `list` prints one line per scheme,
+  `{name}  {title}  {dark|light}  {built in|file|invalid}`, each scheme once (JSON an array of
+  `{ "name", "title", "appearance", "source" }`). `use` writes `custom.color` and puts Custom in
+  force, keeping its font and effect; the first time, the font and effect on screen are pinned so
+  nothing else changes. An unknown name exits 2 and names `arkos color list`. `current` prints
+  `config: color {name}, custom` (or says the colour is the preset's), then each window as
+  `arkos theme current` does. A colour scheme's name is also accepted by `arkos theme contrast`.
+- `arkos font list [--json]`, `arkos font use <name|default> [--json]` and `arkos font current [--json]`:
+  the same for font sets. `default` is the plain fonts (the config's `font.family`); `list` starts
+  with it. `use` writes `custom.font`, pinning the colour and effect on screen the first time.
 - `arkos settings get [<key>] [--json]`: no key prints the config file verbatim, then the window
   lines as `current` does (JSON `{ "file", "windows" }`). A dotted key prints its value bare
   (JSON `{ "key", "value" }`). It reads the file only, so a key left at its default answers
@@ -503,10 +516,10 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
 - `arkos settings set <key> <value> [--json]`: the keys are `appearance.mode`
   (system, dark, light), `appearance.look` (presets, custom: which of the two looks is in
   force, the mode's dark or light theme with its own effect, or the colour, the font and the
-  effect of `custom.color`, `custom.font` and `custom.effect`), `custom.color` (a theme's name,
-  which must load), `custom.font` (a theme's name, for its `[font]` table over whatever colour
-  shows, or `default` for none of a theme's, so the config's `font.family`; never set, the
-  fonts are the colour's own),
+  effect of `custom.color`, `custom.font` and `custom.effect`), `custom.color` (a colour
+  scheme's name, or a preset's, which must load: a preset gives its colours), `custom.font` (a
+  font set's name, or a preset's for its fonts, or `default` for none, so the config's
+  `font.family`; never set, the fonts are those of the colour showing),
   `custom.effect` (theme, none, or an installed effect's name), `theme.dark`, `theme.light`, `font.family`, `font.preset`,
   `layout.placement` (inplace, neighbor: where a plain `arkos open` from a session lands on
   that session's own page),
@@ -574,7 +587,7 @@ arkos sandbox status | stop | reset
   folder; one that does not exist exits 2) and prints
   `sandbox: opened {folder} (config {dir}, state {dir})`. Run again, it opens another window of
   the same sandbox. JSON `{ "folder", "config", "state", "pid" }`.
-- `arkos sandbox <command> ...`: runs `open`, `video`, `panes`, `theme`, `effect`, `settings`,
+- `arkos sandbox <command> ...`: runs `open`, `video`, `panes`, `theme`, `effect`, `color`, `font`, `settings`,
   `config`, `guide`, `doctor`, `telemetry`, `hooks` or `notify` aimed at the sandbox, with that
   command's own output and exit code. `arkos sandbox theme use draft.toml` writes the sandbox's
   `config.toml`, never the user's.
