@@ -1010,7 +1010,7 @@ const SCHEMA: &[TableDoc] = &[
         name: "effect",
         keys: &[
             surface("name", "Optional: the effect the theme was designed with, a built-in or an installed effect's folder name; the user's [effect] name in the config may choose another"),
-            surface("scene", "Optional: which of the effect's scenes the theme shows, by a name its manifest lists in `scenes` (runic: \"city\" or \"code\"); absent, the effect's first"),
+            surface("scene", "Optional: which of the effect's scenes the theme shows, by a name its manifest lists in `scenes` (runic: \"tokyo\" or \"matrix-city\"); absent, the effect's first"),
         ],
     },
 ];
@@ -1272,7 +1272,7 @@ mod tests {
         assert_eq!(rain.font, ThemeFont::default(), "in the system's fonts");
         assert_eq!(rain.appearance, Some(Appearance::Dark));
         assert_eq!(rain.recommended_effect(), Some("runic"));
-        assert_eq!(rain.effect.as_ref().and_then(|e| e.scene.as_deref()), Some("city"));
+        assert_eq!(rain.effect.as_ref().and_then(|e| e.scene.as_deref()), Some("tokyo"));
         assert_eq!(builtin("navy").unwrap().recommended_effect(), Some("material"), "navy, the default, is Material Navy");
         // It was `navy-runic`: the old name still loads it, and a config naming it is moved.
         assert_eq!(current_name("navy-runic"), "tokyo-rain");
@@ -1407,7 +1407,13 @@ mod tests {
             assert_eq!(new.tree, old.tree, "{name} tree");
             assert_eq!(new.viewer, old.viewer, "{name} viewer");
             assert_eq!(new.font, old.font, "{name} font");
-            assert_eq!(new.effect, old.effect, "{name} effect");
+            assert_eq!(new.effect.as_ref().map(|e| e.name.as_str()), old.effect.as_ref().map(|e| e.name.as_str()), "{name} effect");
+            let scene_of = |t: &Theme| {
+                let e = t.effect.as_ref()?;
+                let m = crate::effects::manifest::load(&e.name, std::path::Path::new("/nonexistent/effects")).ok()?;
+                Some(m.manifest.scene_index(e.scene.as_deref()))
+            };
+            assert_eq!(scene_of(&new), scene_of(&old), "{name} scene");
             assert_eq!(new.kind(), old.kind(), "{name} kind");
             assert_eq!(new.appearance, old.appearance, "{name} appearance");
             assert_eq!(new.title, old.title, "{name} title");

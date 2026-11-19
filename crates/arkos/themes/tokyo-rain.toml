@@ -1,8 +1,8 @@
 # The schema of every key is in docs/themes.md.
-# Tokyo Rain (it was `navy-runic`, and that name still loads it): the Rain colours, drawn with the runic effect and its city scene.
+# Tokyo Rain (it was `navy-runic`, and that name still loads it): the Rain colours, drawn with the runic effect and its Tokyo scene.
 name = "tokyo-rain"
 color = "rain"
 
 [effect]
 name = "runic"
-scene = "city"
+scene = "tokyo"

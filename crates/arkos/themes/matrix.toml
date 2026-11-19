@@ -1,9 +1,9 @@
 # The schema of every key is in docs/themes.md.
-# The Matrix: the Matrix colours, drawn with the runic effect and its code scene.
+# The Matrix: the Matrix colours, drawn with the runic effect and its Matrix City scene.
 name = "matrix"
 title = "The Matrix"
 color = "matrix"
 
 [effect]
 name = "runic"
-scene = "code"
+scene = "matrix-city"

@@ -1,4 +1,5 @@
 //! An effect's folder: its manifest, `effect.toml`, and the shaders beside it (spec 4.1).
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -91,6 +92,13 @@ pub struct Manifest {
     /// The scenes the wash can draw, by name, in the order of the number it is handed
     /// (`ArkosInputs::scene`); a theme names one (`[effect] scene`). Empty, one scene, 0.
     pub scenes: Vec<String>,
+    /// The scenes' titles for people, in the order of `scenes`; empty, or one a scene.
+    #[serde(default)]
+    pub scene_titles: Vec<String>,
+    /// Older names for scenes, each the name of one of `scenes`, so a theme that names a scene
+    /// by its old name keeps it.
+    #[serde(default)]
+    pub scene_aliases: BTreeMap<String, String>,
     /// Images the wash samples (`[[texture(0)]]`, a texture array in this order, each image's
     /// size in `ARKOS_IMAGE_SIZE`): JPEG or PNG files in the effect's folder, or in a folder in
     /// it, at most `images::MAX_IMAGES`.
@@ -101,7 +109,24 @@ impl Manifest {
     /// The number of the scene a theme names among this effect's `scenes`; 0 for none, or a
     /// name the effect does not list.
     pub fn scene_index(&self, name: Option<&str>) -> f32 {
-        name.and_then(|n| self.scenes.iter().position(|s| s == n)).map_or(0.0, |i| i as f32)
+        name.and_then(|n| self.scene_name(n)).and_then(|n| self.scenes.iter().position(|s| s == n)).map_or(0.0, |i| i as f32)
+    }
+
+    /// A scene's own name: the name itself when the effect lists it, or the scene an alias
+    /// points to; none for a name the effect does not know.
+    pub fn scene_name(&self, name: &str) -> Option<&str> {
+        self.scenes.iter().find(|s| *s == name).or_else(|| self.scene_aliases.get(name)).map(String::as_str)
+    }
+
+    /// The title of the scene at `i`: the manifest's, else its name in title case.
+    pub fn scene_title(&self, i: usize) -> String {
+        if let Some(t) = self.scene_titles.get(i) {
+            return t.clone();
+        }
+        let name = self.scenes.get(i).map(String::as_str).unwrap_or_default();
+        name.split(['-', '_']).filter(|w| !w.is_empty())
+            .map(|w| { let mut c = w.chars(); c.next().map(|f| f.to_uppercase().chain(c).collect::<String>()).unwrap_or_default() })
+            .collect::<Vec<_>>().join(" ")
     }
 
     /// The frames a second the text is redrawn at while its shader moves: the `glyph_rate` key,
@@ -161,6 +186,8 @@ impl Default for Manifest {
             terminal_decode: false,
             terminal_paint: false,
             scenes: Vec::new(),
+            scene_titles: Vec::new(),
+            scene_aliases: BTreeMap::new(),
             images: Vec::new(),
         }
     }
@@ -241,6 +268,14 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
         let ext = file.rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
         if parts.len() > 2 || parts.iter().any(|p| !is_bare_name(p)) || !["jpg", "jpeg", "png"].contains(&ext.as_str()) {
             return Err(format!("images must be .jpg, .jpeg or .png files in the effect's folder or a folder in it (was {file:?})"));
+        }
+    }
+    if !m.scene_titles.is_empty() && m.scene_titles.len() != m.scenes.len() {
+        return Err(format!("scene_titles must be empty or list one title for each of scenes ({} for {})", m.scene_titles.len(), m.scenes.len()));
+    }
+    for (old, target) in &m.scene_aliases {
+        if !m.scenes.contains(target) {
+            return Err(format!("scene_aliases: {old:?} names {target:?}, which is not one of scenes"));
         }
     }
     in_range("frame_rate", m.frame_rate, 1, 60)?;
@@ -438,6 +473,45 @@ mod tests {
             std::fs::write(f.join(file), format!("// {file} of {name}\n")).unwrap();
         }
         f
+    }
+
+    fn runic() -> Manifest {
+        parse(BUILTIN.iter().find(|b| b.name == "runic").unwrap().manifest).unwrap()
+    }
+
+    #[test]
+    fn runic_s_scenes_are_tokyo_and_matrix_city_titled_for_people() {
+        let m = runic();
+        assert_eq!(m.scenes, ["tokyo", "matrix-city"]);
+        assert_eq!((m.scene_title(0), m.scene_title(1)), ("Tokyo".to_string(), "Matrix City".to_string()));
+        assert_eq!(m.scene_name("code"), Some("matrix-city"));
+        assert_eq!(m.scene_name("tokyo"), Some("tokyo"));
+        assert_eq!(m.scene_name("paris"), None);
+    }
+
+    #[test]
+    fn the_old_scene_names_city_and_code_still_name_the_same_scenes() {
+        let m = runic();
+        assert_eq!((m.scene_index(Some("city")), m.scene_index(Some("tokyo"))), (0.0, 0.0));
+        assert_eq!((m.scene_index(Some("code")), m.scene_index(Some("matrix-city"))), (1.0, 1.0));
+    }
+
+    #[test]
+    fn a_manifest_whose_scene_titles_do_not_match_its_scenes_is_refused() {
+        let text = format!("{MINIMAL}scenes = [\"a\", \"b\"]\nscene_titles = [\"A\"]\n");
+        assert!(parse(&text).unwrap_err().contains("scene_titles"));
+    }
+
+    #[test]
+    fn a_scene_alias_to_no_scene_is_refused() {
+        let text = format!("{MINIMAL}scenes = [\"a\"]\nscene_aliases = {{ old = \"zzz\" }}\n");
+        assert!(parse(&text).unwrap_err().contains("scene_aliases"));
+    }
+
+    #[test]
+    fn a_scene_without_a_title_is_shown_in_title_case() {
+        let m = parse(&format!("{MINIMAL}scenes = [\"matrix-city\", \"san_francisco\"]\n")).unwrap();
+        assert_eq!((m.scene_title(0), m.scene_title(1)), ("Matrix City".to_string(), "San Francisco".to_string()));
     }
 
     #[test]
@@ -766,7 +840,7 @@ mod tests {
         let m = parse(b.manifest).unwrap();
         assert_eq!((m.frame_rate, m.scale, m.ui_text_bump), (30, 0.5, 0.0), "a pixel a point on a Retina display: full size cost 11 to 14 ms a frame there");
         assert_eq!((m.gap, m.title_pad, m.sidebar_pad, m.bar_end_clear), (16.0, 8.0, 2.0, 48.0), "room for the frames, the plates, the chevron and the lamp left of the +");
-        assert_eq!(m.scenes, ["city", "code"]);
+        assert_eq!(m.scenes, ["tokyo", "matrix-city"]);
         assert!(m.sidebar_margin, "the sidebar keeps a pane's margins, so it is framed as one");
         assert_eq!(m.menu_paper_alpha(), 0.92, "a menu's rows read over the rain, though the panes' paper lets the wash through");
         assert_eq!(m.edge_gap, Some(11.0), "6 points of ground between a frame and the window's edge, as between two frames");
