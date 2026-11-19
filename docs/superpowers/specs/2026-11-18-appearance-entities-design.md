@@ -317,8 +317,8 @@ A builder read this design cold and asked these; the answers are my calls unless
   draws every weight Arkos asks for from them; the roughly 10 MB limit counts whatever is shipped.
 - **The oldest macOS is 14.0** (`LSMinimumSystemVersion`); the five system families are confirmed
   against it.
-- **A file of one's own with a built-in's name:** the built-in wins and the file is skipped with a
-  line in the log, as a preset with a built-in's name is today. The identical-colours check is
+- **A file of one's own with a built-in's name** shadows the built-in (the file wins), as a theme
+  file with a built-in's name does today (`theme::list`); found reading the code while planning. The identical-colours check is
   exact, on every colour value.
 - **The bench is the builder's to run**, before and after in the same session, as earlier effect
   work did; the Status rows carry a person's check on the screen.
