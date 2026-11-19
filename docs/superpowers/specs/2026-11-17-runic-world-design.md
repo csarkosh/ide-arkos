@@ -514,3 +514,12 @@ pointed, lit crown stand out; and Mount Rainier broad and snowy on the right (it
 the width and 0.36 of the height, its flanks falling a third of the width either side, a shoulder
 to its left, the upper part of what shows above the city under snow with a softly ragged line).
 The towers show through between the Needle's legs.
+
+Then (Cyrus, 2026-11-19): the towers between the Needle and Rainier "just looks like a bunch of
+odd lines. Make it look cleaner". Each tower had been outlined on both sides, so wherever two
+overlapped a stray vertical line stood in the crowd. Downtown is now one silhouette
+(`downtown_top`): a run of lower buildings at half the band's height so no slot opens down to the
+near skyline at any sidebar width, plain towers standing on it, and the Columbia Center (darker,
+stepped in twice near its top, its beacon), Two Union Square's notch and 1201 Third Avenue's
+pointed crown (lit warm) as steps and points of the same outline. Only the silhouette's own edge is
+lit: along its roofs and down its outer sides.

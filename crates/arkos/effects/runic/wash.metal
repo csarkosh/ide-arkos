@@ -1100,53 +1100,75 @@ float3 rainier_at(float2 q, float2 sz, float3 white_c, float3 col) {
     return mix(c, white_c, (q.y - edge < 0.9 ? 0.18 : 0.0));
 }
 
+// The top of downtown Seattle's silhouette at x (points down the band; the band's foot where no
+// tower stands): plain glass towers and, among them, the Columbia Center stepped in near its top,
+// Two Union Square's notch and 1201 Third Avenue's pointed crown, all one outline as Kerry Park
+// sees it (Cyrus, 2026-11-19: the towers "just looks like a bunch of odd lines. Make it look
+// cleaner").
+float downtown_top(float x, float2 sz) {
+    float h = sz.y;
+    float top = h;
+    // The lower buildings the towers rise from, all along downtown, so no slot opens between two
+    // towers down to the near skyline whatever the sidebar's width.
+    if (x > sz.x * 0.215 && x < sz.x * 0.6) {
+        top = h * 0.5;
+    }
+    // The plain towers: (centre as a share of the width, half width in points, top as a share of
+    // the height).
+    const float3 plain[8] = { float3(0.235, 5.0, 0.42), float3(0.27, 4.0, 0.36), float3(0.35, 4.5, 0.33), float3(0.375, 3.5, 0.4), float3(0.445, 4.0, 0.31), float3(0.52, 5.0, 0.38), float3(0.555, 4.0, 0.46), float3(0.588, 3.5, 0.5) };
+    for (int i = 0; i < 8; i++) {
+        if (abs(x - sz.x * plain[i].x) < plain[i].y) {
+            top = min(top, h * plain[i].z);
+        }
+    }
+    // The Columbia Center: stepped in twice near its top.
+    float cd = abs(x - sz.x * 0.31);
+    float ct = h * 0.2, cr = h - ct;
+    if (cd < 7.5) {
+        top = min(top, cd < 4.5 ? ct : cd < 6.0 ? ct + 0.05 * cr : ct + 0.12 * cr);
+    }
+    // Two Union Square: a notch in its top.
+    float ud = abs(x - sz.x * 0.4);
+    if (ud < 4.5) {
+        top = min(top, ud < 1.2 ? h * 0.3 : h * 0.26);
+    }
+    // 1201 Third Avenue: its crown pointed.
+    float td = abs(x - sz.x * 0.49);
+    float tt = h * 0.24;
+    if (td < 5.0) {
+        top = min(top, tt + td / 5.0 * 0.07 * (h - tt));
+    }
+    return top;
+}
+
 // Seattle's landmarks as Kerry Park sees them (Cyrus, 2026-11-19, a photograph): the Space
 // Needle at the left and in front, and just to its right downtown's towers crowding up, the dark
 // Columbia Center among them reaching about to the Needle's top house, 1201 Third Avenue's pointed
 // crown and Two Union Square's notched top.
 float3 seattle_at(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 far_c, float3 near_c, float3 green, float3 white_c, float3 col, thread float& win) {
     float3 edge_c = mix(white_c, green, 0.4);
-    // Downtown's plainer towers, farthest: a crowd of glass between the Needle and the mountain.
-    float dx0 = sz.x * 0.22, dx1 = sz.x * 0.58;
-    if (q.x > dx0 && q.x < dx1) {
-        float cell = floor((q.x - dx0) / 7.0);
-        float cx0 = dx0 + (cell + 0.5) * 7.0;
-        float top = sz.y * (0.3 + 0.22 * hash2(float2(cell, 271.0)));
-        float hw0 = 2.4 + 1.0 * hash2(float2(cell, 277.0));
-        if (landmark_at(q, cx0, top, sz.y, hw0, far_c, near_c, edge_c, 0.45, col)) {
-            win = window_lit(q, 0, t) * 0.7;
+    // Downtown: one solid silhouette, a shade between the two skylines', its outline lit along
+    // its rooftops and down its outer sides only, so the towers read as buildings rather than
+    // as lines.
+    if (q.x > sz.x * 0.2 && q.x < sz.x * 0.62) {
+        float top = downtown_top(q.x, sz);
+        if (q.y >= top) {
+            bool columbia = abs(q.x - sz.x * 0.31) < 7.5;
+            col = mix(far_c, near_c, columbia ? 0.6 : 0.3);
+            win = window_lit(q, 0, t) * (columbia ? 0.3 : 0.6);
+            bool edge = q.y < top + 0.9 || q.y < downtown_top(q.x - 1.0, sz) || q.y < downtown_top(q.x + 1.0, sz);
+            if (edge) {
+                col = mix(col, edge_c, 0.6);
+                win = 0.0;
+            }
+            // 1201 Third Avenue's crown, lit warm.
+            float td = abs(q.x - sz.x * 0.49);
+            if (td < 5.0 && q.y < sz.y * 0.24 + 0.07 * sz.y * 0.76 + 1.0) {
+                col = mix(col, mix(white_c, u.colors[ARKOS_ANSI + 3].rgb, 0.4), 0.3);
+            }
         }
     }
-    // Two Union Square: its notched top.
-    float ux = sz.x * 0.4, utop = sz.y * 0.26;
-    float ur = (q.y - utop) / (sz.y - utop);
-    float uhw = ur < 0.05 ? (abs(q.x - ux) < 1.2 ? -1.0 : 4.5) : 4.5;
-    if (uhw > 0.0 && landmark_at(q, ux, utop, sz.y, uhw, far_c, near_c, edge_c, 0.7, col)) {
-        win = window_lit(q, 0, t) * 0.6;
-    }
-    // 1201 Third Avenue: its pointed crown, lit.
-    float tx = sz.x * 0.49, ttop3 = sz.y * 0.24;
-    float tr = (q.y - ttop3) / (sz.y - ttop3);
-    float thw = tr < 0.07 ? 0.6 + 4.4 * tr / 0.07 : 5.0;
-    if (landmark_at(q, tx, ttop3, sz.y, thw, far_c, near_c, edge_c, 0.75, col)) {
-        win = tr > 0.08 ? window_lit(q, 0, t) * 0.6 : 0.0;
-        if (tr < 0.07) {
-            col = mix(col, mix(white_c, u.colors[ARKOS_ANSI + 3].rgb, 0.4), 0.35);
-        }
-    }
-    // The Columbia Center: dark, the tallest tower, stepped in near its top.
-    float bx = sz.x * 0.31, btop = sz.y * 0.2;
-    float br = (q.y - btop) / (sz.y - btop);
-    float bhw = br < 0.05 ? 4.5 : br < 0.12 ? 6.0 : 7.5;
-    if (landmark_at(q, bx, btop, sz.y, bhw, far_c, near_c, edge_c, 0.6, col)) {
-        col = mix(col, near_c, 0.45);
-        win = window_lit(q, 1, t) * 0.5;
-        // Its steps' ledges, lit.
-        if (abs(br - 0.05) < 0.004 || abs(br - 0.12) < 0.004) {
-            col = mix(col, edge_c, 0.7);
-        }
-    }
-    col = beacon_at(q, float2(bx, btop - 1.5), t, u, col);
+    col = beacon_at(q, float2(sz.x * 0.31, sz.y * 0.2 - 1.5), t, u, col);
     // The Space Needle, in front, as its silhouette is (Cyrus, 2026-11-19: "make the space needle
     // more accurate to how it looks"): a thin spire over a small cap; the top house's roof
     // sloping out to its rim, the widest point; its underside sloping back in more steeply; three

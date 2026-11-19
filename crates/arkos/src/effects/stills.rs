@@ -367,14 +367,28 @@ mod tests {
         // to the Needle's top house, and Mount Rainier broad and snowy on the right.
         let needle_x = wash_factor("float cx = sz.x * ");
         let needle = wash_factor(&format!("float cx = sz.x * {needle_x}, ttop = sz.y * "));
-        let columbia_x = wash_factor("float bx = sz.x * ");
-        let columbia = wash_factor(&format!("float bx = sz.x * {columbia_x}, btop = sz.y * "));
+        let columbia_x = wash_factor("float cd = abs(x - sz.x * ");
+        let columbia = wash_factor("float ct = h * ");
         let rainier_x = wash_factor("float px = sz.x * ");
         assert!(needle_x < 0.3, "the Needle at the left ({needle_x})");
         assert!(columbia_x > needle_x && columbia_x < 0.5, "downtown just right of the Needle ({columbia_x})");
         assert!(rainier_x > 0.65, "Rainier on the right ({rainier_x})");
         assert!(columbia > needle && columbia < needle + 0.16, "the Columbia Center's top ({columbia}) about at the Needle's top house, below its spire ({needle})");
         assert!(needle >= 0.08, "below the band's faded top");
+    }
+
+    #[test]
+    fn downtown_seattle_is_one_silhouette_outlined_along_its_roofs() {
+        // Cyrus, 2026-11-19: the towers between the Needle and Rainier "just looks like a bunch of
+        // odd lines. Make it look cleaner". Each tower outlined on both sides drew a vertical line
+        // wherever two overlapped; downtown is now one shape, outlined only where its outline is.
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        let seattle = &wash[wash.find("float3 seattle_at(").unwrap()..];
+        let seattle = &seattle[..seattle.find("\n}\n").unwrap()];
+        assert!(wash.contains("float downtown_top(float x, float2 sz)"), "one outline for downtown");
+        let downtown = &seattle[..seattle.find("// The Space Needle, in front").unwrap()];
+        assert!(!downtown.contains("landmark_at("), "no tower outlined on its own between the Needle and Rainier");
+        assert!(downtown.contains("downtown_top(q.x - 1.0, sz)") && downtown.contains("downtown_top(q.x + 1.0, sz)"), "the outline down its outer sides");
     }
 
     #[test]
