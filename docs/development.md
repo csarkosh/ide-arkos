@@ -596,7 +596,7 @@ Things only a person at the screen can check, in order of value:
   narrowest, and changes nothing on screen the first time (it starts as what is showing);
   picking another colour or effect switches the window with the usual fade and keeps the font;
   picking another font changes the text at once, the pixel face on its grid (sharp) under any
-  colour, and "Default" is the Text section's family; a font set that is not installed is
+  colour, and "Default" is the Text section's family; a font set that is neither bundled nor installed is
   marked and cannot be clicked; back on Presets the mode's
   preset and its own effect return, and Custom again brings the custom look back as it was; in
   Custom the window keeps its colour when macOS switches between light and dark; "Add
@@ -670,7 +670,7 @@ Things only a person at the screen can check, in order of value:
   line at its left, and a terminal's rows each sitting on a blue rule that stays under its row
   through a scroll and a resize (a markdown tab has the margin only); edges are pencil lines,
   the selected Explorer row a yellow highlighter stroke with ragged ends and the hovered row a
-  lighter one; the text is hand-set in Chalkboard SE and Monaspace Radon (each glyph a little off
+  lighter one; the text is hand-set in Chalkboard SE and Monaspace Radon Frozen (each glyph a little off
   its line, grainy, no bleed) and new terminal output is written in by the pen, a shade darker
   while wet; under Navy with `effect.name = "notebook"` the cover's label and the rules read in
   Navy's colours

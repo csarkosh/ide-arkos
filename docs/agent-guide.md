@@ -406,7 +406,7 @@ One TOML file: a top-level `name`, five required tables of `#rrggbb` colours, an
 - `[viewer]`: syntax colours: `keyword`, `string`, `comment`, `number`, `function`, `type_name`,
   `constant`, `operator`, `punctuation`.
 - `[font]` (optional): `prose`, `ui`, `terminal`, each an installed family name; `terminal` must
-  be monospaced. A family that is not installed is left out.
+  be monospaced. A family that is neither bundled nor installed is left out.
 
 The contrast rules, which `arkos theme contrast` checks pair by pair:
 

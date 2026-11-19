@@ -184,6 +184,9 @@ pub struct FontEntry {
     pub font: ThemeFont,
 }
 
+const OLD_RADON: &str = "Monaspace Radon";
+const FROZEN_RADON: &str = "Monaspace Radon Frozen";
+
 /// Every font set to show, each once: the built-in sets, the other font files sorted (one that
 /// does not parse is left out), then the non-default fonts of each old-form preset file of
 /// `themes_dir` that match no set listed so far, named and titled as the preset.
@@ -211,7 +214,8 @@ pub fn font_sets(themes_dir: &Path) -> Vec<FontEntry> {
         add(&mut out, &stem);
     }
     for (_, t) in old_form_presets(themes_dir) {
-        if t.font.is_default() || out.iter().any(|e| e.font == t.font) {
+        let font = t.font.with_current_names();
+        if font.is_default() || out.iter().any(|e| e.font == font) {
             continue;
         }
         out.push(FontEntry { title: t.title.clone().unwrap_or_else(|| title_case(&t.name)), name: t.name.clone(), font: t.font.clone() });
@@ -269,12 +273,25 @@ impl ThemeFont {
         *self == ThemeFont::default()
     }
 
+    /// The fonts with 0.8.54's "Monaspace Radon" spelled as the bundled "Monaspace Radon Frozen",
+    /// so a copy of the old notebook preset compares equal to the built-in font set.
+    fn with_current_names(&self) -> ThemeFont {
+        let mut f = self.clone();
+        if f.terminal.as_deref() == Some(OLD_RADON) {
+            f.terminal = Some(FROZEN_RADON.to_string());
+        }
+        f
+    }
+
     /// The same fonts with every family that is not installed left out, and those families'
     /// names: a theme asking for a font this Mac lacks falls back to what the slot shows
     /// without one, rather than to whatever macOS substitutes.
     pub fn installed(&self, families: &std::collections::HashSet<String>) -> (ThemeFont, Vec<String>) {
         let mut missing = Vec::new();
         let mut keep = |f: &Option<String>| match f {
+            // 0.8.54's notebook named "Monaspace Radon"; the app bundles the static files, whose
+            // family is "Monaspace Radon Frozen" (the licence reserves the name, so no renaming).
+            Some(name) if name == OLD_RADON && !families.contains(name) && families.contains(FROZEN_RADON) => Some(FROZEN_RADON.to_string()),
             Some(name) if !families.contains(name) => {
                 missing.push(name.clone());
                 None
@@ -1333,6 +1350,18 @@ mod tests {
     }
 
     #[test]
+    fn an_old_copy_naming_monaspace_radon_draws_the_bundled_frozen_family() {
+        let set = |names: &[&str]| -> std::collections::HashSet<String> { names.iter().map(|s| s.to_string()).collect() };
+        let fonts = ThemeFont { terminal: Some("Monaspace Radon".into()), ui: Some("Chalkboard SE".into()), ..ThemeFont::default() };
+        let (kept, missing) = fonts.installed(&set(&["Chalkboard SE", "Monaspace Radon Frozen"]));
+        assert_eq!(kept.terminal.as_deref(), Some("Monaspace Radon Frozen"));
+        assert!(missing.is_empty(), "{missing:?}");
+        assert_eq!(fonts.installed(&set(&["Monaspace Radon", "Monaspace Radon Frozen"])).0.terminal.as_deref(), Some("Monaspace Radon"));
+        let (kept, missing) = fonts.installed(&set(&["Chalkboard SE"]));
+        assert_eq!((kept.terminal, missing), (None, vec!["Monaspace Radon".to_string()]));
+    }
+
+    #[test]
     fn the_colour_list_shows_each_scheme_once() {
         let dir = tempfile::tempdir().unwrap();
         let names: Vec<String> = colors(dir.path()).into_iter().map(|c| c.name).collect();
@@ -1348,9 +1377,9 @@ mod tests {
             std::fs::write(dir.path().join(format!("{name}.toml")), text).unwrap();
         }
         assert_eq!(colors(dir.path()).len(), 11);
-        // The 0.8.54 notebook copy names "Monaspace Radon", which the built-in set no longer does
-        // (it names the bundled "Monaspace Radon Frozen"), so that one copy is a set of its own.
-        assert_eq!(font_sets(dir.path()).len(), 6);
+        // The 0.8.54 notebook copy names "Monaspace Radon", which the built-in set spells as the
+        // bundled "Monaspace Radon Frozen"; the two are one set.
+        assert_eq!(font_sets(dir.path()).len(), 5);
         assert_eq!(load("lavender-watercolor", dir.path()).unwrap().font.prose.as_deref(), Some("Avenir Next"));
     }
 
