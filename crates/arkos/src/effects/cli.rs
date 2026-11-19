@@ -375,9 +375,13 @@ fn scene_in_force(cfg: &config::Config, env: &Env) -> Option<String> {
     if m.scenes.is_empty() {
         return None;
     }
-    // The theme only stands in for a custom look with no colour of its own.
-    let stand_in = theme::BUILTIN.first().and_then(|(n, _)| theme::builtin(n))?;
-    let raw = crate::effects::scene::look_scene(cfg, &stand_in, env.themes);
+    // The theme shown with the custom look is its colour; a look with no colour of its own has
+    // a stand-in.
+    let colour = match &cfg.custom.color {
+        Some(color) => theme::load_color(color, env.themes).ok()?,
+        None => theme::BUILTIN.first().and_then(|(n, _)| theme::builtin(n))?,
+    };
+    let raw = crate::effects::scene::look_scene(cfg, &colour);
     Some(raw.as_deref().and_then(|s| m.scene_name(s)).unwrap_or(&m.scenes[0]).to_string())
 }
 

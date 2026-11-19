@@ -6227,7 +6227,7 @@ impl Root {
         self.effect_strokes_now = strokes.clone();
         let blocks = effects::blocks::blocks(&scene, style.ink_borders);
         let (size, scale) = e.layer.metrics();
-        let scene_no = e.effect.manifest.scene_index(effects::scene::look_scene(&self.config, &self.theme, &paths::themes_dir()).as_deref());
+        let scene_no = e.effect.manifest.scene_index(effects::scene::look_scene(&self.config, &self.theme).as_deref());
         let mut inputs = effects::inputs::build(&self.theme, self.config.effect.intensity, size, scale, e.time(now, reduce), &blocks);
         inputs.scene = scene_no;
         if e.should_draw(&inputs, hidden, reduce, paused) {
@@ -6272,7 +6272,7 @@ impl Root {
         let blocks = effects::blocks::backdrop_blocks(&menu, &self.effect_strokes_now);
         let (size, scale) = e.layer.metrics();
         let mut inputs = effects::inputs::build(&self.theme, intensity, size, scale, e.time(now, reduce), &blocks);
-        inputs.scene = e.effect.manifest.scene_index(effects::scene::look_scene(&self.config, &self.theme, &paths::themes_dir()).as_deref());
+        inputs.scene = e.effect.manifest.scene_index(effects::scene::look_scene(&self.config, &self.theme).as_deref());
         e.layer.backdrop(key, area, opacity, &inputs)
     }
 

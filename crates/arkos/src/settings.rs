@@ -488,9 +488,10 @@ pub fn remember_scene_pick(picks: &mut GroupPicks, effect: &str, scene: &str) ->
 /// that does not load is marked and not clickable; one named that is not installed is listed
 /// last. `choice` is the custom look's own, and `theme` is the colour's own effect (`own`).
 /// An effect with two or more scenes (`manifests`, by effect: each scene's name and title) is one
-/// group row titled by the effect; when it is the effect in force its row shows `own_scene`, else
-/// the scene last picked (`picks`), else its first.
-pub fn custom_effect_rows(choice: &EffectChoice, own: Option<&str>, own_scene: Option<&str>, listed: &[(String, effects::manifest::Source)], manifests: &[(String, Vec<(String, String)>)], picks: &GroupPicks) -> Vec<EffectRow> {
+/// group row titled by the effect; when it is the effect in force its row shows `own_scene` (an old
+/// name resolved by `aliases`, as "effect/old" to the scene's own), else its first scene, and
+/// otherwise the scene last picked (`picks`), else its first.
+pub fn custom_effect_rows(choice: &EffectChoice, own: Option<&str>, own_scene: Option<&str>, listed: &[(String, effects::manifest::Source)], manifests: &[(String, Vec<(String, String)>)], aliases: &std::collections::BTreeMap<String, String>, picks: &GroupPicks) -> Vec<EffectRow> {
     let named: Option<&str> = match choice {
         EffectChoice::None => None,
         EffectChoice::Theme => own,
@@ -505,7 +506,13 @@ pub fn custom_effect_rows(choice: &EffectChoice, own: Option<&str>, own_scene: O
             (_, Some(members)) => {
                 let has = |scene: &str| members.iter().any(|(n, _)| n == scene).then(|| scene.to_string());
                 let remembered = picks.get(&effect_pick_key(name)).and_then(|p| has(p));
-                let pick = current.then(|| own_scene.and_then(has)).flatten().or(remembered).unwrap_or_else(|| members[0].0.clone());
+                // The row in force names the scene drawn: the one in force by its own name, else the
+                // first, as the wash's scene number does. Only a row not in force remembers a pick.
+                let pick = if current {
+                    own_scene.map(|s| aliases.get(&format!("{name}/{s}")).map(String::as_str).unwrap_or(s)).and_then(has).unwrap_or_else(|| members[0].0.clone())
+                } else {
+                    remembered.unwrap_or_else(|| members[0].0.clone())
+                };
                 let mut title = name.chars();
                 let title = title.next().map(|f| f.to_uppercase().chain(title).collect::<String>()).unwrap_or_default();
                 EffectRow::Group { effect: name.clone(), title, members: members.clone(), pick, current }
@@ -652,6 +659,9 @@ pub fn look_edits(cfg: &Config, which: Look, shown: &str, plain_font: bool, own:
             }
         }
         if cfg.custom.effect.is_none() {
+            // The scene pinned goes with the effect taken from the screen: an effect already
+            // chosen keeps resolving its own scene (`look_scene`), which the preset showing must
+            // not overwrite.
             // Under the presets the effect on screen is the preset's own; an older config's
             // `effect.name` says otherwise.
             let on_screen = match (cfg.look(), &cfg.effect.name) {
@@ -660,10 +670,10 @@ pub fn look_edits(cfg: &Config, which: Look, shown: &str, plain_font: bool, own:
                 _ => own.unwrap_or("none").to_string(),
             };
             edits.push((vec!["custom", "effect"], on_screen));
-        }
-        if cfg.custom.scene.is_none() {
-            if let Some(scene) = scene {
-                edits.push((vec!["custom", "scene"], scene.to_string()));
+            if cfg.custom.scene.is_none() {
+                if let Some(scene) = scene {
+                    edits.push((vec!["custom", "scene"], scene.to_string()));
+                }
             }
         }
     }
@@ -1309,7 +1319,7 @@ impl SettingsWindow {
             let current = look == which;
             let mut p = pill(("look", ix), label, current, enabled, c);
             if enabled && !current {
-                let edits: Vec<Edit> = look_edits(cfg, which, &self.theme.name, self.theme.font.is_default(), self.theme.recommended_effect(), effects::scene::shown_scene(cfg, &self.theme, &crate::paths::themes_dir(), &effects::effects_dir()).as_deref()).into_iter().map(|(keys, value)| edit(&keys, value.as_str())).collect();
+                let edits: Vec<Edit> = look_edits(cfg, which, &self.theme.name, self.theme.font.is_default(), self.theme.recommended_effect(), effects::scene::shown_scene(cfg, &self.theme, &effects::effects_dir()).as_deref()).into_iter().map(|(keys, value)| edit(&keys, value.as_str())).collect();
                 p = self.act(p, cx, move |w, _, cx| w.change(edits.clone(), cx));
             }
             looks = looks.child(p);
@@ -1610,15 +1620,8 @@ impl SettingsWindow {
         };
         let font_rows = font_rows(&self.theme_fonts, font_choice.as_deref(), &self.theme.font, &cfg.font.family, &|f| self.families.contains(f));
         let font = self.rows_list("Font", "custom-font", font_rows, enabled, c, cx, |value| vec![edit(&["custom", "font"], value)]);
-        let scene = effects::scene::look_scene(cfg, &self.theme, &paths::themes_dir());
-        let in_force = match cfg.effect_choice() {
-            EffectChoice::Named(n) => Some(n),
-            EffectChoice::Theme => self.theme.recommended_effect().map(str::to_string),
-            EffectChoice::None => None,
-        };
-        // An old scene name resolves to the scene's own.
-        let scene = scene.map(|s| in_force.as_deref().and_then(|e| self.scene_aliases.get(&format!("{e}/{s}"))).cloned().unwrap_or(s));
-        let effect_rows = custom_effect_rows(&cfg.effect_choice(), self.theme.recommended_effect(), scene.as_deref(), &self.effects, &self.effect_scenes, &self.group_picks);
+        let scene = effects::scene::look_scene(cfg, &self.theme);
+        let effect_rows = custom_effect_rows(&cfg.effect_choice(), self.theme.recommended_effect(), scene.as_deref(), &self.effects, &self.effect_scenes, &self.scene_aliases, &self.group_picks);
         let effect = self.effect_list(effect_rows, enabled, c, cx);
         let columns = div().flex().gap(px(16.0)).child(color.flex_1().min_w_0()).child(div().flex_1().min_w_0().flex().flex_col().child(font).child(effect));
         let mut out = vec![columns.into_any_element()];
@@ -2165,7 +2168,7 @@ mod tests {
         ];
         let none = GroupPicks::new();
         let rows = |choice: &EffectChoice, own: Option<&str>| -> Vec<Row> {
-            custom_effect_rows(choice, own, None, &listed, &[], &none).into_iter().map(|r| match r { EffectRow::One(r) => r, g => panic!("{g:?}") }).collect()
+            custom_effect_rows(choice, own, None, &listed, &[], &runic_aliases(), &none).into_iter().map(|r| match r { EffectRow::One(r) => r, g => panic!("{g:?}") }).collect()
         };
         assert_eq!(
             rows(&EffectChoice::Named("neon".into()), Some("overworld")),
@@ -2182,13 +2185,17 @@ mod tests {
         vec![("runic".into(), vec![("tokyo".into(), "Tokyo".into()), ("matrix-city".into(), "Matrix City".into())])]
     }
 
+    fn runic_aliases() -> std::collections::BTreeMap<String, String> {
+        [("runic/city".to_string(), "tokyo".to_string()), ("runic/code".to_string(), "matrix-city".to_string())].into()
+    }
+
     fn effects_listed() -> Vec<(String, effects::manifest::Source)> {
         vec![("material".to_string(), effects::manifest::Source::BuiltIn), ("runic".to_string(), effects::manifest::Source::BuiltIn)]
     }
 
     #[test]
     fn runic_is_one_group_row_with_tokyo_and_matrix_city() {
-        let rows = custom_effect_rows(&EffectChoice::None, None, None, &effects_listed(), &runic_scenes(), &GroupPicks::new());
+        let rows = custom_effect_rows(&EffectChoice::None, None, None, &effects_listed(), &runic_scenes(), &runic_aliases(), &GroupPicks::new());
         assert_eq!(rows.len(), 3, "None, Material and one Runic row: {rows:?}");
         let members = vec![("tokyo".to_string(), "Tokyo".to_string()), ("matrix-city".to_string(), "Matrix City".to_string())];
         assert_eq!(rows[2], EffectRow::Group { effect: "runic".into(), title: "Runic".into(), members, pick: "tokyo".into(), current: false });
@@ -2196,9 +2203,9 @@ mod tests {
 
     #[test]
     fn the_runic_row_shows_the_scene_in_force() {
-        let rows = custom_effect_rows(&EffectChoice::Named("runic".into()), None, Some("matrix-city"), &effects_listed(), &runic_scenes(), &GroupPicks::new());
+        let rows = custom_effect_rows(&EffectChoice::Named("runic".into()), None, Some("matrix-city"), &effects_listed(), &runic_scenes(), &runic_aliases(), &GroupPicks::new());
         assert!(matches!(&rows[2], EffectRow::Group { pick, current: true, .. } if pick == "matrix-city"), "{:?}", rows[2]);
-        let by_colour = custom_effect_rows(&EffectChoice::Theme, Some("runic"), Some("matrix-city"), &effects_listed(), &runic_scenes(), &GroupPicks::new());
+        let by_colour = custom_effect_rows(&EffectChoice::Theme, Some("runic"), Some("matrix-city"), &effects_listed(), &runic_scenes(), &runic_aliases(), &GroupPicks::new());
         assert!(matches!(&by_colour[2], EffectRow::Group { pick, current: true, .. } if pick == "matrix-city"), "the colour's own effect and scene count too");
     }
 
@@ -2211,10 +2218,10 @@ mod tests {
 
     #[test]
     fn an_effect_without_scenes_stays_a_plain_row() {
-        let rows = custom_effect_rows(&EffectChoice::Named("material".into()), None, Some("stray"), &effects_listed(), &runic_scenes(), &GroupPicks::new());
+        let rows = custom_effect_rows(&EffectChoice::Named("material".into()), None, Some("stray"), &effects_listed(), &runic_scenes(), &runic_aliases(), &GroupPicks::new());
         assert_eq!(rows[1], EffectRow::One(Row { label: "material".into(), value: Some("material".into()), current: true }));
         let one_scene = vec![("material".to_string(), vec![("only".to_string(), "Only".to_string())])];
-        let rows = custom_effect_rows(&EffectChoice::None, None, None, &effects_listed(), &one_scene, &GroupPicks::new());
+        let rows = custom_effect_rows(&EffectChoice::None, None, None, &effects_listed(), &one_scene, &runic_aliases(), &GroupPicks::new());
         assert!(matches!(rows[1], EffectRow::One(_)), "one scene is not a choice");
     }
 
@@ -2224,11 +2231,40 @@ mod tests {
         assert!(remember_scene_pick(&mut picks, "runic", "matrix-city"));
         assert!(!remember_scene_pick(&mut picks, "runic", "matrix-city"), "nothing new to write");
         assert_eq!(picks.get("effect:runic").map(String::as_str), Some("matrix-city"));
-        let rows = custom_effect_rows(&EffectChoice::None, None, None, &effects_listed(), &runic_scenes(), &picks);
+        let rows = custom_effect_rows(&EffectChoice::None, None, None, &effects_listed(), &runic_scenes(), &runic_aliases(), &picks);
         assert!(matches!(&rows[2], EffectRow::Group { pick, current: false, .. } if pick == "matrix-city"), "{:?}", rows[2]);
         picks.insert("effect:runic".into(), "gone".into());
-        let rows = custom_effect_rows(&EffectChoice::None, None, None, &effects_listed(), &runic_scenes(), &picks);
+        let rows = custom_effect_rows(&EffectChoice::None, None, None, &effects_listed(), &runic_scenes(), &runic_aliases(), &picks);
         assert!(matches!(&rows[2], EffectRow::Group { pick, .. } if pick == "tokyo"), "a scene no longer listed falls back to the first");
+    }
+
+    #[test]
+    fn the_runic_row_with_no_scene_in_force_names_the_first_scene_whatever_was_picked_before() {
+        let mut picks = GroupPicks::new();
+        picks.insert("effect:runic".into(), "matrix-city".into());
+        let rows = custom_effect_rows(&EffectChoice::Named("runic".into()), None, None, &effects_listed(), &runic_scenes(), &runic_aliases(), &picks);
+        assert!(matches!(&rows[2], EffectRow::Group { pick, current: true, .. } if pick == "tokyo"), "{:?}", rows[2]);
+    }
+
+    #[test]
+    fn the_runic_row_resolves_an_old_scene_name_to_the_scene_drawn() {
+        let mut picks = GroupPicks::new();
+        picks.insert("effect:runic".into(), "tokyo".into());
+        let rows = custom_effect_rows(&EffectChoice::Named("runic".into()), None, Some("code"), &effects_listed(), &runic_scenes(), &runic_aliases(), &picks);
+        assert!(matches!(&rows[2], EffectRow::Group { pick, current: true, .. } if pick == "matrix-city"), "{:?}", rows[2]);
+    }
+
+    #[test]
+    fn returning_to_a_custom_look_with_its_own_effect_and_no_scene_pins_no_scene() {
+        use crate::config::{parse, Look};
+        let no_scene = |e: &str| parse(&format!("[appearance]\nlook = \"presets\"\n[custom]\ncolor = \"matrix\"\neffect = \"{e}\"\n")).unwrap();
+        // The preset on screen is Tokyo Rain, the custom effect is runic over the Matrix City.
+        let edits = look_edits(&no_scene("runic"), Look::Custom, "tokyo-rain", false, Some("runic"), Some("tokyo"));
+        assert!(edits.iter().all(|(k, _)| k[1] != "scene"), "{edits:?}");
+        let edits = look_edits(&no_scene("runic"), Look::Custom, "matrix", false, Some("runic"), Some("matrix-city"));
+        assert!(edits.iter().all(|(k, _)| k[1] != "scene"), "{edits:?}");
+        let edits = look_edits(&no_scene("material"), Look::Custom, "matrix", false, Some("runic"), Some("matrix-city"));
+        assert!(edits.iter().all(|(k, _)| k[1] != "scene"), "{edits:?}");
     }
 
     #[test]
