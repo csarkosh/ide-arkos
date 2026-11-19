@@ -331,6 +331,48 @@ mod tests {
         }
     }
 
+    /// The number after `prefix` in the runic wash's text, up to the next `;` or `,`.
+    fn wash_factor(prefix: &str) -> f32 {
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        let at = wash.find(prefix).unwrap_or_else(|| panic!("wash.metal lacks {prefix}")) + prefix.len();
+        wash[at..].split([';', ',', ')']).next().unwrap().trim().parse().unwrap()
+    }
+
+    #[test]
+    fn the_golden_gate_s_two_towers_stand_inside_the_band_at_every_width() {
+        // The review of 2026-11-19: the second tower stood past the band's right edge at every
+        // sidebar width, so only one of the pair was ever drawn.
+        let g1 = wash_factor("g1 = sz.x * ");
+        for w in (160..=600).step_by(20) {
+            let w = w as f32;
+            assert!(g1 * w + 4.9 < w, "the far tower's leg at {} past a {w} point band", g1 * w + 4.9);
+        }
+    }
+
+    #[test]
+    fn salesforce_s_crown_and_the_shard_s_tip_stand_below_the_band_s_faded_top() {
+        // The band's top 60 points fade toward the sidebar; a crown from 0.02 of the band's
+        // height was mostly faded away, and the Shard's beacon sat inside its own tip.
+        assert!(wash_factor("float sx = sz.x * 0.6, stop = sz.y * ") >= 0.15, "Salesforce's top too high");
+        assert!(wash_factor("float sx = sz.x * 0.63, stop = sz.y * ") >= 0.06, "the Shard's top too high");
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        assert!(wash.contains("col = beacon_at(q, float2(sx, stop - 1.5), t, u, col);"), "the Shard's beacon above its tip");
+    }
+
+    #[test]
+    fn rainier_s_foot_is_hidden_behind_the_skylines() {
+        // Its base at 0.66 of the band showed a straight cut where a far tower was lower.
+        assert_eq!(wash_factor("float px = sz.x * 0.58, py = sz.y * 0.3, base = sz.y * "), 1.0);
+    }
+
+    #[test]
+    fn the_london_eye_fits_a_narrow_sidebar() {
+        // Its radius followed the band's height while every place followed its width, so on a
+        // 160 point sidebar it ran over the Elizabeth Tower and the Shard.
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        assert!(wash.contains("float er = min(sz.y * 0.17, sz.x * 0.12);"));
+    }
+
     #[test]
     fn on_the_gpu_each_rainy_city_draws_its_own_landmarks() {
         if !gpu() {

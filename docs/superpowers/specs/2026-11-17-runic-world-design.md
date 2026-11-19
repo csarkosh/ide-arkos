@@ -473,3 +473,11 @@ Rain 1.755 ms and London Rain 1.771 ms, each the best of four runs. The runs on 
 between about 1.8 and 4.7 ms from one to the next whichever scene is drawn (Tokyo Rain's own ran
 1.86 to 4.73), so only the best of several is comparable; by that measure no city is more than
 0.3 ms over Tokyo, and none costs more than it.
+
+The review of 2026-11-19 found the Golden Gate's far tower past the band's right edge at every
+sidebar width, Salesforce's crown and the Shard's tip in the band's faded top 60 points, Rainier's
+flat foot showing where a far tower was low, and the London Eye running over its neighbours on a
+narrow sidebar. The pair now stands at 0.8 and 0.95 of the band's width (inside it from 160 points
+up), Salesforce's top at 0.16 of the band's height and the Shard's at 0.07 with its beacon above
+its tip, Rainier's slopes run down to the band's foot behind both skylines, and the Eye's radius is
+the smaller of 0.17 of the band's height and 0.12 of its width.

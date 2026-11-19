@@ -1080,8 +1080,8 @@ float3 beacon_at(float2 p, float2 at, float t, constant ArkosInputs& u, float3 c
 
 // Mount Rainier, faint and snow-capped behind Seattle's far skyline.
 float3 rainier_at(float2 q, float2 sz, float3 white_c, float3 col) {
-    float px = sz.x * 0.58, py = sz.y * 0.3, base = sz.y * 0.66;
-    float slope = (base - py) / (sz.x * 0.5);
+    float px = sz.x * 0.58, py = sz.y * 0.3, base = sz.y * 1.0;
+    float slope = (base - py) / (sz.x * 0.75);
     // A little unevenness along its slopes, so it reads as a mountain rather than a triangle.
     float rough = 1.5 * sin(q.x * 0.21) + 0.8 * sin(q.x * 0.57 + 1.3);
     float edge = py + abs(q.x - px) * slope + rough;
@@ -1090,7 +1090,7 @@ float3 rainier_at(float2 q, float2 sz, float3 white_c, float3 col) {
     }
     float3 c = mix(col, white_c, 0.07);
     // Its snow: the upper third, its line ragged.
-    float snow = py + (base - py) * (0.36 + 0.05 * sin(q.x * 0.35));
+    float snow = py + (base - py) * (0.2 + 0.035 * sin(q.x * 0.35));
     if (q.y < snow) {
         c = mix(col, white_c, 0.16);
     }
@@ -1134,7 +1134,7 @@ float3 san_francisco_at(float2 q, float2 sz, float t, constant ArkosInputs& u, f
     // The Golden Gate first, farthest: its two towers, the deck and the cable between.
     float3 orange = mix(u.colors[ARKOS_ANSI + 1].rgb, u.colors[ARKOS_ANSI + 3].rgb, 0.25);
     float deck = sz.y * 0.68, gtop = sz.y * 0.24;
-    float g0 = sz.x * 0.86, g1 = sz.x * 1.08;
+    float g0 = sz.x * 0.8, g1 = sz.x * 0.95;
     float bridge = 0.0;
     if (q.y > gtop - 2.0 && q.y < sz.y) {
         for (int k = 0; k < 2; k++) {
@@ -1175,7 +1175,7 @@ float3 san_francisco_at(float2 q, float2 sz, float t, constant ArkosInputs& u, f
     }
     col = beacon_at(q, float2(cx, ttop - 1.5), t, u, col);
     // Salesforce Tower: rounding to its top, its crown a lattice of light.
-    float sx = sz.x * 0.6, stop = sz.y * 0.02;
+    float sx = sz.x * 0.6, stop = sz.y * 0.16;
     float sr = (q.y - stop) / (sz.y - stop);
     float shw = sr < 0.1 ? 7.0 * sqrt(max(sr, 0.0) / 0.1) : 7.0 + 1.5 * (sr - 0.1);
     if (landmark_at(q, sx, stop, sz.y, shw, far_c, near_c, edge_c, 0.7, col)) {
@@ -1194,7 +1194,8 @@ float3 san_francisco_at(float2 q, float2 sz, float t, constant ArkosInputs& u, f
 float3 london_at(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 far_c, float3 near_c, float3 green, float3 white_c, float3 col, thread float& win) {
     float3 edge_c = mix(white_c, green, 0.4);
     // The London Eye, farthest: its rim, spokes, pods turning, and the legs it stands on.
-    float ex = sz.x * 0.4, ey = sz.y * 0.42, er = sz.y * 0.17;
+    float ex = sz.x * 0.4, ey = sz.y * 0.42;
+    float er = min(sz.y * 0.17, sz.x * 0.12);
     float2 d = q - float2(ex, ey);
     float dist = length(d);
     float eye = 0.0;
@@ -1232,7 +1233,7 @@ float3 london_at(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 f
         col = mix(col, near_c, (1.0 - smoothstep(0.0, 0.6, hands)) * 0.8);
     }
     // The Shard: a tall glass pyramid, broken into splinters at its tip, its facets faint.
-    float sx = sz.x * 0.63, stop = sz.y * 0.0;
+    float sx = sz.x * 0.63, stop = sz.y * 0.07;
     float sr = (q.y - stop) / (sz.y - stop);
     float shw = sr < 0.07 ? 0.6 + 1.6 * step(0.5, fract(q.y / 3.0 + q.x / 5.0)) : 0.3 + 11.0 * sr;
     if (landmark_at(q, sx, stop, sz.y, shw, far_c, near_c, edge_c, 0.8, col)) {
@@ -1240,7 +1241,7 @@ float3 london_at(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 f
         float facets = min(abs(q.x - sx), min(abs(q.x - (sx - shw * 0.45)), abs(q.x - (sx + shw * 0.45))));
         col = mix(col, edge_c, (1.0 - smoothstep(0.0, 0.7, facets)) * 0.25);
     }
-    col = beacon_at(q, float2(sx, stop + 1.5), t, u, col);
+    col = beacon_at(q, float2(sx, stop - 1.5), t, u, col);
     // The Gherkin: a rounded bullet, its spiral bands darker.
     float gx = sz.x * 0.86, gtop = sz.y * 0.3;
     float gr = (q.y - gtop) / (sz.y - gtop);
