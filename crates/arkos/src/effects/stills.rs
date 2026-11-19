@@ -406,6 +406,25 @@ mod tests {
     }
 
     #[test]
+    fn lower_manhattan_is_one_silhouette_its_landmarks_east_of_one_world_trade_center_on_the_left() {
+        // The review of 2026-11-19: on a narrow sidebar each landmark's lit sides ran through One
+        // World Trade Center's body (the odd lines Seattle had), and looking south the Woolworth
+        // Building, 8 Spruce Street, 70 Pine and 40 Wall Street, all east of it, belong on its left.
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").unwrap().wash;
+        assert!(wash.contains("float fidi_top(float dx, float w)"), "one outline for the district");
+        let fidi = &wash[wash.find("float3 fidi_at(").unwrap()..];
+        let fidi = &fidi[..fidi.find("\n}\n").unwrap()];
+        assert!(fidi.contains("fidi_top(dx - 1.0, w)") && fidi.contains("fidi_top(dx + 1.0, w)"), "lit only along its outline");
+        let wtc = wash_factor("float wtc = w * ");
+        for name in ["wool", "spruce", "pine", "wall"] {
+            let x = -wash_factor(&format!("{name} = -w * "));
+            assert!(x < wtc, "{name} at {x} is not left of One World Trade Center at {wtc}");
+        }
+        // Its beacon is never cut by the district's early return.
+        assert!(fidi.contains("q.y < yh * 0.3 - 4.0"), "the beacon's glow above the spire is kept");
+    }
+
+    #[test]
     fn the_matrix_street_looks_south_to_lower_manhattan() {
         // Cyrus, 2026-11-19: "for the Matrix City, I want a cityline in Manhattan looking south at
         // FiDi in the background". A far silhouette at the street's end, drawn before the street's
@@ -415,8 +434,9 @@ mod tests {
         let scene = &wash[wash.find("float3 code_scene(").unwrap()..];
         let call = scene.find("col = fidi_at(").expect("code_scene draws Lower Manhattan");
         assert!(call < scene.find("// The horizon's line").unwrap(), "before the horizon's line and the street's buildings");
-        let fidi = &wash[wash.find("float3 fidi_at(").expect("a fidi_at function")..];
-        let fidi = &fidi[..fidi.find("\n}\n").unwrap()];
+        // The district's outline (`fidi_top`) and its drawing (`fidi_at`), which follows it.
+        let fidi = &wash[wash.find("float fidi_top(").expect("a fidi_top function")..];
+        let fidi = &fidi[..fidi.find("float3 fidi_at(").expect("a fidi_at function") + fidi[fidi.find("float3 fidi_at(").unwrap()..].find("\n}\n").unwrap()];
         for landmark in ["One World Trade Center", "Woolworth", "40 Wall Street", "70 Pine", "8 Spruce Street"] {
             assert!(fidi.contains(landmark), "fidi_at draws {landmark}");
         }

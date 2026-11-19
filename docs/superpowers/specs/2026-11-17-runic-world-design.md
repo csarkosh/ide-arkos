@@ -523,3 +523,12 @@ near skyline at any sidebar width, plain towers standing on it, and the Columbia
 stepped in twice near its top, its beacon), Two Union Square's notch and 1201 Third Avenue's
 pointed crown (lit warm) as steps and points of the same outline. Only the silhouette's own edge is
 lit: along its roofs and down its outer sides.
+
+The review of 2026-11-19 found that on a narrow sidebar each district landmark's lit sides ran
+through One World Trade Center's body, and that, looking south, the Woolworth Building, 8 Spruce
+Street, 70 Pine and 40 Wall Street, all east of One World Trade Center, belong on its left. The
+district is now one silhouette (`fidi_top`, lit only along its outline, as Seattle's downtown is):
+One World Trade Center just right of the vanishing point (0.025 of the width) and, stepping away to
+its left, the Woolworth Building, 8 Spruce Street, 70 Pine and 40 Wall Street, among plainer
+towers on both sides; One World Trade Center's facets drawn faint inside its body and its beacon
+above its spire, never cut by the district's bounds.

@@ -2622,81 +2622,72 @@ float3 subway_seen(float2 q, float yh, float cx, float f, float t, float3 green,
     return light_on(col, mix(green, white_c, 0.6), win * dim * 0.9, u.dark);
 }
 
+// How high Lower Manhattan's silhouette stands at dx points from the vanishing point, as a share
+// of the sky's height, on a band w points wide (0 where nothing stands). Looking south, east is on
+// the left: the Woolworth Building, 8 Spruce Street, 70 Pine and 40 Wall Street all stand to the
+// left of One World Trade Center (the review of 2026-11-19), among plainer towers on both sides.
+float fidi_top(float dx, float w) {
+    float wtc = w * 0.025, wool = -w * 0.045, spruce = -w * 0.075, pine = -w * 0.105, wall = -w * 0.135;
+    float top = 0.0;
+    // The plainer towers: a ragged band of roofs across the district.
+    if (abs(dx) < w * 0.16) {
+        top = 0.07 + 0.13 * hash2(float2(floor((dx + w) / 6.0), 211.0));
+    }
+    // One World Trade Center: tapering from 6 points either side to 3 at its roof (0.55), then its
+    // spire to 0.66.
+    float d = abs(dx - wtc);
+    top = max(top, d < 0.5 ? 0.66 : d < 3.0 ? 0.55 : d < 6.0 ? 0.55 * (6.0 - d) / 3.0 : 0.0);
+    // The Woolworth Building: its tower, then its Gothic crown stepping in to a spire.
+    d = abs(dx - wool);
+    top = max(top, d < 0.6 ? 0.37 : d < 1.8 ? 0.32 : d < 2.7 ? 0.29 : d < 3.5 ? 0.26 : 0.0);
+    // 8 Spruce Street: a plain slab, its rippled sides too fine to show this far off.
+    d = abs(dx - spruce);
+    top = max(top, d < 3.0 ? 0.3 : 0.0);
+    // 70 Pine: Art Deco setbacks up to its spire.
+    d = abs(dx - pine);
+    top = max(top, d < 0.5 ? 0.39 : d < 1.7 ? 0.33 : d < 2.6 ? 0.29 : d < 3.5 ? 0.24 : 0.0);
+    // 40 Wall Street: its shaft, its pyramid roof and the spire on that.
+    d = abs(dx - wall);
+    top = max(top, d < 0.5 ? 0.41 : d < 3.2 ? 0.36 - 0.06 * (d - 0.5) / 2.7 : d < 3.5 ? 0.3 : 0.0);
+    return top;
+}
+
 // Lower Manhattan seen far down the Matrix City's street, which runs south toward the Financial
-// District (Cyrus, 2026-11-19): a hazy silhouette standing on the horizon at yh around the
-// vanishing point cx, its heights a share of the sky's (yh). One World Trade Center in the middle
-// with its beacon, the Woolworth Building's Gothic crown, 40 Wall Street's pyramid roof, 70 Pine's
-// Art Deco setbacks and 8 Spruce Street's rippled sides, among plainer towers. Drawn before the
-// street's own buildings, which cover it.
+// District (Cyrus, 2026-11-19): One World Trade Center, the Woolworth Building, 8 Spruce Street,
+// 70 Pine and 40 Wall Street among plainer towers, one hazy silhouette standing on the horizon at
+// yh around the vanishing point cx (its outline `fidi_top`), lit only along that outline so the
+// towers never draw lines through one another, a few windows lit, One World Trade Center's beacon
+// blinking. Drawn before the street's own buildings, which cover it.
 float3 fidi_at(float2 q, float2 sz, float yh, float cx, float t, constant ArkosInputs& u, float3 green, float3 white_c, float3 sb, float3 col) {
-    if (q.y > yh || q.y < yh * 0.3 || abs(q.x - cx) > sz.x * 0.16) {
+    float w = sz.x;
+    float dx = q.x - cx;
+    float wtc = w * 0.025;
+    // One World Trade Center's beacon, above its spire, before the district's own bounds.
+    col = beacon_at(q, float2(cx + wtc, yh - yh * 0.66 - 1.5), t, u, col);
+    if (q.y > yh || q.y < yh * 0.3 - 4.0 || abs(dx) > w * 0.2) {
+        return col;
+    }
+    float up = (yh - q.y) / yh;  // how far up the sky p is: 0 at the horizon, 1 at the band's top
+    float top = fidi_top(dx, w);
+    if (up >= top) {
         return col;
     }
     float3 bg = u.colors[ARKOS_WINDOW_BG].rgb;
     float3 haze_c = mix(mix(sb, bg, 0.55), green, 0.06);
     float3 edge_c = mix(green, white_c, 0.25);
-    float up = (yh - q.y) / yh;  // how far up the sky p is: 0 at the horizon, 1 at the band's top
-    float dx = q.x - cx;
-    float w = sz.x;
-    float hw = -1.0;
-    float edge = 0.0;
-    // The plainer towers: a ragged band of roofs across the district.
-    float cell = floor((dx + w) / 6.0);
-    float roof = 0.07 + 0.13 * hash2(float2(cell, 211.0));
-    if (abs(dx) < w * 0.15 && up < roof) {
-        hw = 1.0;
-        edge = up > roof - 0.012 ? 0.5 : 0.0;
-    }
-    // One World Trade Center: its body tapering to the roof, then the spire.
-    float r = up / 0.55;
-    if (r <= 1.0) {
-        float b = mix(6.0, 3.0, r);
-        if (abs(dx) < b) {
-            hw = 1.0;
-            // Its edges and the facets running from each base corner to the far top corner.
-            float facet = min(abs(dx - mix(-6.0, 3.0, r)), abs(dx - mix(6.0, -3.0, r)));
-            edge = max(abs(dx) > b - 0.9 ? 0.85 : 0.0, (1.0 - smoothstep(0.0, 0.8, facet)) * 0.45);
-        }
-    } else if (up < 0.66 && abs(dx) < 0.5) {
-        hw = 1.0;
-        edge = 0.7;
-    }
-    // The Woolworth Building: its tower, then its Gothic crown stepping in to a spire.
-    float wx = dx + w * 0.06;
-    float wb = up < 0.26 ? 3.5 : up < 0.29 ? 2.7 : up < 0.32 ? 1.8 : up < 0.37 ? 0.6 : -1.0;
-    if (abs(wx) < wb) {
-        hw = 1.0;
-        edge = abs(wx) > wb - 0.9 ? 0.75 : (fract(q.y / 3.0) < 0.2 && up > 0.24 ? 0.35 : 0.0);
-    }
-    // 40 Wall Street: its shaft, its pyramid roof, and the spire on that.
-    float fx = dx - w * 0.085;
-    float fb = up < 0.3 ? 3.5 : up < 0.36 ? mix(3.2, 0.7, (up - 0.3) / 0.06) : up < 0.41 ? 0.5 : -1.0;
-    if (abs(fx) < fb) {
-        hw = 1.0;
-        edge = abs(fx) > fb - 0.9 ? 0.75 : 0.0;
-    }
-    // 70 Pine: Art Deco setbacks up to its spire.
-    float px = dx + w * 0.11;
-    float pb = up < 0.24 ? 3.5 : up < 0.29 ? 2.6 : up < 0.33 ? 1.7 : up < 0.39 ? 0.5 : -1.0;
-    if (abs(px) < pb) {
-        hw = 1.0;
-        edge = abs(px) > pb - 0.9 ? 0.75 : 0.0;
-    }
-    // 8 Spruce Street: its sides rippling as its folded steel does.
-    float sx = dx - w * 0.04;
-    float sb2 = up < 0.3 ? 3.0 + 0.7 * sin(q.y * 0.7) : -1.0;
-    if (abs(sx) < sb2) {
-        hw = 1.0;
-        edge = abs(sx) > sb2 - 0.9 ? 0.75 : 0.0;
-    }
-    if (hw < 0.0) {
-        return col;
-    }
     float3 c = mix(col, haze_c, 0.85);
     c = mix(c, mix(green, white_c, 0.45), window_lit(q, 0, t) * 0.4);
-    c = light_on(c, edge_c, edge * 0.6, u.dark);
-    // One World Trade Center's beacon, blinking red.
-    return beacon_at(q, float2(cx, yh - yh * 0.66 - 1.5), t, u, c);
+    // Its outline: along the roofs, and down a side where the neighbour stands lower.
+    float px = 0.9 / yh;
+    bool edge = up > top - px || up > fidi_top(dx - 1.0, w) || up > fidi_top(dx + 1.0, w);
+    // One World Trade Center's facets, faint, where its body is the outline's highest part.
+    float d = dx - wtc;
+    float r = up / 0.55;
+    float facet = 0.0;
+    if (r < 1.0 && abs(d) < mix(6.0, 3.0, r) - 0.9) {
+        facet = 1.0 - smoothstep(0.0, 0.8, min(abs(d - mix(-6.0, 3.0, r)), abs(d - mix(6.0, -3.0, r))));
+    }
+    return light_on(c, edge_c, max(edge ? 0.6 : 0.0, facet * 0.3), u.dark);
 }
 
 float3 code_scene(float2 q, float2 sz, float t, constant ArkosInputs& u, float3 green, float3 white_c, float3 sb) {
