@@ -460,27 +460,116 @@ pub fn color_rows(colors: &[theme::ColorEntry], current: &str) -> Vec<Row> {
     rows
 }
 
+/// A row of the custom look's Effect list: a plain row, or an effect with several scenes shown as
+/// one group row with a choice of its scenes (as the Presets lists show Watercolor).
+#[derive(Debug, Clone, PartialEq)]
+pub enum EffectRow {
+    One(Row),
+    /// `members` are the scenes as (name, title); `pick` is the name of the one the row shows.
+    Group { effect: String, title: String, members: Vec<(String, String)>, pick: String, current: bool },
+}
+
+/// The key a scene effect's last pick is remembered under in the group picks.
+pub fn effect_pick_key(effect: &str) -> String {
+    format!("effect:{effect}")
+}
+
+/// The edits a pick of `scene` under `effect` writes.
+pub fn effect_pick_edits(effect: &str, scene: &str) -> Vec<Edit> {
+    vec![edit(&["custom", "effect"], effect), edit(&["custom", "scene"], scene)]
+}
+
+/// Remembers `scene` as `effect`'s last pick; true when that changed the picks.
+pub fn remember_scene_pick(picks: &mut GroupPicks, effect: &str, scene: &str) -> bool {
+    picks.insert(effect_pick_key(effect), scene.to_string()).as_deref() != Some(scene)
+}
+
 /// The custom look's Effect list: "None", then every effect installed, built in or a folder; one
 /// that does not load is marked and not clickable; one named that is not installed is listed
 /// last. `choice` is the custom look's own, and `theme` is the colour's own effect (`own`).
-pub fn custom_effect_rows(choice: &EffectChoice, own: Option<&str>, listed: &[(String, effects::manifest::Source)]) -> Vec<Row> {
+/// An effect with two or more scenes (`manifests`, by effect: each scene's name and title) is one
+/// group row titled by the effect; when it is the effect in force its row shows `own_scene`, else
+/// the scene last picked (`picks`), else its first.
+pub fn custom_effect_rows(choice: &EffectChoice, own: Option<&str>, own_scene: Option<&str>, listed: &[(String, effects::manifest::Source)], manifests: &[(String, Vec<(String, String)>)], picks: &GroupPicks) -> Vec<EffectRow> {
     let named: Option<&str> = match choice {
         EffectChoice::None => None,
         EffectChoice::Theme => own,
         EffectChoice::Named(name) => Some(name),
     };
-    let mut rows = vec![Row { label: "None".into(), value: Some("none".into()), current: named.is_none() }];
+    let mut rows = vec![EffectRow::One(Row { label: "None".into(), value: Some("none".into()), current: named.is_none() })];
     for (name, source) in listed {
         let current = named == Some(name.as_str());
-        rows.push(match source {
-            effects::manifest::Source::Invalid(_) => Row { label: format!("{name} (invalid)"), value: None, current },
-            _ => Row { label: name.clone(), value: Some(name.clone()), current },
+        let scenes = manifests.iter().find(|(n, _)| n == name).map(|(_, s)| s).filter(|s| s.len() >= 2);
+        rows.push(match (source, scenes) {
+            (effects::manifest::Source::Invalid(_), _) => EffectRow::One(Row { label: format!("{name} (invalid)"), value: None, current }),
+            (_, Some(members)) => {
+                let has = |scene: &str| members.iter().any(|(n, _)| n == scene).then(|| scene.to_string());
+                let remembered = picks.get(&effect_pick_key(name)).and_then(|p| has(p));
+                let pick = current.then(|| own_scene.and_then(has)).flatten().or(remembered).unwrap_or_else(|| members[0].0.clone());
+                let mut title = name.chars();
+                let title = title.next().map(|f| f.to_uppercase().chain(title).collect::<String>()).unwrap_or_default();
+                EffectRow::Group { effect: name.clone(), title, members: members.clone(), pick, current }
+            }
+            _ => EffectRow::One(Row { label: name.clone(), value: Some(name.clone()), current }),
         });
     }
     if let Some(name) = named.filter(|n| !listed.iter().any(|(l, _)| l == n)) {
-        rows.push(Row { label: format!("{name} (not installed)"), value: None, current: true });
+        rows.push(EffectRow::One(Row { label: format!("{name} (not installed)"), value: None, current: true }));
     }
     rows
+}
+
+/// Where an open group's card lives, so a Presets group and the Runic group never both count as
+/// open: a Presets list's slot and its group, or an effect of Custom's Effect list.
+#[derive(Debug, Clone, PartialEq)]
+enum GroupKey {
+    Presets(theme::Appearance, String),
+    Effect(String),
+}
+
+/// The scenes of each effect that has two or more, as (name, title), read from its manifest.
+fn effect_scenes(listed: &[(String, effects::manifest::Source)]) -> Vec<(String, Vec<(String, String)>)> {
+    listed
+        .iter()
+        .filter(|(_, source)| !matches!(source, effects::manifest::Source::Invalid(_)))
+        .filter_map(|(name, _)| {
+            let m = effects::manifest::load(name, &effects::effects_dir()).ok()?.manifest;
+            (m.scenes.len() >= 2).then(|| (name.clone(), m.scenes.iter().enumerate().map(|(i, s)| (s.clone(), m.scene_title(i))).collect()))
+        })
+        .collect()
+}
+
+/// The old scene names of the effects with scenes, as "effect/old" to the scene's own name.
+fn scene_aliases(listed: &[(String, effects::manifest::Source)]) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for (name, source) in listed {
+        if let (false, Ok(e)) = (matches!(source, effects::manifest::Source::Invalid(_)), effects::manifest::load(name, &effects::effects_dir())) {
+            out.extend(e.manifest.scene_aliases.iter().map(|(old, new)| (format!("{name}/{old}"), new.clone())));
+        }
+    }
+    out
+}
+
+/// One member of a group row's card: what it is called, whether it is in force, what a pick of it
+/// writes, and the pick to remember (effect and scene) when it is chosen.
+struct GroupMember {
+    id: usize,
+    title: String,
+    current: bool,
+    edits: Vec<Edit>,
+    remember: Option<(String, String)>,
+}
+
+/// A group row and its card: the row's one line of text, whether the group is in force, and its
+/// members. `anchor` numbers the row's and the card's element ids.
+struct GroupSpec {
+    list_id: &'static str,
+    key: GroupKey,
+    group: String,
+    anchor: usize,
+    line: String,
+    is_current: bool,
+    members: Vec<GroupMember>,
 }
 
 /// The families a font set names, each once, in the order prose, UI, terminal:
@@ -623,7 +712,11 @@ pub struct SettingsWindow {
     /// Each group's last member in force (`paths::group_picks_file`).
     group_picks: GroupPicks,
     /// The preset group whose members are listed open under its row, and in which list.
-    open_group: Option<(theme::Appearance, String)>,
+    open_group: Option<GroupKey>,
+    /// The scenes each installed effect with two or more offers, by effect: name and title.
+    effect_scenes: Vec<(String, Vec<(String, String)>)>,
+    /// Those effects' old scene names, as "effect/old" to the scene's own name.
+    scene_aliases: std::collections::BTreeMap<String, String>,
     /// When a click outside it last closed a group's menu: a click on the group's own row closes
     /// it that way first, and must not open it again.
     group_closed_at: Option<std::time::Instant>,
@@ -738,6 +831,8 @@ pub fn open(cx: &mut App, over: Option<Retained<NSWindow>>, shown: Shown, theme:
                 theme_shown: theme::shown(&paths::themes_dir()),
                 group_picks: read_group_picks(&paths::group_picks_file()),
                 open_group: None,
+                effect_scenes: effect_scenes(&effects::manifest::list(&effects::effects_dir())),
+                scene_aliases: scene_aliases(&effects::manifest::list(&effects::effects_dir())),
                 group_closed_at: None,
                 effects: effects::manifest::list(&effects::effects_dir()),
                 theme_fonts: theme::font_sets(&paths::themes_dir()),
@@ -917,6 +1012,8 @@ impl SettingsWindow {
         self.theme_fonts = theme::font_sets(&paths::themes_dir());
         self.theme_colors = theme::colors(&paths::themes_dir());
         self.effects = effects::manifest::list(&effects::effects_dir());
+        self.effect_scenes = effect_scenes(&self.effects);
+        self.scene_aliases = scene_aliases(&self.effects);
         cx.notify();
     }
 
@@ -982,6 +1079,8 @@ impl SettingsWindow {
                 self.theme_fonts = theme::font_sets(&paths::themes_dir());
                 self.theme_colors = theme::colors(&paths::themes_dir());
                 self.effects = effects::manifest::list(&effects::effects_dir());
+                self.effect_scenes = effect_scenes(&self.effects);
+                self.scene_aliases = scene_aliases(&self.effects);
                 let edits = match adding {
                     Adding::Preset => vec![edit(&["theme", theme_key_for(self.shown.config.appearance.mode, system_is_dark)], name.as_str())],
                     Adding::Color => color_edits(&self.shown.config, &name, &self.theme.name, self.theme.font.is_default()).into_iter().map(|(keys, value)| edit(&keys, value.as_str())).collect(),
@@ -1297,100 +1396,24 @@ impl SettingsWindow {
                         list = list.child(row);
                     }
                     PresetRow::Group { name: group, members, pick } => {
-                        // One row for the group, the whole row a select, read as one line of the
-                        // list's own text ("Watercolor Lavender ▾", aligned with every other row):
-                        // a click anywhere on it opens a small menu of the members floating over
-                        // the list, where a click picks one.
                         let is_current = members.iter().any(|(ix, _)| &self.themes[*ix].0 == current);
                         let pick_name = members.iter().find(|(ix, _)| *ix == pick).map(|(_, t)| member_name(t, &group)).unwrap_or_default();
-                        let open = self.open_group.as_ref().is_some_and(|(s, g)| *s == slot && *g == group);
-                        let toggle_group = group.clone();
-                        let mut row = list_row((list_id, 20_000 + pick), in_theme_list(&group_line(&group, &pick_name)), is_current, enabled, c).relative();
-                        if enabled {
-                            // `list_row` gives a row not in force its hover already; gpui takes
-                            // one hover style an element, so only the row in force adds one here.
-                            if is_current {
-                                row = row.cursor_pointer().hover(move |s| s.bg(c.pill));
-                            }
-                            let keyed = (slot, toggle_group.clone());
-                            row = row.on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |w, _, _, cx| {
-                                    cx.stop_propagation();
-                                    let here = (slot, toggle_group.clone());
-                                    let just_closed = w.group_closed_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(100));
-                                    w.open_group = if w.open_group.as_ref() == Some(&here) || just_closed { None } else { Some(here) };
-                                    cx.notify();
-                                }),
-                            );
-                            // The keys open or close its menu; its members follow it as stops.
-                            row = self.key_only(
-                                row,
-                                ROW_ROUND,
-                                Rc::new(move |w: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                                    w.open_group = if w.open_group.as_ref() == Some(&keyed) { None } else { Some(keyed.clone()) };
-                                    cx.notify();
-                                }),
-                            );
-                        }
-                        if open {
-                            // The menu: a card under the choice, drawn above the rows after it,
-                            // its members by their short names with a check on the one in force.
-                            let mut card = div()
-                                .id((list_id, 40_000 + pick))
-                                .absolute()
-                                .top(px(22.0))
-                                .right(px(0.0))
-                                .min_w(px(140.0))
-                                .py(px(4.0))
-                                .rounded(px(6.0))
-                                .border_1()
-                                .border_color(c.border)
-                                .bg(c.card)
-                                .shadow_md()
-                                .flex()
-                                .flex_col()
-                                .on_mouse_down_out(cx.listener(|w, _, _, cx| {
-                                    w.open_group = None;
-                                    w.group_closed_at = Some(std::time::Instant::now());
-                                    cx.notify();
-                                }));
-                            for (ix, title) in members {
-                                let name = self.themes[ix].0.clone();
-                                let member_current = &name == current;
-                                let mut item = div()
-                                    .id((list_id, 30_000 + ix))
-                                    .flex()
-                                    .gap(px(6.0))
-                                    .px(px(8.0))
-                                    .py(px(3.0))
-                                    .text_color(c.text)
-                                    .child(div().w(px(12.0)).flex_none().child(if member_current { "\u{2713}" } else { "" }))
-                                    .child(in_theme_list(&member_name(&title, &group)));
-                                if !member_current {
-                                    let keyed = name.clone();
-                                    item = item.cursor_pointer().hover(move |s| s.bg(c.pill)).on_mouse_down(
-                                        gpui::MouseButton::Left,
-                                        cx.listener(move |w, _, _, cx| {
-                                            cx.stop_propagation();
-                                            w.open_group = None;
-                                            w.change(vec![edit(&["theme", key], name.as_str())], cx);
-                                        }),
-                                    );
-                                    item = self.key_only(
-                                        item,
-                                        ROW_ROUND,
-                                        Rc::new(move |w: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                                            w.open_group = None;
-                                            w.change(vec![edit(&["theme", key], keyed.as_str())], cx);
-                                        }),
-                                    );
-                                }
-                                card = card.child(item);
-                            }
-                            row = row.child(gpui::deferred(card).with_priority(1));
-                        }
-                        list = list.child(row);
+                        let spec = GroupSpec {
+                            list_id,
+                            key: GroupKey::Presets(slot, group.clone()),
+                            anchor: pick,
+                            line: in_theme_list(&group_line(&group, &pick_name)),
+                            is_current,
+                            members: members
+                                .iter()
+                                .map(|(ix, title)| {
+                                    let name = self.themes[*ix].0.clone();
+                                    GroupMember { id: *ix, title: member_name(title, &group), current: &name == current, edits: vec![edit(&["theme", key], name.as_str())], remember: None }
+                                })
+                                .collect(),
+                            group,
+                        };
+                        list = list.child(self.group_row(spec, enabled, c, cx));
                     }
                 }
             }
@@ -1400,6 +1423,147 @@ impl SettingsWindow {
         let add = self.add_pill("add-preset", "Add preset…", Adding::Preset, enabled, c, cx);
         out.push(div().pt(px(10.0)).flex().gap(px(6.0)).child(add).child(self.folder_pill("presets-folder", "Show presets folder", paths::themes_dir(), enabled, c, cx)).into_any_element());
         out
+    }
+
+    /// A group as one row of a list, the whole row a select read as one line of the list's own
+    /// text ("watercolor lavender ▾", aligned with every other row): a click anywhere on it
+    /// opens a small card of the members floating over the list, where a click picks one. The
+    /// keys open and close the card, and its members follow it as stops. Used by the Presets
+    /// lists and Custom's Effect list alike.
+    fn group_row(&self, spec: GroupSpec, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Stateful<gpui::Div> {
+        let GroupSpec { list_id, key, group, anchor, line, is_current, members } = spec;
+        let open = self.open_group.as_ref() == Some(&key);
+        let mut row = list_row((list_id, 20_000 + anchor), line, is_current, enabled, c).relative();
+        if enabled {
+            // `list_row` gives a row not in force its hover already; gpui takes one hover
+            // style an element, so only the row in force adds one here.
+            if is_current {
+                row = row.cursor_pointer().hover(move |s| s.bg(c.pill));
+            }
+            let (toggle, keyed) = (key.clone(), key.clone());
+            row = row.on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |w, _, _, cx| {
+                    cx.stop_propagation();
+                    let just_closed = w.group_closed_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(100));
+                    w.open_group = if w.open_group.as_ref() == Some(&toggle) || just_closed { None } else { Some(toggle.clone()) };
+                    cx.notify();
+                }),
+            );
+            row = self.key_only(
+                row,
+                ROW_ROUND,
+                Rc::new(move |w: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                    w.open_group = if w.open_group.as_ref() == Some(&keyed) { None } else { Some(keyed.clone()) };
+                    cx.notify();
+                }),
+            );
+        }
+        if open {
+            // The card: under the choice, drawn above the rows after it, its members by their
+            // short names with a check on the one in force.
+            let mut card = div()
+                .id((list_id, 40_000 + anchor))
+                .absolute()
+                .top(px(22.0))
+                .right(px(0.0))
+                .min_w(px(140.0))
+                .py(px(4.0))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(c.border)
+                .bg(c.card)
+                .shadow_md()
+                .flex()
+                .flex_col()
+                .on_mouse_down_out(cx.listener(|w, _, _, cx| {
+                    w.open_group = None;
+                    w.group_closed_at = Some(std::time::Instant::now());
+                    cx.notify();
+                }));
+            for m in members {
+                let mut item = div()
+                    .id((list_id, 30_000 + m.id))
+                    .flex()
+                    .gap(px(6.0))
+                    .px(px(8.0))
+                    .py(px(3.0))
+                    .text_color(c.text)
+                    .child(div().w(px(12.0)).flex_none().child(if m.current { "\u{2713}" } else { "" }))
+                    .child(in_theme_list(&m.title));
+                if !m.current {
+                    let pick: Rc<dyn Fn(&mut Self, &mut Context<Self>)> = {
+                        let (edits, remember) = (m.edits, m.remember);
+                        Rc::new(move |w: &mut Self, cx: &mut Context<Self>| {
+                            w.open_group = None;
+                            if let Some((effect, scene)) = &remember {
+                                if remember_scene_pick(&mut w.group_picks, effect, scene) {
+                                    write_group_picks(&paths::group_picks_file(), &w.group_picks);
+                                }
+                            }
+                            w.change(edits.clone(), cx);
+                        })
+                    };
+                    let by_key = pick.clone();
+                    item = item.cursor_pointer().hover(move |s| s.bg(c.pill)).on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |w, _, _, cx| {
+                            cx.stop_propagation();
+                            pick(w, cx);
+                        }),
+                    );
+                    item = self.key_only(item, ROW_ROUND, Rc::new(move |w: &mut Self, _: &mut Window, cx: &mut Context<Self>| by_key(w, cx)));
+                }
+                card = card.child(item);
+            }
+            row = row.child(gpui::deferred(card).with_priority(1));
+        }
+        let _ = group;
+        row
+    }
+
+    /// The custom look's Effect list under its heading: plain rows as the other lists have them,
+    /// and an effect with several scenes as a group row.
+    fn effect_list(&self, rows: Vec<EffectRow>, enabled: bool, c: Colors, cx: &mut Context<Self>) -> gpui::Div {
+        let list_id = "custom-effect";
+        let mut list = div().flex().flex_col().child(heading("Effect", c));
+        for (ix, r) in rows.into_iter().enumerate() {
+            match r {
+                EffectRow::One(r) => {
+                    let clickable = enabled && r.value.is_some();
+                    let mut row = list_row((list_id, ix), r.label, r.current, clickable, c);
+                    if let (true, false, Some(value)) = (clickable, r.current, r.value) {
+                        let edits = vec![edit(&["custom", "effect"], value.as_str())];
+                        row = self.act_row(row, cx, move |w, _, cx| w.change(edits.clone(), cx));
+                    }
+                    list = list.child(row);
+                }
+                EffectRow::Group { effect, title, members, pick, current } => {
+                    let pick_title = members.iter().find(|(n, _)| *n == pick).map(|(_, t)| t.clone()).unwrap_or_default();
+                    let spec = GroupSpec {
+                        list_id,
+                        key: GroupKey::Effect(effect.clone()),
+                        anchor: ix,
+                        line: in_theme_list(&group_line(&title, &pick_title)),
+                        is_current: current,
+                        members: members
+                            .iter()
+                            .enumerate()
+                            .map(|(i, (scene, t))| GroupMember {
+                                id: i,
+                                title: member_name(t, &title),
+                                current: current && *scene == pick,
+                                edits: effect_pick_edits(&effect, scene),
+                                remember: Some((effect.clone(), scene.clone())),
+                            })
+                            .collect(),
+                        group: title,
+                    };
+                    list = list.child(self.group_row(spec, enabled, c, cx));
+                }
+            }
+        }
+        list
     }
 
     /// One of the custom look's lists under its heading: a click on a row that is not the one in
@@ -1446,8 +1610,16 @@ impl SettingsWindow {
         };
         let font_rows = font_rows(&self.theme_fonts, font_choice.as_deref(), &self.theme.font, &cfg.font.family, &|f| self.families.contains(f));
         let font = self.rows_list("Font", "custom-font", font_rows, enabled, c, cx, |value| vec![edit(&["custom", "font"], value)]);
-        let effect_rows = custom_effect_rows(&cfg.effect_choice(), self.theme.recommended_effect(), &self.effects);
-        let effect = self.rows_list("Effect", "custom-effect", effect_rows, enabled, c, cx, |value| vec![edit(&["custom", "effect"], value)]);
+        let scene = effects::scene::look_scene(cfg, &self.theme, &paths::themes_dir());
+        let in_force = match cfg.effect_choice() {
+            EffectChoice::Named(n) => Some(n),
+            EffectChoice::Theme => self.theme.recommended_effect().map(str::to_string),
+            EffectChoice::None => None,
+        };
+        // An old scene name resolves to the scene's own.
+        let scene = scene.map(|s| in_force.as_deref().and_then(|e| self.scene_aliases.get(&format!("{e}/{s}"))).cloned().unwrap_or(s));
+        let effect_rows = custom_effect_rows(&cfg.effect_choice(), self.theme.recommended_effect(), scene.as_deref(), &self.effects, &self.effect_scenes, &self.group_picks);
+        let effect = self.effect_list(effect_rows, enabled, c, cx);
         let columns = div().flex().gap(px(16.0)).child(color.flex_1().min_w_0()).child(div().flex_1().min_w_0().flex().flex_col().child(font).child(effect));
         let mut out = vec![columns.into_any_element()];
         let (color, effect) = (self.add_pill("add-color", "Add color…", Adding::Color, enabled, c, cx), self.add_pill("add-effect", "Add effect…", Adding::Effect, enabled, c, cx));
@@ -1991,15 +2163,72 @@ mod tests {
             ("neon".to_string(), Source::Folder("/e/neon".into())),
             ("broken".to_string(), Source::Invalid("scale must be 0.1 to 1.0".into())),
         ];
+        let none = GroupPicks::new();
+        let rows = |choice: &EffectChoice, own: Option<&str>| -> Vec<Row> {
+            custom_effect_rows(choice, own, None, &listed, &[], &none).into_iter().map(|r| match r { EffectRow::One(r) => r, g => panic!("{g:?}") }).collect()
+        };
         assert_eq!(
-            custom_effect_rows(&EffectChoice::Named("neon".into()), Some("overworld"), &listed),
+            rows(&EffectChoice::Named("neon".into()), Some("overworld")),
             vec![row("None", Some("none"), false), row("watercolor", Some("watercolor"), false), row("overworld", Some("overworld"), false), row("neon", Some("neon"), true), row("broken (invalid)", None, false)]
         );
-        assert!(custom_effect_rows(&EffectChoice::None, Some("overworld"), &listed)[0].current);
+        assert!(rows(&EffectChoice::None, Some("overworld"))[0].current);
         // `theme` is the colour's own effect, or none when it has none.
-        assert!(custom_effect_rows(&EffectChoice::Theme, Some("overworld"), &listed)[2].current);
-        assert!(custom_effect_rows(&EffectChoice::Theme, None, &listed)[0].current);
-        assert_eq!(custom_effect_rows(&EffectChoice::Named("gone".into()), None, &listed)[5], row("gone (not installed)", None, true));
+        assert!(rows(&EffectChoice::Theme, Some("overworld"))[2].current);
+        assert!(rows(&EffectChoice::Theme, None)[0].current);
+        assert_eq!(rows(&EffectChoice::Named("gone".into()), None)[5], row("gone (not installed)", None, true));
+    }
+
+    fn runic_scenes() -> Vec<(String, Vec<(String, String)>)> {
+        vec![("runic".into(), vec![("tokyo".into(), "Tokyo".into()), ("matrix-city".into(), "Matrix City".into())])]
+    }
+
+    fn effects_listed() -> Vec<(String, effects::manifest::Source)> {
+        vec![("material".to_string(), effects::manifest::Source::BuiltIn), ("runic".to_string(), effects::manifest::Source::BuiltIn)]
+    }
+
+    #[test]
+    fn runic_is_one_group_row_with_tokyo_and_matrix_city() {
+        let rows = custom_effect_rows(&EffectChoice::None, None, None, &effects_listed(), &runic_scenes(), &GroupPicks::new());
+        assert_eq!(rows.len(), 3, "None, Material and one Runic row: {rows:?}");
+        let members = vec![("tokyo".to_string(), "Tokyo".to_string()), ("matrix-city".to_string(), "Matrix City".to_string())];
+        assert_eq!(rows[2], EffectRow::Group { effect: "runic".into(), title: "Runic".into(), members, pick: "tokyo".into(), current: false });
+    }
+
+    #[test]
+    fn the_runic_row_shows_the_scene_in_force() {
+        let rows = custom_effect_rows(&EffectChoice::Named("runic".into()), None, Some("matrix-city"), &effects_listed(), &runic_scenes(), &GroupPicks::new());
+        assert!(matches!(&rows[2], EffectRow::Group { pick, current: true, .. } if pick == "matrix-city"), "{:?}", rows[2]);
+        let by_colour = custom_effect_rows(&EffectChoice::Theme, Some("runic"), Some("matrix-city"), &effects_listed(), &runic_scenes(), &GroupPicks::new());
+        assert!(matches!(&by_colour[2], EffectRow::Group { pick, current: true, .. } if pick == "matrix-city"), "the colour's own effect and scene count too");
+    }
+
+    #[test]
+    fn picking_a_runic_scene_writes_the_effect_and_the_scene() {
+        let edits = effect_pick_edits("runic", "matrix-city");
+        let shown: Vec<(String, String)> = edits.iter().map(|(keys, v)| (keys.join("."), v.as_str().unwrap_or_default().to_string())).collect();
+        assert_eq!(shown, vec![("custom.effect".to_string(), "runic".to_string()), ("custom.scene".to_string(), "matrix-city".to_string())]);
+    }
+
+    #[test]
+    fn an_effect_without_scenes_stays_a_plain_row() {
+        let rows = custom_effect_rows(&EffectChoice::Named("material".into()), None, Some("stray"), &effects_listed(), &runic_scenes(), &GroupPicks::new());
+        assert_eq!(rows[1], EffectRow::One(Row { label: "material".into(), value: Some("material".into()), current: true }));
+        let one_scene = vec![("material".to_string(), vec![("only".to_string(), "Only".to_string())])];
+        let rows = custom_effect_rows(&EffectChoice::None, None, None, &effects_listed(), &one_scene, &GroupPicks::new());
+        assert!(matches!(rows[1], EffectRow::One(_)), "one scene is not a choice");
+    }
+
+    #[test]
+    fn the_runic_group_remembers_its_last_pick() {
+        let mut picks = GroupPicks::new();
+        assert!(remember_scene_pick(&mut picks, "runic", "matrix-city"));
+        assert!(!remember_scene_pick(&mut picks, "runic", "matrix-city"), "nothing new to write");
+        assert_eq!(picks.get("effect:runic").map(String::as_str), Some("matrix-city"));
+        let rows = custom_effect_rows(&EffectChoice::None, None, None, &effects_listed(), &runic_scenes(), &picks);
+        assert!(matches!(&rows[2], EffectRow::Group { pick, current: false, .. } if pick == "matrix-city"), "{:?}", rows[2]);
+        picks.insert("effect:runic".into(), "gone".into());
+        let rows = custom_effect_rows(&EffectChoice::None, None, None, &effects_listed(), &runic_scenes(), &picks);
+        assert!(matches!(&rows[2], EffectRow::Group { pick, .. } if pick == "tokyo"), "a scene no longer listed falls back to the first");
     }
 
     #[test]
