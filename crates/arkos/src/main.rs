@@ -9,6 +9,7 @@ mod av_player;
 mod cache;
 mod chooser_sessions;
 mod chrome;
+mod color_schemes;
 mod claude_folders;
 mod claude_theme;
 mod client;
