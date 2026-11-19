@@ -299,6 +299,14 @@ pub fn group_line(group: &str, member: &str) -> String {
     format!("{group} {member} \u{25be}")
 }
 
+/// A preset group's row as one line of the list's text, from the title of the member it shows:
+/// the title as it is, with the caret. A title starting with its group's word ("Watercolor
+/// Lavender") already reads as group and member; one ending with it ("Seattle Rain") is the
+/// member's own name, so the group's word is never put in front a second time.
+pub fn preset_group_line(title: &str) -> String {
+    format!("{title} \u{25be}")
+}
+
 /// A group member's name in its group's dropdown: its title without the group's word in front
 /// ("Watercolor Lavender" is "Lavender" under Watercolor), else its whole title.
 pub fn member_name(title: &str, group: &str) -> String {
@@ -1407,12 +1415,12 @@ impl SettingsWindow {
                     }
                     PresetRow::Group { name: group, members, pick } => {
                         let is_current = members.iter().any(|(ix, _)| &self.themes[*ix].0 == current);
-                        let pick_name = members.iter().find(|(ix, _)| *ix == pick).map(|(_, t)| member_name(t, &group)).unwrap_or_default();
+                        let pick_title = members.iter().find(|(ix, _)| *ix == pick).map(|(_, t)| t.clone()).unwrap_or_default();
                         let spec = GroupSpec {
                             list_id,
                             key: GroupKey::Presets(slot, group.clone()),
                             anchor: pick,
-                            line: in_theme_list(&group_line(&group, &pick_name)),
+                            line: in_theme_list(&preset_group_line(&pick_title)),
                             is_current,
                             members: members
                                 .iter()
@@ -2094,6 +2102,17 @@ mod tests {
     #[test]
     fn a_group_s_row_reads_as_one_line_of_text() {
         assert_eq!(group_line("Watercolor", "Lavender"), "Watercolor Lavender \u{25be}");
+    }
+
+    #[test]
+    fn a_preset_group_s_row_reads_as_its_member_s_title_once() {
+        // Cyrus, 2026-11-19: "The group option for seattle rain says "rain seattle rain". It
+        // should just be "seattle rain"." A title that starts with its group keeps the group's
+        // word in front once; one that ends with it (or names it elsewhere) is shown as it is.
+        assert_eq!(in_theme_list(&preset_group_line("Seattle Rain")), "seattle rain \u{25be}");
+        assert_eq!(in_theme_list(&preset_group_line("Tokyo Rain")), "tokyo rain \u{25be}");
+        assert_eq!(in_theme_list(&preset_group_line("Watercolor Lavender")), "watercolor lavender \u{25be}");
+        assert_eq!(in_theme_list(&preset_group_line("Material Navy")), "material navy \u{25be}");
     }
 
     #[test]
