@@ -1,6 +1,6 @@
 # Themes
 
-A theme is one TOML file with a `name` and five tables: `chrome`, `terminal`, `semantic`, `tree` and `viewer`, plus an optional `font` table. Every colour key is required and every value is a `#rrggbb` colour; an unknown or missing key is an error. Arkos ships fourteen themes built in (`navy`, `timo-purple`, `peach-watercolor`, `lavender-watercolor`, `lavender-material`, `matrix`, `tokyo-rain`, `composition-notebook`, `material`, `arabia-solar`, `material-solar`, `material-ocean`, `material-palenight`, `material-sublime`, shown as Material Navy, Timo Purple, Watercolor Peach, Watercolor Lavender, Material Lavender, The Matrix, Tokyo Rain, Composition Notebook, Material Bright, Solar Arabia, Material Solar, Material Ocean, Material Palenight and Material Sublime; `peach-light` and `peach-material` (0.8.11) are old names of `peach-watercolor`, and `lavender-light` of `lavender-watercolor`; they still load them); the files in `crates/arkos/themes/` are complete examples to copy.
+A theme is one TOML file with a `name` and five tables: `chrome`, `terminal`, `semantic`, `tree` and `viewer`, plus an optional `font` table. Every colour key is required and every value is a `#rrggbb` colour; an unknown or missing key is an error. Arkos ships fourteen themes built in (`navy`, `timo-purple`, `peach-watercolor`, `lavender-watercolor`, `lavender-material`, `matrix`, `tokyo-rain`, `composition-notebook`, `material`, `arabia-solar`, `material-solar`, `material-ocean`, `material-palenight`, `material-sublime`, shown as Material Navy, Timo Purple, Watercolor Peach, Watercolor Lavender, Material Lavender, The Matrix, Tokyo Rain, Composition Notebook, Material Bright, Solar Arabia, Material Solar, Material Ocean, Material Palenight and Material Sublime; `peach-light` and `peach-material` (0.8.11) are old names of `peach-watercolor`, and `lavender-light` of `lavender-watercolor`; they still load them); the files in `crates/arkos/colors/` are the colour schemes to copy for colours, and the files in `crates/arkos/themes/` are the presets to copy for a preset (each names its colour and its font set; `arkos theme template` prints one resolved into a single complete file).
 
 ## Contrast rules
 
@@ -167,7 +167,7 @@ mine` checks a colour file of that name, and `custom.color` may name it.
 
 ## Adding a theme
 
-1. Copy a built-in as a starting point. "Extract built-in themes" in the command palette writes them into the themes folder (`~/.config/arkos/themes/`), or copy one from `crates/arkos/themes/`.
+1. Start from a built-in. For colours, copy a file from `crates/arkos/colors/` into your colors folder (`~/.config/arkos/colors/`). For a preset, copy one from `crates/arkos/themes/` into the themes folder (`~/.config/arkos/themes/`), or run `arkos theme template > mine.toml` for a complete all-in-one theme with every colour table, `[font]` and `[effect]`.
 2. Give the copy its own `name` and edit the colours.
 3. Check it with `arkos theme validate <file>`. It prints `ok: <name>` when the file parses and names the problem otherwise. `arkos theme list` shows every theme and marks a broken file as invalid.
 4. Put the file in the themes folder as `<name>.toml`, or use "Add preset…" in Settings, which does the same copy and asks "Replace the existing <name>?" first when a theme of that name is installed, a built-in included.

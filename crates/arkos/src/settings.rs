@@ -1423,8 +1423,7 @@ impl SettingsWindow {
         let pinned = cfg.clone();
         // `custom.color` may name a preset (a 0.8.54 config); the row checked is its scheme.
         let current = match cfg.custom.color.as_deref() {
-            Some(name) if !self.theme_colors.iter().any(|e| e.name == name) => theme::load(name, &paths::themes_dir()).map_or_else(|_| name.to_string(), |t| t.color),
-            Some(name) => name.to_string(),
+            Some(name) => theme::current_color(name, &self.theme_colors, &paths::themes_dir()),
             None => self.theme.color.clone(),
         };
         let colors = color_rows(&self.theme_colors, &current).into_iter().map(|r| Row { label: in_theme_list(&r.label), ..r }).collect();
@@ -2056,6 +2055,21 @@ mod tests {
         let checked: Vec<_> = rows.iter().filter(|r| r.current).collect();
         assert_eq!(checked.len(), 1);
         assert_eq!(checked[0].value.as_deref(), Some("lavender"));
+    }
+
+    #[test]
+    fn the_custom_colour_row_checked_for_an_old_form_copy_of_a_built_in_is_its_scheme_and_none_is_not_installed() {
+        let root = tempfile::tempdir().unwrap();
+        let themes = root.path().join("themes");
+        std::fs::create_dir_all(&themes).unwrap();
+        std::fs::write(themes.join("lavender-watercolor.toml"), include_str!("../tests-data/presets-0.8.54/lavender-watercolor.toml")).unwrap();
+        std::fs::write(themes.join("lavender-material.toml"), include_str!("../tests-data/presets-0.8.54/lavender-material.toml")).unwrap();
+        let entries = theme::colors(&themes);
+        let rows = color_rows(&entries, &theme::current_color("lavender-watercolor", &entries, &themes));
+        assert!(!rows.iter().any(|r| r.label.contains("not installed")), "{rows:?}");
+        let checked: Vec<_> = rows.iter().filter(|r| r.current).collect();
+        assert_eq!(checked.len(), 1, "{rows:?}");
+        assert!(checked[0].label.starts_with("Lavender"), "{checked:?}");
     }
 
     #[test]

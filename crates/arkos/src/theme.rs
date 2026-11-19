@@ -126,23 +126,31 @@ fn old_form_presets(dir: &Path) -> Vec<(String, Theme)> {
         .collect()
 }
 
-/// Every colour scheme to show, each once: the built-in schemes in order (a file of one's own with
-/// a built-in's name listed in its place as a file), the other colour files sorted, then each
-/// old-form preset file of `themes_dir` whose colours match no scheme listed so far, named and
-/// titled as the preset.
+/// Every colour to show, one row a name, each row what that name loads (`load_color`): the
+/// built-in schemes in order, the other colour files sorted, then each old-form preset file of
+/// `themes_dir` whose colours match no row listed so far, named by its file name and titled as
+/// the preset. A theme file named like a built-in scheme replaces its row when its colours differ
+/// and leaves it when they do not.
 pub fn colors(themes_dir: &Path) -> Vec<ColorEntry> {
     use crate::color_schemes as cs;
     let folder = cs::dir_of(themes_dir);
-    let mut shown: Vec<(ColorEntry, Option<cs::ColorScheme>)> = Vec::new();
-    let push_named = |name: &str, shown: &mut Vec<(ColorEntry, Option<cs::ColorScheme>)>| {
-        let is_file = folder.join(format!("{name}.toml")).is_file();
-        let (scheme, source) = match cs::load(name, themes_dir) {
-            Ok(s) => (Some(s), if is_file { Source::File } else { Source::BuiltIn }),
-            Err(e) => (None, Source::Invalid(e)),
+    let mut shown: Vec<(ColorEntry, Option<Theme>)> = Vec::new();
+    let push_named = |name: &str, shown: &mut Vec<(ColorEntry, Option<Theme>)>| {
+        let colour_file = folder.join(format!("{name}.toml")).is_file();
+        let theme_file = themes_dir.join(format!("{name}.toml")).is_file();
+        let scheme = cs::builtin(name);
+        let row = match load_color(name, themes_dir) {
+            Ok(t) => {
+                let own = colour_file || (theme_file && !scheme.as_ref().is_some_and(|b| b.same_colors(&t)));
+                let entry = match scheme.filter(|_| !own) {
+                    Some(b) => ColorEntry { name: name.to_string(), title: b.title.clone().unwrap_or_else(|| title_case(name)), appearance: Some(b.appearance.unwrap_or_else(|| background_kind(b.chrome.window_bg))), source: Source::BuiltIn },
+                    None => ColorEntry { name: name.to_string(), title: t.title.clone().unwrap_or_else(|| title_case(name)), appearance: Some(t.kind()), source: Source::File },
+                };
+                (entry, Some(t))
+            }
+            Err(e) => (ColorEntry { name: name.to_string(), title: title_case(name), appearance: None, source: Source::Invalid(e) }, None),
         };
-        let title = scheme.as_ref().and_then(|s| s.title.clone()).unwrap_or_else(|| title_case(name));
-        let appearance = scheme.as_ref().and_then(|s| s.appearance);
-        shown.push((ColorEntry { name: name.to_string(), title, appearance, source }, scheme));
+        shown.push(row);
     };
     for (name, _) in cs::BUILTIN {
         push_named(name, &mut shown);
@@ -158,22 +166,12 @@ pub fn colors(themes_dir: &Path) -> Vec<ColorEntry> {
     for stem in stems {
         push_named(&stem, &mut shown);
     }
-    for (_, t) in old_form_presets(themes_dir) {
-        if shown.iter().any(|(_, s)| s.as_ref().is_some_and(|s| s.same_colors(&t))) {
+    for (stem, t) in old_form_presets(themes_dir) {
+        if shown.iter().any(|(e, s)| e.name == stem || s.as_ref().is_some_and(|s| same_colors(s, &t))) {
             continue;
         }
-        let entry = ColorEntry { title: t.title.clone().unwrap_or_else(|| title_case(&t.name)), name: t.name.clone(), appearance: t.appearance, source: Source::File };
-        let scheme = cs::ColorScheme {
-            name: t.name.clone(),
-            title: t.title.clone(),
-            appearance: t.appearance,
-            chrome: t.chrome.clone(),
-            terminal: t.terminal.clone(),
-            semantic: t.semantic.clone(),
-            tree: t.tree.clone(),
-            viewer: t.viewer.clone(),
-        };
-        shown.push((entry, Some(scheme)));
+        let entry = ColorEntry { title: t.title.clone().unwrap_or_else(|| title_case(&stem)), name: stem, appearance: Some(t.kind()), source: Source::File };
+        shown.push((entry, Some(t)));
     }
     shown.into_iter().map(|(e, _)| e).collect()
 }
@@ -232,17 +230,30 @@ pub fn snap_to(grid: Option<f32>, size: f32) -> f32 {
 
 /// The fonts a look draws in. `choice` is the custom look's font (`Config::font_choice`): no
 /// choice gives the fonts of `theme`, the one showing; `config::PLAIN_FONT` none of a theme's; a
-/// name gives the font set of that name (a file of one's own, then a built-in), and failing that
-/// the fonts of the preset of that name, which is how a 0.8.54 config naming a preset reads. A
-/// name that is neither is the error.
+/// name gives, in this order, the font file of that name, the fonts of a theme file of that name
+/// (old or new form, so an edited copy of a preset keeps its edits), the built-in font set, and
+/// the fonts of the built-in preset, which is how a 0.8.54 config naming a preset reads. A name
+/// that is none of these is the error.
 pub fn font_for(choice: Option<&str>, theme: &Theme, themes_dir: &Path) -> Result<ThemeFont, String> {
     match choice {
         None => Ok(theme.font.clone()),
         Some(crate::config::PLAIN_FONT) => Ok(ThemeFont::default()),
-        Some(name) => match crate::font_sets::load(name, themes_dir) {
-            Ok(set) => Ok(set.font()),
-            Err(set_err) => load(name, themes_dir).map(|t| t.font).map_err(|preset_err| format!("{set_err}; {preset_err}")),
-        },
+        Some(name) => {
+            // Your own font file, then your own theme file (old or new form), then the built-in
+            // set, then a built-in preset.
+            let own_font = crate::font_sets::dir_of(themes_dir).join(format!("{name}.toml")).is_file();
+            let own_theme = is_bare_name(name) && themes_dir.join(format!("{name}.toml")).is_file();
+            if own_font {
+                return crate::font_sets::load(name, themes_dir).map(|s| s.font());
+            }
+            if own_theme {
+                return load(name, themes_dir).map(|t| t.font);
+            }
+            match crate::font_sets::load(name, themes_dir) {
+                Ok(set) => Ok(set.font()),
+                Err(set_err) => load(name, themes_dir).map(|t| t.font).map_err(|preset_err| format!("{set_err}; {preset_err}")),
+            }
+        }
     }
 }
 
@@ -510,12 +521,70 @@ pub fn load(name: &str, dir: &Path) -> Result<Theme, String> {
     match std::fs::read_to_string(&file) {
         Ok(text) => parse_in(&text, Some(dir)).map_err(|e| format!("{}: {e}", file.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => builtin(name).map(Ok).unwrap_or_else(|| {
-            crate::color_schemes::load(name, dir).map(|s| s.to_theme()).map_err(|_| {
-                format!("{name:?} is no theme (not built in and {} does not exist) and no colour scheme", file.display())
+            crate::color_schemes::load(name, dir).map(|s| s.to_theme()).map_err(|e| {
+                // A colour file that is there but does not parse says why, with its path.
+                if crate::color_schemes::dir_of(dir).join(format!("{name}.toml")).is_file() {
+                    e
+                } else {
+                    format!("{name:?} is no theme (not built in and {} does not exist) and no colour scheme", file.display())
+                }
             })
         }),
         Err(e) => Err(format!("cannot read {}: {e}", file.display())),
     }
+}
+
+/// The theme the config shows: the custom look's colour when it names one (`load_color`), else
+/// the preset the mode and macOS's appearance pick (`load`).
+pub fn load_look(cfg: &crate::config::Config, system_is_dark: bool, dir: &Path) -> Result<Theme, String> {
+    let name = cfg.theme_name(system_is_dark);
+    if cfg.look() == crate::config::Look::Custom && cfg.custom.color.is_some() {
+        load_color(name, dir)
+    } else {
+        load(name, dir)
+    }
+}
+
+/// Whether two themes draw the same colours (the five colour tables).
+pub(crate) fn same_colors(a: &Theme, b: &Theme) -> bool {
+    a.chrome == b.chrome && a.terminal == b.terminal && a.semantic == b.semantic && a.tree == b.tree && a.viewer == b.viewer
+}
+
+/// The theme a custom colour name gives: the colour file `colors/<name>.toml`, else the theme file
+/// `themes/<name>.toml` (its colours, and its fonts and effect as a preset has them), else the
+/// built-in colour scheme, else the built-in preset of that name (a 0.8.54 config names one). A
+/// name that is both a built-in scheme and a built-in preset with the same colours gives the
+/// preset, so its fonts are kept. The error is the first file's own when that file is broken.
+pub fn load_color(name: &str, dir: &Path) -> Result<Theme, String> {
+    use crate::color_schemes as cs;
+    if !is_bare_name(name) {
+        return Err(format!("theme name {name:?} must be a bare file name"));
+    }
+    if cs::dir_of(dir).join(format!("{name}.toml")).is_file() {
+        return cs::load(name, dir).map(|s| s.to_theme());
+    }
+    if dir.join(format!("{name}.toml")).is_file() {
+        return load(name, dir);
+    }
+    if let Some(scheme) = cs::builtin(name) {
+        return Ok(builtin(name).filter(|p| scheme.same_colors(p)).unwrap_or_else(|| scheme.to_theme()));
+    }
+    load(name, dir)
+}
+
+/// The colour list's name for the colour a config names: the name itself when a row has it, else
+/// the row that draws the colours the name loads (an old-form copy of a built-in preset, as
+/// `theme extract` wrote before 0.8.55, is the scheme it copied), else the colour scheme the
+/// theme names, so the list shows what is in force.
+pub fn current_color(name: &str, entries: &[ColorEntry], dir: &Path) -> String {
+    if entries.iter().any(|e| e.name == name) {
+        return name.to_string();
+    }
+    let Ok(t) = load_color(name, dir) else { return name.to_string() };
+    entries
+        .iter()
+        .find(|e| load_color(&e.name, dir).is_ok_and(|x| same_colors(&x, &t)))
+        .map_or(t.color.clone(), |e| e.name.clone())
 }
 
 /// Built-in names plus every `*.toml` stem in `dir`, sorted and deduplicated.
@@ -656,7 +725,7 @@ pub fn import_file(src: &Path, dir: &Path, replace: bool) -> Result<(String, boo
         return Err("only .toml theme files can be added".into());
     }
     let text = std::fs::read_to_string(src).map_err(|e| format!("cannot read {}: {e}", src.display()))?;
-    let name = parse(&text)?.name;
+    let name = parse_in(&text, Some(dir))?.name;
     if !is_bare_name(&name) || name.starts_with('.') {
         return Err(format!("theme name {name:?} must be a bare file name that does not start with a dot"));
     }
@@ -1838,5 +1907,141 @@ mod tests {
         let mut white = from.clone();
         white.semantic.bell = rgb(0xffffff);
         assert_eq!(blend(&black, &white, 0.25).semantic.bell, rgb(0x404040));
+    }
+
+    /// A temp root with `themes/` and `colors/` and `fonts/` beside it.
+    fn roots() -> (tempfile::TempDir, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let themes = root.path().join("themes");
+        for d in ["themes", "colors", "fonts"] {
+            std::fs::create_dir_all(root.path().join(d)).unwrap();
+        }
+        (root, themes)
+    }
+
+    fn fixture(name: &str) -> &'static str {
+        FIXTURES.iter().find(|(n, _)| *n == name).unwrap().1
+    }
+
+    fn assert_one_row_a_name(rows: &[ColorEntry]) {
+        let mut names: Vec<&str> = rows.iter().map(|e| e.name.as_str()).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), rows.len(), "no two rows share a value: {rows:?}");
+    }
+
+    #[test]
+    fn an_old_form_theme_with_no_appearance_is_listed_by_its_background() {
+        let (root, themes) = roots();
+        let text = fixture("navy").replace("name = \"navy\"", "name = \"mine\"").replace("#16202f", "#16202e").replace("appearance = \"dark\"\n", "");
+        assert!(!text.contains("appearance"), "the fixture says no appearance");
+        std::fs::write(themes.join("mine.toml"), text).unwrap();
+        let plain = crate::color_schemes::BUILTIN[0].1.replace("name = \"navy\"", "name = \"plain\"").replace("appearance = \"dark\"\n", "").replace("#16202f", "#16202d");
+        std::fs::write(root.path().join("colors").join("plain.toml"), plain).unwrap();
+        let rows = colors(&themes);
+        let of = |n: &str| rows.iter().find(|e| e.name == n).unwrap_or_else(|| panic!("{n} is listed: {rows:?}")).appearance;
+        assert_eq!(of("mine"), Some(Appearance::Dark));
+        assert_eq!(of("plain"), Some(Appearance::Dark));
+    }
+
+    #[test]
+    fn a_theme_file_with_a_built_in_scheme_s_name_and_other_colours_replaces_its_row() {
+        let (_root, themes) = roots();
+        let text = fixture("navy").replace("title = \"Material Navy\"", "title = \"Mine Navy\"").replace("#16202f", "#16202e");
+        std::fs::write(themes.join("navy.toml"), text).unwrap();
+        let rows = colors(&themes);
+        assert_one_row_a_name(&rows);
+        assert_eq!(rows.len(), 11);
+        let navy = rows.iter().find(|e| e.name == "navy").unwrap();
+        assert_eq!((navy.title.as_str(), &navy.source), ("Mine Navy", &Source::File));
+        assert_eq!(load_color("navy", &themes).unwrap().chrome, parse(&std::fs::read_to_string(themes.join("navy.toml")).unwrap()).unwrap().chrome);
+    }
+
+    #[test]
+    fn a_theme_file_with_a_built_in_scheme_s_name_and_the_same_colours_leaves_its_row() {
+        let (_root, themes) = roots();
+        std::fs::write(themes.join("navy.toml"), fixture("navy")).unwrap();
+        let rows = colors(&themes);
+        assert_one_row_a_name(&rows);
+        let navy = rows.iter().find(|e| e.name == "navy").unwrap();
+        assert_eq!((navy.title.as_str(), &navy.source), ("Navy", &Source::BuiltIn));
+    }
+
+    #[test]
+    fn an_old_form_theme_is_listed_by_its_file_name_not_its_name_field() {
+        let (_root, themes) = roots();
+        let text = fixture("navy").replace("name = \"navy\"", "name = \"other\"").replace("#16202f", "#16202e");
+        std::fs::write(themes.join("mine.toml"), text).unwrap();
+        let rows = colors(&themes);
+        assert_one_row_a_name(&rows);
+        assert!(rows.iter().any(|e| e.name == "mine") && !rows.iter().any(|e| e.name == "other"), "{rows:?}");
+        assert!(load_color("mine", &themes).is_ok());
+    }
+
+    #[test]
+    fn a_custom_colour_name_is_a_colour_file_then_a_theme_file_then_a_built_in_scheme_then_a_preset() {
+        let (root, themes) = roots();
+        let navy = |hex: &str| fixture("navy").replace("#16202f", hex);
+        std::fs::write(themes.join("navy.toml"), navy("#16202e")).unwrap();
+        let mine = crate::color_schemes::BUILTIN[0].1.replace(&crate::color_schemes::builtin("navy").unwrap().chrome.border.hex(), "#123456");
+        std::fs::write(root.path().join("colors").join("navy.toml"), mine).unwrap();
+        assert_eq!(load_color("navy", &themes).unwrap().chrome.border.hex(), "#123456", "the colour file first");
+        std::fs::remove_file(root.path().join("colors").join("navy.toml")).unwrap();
+        assert_eq!(load_color("navy", &themes).unwrap().chrome.window_bg.hex(), "#16202e", "then the theme file");
+        std::fs::remove_file(themes.join("navy.toml")).unwrap();
+        assert!(crate::color_schemes::builtin("navy").unwrap().same_colors(&load_color("navy", &themes).unwrap()), "then the built-in scheme");
+        // A preset of the name, as a 0.8.54 config names one, keeps its fonts.
+        assert_eq!(load_color("lavender-watercolor", &themes).unwrap().font.prose.as_deref(), Some("Avenir Next"));
+        assert_eq!(load_color("matrix", &themes).unwrap().font, builtin("matrix").unwrap().font, "a name that is a scheme and a preset keeps the preset's fonts");
+        assert!(load_color("nowhere", &themes).is_err());
+    }
+
+    #[test]
+    fn the_font_of_a_name_is_a_font_file_then_a_theme_file_then_a_built_in_set_then_a_preset() {
+        let (root, themes) = roots();
+        let navy = builtin("navy").unwrap();
+        // An edited old-form copy of a preset keeps the user's font.
+        let edited = fixture("material").replace("prose = \"DM Sans\"", "prose = \"Georgia\"");
+        assert_ne!(edited, fixture("material"));
+        std::fs::write(themes.join("material.toml"), edited).unwrap();
+        assert_eq!(font_for(Some("material"), &navy, &themes).unwrap().prose.as_deref(), Some("Georgia"));
+        std::fs::write(root.path().join("fonts").join("material.toml"), "name = \"material\"\nprose = \"Menlo\"\n").unwrap();
+        assert_eq!(font_for(Some("material"), &navy, &themes).unwrap().prose.as_deref(), Some("Menlo"), "the font file first");
+        std::fs::remove_file(root.path().join("fonts").join("material.toml")).unwrap();
+        std::fs::remove_file(themes.join("material.toml")).unwrap();
+        assert_eq!(font_for(Some("material"), &navy, &themes).unwrap().prose.as_deref(), Some("DM Sans"), "then the preset");
+        assert!(font_for(Some("nowhere"), &navy, &themes).is_err());
+    }
+
+    #[test]
+    fn a_colour_file_that_does_not_parse_says_why_with_its_path() {
+        let (root, themes) = roots();
+        let file = root.path().join("colors").join("broken.toml");
+        std::fs::write(&file, "name = \"broken\"\nbogus = 1\n").unwrap();
+        for e in [load("broken", &themes).unwrap_err(), load_color("broken", &themes).unwrap_err()] {
+            assert!(e.contains(&file.display().to_string()) && e.contains("bogus"), "{e}");
+        }
+    }
+
+    #[test]
+    fn the_colour_row_of_an_old_form_copy_is_the_scheme_with_its_colours() {
+        let (_root, themes) = roots();
+        for (name, text) in FIXTURES {
+            std::fs::write(themes.join(format!("{name}.toml")), text).unwrap();
+        }
+        let rows = colors(&themes);
+        assert_eq!(current_color("lavender-watercolor", &rows, &themes), "lavender");
+        assert_eq!(current_color("peach", &rows, &themes), "peach");
+        assert_eq!(current_color("gone", &rows, &themes), "gone");
+    }
+
+    #[test]
+    fn a_preset_naming_a_colour_of_one_s_own_is_accepted_wherever_a_preset_file_is_read() {
+        let (root, themes) = roots();
+        let mine = crate::color_schemes::BUILTIN[0].1.replace("name = \"navy\"", "name = \"mine\"");
+        std::fs::write(root.path().join("colors").join("mine.toml"), mine).unwrap();
+        let src = root.path().join("dusk.toml");
+        std::fs::write(&src, "name = \"dusk\"\ncolor = \"mine\"\n").unwrap();
+        assert_eq!(import_file(&src, &themes, false), Ok(("dusk".to_string(), false)));
     }
 }

@@ -294,13 +294,19 @@ fn template(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         [name] => name,
         _ => return usage(err, THEME_USAGE),
     };
-    let Some(text) = theme::builtin_text(name) else {
+    let Some(resolved) = theme::builtin(name) else {
         return fail(err, &format!("unknown built-in theme: {name}"));
     };
     if a.has("--json") {
         let _ = writeln!(out, "{}", schema_json());
     } else {
-        let _ = out.write_all(text.as_bytes());
+        // The resolved preset, all in one file: every colour table, its [font] and [effect].
+        match toml::to_string_pretty(&resolved) {
+            Ok(text) => {
+                let _ = out.write_all(text.as_bytes());
+            }
+            Err(e) => return fail(err, &format!("cannot write the template: {e}")),
+        }
     }
     0
 }
@@ -328,10 +334,21 @@ fn schema_json() -> Json {
     json!({ "tables": tables })
 }
 
-/// A theme by name (`unknown theme: {name}` when it is neither a file in the folder nor built
-/// in; a broken file's own error otherwise).
+/// A theme or a colour scheme by name (`unknown theme: {name}` when it is neither a file in the
+/// folder, nor built in, nor a colour scheme; a broken file's own error otherwise). For the
+/// commands that take a colour: `theme contrast` and `custom.color`.
 pub(crate) fn load_name(name: &str, themes: &Path) -> Result<theme::Theme, String> {
     if theme::is_bare_name(name) && !themes.join(format!("{name}.toml")).exists() && theme::builtin(name).is_none() && crate::color_schemes::load(name, themes).is_err() {
+        return Err(format!("unknown theme: {name}"));
+    }
+    theme::load(name, themes)
+}
+
+/// A preset by name, for the commands that pick a preset (`theme use`, `theme.dark`, `theme.light`):
+/// `unknown theme: {name}` when it is neither a file in the folder nor a built-in preset, so a
+/// colour scheme's name is not one.
+pub(crate) fn load_preset_name(name: &str, themes: &Path) -> Result<theme::Theme, String> {
+    if theme::is_bare_name(name) && !themes.join(format!("{name}.toml")).exists() && theme::builtin(name).is_none() {
         return Err(format!("unknown theme: {name}"));
     }
     theme::load(name, themes)
@@ -357,7 +374,7 @@ fn load_target(target: &str, themes: &Path) -> Result<theme::Theme, String> {
         return load_name(target, themes);
     }
     let text = theme_text(target, themes)?;
-    theme::parse(&text).map_err(|e| format!("{target}: {e}"))
+    theme::parse_in(&text, Some(themes)).map_err(|e| format!("{target}: {e}"))
 }
 
 /// The text deepening `contrast` draws the terminal under, beside plain: `--effect`'s (a name, a
@@ -474,7 +491,7 @@ fn add_for_use(src: &Path, themes: &Path, replace: bool) -> Result<String, Strin
         Ok((name, _)) => Ok(name),
         Err(e) if e == "exists" => {
             let text = std::fs::read_to_string(src).map_err(|e| format!("cannot read {}: {e}", src.display()))?;
-            let name = theme::parse(&text)?.name;
+            let name = theme::parse_in(&text, Some(themes))?.name;
             match std::fs::read_to_string(themes.join(format!("{name}.toml"))) {
                 Ok(there) if there == text => Ok(name),
                 _ => Err(format!("exists: {name}; pass --replace")),
@@ -515,7 +532,7 @@ fn use_theme(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Writ
         // A renamed built-in's old name is saved as its name now.
         theme::current_name(target).to_string()
     };
-    if let Err(e) = load_name(&name, env.themes) {
+    if let Err(e) = load_preset_name(&name, env.themes) {
         return fail(err, &e);
     }
     // Creates a missing config from the defaults, so there is a file to write into.
@@ -675,6 +692,14 @@ fn live(env: &Env, action: CustomizeAction, judge: &Judge, json: bool, out: &mut
     }
 }
 
+/// The text `preview` sends the window: the theme's file text, checked to parse (a preset naming a
+/// colour or font of one's own is read against the user's folders).
+fn preview_text(target: &str, themes: &Path) -> Result<String, String> {
+    let toml = theme_text(target, themes)?;
+    theme::parse_in(&toml, Some(themes)).map_err(|e| format!("{target}: {e}"))?;
+    Ok(toml)
+}
+
 fn preview(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     let Some(a) = split(args, &["--end"]) else { return usage(err, THEME_USAGE) };
     let json = a.has("--json");
@@ -685,13 +710,10 @@ fn preview(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
         return live(env, CustomizeAction::EndPreview, &|r| Ok(format!("preview ended, {}", r.theme)), json, out, err);
     }
     let [target] = a.words.as_slice() else { return usage(err, THEME_USAGE) };
-    let toml = match theme_text(target, env.themes) {
+    let toml = match preview_text(target, env.themes) {
         Ok(text) => text,
         Err(e) => return fail(err, &e),
     };
-    if let Err(e) = theme::parse(&toml) {
-        return fail(err, &format!("{target}: {e}"));
-    }
     let judge = |r: &Report| match &r.preview {
         Some(name) => Ok(format!("previewing {name}")),
         None => Err(format!("shows {}", r.theme)),
@@ -983,7 +1005,8 @@ fn settings_set(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn W
     };
     // A name that must be a theme that loads; the custom font may also be none of a theme's.
     if matches!(*key, "theme.dark" | "theme.light" | "custom.color") {
-        if let Err(e) = load_name(raw, env.themes) {
+        let loaded = if *key == "custom.color" { load_name(raw, env.themes) } else { load_preset_name(raw, env.themes) };
+        if let Err(e) = loaded {
             return fail(err, &e);
         }
     }
@@ -1223,6 +1246,67 @@ mod tests {
     }
 
     #[test]
+    fn a_preset_command_does_not_accept_a_colour_scheme_s_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("config.toml");
+        std::fs::write(&cfg, "[theme]\ndark = \"navy\"\n").unwrap();
+        let themes = dir.path().join("themes");
+        let env = Env { socket: &dir.path().join("none.sock"), config: &cfg, themes: &themes, wait: Duration::from_millis(10) };
+        assert_eq!(load_preset_name("ocean", &themes).unwrap_err(), "unknown theme: ocean");
+        let mut err = Vec::new();
+        assert_eq!(theme_cli_to(&["use".into(), "ocean".into()], &env, &mut Vec::new(), &mut err), 1);
+        assert_eq!(String::from_utf8(err).unwrap(), "unknown theme: ocean\n");
+        let mut err = Vec::new();
+        assert_eq!(settings_cli_to(&["set".into(), "theme.dark".into(), "ocean".into()], &env, &mut Vec::new(), &mut err), 1);
+        assert_eq!(String::from_utf8(err).unwrap(), "unknown theme: ocean\n");
+        assert_eq!(settings_cli_to(&["set".into(), "custom.color".into(), "ocean".into()], &env, &mut Vec::new(), &mut Vec::new()), 0, "a custom colour takes a scheme");
+        assert_eq!(theme_cli_to(&["contrast".into(), "ocean".into()], &env, &mut Vec::new(), &mut Vec::new()), 0, "contrast takes a scheme");
+    }
+
+    #[test]
+    fn a_preset_naming_a_colour_of_one_s_own_passes_use_contrast_and_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let (themes, colors) = (dir.path().join("themes"), dir.path().join("colors"));
+        std::fs::create_dir_all(&themes).unwrap();
+        std::fs::create_dir_all(&colors).unwrap();
+        std::fs::write(colors.join("mine.toml"), crate::color_schemes::BUILTIN[0].1.replace("name = \"navy\"", "name = \"mine\"")).unwrap();
+        let src = dir.path().join("dusk.toml");
+        std::fs::write(&src, "name = \"dusk\"\ncolor = \"mine\"\n").unwrap();
+        let cfg = dir.path().join("config.toml");
+        let env = Env { socket: &dir.path().join("none.sock"), config: &cfg, themes: &themes, wait: Duration::from_millis(10) };
+        // Contrast of the file, and (once added) of its name.
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(theme_cli_to(&["contrast".into(), src.display().to_string()], &env, &mut out, &mut err), 0, "{}", String::from_utf8_lossy(&err));
+        // Add, then use.
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(theme_cli_to(&["add".into(), src.display().to_string()], &env, &mut out, &mut err), 0, "{}", String::from_utf8_lossy(&err));
+        assert_eq!(theme_cli_to(&["contrast".into(), "dusk".into()], &env, &mut Vec::new(), &mut Vec::new()), 0);
+        std::fs::remove_file(themes.join("dusk.toml")).unwrap();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(theme_cli_to(&["use".into(), src.display().to_string(), "--dark".into()], &env, &mut out, &mut err), 0, "{}", String::from_utf8_lossy(&err));
+        // Preview checks the text it sends the window.
+        assert!(preview_text(&src.display().to_string(), &themes).is_ok());
+    }
+
+    #[test]
+    fn the_template_is_a_complete_all_in_one_theme_that_validates() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env { socket: &dir.path().join("none.sock"), config: &dir.path().join("c.toml"), themes: dir.path(), wait: Duration::from_millis(10) };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(theme_cli_to(&["template".into()], &env, &mut out, &mut err), 0);
+        let text = String::from_utf8(out).unwrap();
+        for table in ["[chrome]", "[terminal]", "[semantic]", "[tree]", "[viewer]", "[font]", "[effect]"] {
+            assert!(text.contains(table), "the template has {table}");
+        }
+        assert!(!text.contains("color ="), "no colour-scheme key: it is all in one");
+        let file = dir.path().join("template.toml");
+        std::fs::write(&file, &text).unwrap();
+        assert_eq!(theme::validate_file(&file), Ok("navy".to_string()));
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(theme_cli_to(&["validate".into(), file.display().to_string()], &env, &mut out, &mut err), 0, "{}", String::from_utf8_lossy(&err));
+    }
+
+    #[test]
     fn use_writes_the_right_key_refuses_an_unknown_name_and_says_so_without_a_window() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join("config.toml");
@@ -1422,7 +1506,7 @@ mod tests {
         let env = Env { socket: &dir.path().join("none.sock"), config: &dir.path().join("c.toml"), themes: dir.path(), wait: Duration::from_millis(10) };
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["template".into()], &env, &mut out, &mut err), 0);
-        assert_eq!(String::from_utf8(out).unwrap(), theme::BUILTIN[0].1);
+        assert!(String::from_utf8(out).unwrap().contains("[chrome]"));
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["template".into(), "nope".into()], &env, &mut out, &mut err), 1);
         let (mut out, mut err) = (Vec::new(), Vec::new());

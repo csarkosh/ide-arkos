@@ -451,8 +451,9 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
   `[{ "name", "source": "built-in" | "file" | "invalid", "appearance"?: "dark" | "light", "error"?, "path"? }]`; an invalid file has no appearance. A theme file may set `appearance = "dark"` or `"light"` next to its `name`; it must agree with `chrome.window_bg`, and Settings lists the theme under that slot.
 - `arkos theme validate <file> [--json]`: `ok: {name}`, or the error and exit 1. JSON
   `{ "ok": true, "name" }` or `{ "ok": false, "error" }`.
-- `arkos theme template [<built-in>] [--json]`: a built-in's TOML (default `navy`); an unknown
-  built-in exits 1. `--json` gives the schema instead:
+- `arkos theme template [<built-in>] [--json]`: a built-in preset resolved into one complete all-in-one
+  theme file, every colour table with its `[font]` and `[effect]` (default `navy`); it loads
+  with `theme add` and `theme validate`. An unknown built-in exits 1. `--json` gives the schema instead:
   `{ "tables": [{ "name", "keys": [{ "key", "meaning", "contrast_with"?, "needs"? }] }] }`.
 - `arkos theme contrast <file-or-name> [--effect <name|folder|none>] [--json]`: one line per
   theme pair, `{what} {ratio}:1 ok` with the ratio to one decimal, or `{what} {ratio}:1 LOW (needs {needs})`
@@ -549,7 +550,8 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
 
 ## 6. The theme workflow
 
-1. `arkos theme template > draft.toml` (or `arkos theme template peach-watercolor` for a light start).
+1. `arkos theme template > draft.toml` (or `arkos theme template peach-watercolor` for a light start): a
+   complete all-in-one theme, with every colour table, `[font]` and `[effect]`.
 2. Set `name` to a new bare name and edit the colours.
 3. `arkos theme validate draft.toml`, then `arkos theme contrast draft.toml`; fix every LOW pair
    and run it again until it exits 0. It checks the theme's own pairs, Claude Code's in it, and
@@ -627,7 +629,7 @@ in theirs:
 ## 8. A worked example: Timo Purple
 
 The brief was an accent, `#00ffff`, and a background, `#330076`. The built-in `timo-purple` is
-the result (`arkos theme template timo-purple` prints it). The choices, and why each passes:
+the result (`arkos theme template timo-purple` prints it as one complete file). The choices, and why each passes:
 
 - `window_bg` and `terminal.background` are the background `#330076`. The bars, sidebar and
   inactive tabs are a step darker, `#2a0062`, and `banner` a step lighter, `#3b1a86`, so the

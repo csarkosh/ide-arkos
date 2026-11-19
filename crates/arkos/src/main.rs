@@ -1835,7 +1835,7 @@ impl Root {
 
     /// The theme the config and the current appearance name, loaded from the themes folder.
     pub fn resolve_theme(&self) -> Result<theme::Theme, String> {
-        theme::load(self.config.theme_name(self.system_is_dark), &paths::themes_dir())
+        theme::load_look(&self.config, self.system_is_dark, &paths::themes_dir())
     }
 
     /// Switches to `theme`. The fonts change at once (they cannot fade); the colours cross-fade
@@ -2115,7 +2115,7 @@ impl Root {
         // Only a preview parses anything; the other actions cannot fail.
         let parsed = match &action {
             CustomizeAction::PreviewTheme { toml } => {
-                let parsed = theme::parse(toml);
+                let parsed = theme::parse_in(toml, Some(&paths::themes_dir()));
                 if let Ok(t) = &parsed {
                     self.preview = Some(t.name.clone());
                     self.set_theme(t.clone(), cx);
@@ -7036,7 +7036,7 @@ fn main() {
 /// built-in of the same name, else navy, and the banner that says so.
 fn startup_theme(config: &config::Config, system_is_dark: bool) -> (theme::Theme, Option<String>) {
     let name = config.theme_name(system_is_dark).to_string();
-    match theme::load(&name, &paths::themes_dir()) {
+    match theme::load_look(config, system_is_dark, &paths::themes_dir()) {
         Ok(t) => (t, None),
         Err(e) => {
             // A broken user theme file named like a built-in still gives that built-in.

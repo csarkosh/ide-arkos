@@ -153,7 +153,7 @@ fn use_it(part: Part, args: &[String], env: &Env, out: &mut dyn Write, err: &mut
     // What is on screen now: the theme the config shows, in the appearance a window reports.
     let windows_dark = agent_cli::reports(env).ok().and_then(|r| r.outcomes.iter().find_map(|o| o.result.as_ref().ok().map(|r| r.system_is_dark)));
     let shown_name = cfg.theme_name(windows_dark.unwrap_or(true)).to_string();
-    let shown = theme::load(&shown_name, env.themes).ok();
+    let shown = theme::load_look(&cfg, windows_dark.unwrap_or(true), env.themes).ok();
     let plain = shown.as_ref().is_none_or(|t| t.font.is_default());
     let own = shown.as_ref().and_then(|t| t.recommended_effect().map(str::to_string));
     let key = match part {
