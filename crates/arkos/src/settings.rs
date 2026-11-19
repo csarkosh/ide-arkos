@@ -596,6 +596,89 @@ struct GroupSpec {
     members: Vec<GroupMember>,
 }
 
+/// Where the last frame drew things the next one places by: each group row (its card opens
+/// above it when under it would run past the window's foot), the window's height, and the Font
+/// list's longest name and its column (the window widens until the name fits).
+#[derive(Default)]
+struct Measured {
+    groups: std::cell::RefCell<Vec<(GroupKey, gpui::Bounds<gpui::Pixels>)>>,
+    viewport_h: std::cell::Cell<f32>,
+    font_label_right: std::cell::Cell<f32>,
+    font_column_right: std::cell::Cell<f32>,
+    /// The least width last given the window, so it is only set again when it changes.
+    min_width: std::cell::Cell<f32>,
+}
+
+/// An element drawn over the whole of its parent that hands `measure` its bounds in window
+/// points each frame; it draws nothing.
+fn measure(measure: impl FnOnce(gpui::Bounds<gpui::Pixels>, &mut Window, &mut App) + 'static) -> impl IntoElement {
+    gpui::canvas(move |bounds, window, cx| measure(bounds, window, cx), |_, _, _, _| {}).absolute().top_0().left_0().size_full()
+}
+
+/// Points as a plain number.
+fn pt(p: gpui::Pixels) -> f32 {
+    p / px(1.0)
+}
+
+/// Widens the window until the longest font name measured this frame fits its column, and sets
+/// the window's least width to the width at which it fits, for the next frame.
+fn fit_font_names(m: &Measured, window: &mut Window, cx: &mut App) {
+    let (label, column) = (m.font_label_right.replace(0.0), m.font_column_right.get());
+    if label <= 0.0 || column <= 0.0 {
+        return;
+    }
+    let viewport = window.viewport_size();
+    let width = pt(viewport.width);
+    let fit = width_to_fit(width, label, column).ceil();
+    let grow = fit > width + 0.5;
+    if !grow && (fit - m.min_width.get()).abs() < 1.0 {
+        return;
+    }
+    m.min_width.set(fit);
+    window.defer(cx, move |window, _| {
+        if let Some(own) = crate::screen::ns_window_of(window) {
+            own.setContentMinSize(objc2_foundation::NSSize::new(fit as f64, MIN_HEIGHT as f64));
+        }
+        if grow {
+            window.resize(size(px(fit), viewport.height));
+        }
+    });
+}
+
+/// How far a group's card sits from its row's top when it opens under it, and from its row's
+/// foot when it opens above it, in points.
+const CARD_OFFSET: f32 = 22.0;
+
+/// A list row's padding at each side, in points (`list_row`).
+const ROW_PAD: f32 = 6.0;
+
+/// How tall a group's card is with `members` rows, from the height of the list's own rows
+/// (`row_h`): each member is a row with a point more padding above and below, and the card has
+/// four points of padding and a one point border at its top and foot.
+pub fn card_height(members: usize, row_h: f32) -> f32 {
+    members as f32 * (row_h + 2.0) + 10.0
+}
+
+/// Whether a group's card opens above its row (from `row_top` to `row_bottom`, in window
+/// points) rather than under it: when under it would run past the window's foot. When it fits
+/// neither way it opens on the side with more room.
+pub fn card_opens_above(row_top: f32, row_bottom: f32, card_h: f32, viewport_h: f32) -> bool {
+    let room_below = viewport_h - row_top - CARD_OFFSET;
+    let room_above = row_bottom - CARD_OFFSET;
+    if card_h <= room_below {
+        return false;
+    }
+    card_h <= room_above || room_above > room_below
+}
+
+/// The window width at which the longest font name fits: the window is `window_w` wide, the
+/// longest name ends at `label_right` and the Font column at `column_right` (window points).
+/// The Font column is one of two equal columns, so it gains half of what the window gains.
+/// Never below the window's least width.
+pub fn width_to_fit(window_w: f32, label_right: f32, column_right: f32) -> f32 {
+    (window_w + 2.0 * (label_right + ROW_PAD - column_right)).max(MIN_WIDTH)
+}
+
 /// The families a font set names, each once, in the order prose, UI, terminal:
 /// "Baskerville, Optima, PT Mono".
 pub fn families(font: &theme::ThemeFont) -> Vec<&str> {
@@ -750,6 +833,9 @@ pub struct SettingsWindow {
     /// When a click outside it last closed a group's menu: a click on the group's own row closes
     /// it that way first, and must not open it again.
     group_closed_at: Option<std::time::Instant>,
+    /// Where the last frame drew the group rows and the Font list, for the side a card opens on
+    /// and the window's width.
+    measured: Rc<Measured>,
     /// The effects folder and the built-ins, as `effects::manifest::list` reads them.
     effects: Vec<(String, effects::manifest::Source)>,
     /// Every theme that loads with its fonts (`theme::fonts`), for the custom look's Font list.
@@ -864,6 +950,7 @@ pub fn open(cx: &mut App, over: Option<Retained<NSWindow>>, shown: Shown, theme:
                 effect_scenes: effect_scenes(&effects::manifest::list(&effects::effects_dir())),
                 scene_aliases: scene_aliases(&effects::manifest::list(&effects::effects_dir())),
                 group_closed_at: None,
+                measured: Rc::new(Measured::default()),
                 effects: effects::manifest::list(&effects::effects_dir()),
                 theme_fonts: theme::font_sets(&paths::themes_dir()),
                 theme_colors: theme::colors(&paths::themes_dir()),
@@ -1199,6 +1286,11 @@ pub fn pill(id: impl Into<ElementId>, label: impl Into<SharedString>, selected: 
 
 /// A list row: a check mark column, then the name.
 fn list_row(id: impl Into<ElementId>, label: impl Into<SharedString>, current: bool, enabled: bool, c: Colors) -> Stateful<gpui::Div> {
+    list_row_of(id, label.into(), current, enabled, c)
+}
+
+/// A list row as `list_row` draws it, around any label element.
+fn list_row_of(id: impl Into<ElementId>, label: impl IntoElement, current: bool, enabled: bool, c: Colors) -> Stateful<gpui::Div> {
     let r = div()
         .id(id)
         .flex()
@@ -1208,7 +1300,7 @@ fn list_row(id: impl Into<ElementId>, label: impl Into<SharedString>, current: b
         .rounded(px(ROW_ROUND))
         .text_color(if enabled { c.text } else { c.dim })
         .child(div().w(px(14.0)).flex_none().child(if current { "✓" } else { "" }))
-        .child(label.into());
+        .child(label);
     if enabled && !current {
         r.cursor_pointer().hover(move |s| s.bg(c.pill))
     } else {
@@ -1464,6 +1556,15 @@ impl SettingsWindow {
         let GroupSpec { list_id, key, group, anchor, line, is_current, members } = spec;
         let open = self.open_group.as_ref() == Some(&key);
         let mut row = list_row((list_id, 20_000 + anchor), line, is_current, enabled, c).relative();
+        let (measured, measured_key) = (self.measured.clone(), key.clone());
+        row = row.child(measure(move |bounds, window, _| {
+            measured.viewport_h.set(pt(window.viewport_size().height));
+            let mut groups = measured.groups.borrow_mut();
+            match groups.iter_mut().find(|(k, _)| *k == measured_key) {
+                Some(entry) => entry.1 = bounds,
+                None => groups.push((measured_key, bounds)),
+            }
+        }));
         if enabled {
             // `list_row` gives a row not in force its hover already; gpui takes one hover
             // style an element, so only the row in force adds one here.
@@ -1491,11 +1592,14 @@ impl SettingsWindow {
         }
         if open {
             // The card: under the choice, drawn above the rows after it, its members by their
-            // short names with a check on the one in force.
-            let mut card = div()
-                .id((list_id, 40_000 + anchor))
-                .absolute()
-                .top(px(22.0))
+            // short names with a check on the one in force. Where under it would run past the
+            // window's foot it opens above the choice.
+            let above = self.measured.groups.borrow().iter().find(|(k, _)| *k == key).is_some_and(|(_, b)| {
+                card_opens_above(pt(b.top()), pt(b.bottom()), card_height(members.len(), pt(b.size.height)), self.measured.viewport_h.get())
+            });
+            let card = div().id((list_id, 40_000 + anchor)).absolute();
+            let card = if above { card.bottom(px(CARD_OFFSET)) } else { card.top(px(CARD_OFFSET)) };
+            let mut card = card
                 .right(px(0.0))
                 .min_w(px(140.0))
                 .py(px(4.0))
@@ -1600,10 +1704,25 @@ impl SettingsWindow {
     /// force writes what `edits` gives for its value.
     #[allow(clippy::too_many_arguments)]
     fn rows_list(&self, title: &'static str, list_id: &'static str, rows: Vec<Row>, enabled: bool, c: Colors, cx: &mut Context<Self>, edits: impl Fn(&str) -> Vec<Edit>) -> gpui::Div {
+        self.rows_list_measured(title, list_id, rows, enabled, c, cx, false, edits)
+    }
+
+    /// `rows_list`, with `measured` each label kept on one line and the right end of the
+    /// longest one recorded as the Font list's (`Measured::font_label_right`).
+    #[allow(clippy::too_many_arguments)]
+    fn rows_list_measured(&self, title: &'static str, list_id: &'static str, rows: Vec<Row>, enabled: bool, c: Colors, cx: &mut Context<Self>, measured: bool, edits: impl Fn(&str) -> Vec<Edit>) -> gpui::Div {
         let mut list = div().flex().flex_col().child(heading(title, c));
         for (ix, r) in rows.into_iter().enumerate() {
             let clickable = enabled && r.value.is_some();
-            let mut row = list_row((list_id, ix), r.label, r.current, clickable, c);
+            let mut row = if measured {
+                let m = self.measured.clone();
+                let label = div().flex_none().whitespace_nowrap().relative().child(SharedString::from(r.label)).child(measure(move |bounds, _, _| {
+                    m.font_label_right.set(m.font_label_right.get().max(pt(bounds.right())));
+                }));
+                list_row_of((list_id, ix), label, r.current, clickable, c)
+            } else {
+                list_row((list_id, ix), r.label, r.current, clickable, c)
+            };
             if let (true, false, Some(value)) = (clickable, r.current, r.value) {
                 let edits = edits(&value);
                 row = self.act_row(row, cx, move |w, _, cx| w.change(edits.clone(), cx));
@@ -1639,11 +1758,17 @@ impl SettingsWindow {
             other => other.map(str::to_string),
         };
         let font_rows = font_rows(&self.theme_fonts, font_choice.as_deref(), &self.theme.font, &cfg.font.family, &|f| self.families.contains(f));
-        let font = self.rows_list("Font", "custom-font", font_rows, enabled, c, cx, |value| vec![edit(&["custom", "font"], value)]);
+        let font = self.rows_list_measured("Font", "custom-font", font_rows, enabled, c, cx, true, |value| vec![edit(&["custom", "font"], value)]);
         let scene = effects::scene::look_scene(cfg, &self.theme);
         let effect_rows = custom_effect_rows(&cfg.effect_choice(), self.theme.recommended_effect(), scene.as_deref(), &self.effects, &self.effect_scenes, &self.scene_aliases, &self.group_picks);
         let effect = self.effect_list(effect_rows, enabled, c, cx);
-        let columns = div().flex().gap(px(16.0)).child(color.flex_1().min_w_0()).child(div().flex_1().min_w_0().flex().flex_col().child(font).child(effect));
+        let column = self.measured.clone();
+        let fit = self.measured.clone();
+        let right = div().flex_1().min_w_0().relative().flex().flex_col().child(font).child(effect).child(measure(move |bounds, _, _| column.font_column_right.set(pt(bounds.right()))));
+        // After both columns are placed: the window widens until the longest font name fits, and
+        // is not made narrower than that again.
+        let fit = measure(move |_, window, cx| fit_font_names(&fit, window, cx));
+        let columns = div().flex().gap(px(16.0)).relative().child(color.flex_1().min_w_0()).child(right).child(fit);
         let mut out = vec![columns.into_any_element()];
         let (color, effect) = (self.add_pill("add-color", "Add color…", Adding::Color, enabled, c, cx), self.add_pill("add-effect", "Add effect…", Adding::Effect, enabled, c, cx));
         out.push(div().pt(px(10.0)).flex().gap(px(6.0)).child(color).child(effect).into_any_element());
@@ -1984,6 +2109,41 @@ impl Render for SettingsWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_group_card_near_the_window_s_foot_opens_above_its_row() {
+        // Cyrus, 2026-11-19: "The single select should appear above the input if it would
+        // otherwise overflow off the screen." Runic's two scenes under its row 35 points from the
+        // foot of a 500 point window run past the foot; above, they fit.
+        let card = card_height(2, 25.0);
+        assert_eq!(card, 64.0);
+        assert!(card_opens_above(440.0, 465.0, card, 500.0));
+    }
+
+    #[test]
+    fn a_group_card_with_room_below_its_row_opens_below() {
+        assert!(!card_opens_above(100.0, 125.0, card_height(4, 25.0), 500.0));
+        // Exactly reaching the foot still fits.
+        assert!(!card_opens_above(100.0, 125.0, 378.0, 500.0));
+    }
+
+    #[test]
+    fn a_group_card_that_fits_neither_way_opens_on_the_side_with_more_room() {
+        let card = card_height(12, 25.0);
+        assert!(card_opens_above(300.0, 325.0, card, 400.0), "more room above");
+        assert!(!card_opens_above(60.0, 85.0, card, 400.0), "more room below");
+    }
+
+    #[test]
+    fn the_settings_window_widens_until_the_longest_font_name_fits() {
+        // Cyrus, 2026-11-19: the Settings window "should increase its width so the font option
+        // text does not overflow". The Font column is one of two equal columns, so the window
+        // grows by twice what the longest name lacks, and with room to spare the fit is narrower
+        // than the window, never below the window's own least width.
+        assert_eq!(width_to_fit(560.0, 590.0, 544.0), 664.0);
+        assert_eq!(width_to_fit(560.0, 400.0, 544.0), MIN_WIDTH);
+        assert_eq!(width_to_fit(700.0, 590.0, 640.0), 612.0);
+    }
     use crate::config::{AppearanceMode, Config, DEFAULT_CONFIG};
 
     #[test]
