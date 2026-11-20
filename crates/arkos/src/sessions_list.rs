@@ -641,9 +641,7 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
         .min_h_0()
         .overflow_y_scroll()
         .flex()
-        .flex_col()
-        // The part of the list that shows: a row scrolled out of it is not under the pointer.
-        .on_drag_move(cx.listener(|root, ev: &gpui::DragMoveEvent<crate::drag::TabDrag>, _window, _cx| root.list_view = ev.bounds));
+        .flex_col();
     for (kind, rows) in groups {
         // The list having the keys opens no group (Cyrus, 2026-11-17: "when Pane 0 is in focus, it
         // should not uncollapse all the session states"), so the ring passes over a folded

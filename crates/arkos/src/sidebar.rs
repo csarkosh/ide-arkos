@@ -180,6 +180,27 @@ pub fn sidebar_split(total: f32, explorer_rows_h: f32, explorer_open: bool, work
 /// Inbox's whole column while it shows Sessions, and nothing in the Grid, whose sidebar is the
 /// Explorer and Worktrees alone (Cyrus, 2026-11-14: "Grid layout should not have the sessions
 /// view. That's for Inbox only").
+/// The Sessions list inside a frame that reports, each frame, the part of it that shows
+/// (`Root::list_view`), for a tab dragged over it. The frame does not scroll, so it stays put.
+fn list_with_bounds(list: Stateful<Div>, cx: &mut Context<Root>) -> Div {
+    let weak = cx.weak_entity();
+    div()
+        .relative()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .child(gpui::canvas(
+            move |b, _window, cx| {
+                let _ = weak.update(cx, |root, _| root.list_view = b);
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full())
+        .child(list)
+}
+
 pub fn sessions_height(inbox: bool, files_view: bool, total: f32, switch_h: f32) -> f32 {
     if inbox && !files_view {
         (total - switch_h).max(0.0)
@@ -342,6 +363,8 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         root.effect_divider = None;
     }
     // The sessions first: what they take is taken from the two sections under them.
+    // Reported again by the list's frame below, so a list not drawn leaves nothing stale.
+    root.list_view = gpui::Bounds::default();
     let session_groups = crate::sessions_list::grouped(crate::sessions_list::entries(root, crate::sessions::now_ms()));
     let sessions_h = sessions_height(inbox, files_view, total_h, switch_h);
     // Where a tab dragged into the list would become a session: a dashed row under the button,
@@ -390,7 +413,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .on_drop(cx.listener(|root, d: &crate::drag::TabDrag, _window, cx| root.drop_on_list(d, None, cx)))
         .children(placeholder)
         .when(inbox && session_groups.is_empty(), |d| d.child(div().px(px(12.0 + style.sidebar_pad)).py(px(8.0)).text_size(px(style.ui(12.0))).text_color(c.text_dim.hsla()).child("No sessions yet.")).child(sidebar_end_marker(cx)))
-        .when(!session_groups.is_empty() && sessions_h > 0.0, |d| d.child(crate::sessions_list::render(root, width, inbox, cx).opacity(sessions_o)));
+        .when(!session_groups.is_empty() && sessions_h > 0.0, |d| d.child(list_with_bounds(crate::sessions_list::render(root, width, inbox, cx).opacity(sessions_o), cx)));
     let (explorer_h, worktrees_h) = sidebar_split(total_h - sessions_h - switch_h, tree_rows as f32 * ROW_H, explorer_open, worktrees_open);
     let explorer = div()
         .flex()

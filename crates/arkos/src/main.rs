@@ -3812,6 +3812,9 @@ impl Root {
                 if moved {
                     self.preview_tab = after_drop(self.preview_tab, d.tab);
                     self.settle_page(shown, Some(page), cx);
+                    if !self.tree.page_keys().contains(&shown) && self.row_rename.as_ref().is_some_and(|r| r.page == shown) {
+                        self.row_rename = None;
+                    }
                 }
                 moved
             }
