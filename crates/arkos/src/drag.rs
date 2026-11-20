@@ -2,6 +2,7 @@
 //! it would land; the hovered pane shows five drop zones (center, left, right, top, bottom).
 //! Dragging a file out of the tree (spec 6): dropped on a terminal, its path is typed there.
 
+use crate::attention::Attention;
 use crate::palette::Rgb;
 use crate::tree::{PageKey, PaneId, TabId};
 use gpui::{div, prelude::*, px, Bounds, Context, Pixels, Point, Render, SharedString, Window};
@@ -105,6 +106,74 @@ pub fn list_drop(tab_page: PageKey, over: Option<PageKey>, whole_of_page: bool) 
 /// Whether a session dropped on the panes of page `shown` moves anything: not onto itself.
 pub fn session_drop_lands(dragged: PageKey, shown: PageKey) -> bool {
     dragged != shown
+}
+
+/// Which part of a row of the Sessions list the pointer is over: the top quarter, the bottom
+/// quarter, or the rest.
+// Task 10 wires this to the drag.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowZone {
+    Before,
+    Middle,
+    After,
+}
+
+/// Which part of the row whose top is `row_top` and height `row_h` the height `y` falls in.
+// Task 10 wires this to the drag.
+#[allow(dead_code)]
+pub fn row_zone(row_top: f32, row_h: f32, y: f32) -> RowZone {
+    let t = (y - row_top) / row_h.max(1.0);
+    if t < 0.25 {
+        RowZone::Before
+    } else if t > 0.75 {
+        RowZone::After
+    } else {
+        RowZone::Middle
+    }
+}
+
+/// What a session dropped on the Sessions list does: joins another row, takes a place in a
+/// group (its own or one it may move to), or nothing.
+// Task 10 wires this to the drag.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowDrop {
+    Merge(PageKey),
+    Place { group: Attention, at: usize },
+    Nothing,
+}
+
+/// Decides a session drop on the Sessions list. `over` is the live row under the pointer, with
+/// its page, its group and its index among that group's live rows; None for an ended row or
+/// anywhere else. `allowed` lists the groups the session may move into, and `own_at` is the
+/// dragged row's index among its own group's live rows (None when it is in no group). A gap is
+/// the place it already has when it sits in its own group, so that drop does nothing.
+// Task 10 wires this to the drag.
+#[allow(dead_code)]
+pub fn row_drop(dragged: PageKey, dragged_group: Attention, over: Option<(PageKey, Attention, usize)>, zone: RowZone, allowed: &[Attention], own_at: Option<usize>) -> RowDrop {
+    let Some((page, group, index)) = over else {
+        return RowDrop::Nothing;
+    };
+    if page == dragged {
+        return RowDrop::Nothing;
+    }
+    let at = match zone {
+        RowZone::Middle => return RowDrop::Merge(page),
+        RowZone::Before => index,
+        RowZone::After => index + 1,
+    };
+    if group == dragged_group {
+        if own_at == Some(at) {
+            RowDrop::Nothing
+        } else {
+            RowDrop::Place { group, at }
+        }
+    } else if allowed.contains(&group) {
+        RowDrop::Place { group, at }
+    } else {
+        RowDrop::Nothing
+    }
 }
 
 /// A markdown block dragged by its handle (structure spec, section 3): which document and which
@@ -401,6 +470,28 @@ mod tests {
     fn a_session_dropped_on_its_own_panes_lands_nowhere() {
         assert!(!session_drop_lands(4, 4));
         assert!(session_drop_lands(4, 5));
+    }
+
+    #[test]
+    fn a_session_on_another_row_s_middle_merges_and_on_its_own_row_does_nothing() {
+        assert_eq!(row_drop(1, Attention::Quiet, Some((2, Attention::Quiet, 0)), RowZone::Middle, &[], None), RowDrop::Merge(2));
+        assert_eq!(row_drop(1, Attention::Quiet, Some((1, Attention::Quiet, 0)), RowZone::Before, &[], None), RowDrop::Nothing);
+        assert_eq!(row_drop(1, Attention::Quiet, None, RowZone::Middle, &[], None), RowDrop::Nothing);
+    }
+
+    #[test]
+    fn a_gap_in_its_own_group_places_it_and_another_group_s_only_when_it_can_move_there() {
+        assert_eq!(row_drop(1, Attention::Quiet, Some((2, Attention::Quiet, 0)), RowZone::After, &[], Some(0)), RowDrop::Place { group: Attention::Quiet, at: 1 });
+        assert_eq!(row_drop(1, Attention::Quiet, Some((2, Attention::Quiet, 0)), RowZone::Before, &[], Some(0)), RowDrop::Nothing, "its own place");
+        assert_eq!(row_drop(1, Attention::Quiet, Some((3, Attention::Done, 2)), RowZone::Before, &[Attention::Done], Some(0)), RowDrop::Place { group: Attention::Done, at: 2 });
+        assert_eq!(row_drop(1, Attention::Quiet, Some((3, Attention::Working, 0)), RowZone::Before, &[Attention::Done], Some(0)), RowDrop::Nothing);
+    }
+
+    #[test]
+    fn a_row_s_top_and_bottom_quarters_are_its_gaps() {
+        assert_eq!(row_zone(100.0, 40.0, 105.0), RowZone::Before);
+        assert_eq!(row_zone(100.0, 40.0, 120.0), RowZone::Middle);
+        assert_eq!(row_zone(100.0, 40.0, 135.0), RowZone::After);
     }
 
 }
