@@ -43,6 +43,15 @@ pub enum Orientation {
     Vertical,
 }
 
+/// Where a merged page's tabs land in a pane: from an index, at the end, or in a new pane on a
+/// side of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    At(usize),
+    End,
+    Side(Side),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Side {
@@ -1145,6 +1154,120 @@ impl Tree {
         true
     }
 
+    /// Puts a tab with its id into `pane` at `at` (clamped to the end) as its active tab.
+    fn insert_tab(&mut self, pane: PaneId, at: usize, tab: Tab, id: TabId) {
+        let p = self.pane_mut(pane).expect("pane exists");
+        let landing = at.min(p.tabs.len());
+        p.tabs.insert(landing, tab);
+        p.ids.insert(landing, id);
+        for i in p.mru.iter_mut() {
+            if *i >= landing {
+                *i += 1;
+            }
+        }
+        p.active = landing;
+        p.mru.insert(0, landing);
+    }
+
+    /// Moves the tab `tab` to the end of page `page`'s focused pane, as that pane's active tab.
+    /// The page shown, the focus and the maximized pane stay as they are, which `move_tab` does
+    /// not do (it shows the target's page). The pane the tab left closes when it emptied, unless
+    /// it was its page's last. False, changing nothing, when the tab or the page is missing or
+    /// the page is the tab's own.
+    pub fn move_tab_to_page(&mut self, tab: TabId, page: PageKey) -> bool {
+        let Some((from, idx)) = self.locate(tab) else { return false };
+        let Some(to) = self.page_focused(page) else { return false };
+        if self.page_of(from) == Some(page) {
+            return false;
+        }
+        let Some((t, id)) = self.remove_tab(from, idx) else { return false };
+        let at = self.pane(to).map_or(0, |p| p.tabs.len());
+        self.insert_tab(to, at, t, id);
+        self.close_pane_if_empty(from);
+        true
+    }
+
+    /// Makes a new kept page, not shown, of one pane holding `tabs` in the order given, ids
+    /// kept. The first is active. Panes they left close when emptied, unless last on their page.
+    /// Returns the page's key. None, changing nothing, when `tabs` is empty, repeats a tab or
+    /// names a missing one, when the tabs are not all on one page, or when they are every tab of
+    /// their page, which would only remake the same session.
+    pub fn page_from_tabs(&mut self, tabs: &[TabId]) -> Option<PageKey> {
+        let mut spots = Vec::new();
+        for id in tabs {
+            spots.push(self.locate(*id)?);
+        }
+        let page = self.page_of(spots.first()?.0)?;
+        if spots.iter().any(|(pane, _)| self.page_of(*pane) != Some(page)) {
+            return None;
+        }
+        if (1..tabs.len()).any(|i| tabs[..i].contains(&tabs[i])) || self.page_tabs(page).len() == tabs.len() {
+            return None;
+        }
+        let mut taken = Vec::new();
+        let mut left = Vec::new();
+        for id in tabs {
+            let (pane, idx) = self.locate(*id).expect("checked above");
+            let (t, tab_id) = self.remove_tab(pane, idx).expect("located");
+            taken.push((t, tab_id));
+            if !left.contains(&pane) {
+                left.push(pane);
+            }
+        }
+        for pane in left {
+            self.close_pane_if_empty(pane);
+        }
+        let (key, pane_id) = (self.fresh_id(), self.fresh_id());
+        let count = taken.len();
+        let (tabs, ids) = taken.into_iter().unzip();
+        let pane = Pane { id: pane_id, tabs, active: 0, mru: (0..count).collect(), ids };
+        self.pages.push(Page { key, root: Node::Leaf(pane), focused: pane_id, maximized: None });
+        Some(key)
+    }
+
+    /// Moves every tab of page `from`, in `page_tabs` order, into pane `into` of the page shown:
+    /// from index `i` for `At(i)`, appended for `End`, or into one new pane on that side of
+    /// `into` for `Side`. The first tab moved becomes active and its pane is focused. Page
+    /// `from` closes, dropping its session name and keeping its tabs' names. False, changing
+    /// nothing, when `from` is the page shown or missing, `into` is not on the page shown, or
+    /// `from` has no tabs.
+    pub fn merge_page(&mut self, from: PageKey, into: PaneId, place: Place) -> bool {
+        if from == self.page || !self.pages.iter().any(|p| p.key == from) || self.page_of(into) != Some(self.page) {
+            return false;
+        }
+        let spots: Vec<(PaneId, TabId)> = self.page_tabs(from).iter().filter_map(|(pane, idx, _)| Some((*pane, self.tab_id(*pane, *idx)?))).collect();
+        if spots.is_empty() {
+            return false;
+        }
+        let mut moved = Vec::new();
+        for (_, id) in &spots {
+            let (pane, idx) = self.locate(*id).expect("listed tab exists");
+            moved.push(self.remove_tab(pane, idx).expect("located"));
+        }
+        let mut moved = moved.into_iter();
+        let (first, first_id) = moved.next().expect("not empty");
+        let (target, at) = match place {
+            Place::At(i) => (into, i),
+            Place::End => (into, usize::MAX),
+            Place::Side(side) => (self.split_with_tab(into, side, first_id, first.clone()).expect("into exists"), 1),
+        };
+        let mut next = at;
+        if !matches!(place, Place::Side(_)) {
+            let start = at.min(self.pane(target).map_or(0, |p| p.tabs.len()));
+            self.insert_tab(target, start, first, first_id);
+            next = start + 1;
+        }
+        for (t, id) in moved {
+            self.insert_tab(target, next, t, id);
+            next += 1;
+        }
+        let first_at = self.pane(target).and_then(|p| p.ids.iter().position(|i| *i == first_id)).unwrap_or(0);
+        self.activate(target, first_at);
+        self.focused = target;
+        self.close_page(from, None);
+        true
+    }
+
     /// The id of the tab at `idx` in `pane`.
     pub fn tab_id(&self, pane: PaneId, idx: usize) -> Option<TabId> {
         self.pane(pane)?.ids.get(idx).copied()
@@ -1517,6 +1640,127 @@ mod tests {
 
     fn bounds() -> Rect {
         Rect { x: 0.0, y: 0.0, w: 1200.0, h: 800.0 }
+    }
+
+    #[test]
+    fn a_tab_joins_another_page_at_the_end_of_its_focused_pane_and_the_shown_page_stays() {
+        let mut t = Tree::new(term(1));
+        let first = t.page;
+        let p1 = t.focused;
+        t.add_tab(p1, term(2));
+        let other_pane = t.blank_page();
+        t.add_tab(other_pane, term(3));
+        let other = t.page;
+        t.show_page(first);
+        let moving = t.tab_id(p1, 1).unwrap();
+        t.set_tab_name(moving, Some("api".into()));
+        assert!(t.move_tab_to_page(moving, other));
+        assert_eq!(t.page, first, "the page shown stays");
+        assert_eq!(t.page_focused(first), Some(p1));
+        assert_eq!(t.locate(moving), Some((other_pane, 1)), "the end of the other page's focused pane");
+        assert_eq!(t.pane(other_pane).unwrap().active, 1);
+        assert_eq!(t.tab_name(moving), Some("api"), "the tab keeps its name");
+        assert!(matches!(t.pane(other_pane).unwrap().tabs[1], Tab::Terminal { session: SessionId(2), .. }));
+    }
+
+    #[test]
+    fn a_tab_joining_its_own_page_changes_nothing() {
+        let mut t = Tree::new(term(1));
+        let id = t.tab_id(t.focused, 0).unwrap();
+        let before = t.clone();
+        assert!(!t.move_tab_to_page(id, t.page));
+        assert_eq!(t, before);
+    }
+
+    #[test]
+    fn a_tab_made_into_a_page_keeps_its_id_and_name_and_the_shown_page_stays() {
+        let mut t = Tree::new(term(1));
+        let first = t.page;
+        let p1 = t.focused;
+        t.add_tab(p1, term(2));
+        let id = t.tab_id(p1, 1).unwrap();
+        t.set_tab_name(id, Some("api".into()));
+        let made = t.page_from_tabs(&[id]).expect("a new page");
+        assert_ne!(made, first);
+        assert_eq!(t.page, first);
+        assert_eq!(t.page_tabs(made).len(), 1);
+        assert_eq!(t.page_of(t.locate(id).unwrap().0), Some(made));
+        assert_eq!(t.tab_name(id), Some("api"));
+        assert_eq!(t.page_tabs(first).len(), 1);
+    }
+
+    #[test]
+    fn the_shown_page_s_only_tabs_make_no_new_page() {
+        let mut t = Tree::new(term(1));
+        let id = t.tab_id(t.focused, 0).unwrap();
+        let before = t.clone();
+        assert_eq!(t.page_from_tabs(&[id]), None);
+        assert_eq!(t, before);
+    }
+
+    #[test]
+    fn a_pane_emptied_by_a_move_closes_unless_it_is_its_page_s_last() {
+        let mut t = Tree::new(term(1));
+        let first = t.page;
+        let p1 = t.focused;
+        let p2 = t.split(p1, Side::Right, term(2)).unwrap();
+        let other_pane = t.blank_page();
+        t.add_tab(other_pane, term(3));
+        let other = t.page;
+        t.show_page(first);
+        let id2 = t.tab_id(p2, 0).unwrap();
+        assert!(t.move_tab_to_page(id2, other));
+        assert!(t.pane(p2).is_none(), "the emptied pane closed");
+        let id1 = t.tab_id(p1, 0).unwrap();
+        assert!(t.move_tab_to_page(id1, other));
+        assert!(t.pane(p1).is_some_and(|p| p.tabs.is_empty()), "the page's last pane stays, empty, for the caller to settle");
+    }
+
+    #[test]
+    fn a_merged_page_s_tabs_land_in_order_and_the_page_and_its_session_name_go() {
+        let mut t = Tree::new(term(1));
+        let first = t.page;
+        let p1 = t.focused;
+        let q1 = t.blank_page();
+        t.add_tab(q1, term(2));
+        let q2 = t.split(q1, Side::Right, term(3)).unwrap();
+        let gone = t.page;
+        t.set_session_name(gone, Some("old".into()));
+        let (a, b) = (t.tab_id(q1, 0).unwrap(), t.tab_id(q2, 0).unwrap());
+        t.set_tab_name(b, Some("kept".into()));
+        t.show_page(first);
+        assert!(t.merge_page(gone, p1, Place::At(0)));
+        assert_eq!(t.pane(p1).unwrap().ids[..2], [a, b], "first pane's tabs, then the second's, from the drop");
+        assert!(!t.page_keys().contains(&gone));
+        assert_eq!(t.session_name(gone), None);
+        assert_eq!(t.tab_name(b), Some("kept"));
+        assert_eq!(t.pane(p1).unwrap().active, 0);
+        assert_eq!((t.page, t.focused), (first, p1));
+    }
+
+    #[test]
+    fn a_merged_page_on_an_edge_makes_one_new_pane_holding_every_tab() {
+        let mut t = Tree::new(term(1));
+        let first = t.page;
+        let p1 = t.focused;
+        let q1 = t.blank_page();
+        t.add_tab(q1, term(2));
+        t.add_tab(q1, term(3));
+        let gone = t.page;
+        t.show_page(first);
+        assert!(t.merge_page(gone, p1, Place::Side(Side::Right)));
+        assert_eq!(t.page_panes(first).len(), 2);
+        let new = t.focused;
+        assert_ne!(new, p1);
+        assert_eq!(t.pane(new).unwrap().tabs.len(), 2);
+    }
+
+    #[test]
+    fn merging_the_shown_page_into_itself_changes_nothing() {
+        let mut t = Tree::new(term(1));
+        let before = t.clone();
+        assert!(!t.merge_page(t.page, t.focused, Place::End));
+        assert_eq!(t, before);
     }
 
     #[test]
