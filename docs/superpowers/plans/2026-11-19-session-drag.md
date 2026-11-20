@@ -623,15 +623,15 @@ fn a_saved_order_naming_gone_pages_is_ignored() {
   `pub fn row_zone(row_top: f32, row_h: f32, y: f32) -> RowZone`:
   - `Before` is the top quarter, `After` the bottom quarter, `Middle` the rest.
 - Produces `pub enum RowDrop { Merge(PageKey), Place { group: Attention, at: usize }, Nothing }`,
-  and `pub fn row_drop(dragged: PageKey, dragged_group: Attention, over: Option<(PageKey, Attention, usize)>, zone: RowZone, allowed: &[Attention]) -> RowDrop`:
+  and `pub fn row_drop(dragged: PageKey, dragged_group: Attention, over: Option<(PageKey, Attention, usize)>, zone: RowZone, allowed: &[Attention], own_at: Option<usize>) -> RowDrop`:
   - `over` is the live row under the pointer: its page, its group, and its index among its
     group's live rows. It is None for an ended row and anywhere else.
   - **The middle of another row:** `Merge(it)`.
   - **Its own row, any zone:** `Nothing`.
-  - **A gap in the same group:** `Before` places at its index, and `After` at index + 1. When
-    that is the dragged row's own place, it is `Nothing`. The dragged row's index is found by
-    the caller and is not part of `at`. The caller passes indices of the group without the
-    dragged row.
+  - **A gap in the same group:** `Before` places at its index, and `After` at index + 1. The
+    caller passes indices among the group's live rows without the dragged row, and `own_at`,
+    the dragged row's index among its group's live rows (None when it is in no group). A place
+    equal to `own_at` in the dragged row's own group is its own place, so it is `Nothing`.
   - **A gap in another group:** `Place` when that group is in `allowed`, else `Nothing`.
 
 - [ ] **Step 1: Write the failing tests.**
@@ -639,16 +639,17 @@ fn a_saved_order_naming_gone_pages_is_ignored() {
 ```rust
 #[test]
 fn a_session_on_another_row_s_middle_merges_and_on_its_own_row_does_nothing() {
-    assert_eq!(row_drop(1, Attention::Quiet, Some((2, Attention::Quiet, 0)), RowZone::Middle, &[]), RowDrop::Merge(2));
-    assert_eq!(row_drop(1, Attention::Quiet, Some((1, Attention::Quiet, 0)), RowZone::Before, &[]), RowDrop::Nothing);
-    assert_eq!(row_drop(1, Attention::Quiet, None, RowZone::Middle, &[]), RowDrop::Nothing);
+    assert_eq!(row_drop(1, Attention::Quiet, Some((2, Attention::Quiet, 0)), RowZone::Middle, &[], None), RowDrop::Merge(2));
+    assert_eq!(row_drop(1, Attention::Quiet, Some((1, Attention::Quiet, 0)), RowZone::Before, &[], None), RowDrop::Nothing);
+    assert_eq!(row_drop(1, Attention::Quiet, None, RowZone::Middle, &[], None), RowDrop::Nothing);
 }
 
 #[test]
 fn a_gap_in_its_own_group_places_it_and_another_group_s_only_when_it_can_move_there() {
-    assert_eq!(row_drop(1, Attention::Quiet, Some((2, Attention::Quiet, 0)), RowZone::After, &[]), RowDrop::Place { group: Attention::Quiet, at: 1 });
-    assert_eq!(row_drop(1, Attention::Quiet, Some((3, Attention::Done, 2)), RowZone::Before, &[Attention::Done]), RowDrop::Place { group: Attention::Done, at: 2 });
-    assert_eq!(row_drop(1, Attention::Quiet, Some((3, Attention::Working, 0)), RowZone::Before, &[Attention::Done]), RowDrop::Nothing);
+    assert_eq!(row_drop(1, Attention::Quiet, Some((2, Attention::Quiet, 0)), RowZone::After, &[], Some(0)), RowDrop::Place { group: Attention::Quiet, at: 1 });
+    assert_eq!(row_drop(1, Attention::Quiet, Some((2, Attention::Quiet, 0)), RowZone::Before, &[], Some(0)), RowDrop::Nothing, "its own place");
+    assert_eq!(row_drop(1, Attention::Quiet, Some((3, Attention::Done, 2)), RowZone::Before, &[Attention::Done], Some(0)), RowDrop::Place { group: Attention::Done, at: 2 });
+    assert_eq!(row_drop(1, Attention::Quiet, Some((3, Attention::Working, 0)), RowZone::Before, &[Attention::Done], Some(0)), RowDrop::Nothing);
 }
 
 #[test]
