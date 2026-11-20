@@ -81,6 +81,13 @@ row, a tab does nothing, and nothing lights. A closed session's row (under Done)
 and a tab dropped on it makes a new session. A session that holds only files is listed under Quiet,
 and its menu has Rename and Close.
 
+A session's own row drags too. Drop it on the middle of another session's row, which lights up, and
+all of its tabs join that session at the end of its focused pane; its row goes. Drop it between
+rows and a thin line shows where it will land. Within its own group the row lands at that place,
+and in another group only where "Move to" in the row menu would take it. The order you give a
+group stays, even after a restart, until a row changes state, after which that row arrives at the
+top.
+
 No hook says a permission or a question was answered, so Enter or a digit typed into a session
 that needs you counts as the answer and shows it working again.
 

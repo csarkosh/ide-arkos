@@ -595,7 +595,14 @@ Things only a person at the screen can check, in order of value:
   pane's tab bar, middle and each edge and its tabs arrive as a tab would, its row goes; merge a
   session that had a reminder into the one on screen and the reminder goes with its row while the
   shown session keeps its own; a session left holding only files is listed under Quiet, and its
-  menu has Rename and Close only, Close ending its tabs and its row
+  menu has Rename and Close only, Close ending its tabs and its row; drop a session
+  row on the middle of another live row: the row lights with the keyboard ring, all its tabs go to
+  the end of that session's focused pane and its row goes; on its own row or an ended row nothing
+  happens; drag a session row over the top or bottom quarter of a row: a thin focus-coloured line
+  shows in the gap and fades in and out (instant with Reduce Motion), and the row lands there in
+  its own group; in a group "Move to" offers it the row moves there and lands at that place, while
+  gaps in Working, Needs you and other groups show no line and do nothing; the order you gave
+  stays after a restart, and a row that changes state arrives at the top
 - layouts: "A session's files open" on Neighbor: with one pane an `arkos open` splits a pane
   to the right, the next goes into that pane, and from the right pane it goes to the left one;
   on a 13 or 14 inch MacBook with the sidebar shown the first open splits on top, on an
