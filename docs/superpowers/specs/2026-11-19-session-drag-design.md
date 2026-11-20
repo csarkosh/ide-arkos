@@ -208,3 +208,51 @@ session is shown.
 - Where the drop handlers sit in `sessions_list.rs` and `pane_view.rs`. How the placeholder is
   laid out within the list's scroll.
 - The ghost chip's look for a session row, within the `TabDrag` chip's style.
+
+## Addendum, 2026-11-19: session onto session, and reordering rows
+
+Asked by Cyrus after trying the first build's design: "session rows should be able to be drag and
+dropped into eachother. it works the same way as dragging and dropping a session row into panes
+1+", and "i also should be able to drag & drop reorder in the session rows". He chose order
+within a group over a fully manual list. This replaces the non-goal "Reordering rows by drag"
+above; the other non-goals stand.
+
+### A session row dropped on another session's row: merge
+
+- **The zone:** the middle half of a live row. That row lights with the keyboard ring, as a tab's join does.
+- **The drop:** every tab of the dragged session goes, in `page_tabs` order, to the end of the
+  target session's focused pane. The dragged page closes with its session name, its reminder and
+  its `page_made`. Tab names stay.
+- **What is shown:** if the dragged session was the one shown, the target is shown. Otherwise
+  the user stays where they are.
+- **Nothing happens:** on its own row, or on an ended row's middle.
+
+### Reordering rows within a group
+
+- **The zones:** while a session row is dragged, the top and bottom quarter of a live row are
+  its gaps (before it, after it). A thin line in the focus colour shows in that gap, fading in
+  and out with the highlight fade.
+- **In its own group,** the row lands at that place, and the order the user gave the group
+  stays while its rows stay in it.
+  - **Arrivals:** a row that arrives in a group because its state changed goes to the top, as
+    today. A placed row that leaves its group and comes back later arrives at the top too.
+  - **Saving:** the order is saved with the window's state, as the reminders are.
+  - **The model:** each group keeps the list of pages in the order the user last left it. Rows not
+    in that list (arrivals) come first, newest first, then the listed ones in the list's order.
+    A page that leaves the group is dropped from its list.
+- **In another group,** the gap acts as "Move to" that section (the row menu's
+  `RowAction::Move`, reminder dropped as that does), then the row lands at that place.
+  - **Which groups:** only sections that `attention::move_targets` offers the dragged session.
+  - **Elsewhere:** gaps in any other group show no line, and a drop there does nothing.
+  - **Fixed groups:** Working and Needs you are never targets, since only the agent's state
+    puts a session there.
+- **Never targets:** ended rows' gaps, and the dragged row's own gaps, which would leave it
+  where it is.
+- **Tabs are unchanged:** a tab dropped in a gap still makes a new session (the placeholder).
+
+### My calls
+
+- **The zones:** the middle half merges, and the top and bottom quarters reorder.
+- **Where a merge lands:** at the end of the target's focused pane, as a joining tab does.
+- **What reordering leaves alone:** the keyboard's cycling (Ctrl+Tab between sessions) and
+  `row_beside` follow the order shown, so they follow the user's order too.
