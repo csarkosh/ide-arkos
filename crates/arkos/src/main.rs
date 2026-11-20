@@ -6532,6 +6532,12 @@ impl Render for Root {
         self.effect_menus.clear();
         self.window_active = window.is_window_active();
         self.sync_shown();
+        // A row that left its group is forgotten by the user's order at once, whatever the sidebar
+        // shows, so it comes back at the top. Skipped while no order is set.
+        if !self.row_order.is_empty() {
+            let shown = sessions_list::grouped_in(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held), &self.row_order);
+            self.row_order.prune(&shown);
+        }
         // The Dock icon says how many sessions call for the user.
         let calling = sessions_list::calling(&sessions_list::grouped_in(sessions_list::entries(self, sessions::now_ms()), &self.row_order));
         if calling != self.dock_badge {

@@ -685,7 +685,6 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
     let c = &theme.chrome;
     let now = now_ms();
     let groups = grouped_in(hold(entries(root, now), root.held), &root.row_order);
-    root.row_order.prune(&groups);
     let weak = cx.weak_entity();
     let (highlights, hovered) = (root.effect_highlights(), root.effect_hover);
     let shown = root.tree.page;
