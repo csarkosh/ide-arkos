@@ -3,7 +3,7 @@
 //! Dragging a file out of the tree (spec 6): dropped on a terminal, its path is typed there.
 
 use crate::palette::Rgb;
-use crate::tree::{PaneId, TabId};
+use crate::tree::{PageKey, PaneId, TabId};
 use gpui::{div, prelude::*, px, Bounds, Context, Pixels, Point, Render, SharedString, Window};
 use crate::motion::{self, Transient};
 use std::path::{Path, PathBuf};
@@ -37,18 +37,79 @@ impl TabDrag {
 /// The ghost chip gpui draws under the pointer while dragging.
 impl Render for TabDrag {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().pl(self.position.x + px(8.0)).pt(self.position.y + px(8.0)).child(
-            div()
-                .px(px(10.0))
-                .py(px(4.0))
-                .bg(self.bg.hsla())
-                .text_color(self.fg.hsla())
-                .font_family(self.family.clone())
-                .text_size(px(12.0))
-                .opacity(0.9)
-                .child(self.label.clone()),
-        )
+        chip(self.position, self.bg, self.fg, &self.family, self.label.clone())
     }
+}
+
+/// The chip a tab or a session drag draws beside the pointer.
+fn chip(position: Point<Pixels>, bg: Rgb, fg: Rgb, family: &SharedString, label: String) -> impl IntoElement {
+    div().pl(position.x + px(8.0)).pt(position.y + px(8.0)).child(
+        div()
+            .px(px(10.0))
+            .py(px(4.0))
+            .bg(bg.hsla())
+            .text_color(fg.hsla())
+            .font_family(family.clone())
+            .text_size(px(12.0))
+            .opacity(0.9)
+            .child(label),
+    )
+}
+
+/// A whole session dragged by its pane number or tab; the drop moves every tab of `page`.
+#[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)] // Tasks 4 and 5 start and receive this drag.
+pub struct SessionDrag {
+    pub page: PageKey,
+    pub label: String,
+    pub position: Point<Pixels>,
+    pub bg: Rgb,
+    pub fg: Rgb,
+    pub family: SharedString,
+}
+
+#[allow(dead_code)] // Tasks 4 and 5 use it.
+impl SessionDrag {
+    pub fn at(mut self, position: Point<Pixels>) -> Self {
+        self.position = position;
+        self
+    }
+}
+
+impl Render for SessionDrag {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        chip(self.position, self.bg, self.fg, &self.family, self.label.clone())
+    }
+}
+
+/// What dropping dragged tabs on the Sessions list does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Tasks 4 and 5 use it.
+pub enum ListDrop {
+    /// The tabs join the session of this page.
+    Join(PageKey),
+    /// The tabs become a new session.
+    NewRow,
+    Nothing,
+}
+
+/// Decides a tab drop on the Sessions list. `over` is the live row under the pointer, and None
+/// anywhere else in the list (an ended row included). `whole_of_page` says the dragged tabs are
+/// every tab of their page, which a new row would only rename.
+#[allow(dead_code)] // Tasks 4 and 5 use it.
+pub fn list_drop(tab_page: PageKey, over: Option<PageKey>, whole_of_page: bool) -> ListDrop {
+    match over {
+        Some(page) if page == tab_page => ListDrop::Nothing,
+        Some(page) => ListDrop::Join(page),
+        None if whole_of_page => ListDrop::Nothing,
+        None => ListDrop::NewRow,
+    }
+}
+
+/// Whether a session dropped on the panes of page `shown` moves anything: not onto itself.
+#[allow(dead_code)] // Tasks 4 and 5 use it.
+pub fn session_drop_lands(dragged: PageKey, shown: PageKey) -> bool {
+    dragged != shown
 }
 
 /// A markdown block dragged by its handle (structure spec, section 3): which document and which
@@ -326,6 +387,25 @@ mod tests {
         let tab = b(200.0, 0.0, 100.0, 28.0);
         assert_eq!(insert_index(tab, point(px(210.0), px(10.0)), 3), 3);
         assert_eq!(insert_index(tab, point(px(290.0), px(10.0)), 3), 4);
+    }
+
+    #[test]
+    fn a_tab_over_another_session_s_row_joins_it_and_over_its_own_does_nothing() {
+        assert_eq!(list_drop(1, Some(2), false), ListDrop::Join(2));
+        assert_eq!(list_drop(1, Some(1), false), ListDrop::Nothing);
+        assert_eq!(list_drop(1, Some(2), true), ListDrop::Join(2), "a whole session's last tab may still join another");
+    }
+
+    #[test]
+    fn a_tab_anywhere_else_in_the_list_makes_a_new_row_unless_it_is_its_whole_session() {
+        assert_eq!(list_drop(1, None, false), ListDrop::NewRow);
+        assert_eq!(list_drop(1, None, true), ListDrop::Nothing);
+    }
+
+    #[test]
+    fn a_session_dropped_on_its_own_panes_lands_nowhere() {
+        assert!(!session_drop_lands(4, 4));
+        assert!(session_drop_lands(4, 5));
     }
 
 }
