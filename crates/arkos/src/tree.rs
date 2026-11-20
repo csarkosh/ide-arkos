@@ -1268,6 +1268,24 @@ impl Tree {
         true
     }
 
+    /// Moves every tab of page `from`, in `page_tabs` order, to the end of page `to`'s focused
+    /// pane, ids kept, then closes `from`, dropping its session name and keeping its tabs' names.
+    /// When `from` is the page shown, `to` is shown after. False, changing nothing, when the
+    /// pages are the same or either is missing.
+    pub fn merge_into_page(&mut self, from: PageKey, to: PageKey) -> bool {
+        let has = |t: &Self, k: PageKey| k == t.page || t.pages.iter().any(|p| p.key == k);
+        if from == to || !has(self, from) || !has(self, to) {
+            return false;
+        }
+        let ids: Vec<TabId> = self.page_tabs(from).iter().filter_map(|(pane, idx, _)| self.tab_id(*pane, *idx)).collect();
+        for id in ids {
+            self.move_tab_to_page(id, to);
+        }
+        let then = (from == self.page).then_some(to);
+        self.close_page(from, then);
+        true
+    }
+
     /// The id of the tab at `idx` in `pane`.
     pub fn tab_id(&self, pane: PaneId, idx: usize) -> Option<TabId> {
         self.pane(pane)?.ids.get(idx).copied()
@@ -1505,6 +1523,45 @@ fn overlap(a: f32, aw: f32, b: f32, bw: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_page_merged_into_another_lands_at_the_end_of_its_focused_pane_and_goes() {
+        let mut t = Tree::new(term(1));
+        let first = t.page;
+        let p1 = t.focused;
+        let q = t.blank_page();
+        t.add_tab(q, term(2));
+        t.add_tab(q, term(3));
+        let gone = t.page;
+        t.set_session_name(gone, Some("old".into()));
+        let ids: Vec<TabId> = t.pane(q).unwrap().ids.clone();
+        t.show_page(first);
+        assert!(t.merge_into_page(gone, first));
+        assert_eq!(t.pane(p1).unwrap().ids[1..], ids[..]);
+        assert!(!t.page_keys().contains(&gone));
+        assert_eq!(t.session_name(gone), None);
+        assert_eq!(t.page, first);
+    }
+
+    #[test]
+    fn the_shown_page_merged_into_another_shows_that_one() {
+        let mut t = Tree::new(term(1));
+        let first = t.page;
+        let q = t.blank_page();
+        t.add_tab(q, term(2));
+        let second = t.page;
+        assert!(t.merge_into_page(second, first));
+        assert_eq!(t.page, first);
+        assert_eq!(t.page_tabs(first).len(), 2);
+    }
+
+    #[test]
+    fn a_page_merged_into_itself_changes_nothing() {
+        let mut t = Tree::new(term(1));
+        let before = t.clone();
+        assert!(!t.merge_into_page(t.page, t.page));
+        assert_eq!(t, before);
+    }
     use super::*;
 
     #[test]
