@@ -412,6 +412,12 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
             root.track_list_drag(ev.bounds, ev.event.position, &d, cx);
         }))
         .on_drop(cx.listener(|root, d: &crate::drag::TabDrag, _window, cx| root.drop_on_list(d, cx)))
+        // A session row dragged over the block: a row lights, or a line shows in a gap.
+        .on_drag_move(cx.listener(|root, ev: &gpui::DragMoveEvent<crate::drag::SessionDrag>, _window, cx| {
+            let d = ev.drag(cx).clone();
+            root.track_session_list_drag(ev.bounds, ev.event.position, &d, cx);
+        }))
+        .on_drop(cx.listener(|root, d: &crate::drag::SessionDrag, _window, cx| root.drop_session_on_list(d, cx)))
         .children(placeholder)
         .when(inbox && session_groups.is_empty(), |d| d.child(div().px(px(12.0 + style.sidebar_pad)).py(px(8.0)).text_size(px(style.ui(12.0))).text_color(c.text_dim.hsla()).child("No sessions yet.")).child(sidebar_end_marker(cx)))
         .when(!session_groups.is_empty() && sessions_h > 0.0, |d| d.child(list_with_bounds(crate::sessions_list::render(root, width, inbox, cx).opacity(sessions_o), cx)));

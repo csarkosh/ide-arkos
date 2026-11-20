@@ -110,8 +110,6 @@ pub fn session_drop_lands(dragged: PageKey, shown: PageKey) -> bool {
 
 /// Which part of a row of the Sessions list the pointer is over: the top quarter, the bottom
 /// quarter, or the rest.
-// Task 10 wires this to the drag.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowZone {
     Before,
@@ -120,8 +118,6 @@ pub enum RowZone {
 }
 
 /// Which part of the row whose top is `row_top` and height `row_h` the height `y` falls in.
-// Task 10 wires this to the drag.
-#[allow(dead_code)]
 pub fn row_zone(row_top: f32, row_h: f32, y: f32) -> RowZone {
     let t = (y - row_top) / row_h.max(1.0);
     if t < 0.25 {
@@ -135,8 +131,6 @@ pub fn row_zone(row_top: f32, row_h: f32, y: f32) -> RowZone {
 
 /// What a session dropped on the Sessions list does: joins another row, takes a place in a
 /// group (its own or one it may move to), or nothing.
-// Task 10 wires this to the drag.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowDrop {
     Merge(PageKey),
@@ -149,8 +143,6 @@ pub enum RowDrop {
 /// anywhere else. `allowed` lists the groups the session may move into, and `own_at` is the
 /// dragged row's index among its own group's live rows (None when it is in no group). A gap is
 /// the place it already has when it sits in its own group, so that drop does nothing.
-// Task 10 wires this to the drag.
-#[allow(dead_code)]
 pub fn row_drop(dragged: PageKey, dragged_group: Attention, over: Option<(PageKey, Attention, usize)>, zone: RowZone, allowed: &[Attention], own_at: Option<usize>) -> RowDrop {
     let Some((page, group, index)) = over else {
         return RowDrop::Nothing;

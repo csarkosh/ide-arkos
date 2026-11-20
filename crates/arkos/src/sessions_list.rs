@@ -694,6 +694,8 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
     let cursor = root.session_cursor.filter(|_| root.session_list_focused);
     // The row a dragged tab would join, and how far its ring has faded in.
     let lit = root.list_drop_row.current(root.frame_now).map(|(page, opacity)| (*page, opacity));
+    // The row beside which a dragged session row would land, the side, and how far its line has faded in.
+    let gap = root.list_gap.current(root.frame_now).map(|(h, opacity)| (*h, opacity));
 
     let pad = 10.0 + style.sidebar_pad;
     root.list_rows.clear();
@@ -791,6 +793,12 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
                 // A tab dragged over this row would join it: the ring fades in (`Transient`'s
                 // own enter and exit, ENTER on standard decelerate and EXIT on accelerate).
                 .when_some(lit.filter(|(p, _)| key == RowKey::Live(*p)), |d, (_, opacity)| d.child(crate::chrome::keys_ring(&theme, &style).opacity(opacity)))
+                // A session row dragged here would land before or after this one: a thin line in the
+                // focus colour at that edge, fading over `ENTER` and `EXIT` as the ring does.
+                .when_some(gap.filter(|((p, _), _)| key == RowKey::Live(*p)), |d, ((_, zone), opacity)| {
+                    let line = div().absolute().left_0().right_0().h(px(2.0)).bg(c.focus_ring.alpha(opacity));
+                    d.child(if zone == crate::drag::RowZone::Before { line.top_0() } else { line.bottom_0() })
+                })
                 .when(!highlights, |d| d.hover(move |s| s.bg(hover_bg)))
                 .when(highlights, |d| {
                     let w_hover = weak.clone();
@@ -821,6 +829,7 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
                 .when(e.ended.is_none(), |d| {
                     let w_rows = weak.clone();
                     d.on_drop(cx.listener(move |root, d: &crate::drag::TabDrag, _window, cx| root.drop_on_list(d, cx)))
+                        .on_drop(cx.listener(move |root, d: &crate::drag::SessionDrag, _window, cx| root.drop_session_on_list(d, cx)))
                         .child(
                             gpui::canvas(
                                 move |b, _window, cx| {

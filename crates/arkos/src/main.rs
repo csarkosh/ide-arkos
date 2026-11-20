@@ -477,6 +477,12 @@ pub struct Root {
     /// What dropping on the list does, as `track_list_drag` last decided it: what was lit is
     /// what lands.
     pub list_drop: drag::ListDrop,
+    /// What dropping a session row on the list does, as `track_session_list_drag` last decided
+    /// it: what was lit or lined is what lands.
+    pub list_row_drop: drag::RowDrop,
+    /// The row beside which a dragged session row would be placed, and the side of it (before or
+    /// after): where the thin gap line shows. It enters on `motion::ENTER` and leaves on `EXIT`.
+    pub list_gap: motion::Transient<(tree::PageKey, drag::RowZone)>,
     pub list_view: gpui::Bounds<gpui::Pixels>,
     /// Each pane's drop tint as drawn: it follows `drop_target` a frame at a time, fading and
     /// gliding, so the logic above stays a plain `Option`.
@@ -1029,6 +1035,8 @@ impl Root {
             list_rows: Vec::new(),
             list_placeholder_h: 0.0,
             list_drop: drag::ListDrop::Nothing,
+            list_row_drop: drag::RowDrop::Nothing,
+            list_gap: Transient::Hidden,
             list_view: gpui::Bounds::default(),
             drop_tints: HashMap::new(),
             glow: motion::Fades::default(),
@@ -1818,6 +1826,7 @@ impl Root {
             || self.drop_tints.values().any(|t| t.animating(now))
             || self.list_drop_row.animating(now)
             || self.list_drop_new.animating(now)
+            || self.list_gap.animating(now)
             || self.reorder.as_ref().is_some_and(|r| r.animating(now))
             || self.glow.animating(now)
             || self.handle_fades.animating(now)
@@ -3121,6 +3130,27 @@ impl Root {
         }
     }
 
+    /// Moves the session of `page` to the section `to`, as the row menu's "Move to" does. Unread
+    /// marks the lead alone, which a look then clears; every other section takes every terminal
+    /// there. A move ends the reminder.
+    fn move_page_to(&mut self, page: tree::PageKey, to: attention::MoveTo) {
+        let terms: Vec<SessionId> = self.tree.page_tabs(page).into_iter().filter_map(|(_, _, t)| if let Tab::Terminal { session, .. } = t { Some(*session) } else { None }).collect();
+        let lead = self.page_row(page).map(|e| e.session);
+        self.reminders.remove(&page);
+        match to {
+            attention::MoveTo::To(attention::Attention::Unread) => {
+                if let Some(s) = lead {
+                    self.sessions.move_to(s, to);
+                }
+            }
+            _ => {
+                for s in terms {
+                    self.sessions.move_to(s, to);
+                }
+            }
+        }
+    }
+
     /// What a session row's menu does (`sessions_list::menu_items`), for the row of `page`.
     pub fn session_row_action(&mut self, page: tree::PageKey, action: sessions_list::RowAction, _window: &mut Window, cx: &mut Context<Self>) {
         use sessions_list::RowAction;
@@ -3129,30 +3159,13 @@ impl Root {
             self.held = None;
         }
         let terms: Vec<SessionId> = self.tree.page_tabs(page).into_iter().filter_map(|(_, _, t)| if let Tab::Terminal { session, .. } = t { Some(*session) } else { None }).collect();
-        let lead = self.page_row(page).map(|e| e.session);
         match action {
             // In place on the row, the session's own name (Cyrus, 2026-11-18: "It should not
             // rename the tab in the other panes").
             RowAction::Rename => self.begin_row_rename(page, cx),
             RowAction::End => self.end_page(page, cx),
             RowAction::Close => self.close_page_tabs(page, cx),
-            RowAction::Move(to) => {
-                // Unread marks the lead alone, which a look then clears; every other section
-                // takes every terminal there. A move ends the reminder.
-                self.reminders.remove(&page);
-                match to {
-                    attention::MoveTo::To(attention::Attention::Unread) => {
-                        if let Some(s) = lead {
-                            self.sessions.move_to(s, to);
-                        }
-                    }
-                    _ => {
-                        for s in terms {
-                            self.sessions.move_to(s, to);
-                        }
-                    }
-                }
-            }
+            RowAction::Move(to) => self.move_page_to(page, to),
             RowAction::Remind(at, repeat) => {
                 self.reminders.insert(page, reminder::Reminder::new(at, repeat));
                 // Put off: whatever the user had moved it to or marked gives way.
@@ -3805,11 +3818,122 @@ impl Root {
         }
     }
 
+    /// What dropping session row `d` with the pointer at `at` does, and the row and the side of it
+    /// the gap line shows at when it places the row. The rows are taken where they rest
+    /// (`sessions_list::row_under`).
+    fn row_drop_of(&self, d: &drag::SessionDrag, at: gpui::Point<gpui::Pixels>) -> (drag::RowDrop, Option<(tree::PageKey, drag::RowZone)>) {
+        let none = (drag::RowDrop::Nothing, None);
+        if !self.list_view.contains(&at) {
+            return none;
+        }
+        let Some(over_page) = sessions_list::row_under(&self.list_rows, self.list_placeholder_h, at) else { return none };
+        let Some((_, b)) = self.list_rows.iter().find(|(p, _)| *p == over_page) else { return none };
+        let zone = drag::row_zone(f32::from(b.origin.y), f32::from(b.size.height), f32::from(at.y) + self.list_placeholder_h);
+        let groups = sessions_list::grouped_in(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held), &self.row_order);
+        let Some((dragged_group, dragged)) = groups.iter().find_map(|(g, rows)| rows.iter().find(|e| e.ended.is_none() && e.page == d.page).map(|e| (*g, e))) else { return none };
+        let own_at = groups.iter().find(|(g, _)| *g == dragged_group).and_then(|(_, rows)| rows.iter().filter(|e| e.ended.is_none()).position(|e| e.page == d.page));
+        let over = groups.iter().find_map(|(g, rows)| rows.iter().filter(|e| e.ended.is_none() && e.page != d.page).position(|e| e.page == over_page).map(|i| (over_page, *g, i)));
+        let allowed: Vec<attention::Attention> = attention::row_targets(dragged.attention, dragged.alive).into_iter().map(|(_, attention::MoveTo::To(g))| g).collect();
+        let decided = drag::row_drop(d.page, dragged_group, over, zone, &allowed, own_at);
+        (decided, Some((over_page, zone)))
+    }
+
+    /// A session row dragged over the Sessions block, whose bounds are `block` (every drag move
+    /// reaches this, over it or not): over the middle of another live row that row lights, near
+    /// the top or bottom of one a thin line shows in the gap where the row would land, and
+    /// anywhere else nothing shows. The decision is kept for the drop.
+    pub fn track_session_list_drag(&mut self, block: gpui::Bounds<gpui::Pixels>, at: gpui::Point<gpui::Pixels>, d: &drag::SessionDrag, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        let (decided, hovered) = if block.contains(&at) { self.row_drop_of(d, at) } else { (drag::RowDrop::Nothing, None) };
+        self.list_row_drop = decided;
+        let mut changed = false;
+        match decided {
+            drag::RowDrop::Merge(page) => {
+                if self.list_drop_row.value() != Some(&page) {
+                    self.list_drop_row.show(page, now);
+                    changed = true;
+                }
+                changed |= self.list_gap.hide(now);
+            }
+            drag::RowDrop::Place { .. } => {
+                if let Some(h) = hovered {
+                    if self.list_gap.value() != Some(&h) {
+                        self.list_gap.show(h, now);
+                        changed = true;
+                    }
+                }
+                changed |= self.list_drop_row.hide(now);
+            }
+            drag::RowDrop::Nothing => {
+                changed = self.list_drop_row.hide(now);
+                changed |= self.list_gap.hide(now);
+            }
+        }
+        if changed {
+            cx.notify();
+        }
+    }
+
+    /// Lands a session row dragged onto the Sessions list, as the pointer last decided it. Over
+    /// the middle of another row its tabs join that row's session (the page shown follows when it
+    /// was the dragged one). In a gap it takes that place in its group, moving to the group first
+    /// when it is another one's.
+    pub fn drop_session_on_list(&mut self, d: &drag::SessionDrag, cx: &mut Context<Self>) {
+        self.drop_target = None;
+        let decided = self.list_row_drop;
+        self.hide_list_drops(Instant::now());
+        if !self.tree.page_keys().contains(&d.page) {
+            cx.notify();
+            return;
+        }
+        match decided {
+            drag::RowDrop::Merge(to) if self.tree.page_keys().contains(&to) => {
+                if self.tree.merge_into_page(d.page, to) {
+                    self.reminders.remove(&d.page);
+                    self.page_made.remove(&d.page);
+                    if self.held.is_some_and(|h| h.0 == d.page) {
+                        self.held = None;
+                    }
+                    if self.row_rename.as_ref().is_some_and(|r| r.page == d.page) {
+                        self.row_rename = None;
+                    }
+                    if self.session_cursor == Some(sessions_list::Stop::Row(sessions_list::RowKey::Live(d.page))) {
+                        self.session_cursor = None;
+                    }
+                    self.grids.clear();
+                    let focused = self.tree.focused;
+                    self.focus_pane(focused, cx);
+                    self.save(cx);
+                }
+            }
+            drag::RowDrop::Place { group, at } => {
+                let listed = |root: &Root| sessions_list::grouped_in(sessions_list::hold(sessions_list::entries(root, sessions::now_ms()), root.held), &root.row_order);
+                let in_group = listed(self).iter().find_map(|(g, rows)| rows.iter().any(|e| e.ended.is_none() && e.page == d.page).then_some(*g));
+                if in_group.is_some() {
+                    if in_group != Some(group) {
+                        if self.held.is_some_and(|h| h.0 == d.page) {
+                            self.held = None;
+                        }
+                        self.move_page_to(d.page, attention::MoveTo::To(group));
+                    }
+                    let shown: Vec<tree::PageKey> = listed(self).into_iter().filter(|(g, _)| *g == group).flat_map(|(_, rows)| rows).filter(|e| e.ended.is_none() && e.page != d.page).map(|e| e.page).collect();
+                    self.row_order.place(group, &shown, d.page, at);
+                    self.save(cx);
+                }
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
     /// Hides the Sessions list's drop highlight and placeholder, each leaving over its exit.
     pub fn hide_list_drops(&mut self, now: Instant) -> bool {
+        self.list_drop = drag::ListDrop::Nothing;
+        self.list_row_drop = drag::RowDrop::Nothing;
         let row = self.list_drop_row.hide(now);
         let new = self.list_drop_new.hide(now);
-        row || new
+        let gap = self.list_gap.hide(now);
+        row || new || gap
     }
 
     /// Lands tabs dragged onto the Sessions list: over another session's row they join it (the
@@ -3818,13 +3942,13 @@ impl Root {
     /// the tabs' own row, or with the tabs being their whole session, nothing moves.
     pub fn drop_on_list(&mut self, d: &drag::TabDrag, cx: &mut Context<Self>) {
         self.drop_target = None;
-        self.hide_list_drops(Instant::now());
-        let tabs = self.dragged_tabs(d);
         // What was lit is what lands; a row that went since lands as nothing.
-        let decided = match std::mem::replace(&mut self.list_drop, drag::ListDrop::Nothing) {
+        let decided = match self.list_drop {
             drag::ListDrop::Join(page) if !self.tree.page_keys().contains(&page) => drag::ListDrop::Nothing,
             other => other,
         };
+        self.hide_list_drops(Instant::now());
+        let tabs = self.dragged_tabs(d);
         let changed = match decided {
             drag::ListDrop::Join(page) => {
                 let shown = self.tree.page;
