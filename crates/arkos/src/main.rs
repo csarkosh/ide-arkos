@@ -459,6 +459,8 @@ pub struct Root {
     /// Where a dragged tab would land if released now. Cleared on drop, on a release anywhere
     /// else, and on the first move after a release outside the window.
     pub drop_target: Option<drag::DropTarget>,
+    /// The moment (ms) a drop made each page, for the row of a page with no terminal. Not saved.
+    pub page_made: HashMap<tree::PageKey, u64>,
     /// Each pane's drop tint as drawn: it follows `drop_target` a frame at a time, fading and
     /// gliding, so the logic above stays a plain `Option`.
     pub drop_tints: HashMap<PaneId, drag::Tint>,
@@ -1002,6 +1004,7 @@ impl Root {
             pane_order: Vec::new(),
             closed: ClosedStack::default(),
             drop_target: None,
+            page_made: HashMap::new(),
             drop_tints: HashMap::new(),
             glow: motion::Fades::default(),
             handle_hovered: HashSet::new(),
@@ -3048,6 +3051,26 @@ impl Root {
         self.focus_pane(focused, cx);
     }
 
+    /// Closes every tab of a page with no terminal, each as Cmd+W closes it, stopping at one that
+    /// will not close; the page goes with its last tab, for the row beside it.
+    fn close_page_tabs(&mut self, page: tree::PageKey, cx: &mut Context<Self>) {
+        let next = self.row_beside(page);
+        let tabs: Vec<TabId> = self.tree.page_tabs(page).into_iter().filter_map(|(pane, idx, _)| self.tree.tab_id(pane, idx)).collect();
+        let shown = self.tree.page;
+        self.tree.show_page_for(page);
+        for tab in tabs {
+            let Some((pane, idx)) = self.tree.locate(tab) else { continue };
+            self.close_tab(pane, idx, cx);
+            if self.tree.locate(tab).is_some() {
+                break;
+            }
+        }
+        if self.tree.page_keys().contains(&shown) {
+            self.tree.show_page_for(shown);
+        }
+        self.settle_page(page, next, cx);
+    }
+
     /// Ends a row's session: each of its terminals closes as Cmd+W closes it, the last taking the
     /// page's other tabs with it.
     fn end_page(&mut self, page: tree::PageKey, cx: &mut Context<Self>) {
@@ -3085,6 +3108,7 @@ impl Root {
             // rename the tab in the other panes").
             RowAction::Rename => self.begin_row_rename(page, cx),
             RowAction::End => self.end_page(page, cx),
+            RowAction::Close => self.close_page_tabs(page, cx),
             RowAction::Move(to) => {
                 // Unread marks the lead alone, which a look then clears; every other section
                 // takes every terminal there. A move ends the reminder.
