@@ -160,6 +160,12 @@ pub fn row_targets(here: Attention, alive: bool) -> Vec<(&'static str, MoveTo)> 
     Attention::LISTED.into_iter().filter(|k| *k != here && *k != Attention::Scheduled).map(|k| (k.label(), MoveTo::To(k))).collect()
 }
 
+/// The sections a session row dragged from `here` can be dropped in: `row_targets` less Working
+/// and Needs you, which the agent fills and which are never a target of a drop in a gap.
+pub fn drag_targets(here: Attention, alive: bool) -> Vec<Attention> {
+    row_targets(here, alive).into_iter().map(|(_, MoveTo::To(g))| g).filter(|g| !matches!(g, Attention::Working | Attention::NeedsYou)).collect()
+}
+
 /// Where a session stands. `state` is the daemon's (None: never reported), `blocked` its agent's
 /// block, `alive` whether its shell still runs.
 pub fn of(state: Option<ClaudeState>, blocked: bool, alive: bool, marks: &Marks, now: u64) -> Attention {
@@ -304,6 +310,15 @@ mod tests {
         assert_eq!(names(Attention::Working), ["New", "Needs you", "Unread", "Unanswered", "Quiet", "Done"], "in the list's order");
         assert_eq!(names(Attention::Scheduled), ["New", "Needs you", "Unread", "Unanswered", "Working", "Quiet", "Done"]);
         assert!(row_targets(Attention::Done, false).is_empty());
+    }
+
+    #[test]
+    fn a_dragged_row_is_never_dropped_in_working_or_needs_you() {
+        let drag = |here| drag_targets(here, true);
+        assert_eq!(drag(Attention::Quiet), [Attention::New, Attention::Unread, Attention::Unanswered, Attention::Done]);
+        assert!(!drag(Attention::Unread).contains(&Attention::Working));
+        assert!(!drag(Attention::Unread).contains(&Attention::NeedsYou));
+        assert!(drag_targets(Attention::Done, false).is_empty());
     }
 
     #[test]

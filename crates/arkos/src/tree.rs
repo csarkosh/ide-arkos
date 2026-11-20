@@ -1523,6 +1523,7 @@ fn overlap(a: f32, aw: f32, b: f32, bw: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     #[test]
     fn a_page_merged_into_another_lands_at_the_end_of_its_focused_pane_and_goes() {
@@ -1562,7 +1563,6 @@ mod tests {
         assert!(!t.merge_into_page(t.page, t.page));
         assert_eq!(t, before);
     }
-    use super::*;
 
     #[test]
     fn find_path_locates_a_tab_by_path_in_one_pane() {

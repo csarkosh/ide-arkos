@@ -259,6 +259,8 @@ pub struct SessionManager {
     backlog: HashMap<SessionId, Vec<Event>>,
     /// Between `disconnect` and the next `set_client`: kills wait in `kills_to_resend`.
     offline: bool,
+    /// Whether the daemon has listed its sessions since the last connect (`note_list`).
+    reported: bool,
     /// Kills asked for while disconnected (a closed tab's grace ran out) or refused during an
     /// upgrade, sent on the next connection or by `resend_kills`.
     kills_to_resend: Vec<SessionId>,
@@ -271,7 +273,7 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub fn new(transport: Arc<dyn Transport>, client: Option<Arc<Client>>, project: PathBuf) -> Self {
-        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashMap::new(), states: HashMap::new(), labels: HashMap::new(), attention: HashMap::new(), marks: HashMap::new(), agents: HashMap::new(), lines: HashMap::new(), shown: None, marks_changed: false, later_checked: 0, reporting: HashSet::new(), probed: HashMap::new(), probe_wanted: false, newly_reporting: false, restoring: HashSet::new(), backlog: HashMap::new(), offline: false, kills_to_resend: Vec::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
+        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashMap::new(), states: HashMap::new(), labels: HashMap::new(), attention: HashMap::new(), marks: HashMap::new(), agents: HashMap::new(), lines: HashMap::new(), shown: None, marks_changed: false, later_checked: 0, reporting: HashSet::new(), probed: HashMap::new(), probe_wanted: false, newly_reporting: false, restoring: HashSet::new(), backlog: HashMap::new(), offline: false, reported: false, kills_to_resend: Vec::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
     }
 
     /// A new connection: requests go to it from now on.
@@ -325,6 +327,7 @@ impl SessionManager {
         self.busy.clear();
         self.notes.clear();
         self.states.clear();
+        self.reported = false;
         self.restoring.clear();
         self.backlog.clear();
     }
@@ -334,6 +337,12 @@ impl SessionManager {
         self.scrollback = scrollback;
         self.shell = shell;
         self.nice = nice;
+    }
+
+    /// Whether the daemon has reported its sessions since the last connect: until then their
+    /// states are unknown and every session lists as Quiet or New.
+    pub fn has_reported(&self) -> bool {
+        self.reported
     }
 
     /// Whether the connection is down and the window is waiting for the next one.
@@ -406,6 +415,7 @@ impl SessionManager {
     /// Records what the daemon's list says about each session. A "resumed" note comes back only
     /// until the user types into the session: the daemon clears its `recovered` on that Input.
     pub fn note_list(&mut self, list: &[SessionDetail]) {
+        self.reported = true;
         for d in list {
             self.states.insert(d.info.id, d.info.state);
             // A session with no time of its own yet takes the daemon's last activity.
@@ -1279,6 +1289,17 @@ mod tests {
         assert_eq!(rec.requests(), vec![Request::Goodbye]);
         m.disconnect();
         assert!(m.states.is_empty(), "the next list says what each session does");
+    }
+
+    #[test]
+    fn the_daemon_has_reported_from_its_list_until_the_connection_ends() {
+        let rec = Recorder::new();
+        let mut m = SessionManager::new(rec, None, PathBuf::from("/p"));
+        assert!(!m.has_reported(), "nothing is known at start");
+        m.note_list(&[]);
+        assert!(m.has_reported());
+        m.disconnect();
+        assert!(!m.has_reported(), "the next list says it again");
     }
 
     #[test]

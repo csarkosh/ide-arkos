@@ -250,6 +250,15 @@ impl RowOrder {
         }
     }
 
+    /// `prune`, but only once the daemon has reported its sessions since the last connect. Before
+    /// that every session lists as Quiet or New, so the grouping says nothing about where a row
+    /// belongs and pruning would erase the saved order.
+    pub fn prune_once_reported(&mut self, reported: bool, groups: &[(Attention, Vec<Entry>)]) {
+        if reported {
+            self.prune(groups);
+        }
+    }
+
     /// Drops from each group's list the pages that are not live rows of that group now, and
     /// the lists left empty.
     pub fn prune(&mut self, groups: &[(Attention, Vec<Entry>)]) {
@@ -1134,6 +1143,19 @@ mod tests {
         let groups = grouped_in(rows, &order);
         let pages: Vec<PageKey> = groups[0].1.iter().map(|e| e.page).collect();
         assert_eq!(pages, [4, 3, 1, 2], "the arrival first, then the user's order");
+    }
+
+    #[test]
+    fn no_prune_before_the_daemon_has_reported_its_sessions() {
+        let mut order = RowOrder::default();
+        order.place(Attention::Unanswered, &[1], 2, 1);
+        let before = order.clone();
+        // Until the list arrives every session shows as Quiet, so none is in its saved group.
+        let all_quiet = grouped_in(vec![entry(1, Attention::Quiet, 10), entry(2, Attention::Quiet, 20)], &order);
+        order.prune_once_reported(false, &all_quiet);
+        assert_eq!(order, before, "the saved order survives a start or a reconnect");
+        order.prune_once_reported(true, &all_quiet);
+        assert!(order.is_empty(), "once reported, rows that left the group are dropped");
     }
 
     #[test]

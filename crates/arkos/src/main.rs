@@ -3833,7 +3833,7 @@ impl Root {
         let Some((dragged_group, dragged)) = groups.iter().find_map(|(g, rows)| rows.iter().find(|e| e.ended.is_none() && e.page == d.page).map(|e| (*g, e))) else { return none };
         let own_at = groups.iter().find(|(g, _)| *g == dragged_group).and_then(|(_, rows)| rows.iter().filter(|e| e.ended.is_none()).position(|e| e.page == d.page));
         let over = groups.iter().find_map(|(g, rows)| rows.iter().filter(|e| e.ended.is_none() && e.page != d.page).position(|e| e.page == over_page).map(|i| (over_page, *g, i)));
-        let allowed: Vec<attention::Attention> = attention::row_targets(dragged.attention, dragged.alive).into_iter().map(|(_, attention::MoveTo::To(g))| g).collect();
+        let allowed = attention::drag_targets(dragged.attention, dragged.alive);
         let decided = drag::row_drop(d.page, dragged_group, over, zone, &allowed, own_at);
         (decided, Some((over_page, zone)))
     }
@@ -6660,7 +6660,7 @@ impl Render for Root {
         // shows, so it comes back at the top. Skipped while no order is set.
         if !self.row_order.is_empty() {
             let shown = sessions_list::grouped_in(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held), &self.row_order);
-            self.row_order.prune(&shown);
+            self.row_order.prune_once_reported(self.sessions.has_reported(), &shown);
         }
         // The Dock icon says how many sessions call for the user.
         let calling = sessions_list::calling(&sessions_list::grouped_in(sessions_list::entries(self, sessions::now_ms()), &self.row_order));
