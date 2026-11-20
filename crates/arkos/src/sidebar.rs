@@ -344,6 +344,32 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
     // The sessions first: what they take is taken from the two sections under them.
     let session_groups = crate::sessions_list::grouped(crate::sessions_list::entries(root, crate::sessions::now_ms()));
     let sessions_h = sessions_height(inbox, files_view, total_h, switch_h);
+    // Where a tab dragged into the list would become a session: a dashed row under the button,
+    // opening over `ENTER` (the transient's own enter and exit) to a row's height, so the rows
+    // slide down to make room. Outside the list's scroll, so it never scrolls away.
+    let placeholder = root.list_drop_new.current(now).map(|(label, open)| {
+        div()
+            .flex_none()
+            .h(px(crate::sessions_list::ROW_H * open))
+            .overflow_hidden()
+            .child(
+                div()
+                    .h(px(crate::sessions_list::ROW_H))
+                    .mx(px(8.0 + style.sidebar_pad))
+                    .my(px(2.0))
+                    .px(px(8.0))
+                    .flex()
+                    .items_center()
+                    .rounded(px(5.0))
+                    .border_1()
+                    .border_dashed()
+                    .border_color(c.text_dim.alpha(0.6))
+                    .text_size(px(style.ui(12.0)))
+                    .text_color(c.text_dim.hsla())
+                    .opacity(open)
+                    .child(label.clone()),
+            )
+    });
     let sessions = div()
         .flex()
         .flex_col()
@@ -356,6 +382,13 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .key_context("SessionList")
         .on_key_down(cx.listener(|root, ev: &KeyDownEvent, _window, cx| root.session_list_key(&ev.keystroke, cx)))
         .children(new_row)
+        // A tab dragged over the block: a row lights, or a placeholder row opens under the button.
+        .on_drag_move(cx.listener(|root, ev: &gpui::DragMoveEvent<crate::drag::TabDrag>, _window, cx| {
+            let d = ev.drag(cx).clone();
+            root.track_list_drag(ev.bounds, ev.event.position, &d, cx);
+        }))
+        .on_drop(cx.listener(|root, d: &crate::drag::TabDrag, _window, cx| root.drop_on_list(d, None, cx)))
+        .children(placeholder)
         .when(inbox && session_groups.is_empty(), |d| d.child(div().px(px(12.0 + style.sidebar_pad)).py(px(8.0)).text_size(px(style.ui(12.0))).text_color(c.text_dim.hsla()).child("No sessions yet.")).child(sidebar_end_marker(cx)))
         .when(!session_groups.is_empty() && sessions_h > 0.0, |d| d.child(crate::sessions_list::render(root, width, inbox, cx).opacity(sessions_o)));
     let (explorer_h, worktrees_h) = sidebar_split(total_h - sessions_h - switch_h, tree_rows as f32 * ROW_H, explorer_open, worktrees_open);

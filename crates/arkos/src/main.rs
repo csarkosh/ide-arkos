@@ -461,6 +461,15 @@ pub struct Root {
     pub drop_target: Option<drag::DropTarget>,
     /// The moment (ms) a drop made each page, for the row of a page with no terminal. Not saved.
     pub page_made: HashMap<tree::PageKey, u64>,
+    /// The Sessions row a dragged tab would join, lit while the pointer is over it (it enters on
+    /// `motion::ENTER` and leaves on `EXIT`, as `Transient` does).
+    pub list_drop_row: motion::Transient<tree::PageKey>,
+    /// The dashed placeholder row a dragged tab would make a session of, holding its label.
+    pub list_drop_new: motion::Transient<String>,
+    /// Where each live Sessions row was laid out last frame, and the part of the list that shows
+    /// (from its last drag-move): what a tab dragged over the list is over.
+    pub list_rows: Vec<(tree::PageKey, gpui::Bounds<gpui::Pixels>)>,
+    pub list_view: gpui::Bounds<gpui::Pixels>,
     /// Each pane's drop tint as drawn: it follows `drop_target` a frame at a time, fading and
     /// gliding, so the logic above stays a plain `Option`.
     pub drop_tints: HashMap<PaneId, drag::Tint>,
@@ -1005,6 +1014,10 @@ impl Root {
             closed: ClosedStack::default(),
             drop_target: None,
             page_made: HashMap::new(),
+            list_drop_row: Transient::Hidden,
+            list_drop_new: Transient::Hidden,
+            list_rows: Vec::new(),
+            list_view: gpui::Bounds::default(),
             drop_tints: HashMap::new(),
             glow: motion::Fades::default(),
             handle_hovered: HashSet::new(),
@@ -1791,6 +1804,8 @@ impl Root {
             || self.notice.animating(now)
             || self.url_prompt.animating(now)
             || self.drop_tints.values().any(|t| t.animating(now))
+            || self.list_drop_row.animating(now)
+            || self.list_drop_new.animating(now)
             || self.reorder.as_ref().is_some_and(|r| r.animating(now))
             || self.glow.animating(now)
             || self.handle_fades.animating(now)
@@ -3707,6 +3722,7 @@ impl Root {
     /// only when the drag emptied it, and never when it is the last pane (spec 4).
     pub fn drop_tab(&mut self, d: &drag::TabDrag, target: drag::DropTarget, cx: &mut Context<Self>) {
         self.drop_target = None;
+        self.hide_list_drops(Instant::now());
         if self.tree.locate(d.tab).is_some() {
             self.preview_tab = after_drop(self.preview_tab, d.tab);
         }
@@ -3717,6 +3733,112 @@ impl Root {
             self.save(cx);
         } else if let Some(r) = self.reorder.as_mut() {
             // Nowhere to land: the gap closes and the slot opens again.
+            r.end(Instant::now());
+        }
+        cx.notify();
+    }
+
+    /// The tabs a tab drag carries, by id: the one dragged, or with `whole` every tab of its pane.
+    fn dragged_tabs(&self, d: &drag::TabDrag) -> Vec<TabId> {
+        if d.whole {
+            self.tree.pane(d.pane).map(|p| p.ids.clone()).unwrap_or_default()
+        } else {
+            vec![d.tab]
+        }
+    }
+
+    /// What dropping drag `d` on the Sessions list does with the pointer over live row `over`
+    /// (None anywhere else in the list).
+    pub fn list_drop_of(&self, d: &drag::TabDrag, over: Option<tree::PageKey>) -> drag::ListDrop {
+        let tabs = self.dragged_tabs(d);
+        let Some(page) = tabs.first().and_then(|t| self.tree.locate(*t)).and_then(|(pane, _)| self.tree.page_of(pane)) else {
+            return drag::ListDrop::Nothing;
+        };
+        drag::list_drop(page, over, self.tree.page_tabs(page).len() == tabs.len())
+    }
+
+    /// A tab dragged over the Sessions block, whose bounds are `block` (every drag move reaches
+    /// this, over it or not): over another session's row that row lights, elsewhere in the block
+    /// a placeholder row opens, and outside the block, or over its own session, nothing shows.
+    pub fn track_list_drag(&mut self, block: gpui::Bounds<gpui::Pixels>, at: gpui::Point<gpui::Pixels>, d: &drag::TabDrag, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        let mut changed = false;
+        if !block.contains(&at) {
+            changed = self.hide_list_drops(now);
+        } else {
+            let over = self.list_rows.iter().find(|(_, b)| b.contains(&at) && self.list_view.contains(&at)).map(|(p, _)| *p);
+            match self.list_drop_of(d, over) {
+                drag::ListDrop::Join(page) => {
+                    if self.list_drop_row.value() != Some(&page) {
+                        self.list_drop_row.show(page, now);
+                        changed = true;
+                    }
+                    changed |= self.list_drop_new.hide(now);
+                }
+                drag::ListDrop::NewRow => {
+                    if self.list_drop_new.value().is_none() {
+                        self.list_drop_new.show(d.label.clone(), now);
+                        changed = true;
+                    }
+                    changed |= self.list_drop_row.hide(now);
+                }
+                drag::ListDrop::Nothing => changed = self.hide_list_drops(now),
+            }
+        }
+        if changed {
+            cx.notify();
+        }
+    }
+
+    /// Hides the Sessions list's drop highlight and placeholder, each leaving over its exit.
+    pub fn hide_list_drops(&mut self, now: Instant) -> bool {
+        let row = self.list_drop_row.hide(now);
+        let new = self.list_drop_new.hide(now);
+        row || new
+    }
+
+    /// Lands tabs dragged onto the Sessions list: over another session's row they join it (the
+    /// page shown stays, or goes to that row when it is left with no tab); anywhere else in the
+    /// list they become a new session, named as the tab is when it was alone and had a name. Over
+    /// the tabs' own row, or with the tabs being their whole session, nothing moves.
+    pub fn drop_on_list(&mut self, d: &drag::TabDrag, over: Option<tree::PageKey>, cx: &mut Context<Self>) {
+        self.drop_target = None;
+        self.hide_list_drops(Instant::now());
+        let tabs = self.dragged_tabs(d);
+        let changed = match self.list_drop_of(d, over) {
+            drag::ListDrop::Join(page) => {
+                let shown = self.tree.page;
+                let moved = tabs.iter().fold(false, |any, t| self.tree.move_tab_to_page(*t, page) || any);
+                if moved {
+                    self.preview_tab = after_drop(self.preview_tab, d.tab);
+                    self.settle_page(shown, Some(page), cx);
+                }
+                moved
+            }
+            drag::ListDrop::NewRow => {
+                // Read before the tab moves, while its pane and index are where it was dragged.
+                let name = match tabs.as_slice() {
+                    [only] => self.tree.tab_name(*only).map(str::to_string),
+                    _ => None,
+                };
+                match self.tree.page_from_tabs(&tabs) {
+                    Some(new) => {
+                        self.preview_tab = after_drop(self.preview_tab, d.tab);
+                        if name.is_some() {
+                            self.tree.set_session_name(new, name);
+                        }
+                        self.page_made.insert(new, sessions::now_ms());
+                        true
+                    }
+                    None => false,
+                }
+            }
+            drag::ListDrop::Nothing => false,
+        };
+        if changed {
+            self.reorder = None;
+            self.save(cx);
+        } else if let Some(r) = self.reorder.as_mut() {
             r.end(Instant::now());
         }
         cx.notify();
@@ -6633,6 +6755,9 @@ impl Render for Root {
                     // A tab drag released outside the window, where no mouse-up reaches us: it
                     // ends here and in gpui, else a later click would drop it.
                     if root.drop_target.take().is_some() {
+                        cx.notify();
+                    }
+                    if root.hide_list_drops(Instant::now()) {
                         cx.notify();
                     }
                     if let Some(r) = root.reorder.as_mut().filter(|r| !r.ended()) {

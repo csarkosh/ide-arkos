@@ -630,9 +630,20 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
     let (selected_bg, hover_bg, dim) = (c.tab_active.hsla(), c.tab_inactive.hsla(), c.text_dim.hsla());
     // The keyboard's cursor (Cmd+0), drawn as a ring while the list has the keys.
     let cursor = root.session_cursor.filter(|_| root.session_list_focused);
+    // The row a dragged tab would join, and how far its ring has faded in.
+    let lit = root.list_drop_row.current(root.frame_now).map(|(page, opacity)| (*page, opacity));
 
     let pad = 10.0 + style.sidebar_pad;
-    let mut list = div().id("session-rows").flex_1().min_h_0().overflow_y_scroll().flex().flex_col();
+    root.list_rows.clear();
+    let mut list = div()
+        .id("session-rows")
+        .flex_1()
+        .min_h_0()
+        .overflow_y_scroll()
+        .flex()
+        .flex_col()
+        // The part of the list that shows: a row scrolled out of it is not under the pointer.
+        .on_drag_move(cx.listener(|root, ev: &gpui::DragMoveEvent<crate::drag::TabDrag>, _window, _cx| root.list_view = ev.bounds));
     for (kind, rows) in groups {
         // The list having the keys opens no group (Cyrus, 2026-11-17: "when Pane 0 is in focus, it
         // should not uncollapse all the session states"), so the ring passes over a folded
@@ -717,6 +728,9 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
                 .gap(px(6.0))
                 .when(is_selected && !highlights, |d| d.bg(selected_bg))
                 .when(cursor == Some(Stop::Row(key)), |d| d.child(crate::chrome::keys_ring(&theme, &style)))
+                // A tab dragged over this row would join it: the ring fades in (`Transient`'s
+                // own enter and exit, ENTER on standard decelerate and EXIT on accelerate).
+                .when_some(lit.filter(|(p, _)| key == RowKey::Live(*p)), |d, (_, opacity)| d.child(crate::chrome::keys_ring(&theme, &style).opacity(opacity)))
                 .when(!highlights, |d| d.hover(move |s| s.bg(hover_bg)))
                 .when(highlights, |d| {
                     let w_hover = weak.clone();
@@ -742,6 +756,22 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
                     )
                 })
                 .cursor_pointer()
+                // A tab dropped on a live row joins it; the block above the list decides what is lit
+                // (`Root::track_list_drag`), from the bounds each row reports.
+                .when(e.ended.is_none(), |d| {
+                    let w_rows = weak.clone();
+                    d.on_drop(cx.listener(move |root, d: &crate::drag::TabDrag, _window, cx| root.drop_on_list(d, Some(page), cx)))
+                        .child(
+                            gpui::canvas(
+                                move |b, _window, cx| {
+                                    let _ = w_rows.update(cx, |root, _| root.list_rows.push((page, b)));
+                                },
+                                |_, _, _, _| {},
+                            )
+                            .absolute()
+                            .size_full(),
+                        )
+                })
                 // A live row not being renamed is dragged onto a pane, to bring its tabs in.
                 .when_some(drag_value, |d, value| d.on_drag(value, |v: &crate::drag::SessionDrag, position, _window, cx| cx.new(|_| v.clone().at(position))))
                 // The mark's slot, level with the name.

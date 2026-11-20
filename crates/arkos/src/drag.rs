@@ -82,7 +82,6 @@ impl Render for SessionDrag {
 
 /// What dropping dragged tabs on the Sessions list does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Tasks 4 and 5 use it.
 pub enum ListDrop {
     /// The tabs join the session of this page.
     Join(PageKey),
@@ -94,7 +93,6 @@ pub enum ListDrop {
 /// Decides a tab drop on the Sessions list. `over` is the live row under the pointer, and None
 /// anywhere else in the list (an ended row included). `whole_of_page` says the dragged tabs are
 /// every tab of their page, which a new row would only rename.
-#[allow(dead_code)] // Tasks 4 and 5 use it.
 pub fn list_drop(tab_page: PageKey, over: Option<PageKey>, whole_of_page: bool) -> ListDrop {
     match over {
         Some(page) if page == tab_page => ListDrop::Nothing,
