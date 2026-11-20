@@ -3722,6 +3722,45 @@ impl Root {
         cx.notify();
     }
 
+    /// Lands a dragged session row: every tab of its page joins the session shown, at the bar's
+    /// insertion point, in a pane's middle, or in a new pane split off one. The session's name
+    /// goes with its page, and what was kept for the page (reminder, row state) is dropped.
+    pub fn drop_session(&mut self, d: &drag::SessionDrag, target: drag::DropTarget, cx: &mut Context<Self>) {
+        self.drop_target = None;
+        if !drag::session_drop_lands(d.page, self.tree.page) || !self.tree.page_keys().contains(&d.page) {
+            cx.notify();
+            return;
+        }
+        let (into, place) = match target {
+            drag::DropTarget::TabBar { pane, at } => (pane, tree::Place::At(at)),
+            drag::DropTarget::Pane { pane, zone: drag::Zone::Center } => (pane, tree::Place::End),
+            drag::DropTarget::Pane { pane, zone } => {
+                let side = match zone {
+                    drag::Zone::Left => Side::Left,
+                    drag::Zone::Right => Side::Right,
+                    drag::Zone::Top => Side::Top,
+                    _ => Side::Bottom,
+                };
+                (pane, tree::Place::Side(side))
+            }
+        };
+        if self.tree.merge_page(d.page, into, place) {
+            self.reminders.remove(&d.page);
+            self.page_made.remove(&d.page);
+            if self.held.is_some_and(|h| h.0 == d.page) {
+                self.held = None;
+            }
+            if self.row_rename.as_ref().is_some_and(|r| r.page == d.page) {
+                self.row_rename = None;
+            }
+            if self.session_cursor == Some(sessions_list::Stop::Row(sessions_list::RowKey::Live(d.page))) {
+                self.session_cursor = None;
+            }
+            self.save(cx);
+        }
+        cx.notify();
+    }
+
     /// Moves the tab with id `tab` to `target`: onto a tab bar, into a pane (center), or into a
     /// new pane split off one (an edge zone). The source pane closes when this emptied it.
     /// False when nothing changed.
@@ -6564,6 +6603,11 @@ impl Render for Root {
             .bg(theme.chrome.window_bg.alpha(style.ground_alpha))
             .flex()
             .flex_col()
+            .on_drag_move(cx.listener(|root, _ev: &DragMoveEvent<drag::SessionDrag>, _window, cx| {
+                // As for a tab: forget the last target before a pane or bar claims it.
+                root.drop_target = None;
+                cx.notify();
+            }))
             .on_drag_move(cx.listener(|root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
                 // Capture listeners run parent first, so this forgets the last target before
                 // the bar, tab or pane under the pointer claims it; over none of them, none.

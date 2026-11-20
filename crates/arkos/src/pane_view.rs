@@ -566,6 +566,20 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
                 cx.notify();
             }
         }))
+        .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::SessionDrag>, _window, cx| {
+            if ev.bounds.contains(&ev.event.position) && drag::session_drop_lands(ev.drag(cx).page, root.tree.page) {
+                let zone = drag::zone_for(ev.bounds, ev.event.position);
+                root.drop_target = Some(drag::DropTarget::Pane { pane, zone });
+                cx.notify();
+            }
+        }))
+        .on_drop(cx.listener(move |root, d: &drag::SessionDrag, _window, cx| match root.drop_target {
+            Some(target @ drag::DropTarget::Pane { pane: p, .. }) if p == pane => root.drop_session(d, target, cx),
+            _ => {
+                root.drop_target = None;
+                cx.notify();
+            }
+        }))
         .child(measure)
         .child(body)
         .children(overlay);
@@ -738,6 +752,20 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
                 _ => drag::DropTarget::TabBar { pane, at: usize::MAX },
             };
             root.drop_tab(d, target, cx);
+        }))
+        .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::SessionDrag>, _window, cx| {
+            // Off every tab, the bar appends; the tabs claim an exact insertion point.
+            if ev.bounds.contains(&ev.event.position) && drag::session_drop_lands(ev.drag(cx).page, root.tree.page) {
+                root.drop_target = Some(drag::DropTarget::TabBar { pane, at: usize::MAX });
+                cx.notify();
+            }
+        }))
+        .on_drop(cx.listener(move |root, d: &drag::SessionDrag, _window, cx| {
+            let target = match root.drop_target {
+                Some(t @ drag::DropTarget::TabBar { pane: p, .. }) if p == pane => t,
+                _ => drag::DropTarget::TabBar { pane, at: usize::MAX },
+            };
+            root.drop_session(d, target, cx);
         }));
     let handle = root.bar_scroll.entry(pane).or_default().clone();
     let rename = root.tab_rename.as_ref().filter(|r| r.pane == pane).map(|r| (r.tab, r.edit.clone()));
@@ -802,6 +830,13 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
             .when_some(drag_value, |el, value| {
                 el.on_drag(value, |d: &drag::TabDrag, position, _window, cx| cx.new(|_| d.clone().at(position)))
             })
+            .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::SessionDrag>, _window, cx| {
+                if ev.bounds.contains(&ev.event.position) && drag::session_drop_lands(ev.drag(cx).page, root.tree.page) {
+                    let at = drag::insert_index(ev.bounds, ev.event.position, idx);
+                    root.drop_target = Some(drag::DropTarget::TabBar { pane, at });
+                    cx.notify();
+                }
+            }))
             .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
                 // A tab from this bar is placed by the bar itself (the gap moves the tabs).
                 if ev.bounds.contains(&ev.event.position) && ev.drag(cx).pane != pane {

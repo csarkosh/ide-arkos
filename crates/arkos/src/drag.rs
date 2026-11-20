@@ -58,7 +58,6 @@ fn chip(position: Point<Pixels>, bg: Rgb, fg: Rgb, family: &SharedString, label:
 
 /// A whole session dragged by its pane number or tab; the drop moves every tab of `page`.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)] // Tasks 4 and 5 start and receive this drag.
 pub struct SessionDrag {
     pub page: PageKey,
     pub label: String,
@@ -68,7 +67,6 @@ pub struct SessionDrag {
     pub family: SharedString,
 }
 
-#[allow(dead_code)] // Tasks 4 and 5 use it.
 impl SessionDrag {
     pub fn at(mut self, position: Point<Pixels>) -> Self {
         self.position = position;
@@ -107,7 +105,6 @@ pub fn list_drop(tab_page: PageKey, over: Option<PageKey>, whole_of_page: bool) 
 }
 
 /// Whether a session dropped on the panes of page `shown` moves anything: not onto itself.
-#[allow(dead_code)] // Tasks 4 and 5 use it.
 pub fn session_drop_lands(dragged: PageKey, shown: PageKey) -> bool {
     dragged != shown
 }

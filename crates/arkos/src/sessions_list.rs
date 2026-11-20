@@ -695,6 +695,14 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
             };
             let is_selected = key == RowKey::Live(page) && shown == page;
             let state = blocks::HighlightState::of(is_selected, hovered == Some(mark_key)).filter(|_| highlights);
+            let drag_value = (e.ended.is_none() && !root.row_rename.as_ref().is_some_and(|r| r.page == e.page)).then(|| crate::drag::SessionDrag {
+                page: e.page,
+                label: e.name.clone(),
+                position: Default::default(),
+                bg: c.banner,
+                fg: c.text,
+                family: root.ui_family(),
+            });
             let row = div()
                 .id(match key {
                     RowKey::Live(p) => ("session-row", p as usize),
@@ -734,6 +742,8 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
                     )
                 })
                 .cursor_pointer()
+                // A live row not being renamed is dragged onto a pane, to bring its tabs in.
+                .when_some(drag_value, |d, value| d.on_drag(value, |v: &crate::drag::SessionDrag, position, _window, cx| cx.new(|_| v.clone().at(position))))
                 // The mark's slot, level with the name.
                 .child(div().flex_none().w(px(12.0)).h(px(style.ui(20.0))).flex().items_center().justify_center().children(mark.glyph(&theme, breath)))
                 .child(
