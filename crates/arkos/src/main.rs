@@ -398,6 +398,8 @@ pub struct Root {
     /// Each session's reminder, by its page (sessions hold grids spec, section 4). Saved with
     /// the workspace.
     pub reminders: HashMap<tree::PageKey, reminder::Reminder>,
+    /// The order the user gave the rows within each Sessions group. Saved with the workspace.
+    pub row_order: sessions_list::RowOrder,
     /// When `reminder_came` last looked, in milliseconds since the Unix epoch.
     pub reminders_checked: u64,
     /// The count the Dock icon shows: this window's sessions that call for the user.
@@ -882,6 +884,7 @@ impl Root {
         let saved_lines: HashMap<SessionId, String> = saved.as_ref().map(|w| w.lines.iter().cloned().collect()).unwrap_or_default();
         let saved_marks: HashMap<SessionId, attention::Marks> = saved.as_ref().map(|w| w.marks.iter().copied().collect()).unwrap_or_default();
         let saved_ended = saved.as_ref().map(|w| w.ended.clone()).unwrap_or_default();
+        let row_order = saved.as_ref().map(|w| w.row_order.clone()).unwrap_or_default();
         let mut reminders: HashMap<tree::PageKey, reminder::Reminder> = saved.as_ref().map(|w| w.reminders.iter().copied().collect()).unwrap_or_default();
         let mut saved_marks = saved_marks;
         let tree = match saved {
@@ -923,6 +926,7 @@ impl Root {
         Self {
             tree,
             reminders,
+            row_order,
             reminders_checked: sessions::now_ms(),
             sessions,
             save_queue: SharedSaveQueue::default(),
@@ -2274,7 +2278,7 @@ impl Root {
         reminders.sort_by_key(|(p, _)| *p);
         let mut lines: Vec<(SessionId, String)> = self.sessions.lines.iter().filter(|(s, _)| shown.contains(s)).map(|(s, l)| (*s, l.clone())).collect();
         lines.sort_by_key(|(s, _)| s.0);
-        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), marks, reminders, grid: None, ended: self.ended.clone(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines, folded_sections: Some(self.sessions_folded.iter().copied().collect()), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone(), folds: self.folds.clone(), diagram_modes: self.diagram_modes.clone() };
+        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), marks, reminders, row_order: self.row_order.clone(), grid: None, ended: self.ended.clone(), sides: Vec::new(), side_of: None, side_ratio: None, side_stacked: None, side_place: None, owners: Vec::new(), lines, folded_sections: Some(self.sessions_folded.iter().copied().collect()), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone(), folds: self.folds.clone(), diagram_modes: self.diagram_modes.clone() };
         request_save(&self.save_queue, ws, cx);
     }
 
@@ -2474,7 +2478,7 @@ impl Root {
                 // Left folds an open group (and steps from a session up to its heading), Right opens
                 // a folded one (and steps into an open one), as the Files tab's keys do its folders.
                 if let Some(at) = self.session_cursor {
-                    let groups = sessions_list::grouped(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held));
+                    let groups = sessions_list::grouped_in(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held), &self.row_order);
                     match sessions_list::group_move(at, open, &groups, &self.sessions_folded) {
                         Some(sessions_list::GroupMove::Fold(kind)) | Some(sessions_list::GroupMove::Open(kind)) => {
                             sessions_list::toggle_fold(&mut self.sessions_folded, kind);
@@ -2781,7 +2785,7 @@ impl Root {
 
     /// The rows the session list shows now, in order, for the keyboard's cursor.
     fn shown_session_rows(&self) -> Vec<sessions_list::Stop> {
-        let groups = sessions_list::grouped(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held));
+        let groups = sessions_list::grouped_in(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held), &self.row_order);
         // As the list shows them: each group's heading, its rows unless folded.
         sessions_list::cursor_stops(&groups, &self.sessions_folded)
     }
@@ -2835,7 +2839,7 @@ impl Root {
     /// group's included, wrapping.
     fn cycle_session(&mut self, delta: isize, cx: &mut Context<Self>) {
         let rows = sessions_list::shown_rows(
-            &sessions_list::grouped(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held)),
+            &sessions_list::grouped_in(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held), &self.row_order),
             // Every group's rows, a folded group's too.
             &sessions_list::Folded::default(),
         );
@@ -3026,7 +3030,7 @@ impl Root {
 
     /// The page to show when `page`, shown, goes: the row listed after it, else the one before.
     fn row_beside(&self, page: tree::PageKey) -> Option<tree::PageKey> {
-        let rows: Vec<tree::PageKey> = sessions_list::grouped(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held)).into_iter().flat_map(|(_, rows)| rows).filter(|e| e.ended.is_none()).map(|e| e.page).collect();
+        let rows: Vec<tree::PageKey> = sessions_list::grouped_in(sessions_list::hold(sessions_list::entries(self, sessions::now_ms()), self.held), &self.row_order).into_iter().flat_map(|(_, rows)| rows).filter(|e| e.ended.is_none()).map(|e| e.page).collect();
         let at = rows.iter().position(|p| *p == page)?;
         rows.get(at + 1).or_else(|| at.checked_sub(1).and_then(|i| rows.get(i))).copied()
     }
@@ -3110,7 +3114,7 @@ impl Root {
     /// Goes to the next session that is the user's move: a blocked one first, then an unread
     /// one, then one looked at and not answered. A notice says so when there is none.
     pub fn next_calling_session(&mut self, cx: &mut Context<Self>) {
-        let groups = sessions_list::grouped(sessions_list::entries(self, sessions::now_ms()));
+        let groups = sessions_list::grouped_in(sessions_list::entries(self, sessions::now_ms()), &self.row_order);
         match sessions_list::next_calling(&groups, Some(self.tree.page)) {
             Some(page) => self.show_row(page, cx),
             None => self.show_notice("no session needs you".to_string(), cx),
@@ -6529,7 +6533,7 @@ impl Render for Root {
         self.window_active = window.is_window_active();
         self.sync_shown();
         // The Dock icon says how many sessions call for the user.
-        let calling = sessions_list::calling(&sessions_list::grouped(sessions_list::entries(self, sessions::now_ms())));
+        let calling = sessions_list::calling(&sessions_list::grouped_in(sessions_list::entries(self, sessions::now_ms()), &self.row_order));
         if calling != self.dock_badge {
             self.dock_badge = calling;
             screen::set_dock_badge(calling);

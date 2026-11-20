@@ -220,7 +220,51 @@ pub fn badge(e: &Entry) -> Badge {
 /// The entries under their groups, in `Attention::LISTED`'s order (New first), a group with nothing in it left
 /// out. Within a group the newest change is first, and sessions of the same moment keep the
 /// order they came in (the tabs' own), so the list does not shuffle on its own.
+#[cfg(test)]
 pub fn grouped(entries: Vec<Entry>) -> Vec<(Attention, Vec<Entry>)> {
+    grouped_in(entries, &RowOrder::default())
+}
+
+/// The order the user gave the rows of each group, as the pages in the order they last left
+/// them. Rows not listed (arrivals) are shown first, newest first, and the listed ones follow in
+/// the list's order. A page that leaves its group is dropped from the list (`prune`), so it
+/// comes back at the top.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RowOrder(pub Vec<(Attention, Vec<PageKey>)>);
+
+impl RowOrder {
+    /// Whether no group has an order.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Puts `page` in `group` before the row at index `at` of `shown` (the group's live rows as
+    /// now shown, `page` left out if it is among them). `at` is clamped. The group's list
+    /// becomes `shown` with `page` in that place.
+    pub fn place(&mut self, group: Attention, shown: &[PageKey], page: PageKey, at: usize) {
+        let mut list: Vec<PageKey> = shown.iter().copied().filter(|p| *p != page).collect();
+        list.insert(at.min(list.len()), page);
+        match self.0.iter_mut().find(|(g, _)| *g == group) {
+            Some((_, l)) => *l = list,
+            None => self.0.push((group, list)),
+        }
+    }
+
+    /// Drops from each group's list the pages that are not live rows of that group now, and
+    /// the lists left empty.
+    pub fn prune(&mut self, groups: &[(Attention, Vec<Entry>)]) {
+        for (group, list) in &mut self.0 {
+            let live: Vec<PageKey> = groups.iter().filter(|(g, _)| g == group).flat_map(|(_, rows)| rows).filter(|e| e.ended.is_none()).map(|e| e.page).collect();
+            list.retain(|p| live.contains(p));
+        }
+        self.0.retain(|(_, list)| !list.is_empty());
+    }
+}
+
+/// `grouped`, with the user's order within each group: the rows not in the group's list first,
+/// newest first, then the listed ones in the list's order. Ended rows keep their place after
+/// the live ones.
+pub fn grouped_in(entries: Vec<Entry>, order: &RowOrder) -> Vec<(Attention, Vec<Entry>)> {
     let mut groups: Vec<(Attention, Vec<Entry>)> = Vec::new();
     for kind in Attention::LISTED {
         let mut rows: Vec<Entry> = entries.iter().filter(|e| e.group == kind).cloned().collect();
@@ -228,6 +272,15 @@ pub fn grouped(entries: Vec<Entry>) -> Vec<(Attention, Vec<Entry>)> {
             continue;
         }
         rows.sort_by(|a, b| b.since.cmp(&a.since));
+        if let Some((_, list)) = order.0.iter().find(|(g, _)| *g == kind).filter(|(_, l)| !l.is_empty()) {
+            let (live, ended): (Vec<Entry>, Vec<Entry>) = rows.into_iter().partition(|e| e.ended.is_none());
+            let (listed, mut fresh): (Vec<Entry>, Vec<Entry>) = live.into_iter().partition(|e| list.contains(&e.page));
+            let mut listed = listed;
+            listed.sort_by_key(|e| list.iter().position(|p| *p == e.page));
+            fresh.extend(listed);
+            fresh.extend(ended);
+            rows = fresh;
+        }
         groups.push((kind, rows));
     }
     groups
@@ -631,7 +684,8 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
     let theme = root.theme.clone();
     let c = &theme.chrome;
     let now = now_ms();
-    let groups = grouped(hold(entries(root, now), root.held));
+    let groups = grouped_in(hold(entries(root, now), root.held), &root.row_order);
+    root.row_order.prune(&groups);
     let weak = cx.weak_entity();
     let (highlights, hovered) = (root.effect_highlights(), root.effect_hover);
     let shown = root.tree.page;
@@ -1062,6 +1116,36 @@ mod tests {
         assert_eq!(list_key("down", false), ListKey::Pass, "a chord is its command's");
         let sidebar = include_str!("sidebar.rs");
         assert!(!sidebar.contains("render_filter") && !include_str!("sessions_list.rs").contains("\"Filter sessions\""), "no filter field in Pane 0");
+    }
+
+    #[test]
+    fn rows_the_user_placed_keep_their_order_under_new_arrivals() {
+        let mut order = RowOrder::default();
+        order.place(Attention::Quiet, &[1, 2], 3, 0);
+        let rows = vec![entry(1, Attention::Quiet, 10), entry(2, Attention::Quiet, 20), entry(3, Attention::Quiet, 5), entry(4, Attention::Quiet, 1)];
+        let groups = grouped_in(rows, &order);
+        let pages: Vec<PageKey> = groups[0].1.iter().map(|e| e.page).collect();
+        assert_eq!(pages, [4, 3, 1, 2], "the arrival first, then the user's order");
+    }
+
+    #[test]
+    fn a_placed_row_that_leaves_its_group_comes_back_at_the_top() {
+        let mut order = RowOrder::default();
+        order.place(Attention::Quiet, &[1, 2], 3, 2);
+        let away = grouped_in(vec![entry(1, Attention::Quiet, 10), entry(2, Attention::Quiet, 20), entry(3, Attention::Working, 30)], &order);
+        order.prune(&away);
+        let back = grouped_in(vec![entry(1, Attention::Quiet, 10), entry(2, Attention::Quiet, 20), entry(3, Attention::Quiet, 1)], &order);
+        let pages: Vec<PageKey> = back[0].1.iter().map(|e| e.page).collect();
+        assert_eq!(pages, [3, 1, 2]);
+    }
+
+    #[test]
+    fn a_saved_order_naming_gone_pages_is_ignored() {
+        let mut order = RowOrder::default();
+        order.place(Attention::Quiet, &[1, 9], 2, 1);
+        let groups = grouped_in(vec![entry(1, Attention::Quiet, 10), entry(2, Attention::Quiet, 20)], &order);
+        let pages: Vec<PageKey> = groups[0].1.iter().map(|e| e.page).collect();
+        assert_eq!(pages, [1, 2]);
     }
 
     fn entry(id: u64, attention: Attention, since: u64) -> Entry {

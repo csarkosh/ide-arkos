@@ -365,7 +365,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
     // The sessions first: what they take is taken from the two sections under them.
     // Reported again by the list's frame below, so a list not drawn leaves nothing stale.
     root.list_view = gpui::Bounds::default();
-    let session_groups = crate::sessions_list::grouped(crate::sessions_list::entries(root, crate::sessions::now_ms()));
+    let session_groups = crate::sessions_list::grouped_in(crate::sessions_list::entries(root, crate::sessions::now_ms()), &root.row_order);
     let sessions_h = sessions_height(inbox, files_view, total_h, switch_h);
     // Where a tab dragged into the list would become a session: a dashed row under the button,
     // opening over `ENTER` (the transient's own enter and exit) to a row's height, so the rows
