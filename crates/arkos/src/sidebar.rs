@@ -370,6 +370,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
     // Where a tab dragged into the list would become a session: a dashed row under the button,
     // opening over `ENTER` (the transient's own enter and exit) to a row's height, so the rows
     // slide down to make room. Outside the list's scroll, so it never scrolls away.
+    root.list_placeholder_h = root.list_drop_new.current(now).map_or(0.0, |(_, open)| crate::sessions_list::ROW_H * open);
     let placeholder = root.list_drop_new.current(now).map(|(label, open)| {
         div()
             .flex_none()
@@ -410,7 +411,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
             let d = ev.drag(cx).clone();
             root.track_list_drag(ev.bounds, ev.event.position, &d, cx);
         }))
-        .on_drop(cx.listener(|root, d: &crate::drag::TabDrag, _window, cx| root.drop_on_list(d, None, cx)))
+        .on_drop(cx.listener(|root, d: &crate::drag::TabDrag, _window, cx| root.drop_on_list(d, cx)))
         .children(placeholder)
         .when(inbox && session_groups.is_empty(), |d| d.child(div().px(px(12.0 + style.sidebar_pad)).py(px(8.0)).text_size(px(style.ui(12.0))).text_color(c.text_dim.hsla()).child("No sessions yet.")).child(sidebar_end_marker(cx)))
         .when(!session_groups.is_empty() && sessions_h > 0.0, |d| d.child(list_with_bounds(crate::sessions_list::render(root, width, inbox, cx).opacity(sessions_o), cx)));

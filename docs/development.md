@@ -584,7 +584,18 @@ Things only a person at the screen can check, in order of value:
 - sessions: "+ New session" is a small filled button, as wide as its words, at the left at the top of the list; the session it starts is
   listed under New, leaves New at its first prompt, and an untouched one is under Quiet ten
   minutes later without a click
-- session drag: drag a tab over another session's row under each effect (none, watercolor, matrix, space, runic, overworld): the row lights in that effect's keyboard ring look (outline, pill, glow, pixel or wash) and fades in and out, never a bare box; over the gaps, a group heading or the empty space a dashed row opens under "+ New session" and the rows below slide down, then slide back when the tab leaves the list; with Reduce Motion on both are instant; release the tab outside the window and nothing moves, the placeholder closes; drop a tab on the session's own row and nothing happens; drop a terminal tab you renamed and the new row takes its name; a pane dragged by its number joins or makes a session with all its tabs; drag a session row onto a pane's tab bar, middle and each edge and its tabs arrive as a tab would, its row goes; merge a session that had a reminder into the one on screen and the reminder goes with its row while the shown session keeps its own; a session left holding only files is listed under Quiet, and its menu has Rename and Close only, Close ending its tabs and its row
+- session drag: drag a tab over another session's row under each effect (none, watercolor, matrix,
+  space, runic, overworld): the row lights in that effect's keyboard ring look (outline, pill,
+  glow, pixel or wash) and fades in and out, never a bare box; over the gaps, a group heading or
+  the empty space a dashed row opens under "+ New session" and the rows below slide down, then
+  slide back when the tab leaves the list; with Reduce Motion on both are instant; release the tab
+  outside the window and nothing moves, the placeholder closes; drop a tab on the session's own
+  row and nothing happens; drop a terminal tab you renamed and the new row takes its name; a pane
+  dragged by its number joins or makes a session with all its tabs; drag a session row onto a
+  pane's tab bar, middle and each edge and its tabs arrive as a tab would, its row goes; merge a
+  session that had a reminder into the one on screen and the reminder goes with its row while the
+  shown session keeps its own; a session left holding only files is listed under Quiet, and its
+  menu has Rename and Close only, Close ending its tabs and its row
 - layouts: "A session's files open" on Neighbor: with one pane an `arkos open` splits a pane
   to the right, the next goes into that pane, and from the right pane it goes to the left one;
   on a 13 or 14 inch MacBook with the sidebar shown the first open splits on top, on an

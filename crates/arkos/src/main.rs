@@ -469,6 +469,12 @@ pub struct Root {
     /// Where each live Sessions row was laid out last frame, and the part of the list that shows
     /// (from its last drag-move): what a tab dragged over the list is over.
     pub list_rows: Vec<(tree::PageKey, gpui::Bounds<gpui::Pixels>)>,
+    /// How far the placeholder row had opened, in pixels, in the frame `list_rows` was measured
+    /// in: the rows sit that far below where they rest (`sessions_list::row_under`).
+    pub list_placeholder_h: f32,
+    /// What dropping on the list does, as `track_list_drag` last decided it: what was lit is
+    /// what lands.
+    pub list_drop: drag::ListDrop,
     pub list_view: gpui::Bounds<gpui::Pixels>,
     /// Each pane's drop tint as drawn: it follows `drop_target` a frame at a time, fading and
     /// gliding, so the logic above stays a plain `Option`.
@@ -1017,6 +1023,8 @@ impl Root {
             list_drop_row: Transient::Hidden,
             list_drop_new: Transient::Hidden,
             list_rows: Vec::new(),
+            list_placeholder_h: 0.0,
+            list_drop: drag::ListDrop::Nothing,
             list_view: gpui::Bounds::default(),
             drop_tints: HashMap::new(),
             glow: motion::Fades::default(),
@@ -3764,10 +3772,13 @@ impl Root {
         let now = Instant::now();
         let mut changed = false;
         if !block.contains(&at) {
+            self.list_drop = drag::ListDrop::Nothing;
             changed = self.hide_list_drops(now);
         } else {
-            let over = self.list_rows.iter().find(|(_, b)| b.contains(&at) && self.list_view.contains(&at)).map(|(p, _)| *p);
-            match self.list_drop_of(d, over) {
+            let over = sessions_list::row_under(&self.list_rows, self.list_placeholder_h, at).filter(|_| self.list_view.contains(&at));
+            let decided = self.list_drop_of(d, over);
+            self.list_drop = decided;
+            match decided {
                 drag::ListDrop::Join(page) => {
                     if self.list_drop_row.value() != Some(&page) {
                         self.list_drop_row.show(page, now);
@@ -3801,11 +3812,16 @@ impl Root {
     /// page shown stays, or goes to that row when it is left with no tab); anywhere else in the
     /// list they become a new session, named as the tab is when it was alone and had a name. Over
     /// the tabs' own row, or with the tabs being their whole session, nothing moves.
-    pub fn drop_on_list(&mut self, d: &drag::TabDrag, over: Option<tree::PageKey>, cx: &mut Context<Self>) {
+    pub fn drop_on_list(&mut self, d: &drag::TabDrag, cx: &mut Context<Self>) {
         self.drop_target = None;
         self.hide_list_drops(Instant::now());
         let tabs = self.dragged_tabs(d);
-        let changed = match self.list_drop_of(d, over) {
+        // What was lit is what lands; a row that went since lands as nothing.
+        let decided = match std::mem::replace(&mut self.list_drop, drag::ListDrop::Nothing) {
+            drag::ListDrop::Join(page) if !self.tree.page_keys().contains(&page) => drag::ListDrop::Nothing,
+            other => other,
+        };
+        let changed = match decided {
             drag::ListDrop::Join(page) => {
                 let shown = self.tree.page;
                 let moved = tabs.iter().fold(false, |any, t| self.tree.move_tab_to_page(*t, page) || any);
@@ -3814,6 +3830,9 @@ impl Root {
                     self.settle_page(shown, Some(page), cx);
                     if !self.tree.page_keys().contains(&shown) && self.row_rename.as_ref().is_some_and(|r| r.page == shown) {
                         self.row_rename = None;
+                    }
+                    if !self.tree.page_keys().contains(&shown) && self.session_cursor == Some(sessions_list::Stop::Row(sessions_list::RowKey::Live(shown))) {
+                        self.session_cursor = None;
                     }
                 }
                 moved

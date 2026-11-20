@@ -26,6 +26,15 @@ const MARK_ENDED: u64 = 0x5E55_2000_0000_0000;
 
 /// A session's row: two lines, its name and age over its line.
 pub const ROW_H: f32 = 40.0;
+
+/// The live row a pointer at `at` is over, judged by where the rows rest. `rows` holds each row's
+/// bounds as last drawn, and `placeholder_h` is the height the drag's placeholder row had opened
+/// to in that same frame, which pushed every row down by it. Taking it off again means what is
+/// under the pointer does not change as the placeholder opens and closes.
+pub fn row_under(rows: &[(PageKey, gpui::Bounds<gpui::Pixels>)], placeholder_h: f32, at: gpui::Point<gpui::Pixels>) -> Option<PageKey> {
+    let at = gpui::point(at.x, at.y + px(placeholder_h));
+    rows.iter().find(|(_, b)| b.contains(&at)).map(|(p, _)| *p)
+}
 /// A group's heading.
 pub const GROUP_H: f32 = 20.0;
 
@@ -758,7 +767,7 @@ pub fn render(root: &mut Root, width: f32, report_end: bool, cx: &mut Context<Ro
                 // (`Root::track_list_drag`), from the bounds each row reports.
                 .when(e.ended.is_none(), |d| {
                     let w_rows = weak.clone();
-                    d.on_drop(cx.listener(move |root, d: &crate::drag::TabDrag, _window, cx| root.drop_on_list(d, Some(page), cx)))
+                    d.on_drop(cx.listener(move |root, d: &crate::drag::TabDrag, _window, cx| root.drop_on_list(d, cx)))
                         .child(
                             gpui::canvas(
                                 move |b, _window, cx| {
@@ -1009,6 +1018,24 @@ pub fn render_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pointer_over_a_heading_stays_over_no_row_whether_the_placeholder_is_shut_or_open() {
+        let at = |y: f32| gpui::point(px(10.0), px(y));
+        let bounds = |y: f32| gpui::Bounds::new(gpui::point(px(0.0), px(y)), gpui::size(px(200.0), px(ROW_H)));
+        // A heading rests at 80 to 100 and the row under it at 100 to 140.
+        let shut = [(7, bounds(100.0))];
+        assert_eq!(row_under(&shut, 0.0, at(90.0)), None, "over the heading, placeholder shut");
+        assert_eq!(row_under(&shut, 0.0, at(120.0)), Some(7), "over the row, placeholder shut");
+        // The placeholder has opened to a row's height and pushed the row down to 140 to 180.
+        let open = [(7, bounds(100.0 + ROW_H))];
+        assert_eq!(row_under(&open, ROW_H, at(90.0)), None, "over the heading, placeholder open");
+        assert_eq!(row_under(&open, ROW_H, at(120.0)), Some(7), "over the row, placeholder open");
+        // Half open, the row has moved half a row.
+        let half = [(7, bounds(100.0 + ROW_H / 2.0))];
+        assert_eq!(row_under(&half, ROW_H / 2.0, at(90.0)), None, "over the heading, placeholder half open");
+        assert_eq!(row_under(&half, ROW_H / 2.0, at(120.0)), Some(7), "over the row, placeholder half open");
+    }
 
     #[test]
     fn a_click_on_a_session_hands_the_keys_to_its_pane_and_enter_keeps_them_in_the_list() {

@@ -72,13 +72,14 @@ with each session (seen, done, its reminder) is this window's own and is saved w
 window on another folder keeps its own list.
 
 Drag a tab of any kind (a terminal, a file, a grid, a video, a web page) from the pane onto the
-Sessions list. Over another session's row, that row lights up and the tab joins that session, at
-the end of its focused pane, when you let go. Anywhere else in the list (between rows, on a
-heading or in the empty space), a dashed row opens under "+ New session" and the rows below slide
-down to make room; let go and the tab becomes a session of its own, named after the tab when you
-named the tab yourself. A pane dragged by its number does the same with all its tabs. Dropped on
-its own session's row, a tab does nothing, and nothing lights. A session that holds only files is
-listed under Quiet, and its menu has Rename and Close.
+Sessions list. Over another session's row, that row lights up and the tab joins that session, at the
+end of its focused pane, when you let go. Anywhere else in the list (between rows, on a heading or
+in the empty space), a dashed row opens under "+ New session" and the rows below slide down to make
+room; let go and the tab becomes a session of its own, named after the tab when you named the tab
+yourself. A pane dragged by its number does the same with all its tabs. Dropped on its own session's
+row, a tab does nothing, and nothing lights. A closed session's row (under Done) cannot be dragged,
+and a tab dropped on it makes a new session. A session that holds only files is listed under Quiet,
+and its menu has Rename and Close.
 
 No hook says a permission or a question was answered, so Enter or a digit typed into a session
 that needs you counts as the answer and shows it working again.
