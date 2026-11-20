@@ -453,3 +453,263 @@ Expected: every `test result: ok`, except the two known `arkosd` pty failures. T
 git add docs/guide.md docs/development.md
 git commit -m "Docs: dragging between the Sessions list and the panes"
 ```
+
+---
+
+## Addendum, 2026-11-19: tasks 7 to 11
+
+These tasks implement the spec's addendum, "Session onto session, and reordering rows". The
+Global Constraints above bind them.
+
+### Addendum Review Focus
+
+1. **A row the user placed that leaves its group and comes back.** It must arrive at the top,
+   not at its old place. Pruning has to run whenever the rows are grouped for the screen, not
+   only on save.
+2. **A drop into another group's gap for a session whose "Move to" does not offer that group.**
+   It shows no line and does nothing.
+3. **A merge of a session that holds the list's keyboard cursor, a rename or a hold.** Nothing
+   is left naming the merged page, as `drop_session` does for a pane drop.
+4. **Ctrl+Tab cycling and the row shown after a session closes.** Both follow the user's order,
+   since every caller that lists rows for the user uses the ordered grouping.
+5. **A saved order naming pages that no longer exist,** after a restart or a closed session. It
+   is ignored, not shown as a gap.
+
+### Task 7: The tree merges one page into another
+
+**Files:** Modify `crates/arkos/src/tree.rs`, next to `merge_page`, with tests in `mod tests`.
+
+**Interfaces:**
+- Produces `pub fn merge_into_page(&mut self, from: PageKey, to: PageKey) -> bool`:
+  - Moves every tab of `from`, in `page_tabs` order, to the end of `to`'s focused pane, ids kept.
+  - When `from` is the page shown, `to` is shown after.
+  - `from` closes through `close_page`: with `Some(to)` when it is shown, else `None`. Its session
+    name goes, and tab names stay.
+  - False, changing nothing, when `from == to` or either page is missing.
+
+- [ ] **Step 1: Write the failing tests.**
+
+```rust
+#[test]
+fn a_page_merged_into_another_lands_at_the_end_of_its_focused_pane_and_goes() {
+    let mut t = Tree::new(term(1));
+    let first = t.page;
+    let p1 = t.focused;
+    let q = t.blank_page();
+    t.add_tab(q, term(2));
+    t.add_tab(q, term(3));
+    let gone = t.page;
+    t.set_session_name(gone, Some("old".into()));
+    let ids: Vec<TabId> = t.pane(q).unwrap().ids.clone();
+    t.show_page(first);
+    assert!(t.merge_into_page(gone, first));
+    assert_eq!(t.pane(p1).unwrap().ids[1..], ids[..]);
+    assert!(!t.page_keys().contains(&gone));
+    assert_eq!(t.session_name(gone), None);
+    assert_eq!(t.page, first);
+}
+
+#[test]
+fn the_shown_page_merged_into_another_shows_that_one() {
+    let mut t = Tree::new(term(1));
+    let first = t.page;
+    let q = t.blank_page();
+    t.add_tab(q, term(2));
+    let second = t.page;
+    assert!(t.merge_into_page(second, first));
+    assert_eq!(t.page, first);
+    assert_eq!(t.page_tabs(first).len(), 2);
+}
+
+#[test]
+fn a_page_merged_into_itself_changes_nothing() {
+    let mut t = Tree::new(term(1));
+    let before = t.clone();
+    assert!(!t.merge_into_page(t.page, t.page));
+    assert_eq!(t, before);
+}
+```
+
+- [ ] **Step 2: Watch them fail.** Run
+  `nice -n 15 cargo test -p arkos --bin arkos -- tree::tests 2>&1 | tail -10`. Expected: a
+  compile error that `merge_into_page` is not found.
+- [ ] **Step 3: Implement it.** Use `move_tab_to_page` for the tabs, then `close_page`.
+- [ ] **Step 4: Watch them pass.** Run
+  `nice -n 15 cargo test -p arkos --bin arkos -- tree:: 2>&1 | grep -E "test result|FAILED"`.
+  Expected: ok.
+- [ ] **Step 5: Commit.**
+  `git commit -m "Tree: merge one page into another"`
+
+### Task 8: The user's order within a group
+
+**Files:**
+- Modify `crates/arkos/src/sessions_list.rs`: the new `RowOrder`, `grouped_in`, and tests.
+- Modify `crates/arkos/src/workspace.rs`: a new saved field, then every `Workspace { .. }`
+  literal.
+- Modify `crates/arkos/src/main.rs`: `Root::row_order`, loading it, saving it beside
+  `reminders` (near line 2273), and the callers.
+- Modify `crates/arkos/src/sidebar.rs`: the callers there.
+
+**Interfaces:**
+- Produces `#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)] pub struct RowOrder(pub Vec<(Attention, Vec<PageKey>)>)`,
+  with:
+  - `pub fn place(&mut self, group: Attention, shown: &[PageKey], page: PageKey, at: usize)`:
+    - `shown` is the group's live rows as now shown, `page` excluded if it is there.
+    - `at` is the index in `shown` to insert before, clamped.
+    - The group's list becomes `shown` with `page` inserted there.
+  - `pub fn prune(&mut self, groups: &[(Attention, Vec<Entry>)])`: drops from each group's list
+    the pages that are not live rows of that group now.
+  - `pub fn grouped_in(entries: Vec<Entry>, order: &RowOrder) -> Vec<(Attention, Vec<Entry>)>`:
+    - Groups as `grouped` does.
+    - Within a group, the rows not in its list come first, newest first, as now. The listed
+      rows follow in list order.
+    - Ended rows keep their place after the live rows.
+  - `grouped(entries)` stays and equals `grouped_in(entries, &RowOrder::default())`.
+- `Root::row_order: RowOrder`, saved in `Workspace::row_order` (`#[serde(default)]`).
+- **Pruning on screen:** `sessions_list::render` calls `root.row_order.prune(&groups)` after
+  grouping, so a row that left is forgotten at once.
+- **Callers:** every non-test caller that lists rows for the user uses
+  `grouped_in(.., &root.row_order)`. That covers the list's render, `row_beside`, session
+  cycling, cursor stops, `next_calling` and the sidebar's.
+
+- [ ] **Step 1: Write the failing tests.** The `entry(page, group, since)` helper builds an
+  `Entry` as the existing tests there do. Write one if none exists.
+
+```rust
+#[test]
+fn rows_the_user_placed_keep_their_order_under_new_arrivals() {
+    let mut order = RowOrder::default();
+    order.place(Attention::Quiet, &[1, 2], 3, 0);
+    let rows = vec![entry(1, Attention::Quiet, 10), entry(2, Attention::Quiet, 20), entry(3, Attention::Quiet, 5), entry(4, Attention::Quiet, 1)];
+    let groups = grouped_in(rows, &order);
+    let pages: Vec<PageKey> = groups[0].1.iter().map(|e| e.page).collect();
+    assert_eq!(pages, [4, 3, 1, 2], "the arrival first, then the user's order");
+}
+
+#[test]
+fn a_placed_row_that_leaves_its_group_comes_back_at_the_top() {
+    let mut order = RowOrder::default();
+    order.place(Attention::Quiet, &[1, 2], 3, 2);
+    let away = grouped_in(vec![entry(1, Attention::Quiet, 10), entry(2, Attention::Quiet, 20), entry(3, Attention::Working, 30)], &order);
+    order.prune(&away);
+    let back = grouped_in(vec![entry(1, Attention::Quiet, 10), entry(2, Attention::Quiet, 20), entry(3, Attention::Quiet, 1)], &order);
+    let pages: Vec<PageKey> = back[0].1.iter().map(|e| e.page).collect();
+    assert_eq!(pages, [3, 1, 2]);
+}
+
+#[test]
+fn a_saved_order_naming_gone_pages_is_ignored() {
+    let mut order = RowOrder::default();
+    order.place(Attention::Quiet, &[1, 9], 2, 1);
+    let groups = grouped_in(vec![entry(1, Attention::Quiet, 10), entry(2, Attention::Quiet, 20)], &order);
+    let pages: Vec<PageKey> = groups[0].1.iter().map(|e| e.page).collect();
+    assert_eq!(pages, [1, 2]);
+}
+```
+
+- [ ] **Step 2: Watch them fail.** The expected error is that `RowOrder` is not found.
+- [ ] **Step 3: Implement** `RowOrder`, `grouped_in`, the saved field, loading and saving, and
+  the callers.
+- [ ] **Step 4: Watch them pass.** Run the `sessions_list::` and `workspace::` tests. Expected: ok.
+- [ ] **Step 5: Commit.**
+  `git commit -m "Sessions list: the user's order within a group, saved"`
+
+### Task 9: What a session dropped on the list does
+
+**Files:** Modify `crates/arkos/src/drag.rs`, with tests in `mod tests`.
+
+**Interfaces:**
+- Produces `pub enum RowZone { Before, Middle, After }`, and
+  `pub fn row_zone(row_top: f32, row_h: f32, y: f32) -> RowZone`:
+  - `Before` is the top quarter, `After` the bottom quarter, `Middle` the rest.
+- Produces `pub enum RowDrop { Merge(PageKey), Place { group: Attention, at: usize }, Nothing }`,
+  and `pub fn row_drop(dragged: PageKey, dragged_group: Attention, over: Option<(PageKey, Attention, usize)>, zone: RowZone, allowed: &[Attention]) -> RowDrop`:
+  - `over` is the live row under the pointer: its page, its group, and its index among its
+    group's live rows. It is None for an ended row and anywhere else.
+  - **The middle of another row:** `Merge(it)`.
+  - **Its own row, any zone:** `Nothing`.
+  - **A gap in the same group:** `Before` places at its index, and `After` at index + 1. When
+    that is the dragged row's own place, it is `Nothing`. The dragged row's index is found by
+    the caller and is not part of `at`. The caller passes indices of the group without the
+    dragged row.
+  - **A gap in another group:** `Place` when that group is in `allowed`, else `Nothing`.
+
+- [ ] **Step 1: Write the failing tests.**
+
+```rust
+#[test]
+fn a_session_on_another_row_s_middle_merges_and_on_its_own_row_does_nothing() {
+    assert_eq!(row_drop(1, Attention::Quiet, Some((2, Attention::Quiet, 0)), RowZone::Middle, &[]), RowDrop::Merge(2));
+    assert_eq!(row_drop(1, Attention::Quiet, Some((1, Attention::Quiet, 0)), RowZone::Before, &[]), RowDrop::Nothing);
+    assert_eq!(row_drop(1, Attention::Quiet, None, RowZone::Middle, &[]), RowDrop::Nothing);
+}
+
+#[test]
+fn a_gap_in_its_own_group_places_it_and_another_group_s_only_when_it_can_move_there() {
+    assert_eq!(row_drop(1, Attention::Quiet, Some((2, Attention::Quiet, 0)), RowZone::After, &[]), RowDrop::Place { group: Attention::Quiet, at: 1 });
+    assert_eq!(row_drop(1, Attention::Quiet, Some((3, Attention::Done, 2)), RowZone::Before, &[Attention::Done]), RowDrop::Place { group: Attention::Done, at: 2 });
+    assert_eq!(row_drop(1, Attention::Quiet, Some((3, Attention::Working, 0)), RowZone::Before, &[Attention::Done]), RowDrop::Nothing);
+}
+
+#[test]
+fn a_row_s_top_and_bottom_quarters_are_its_gaps() {
+    assert_eq!(row_zone(100.0, 40.0, 105.0), RowZone::Before);
+    assert_eq!(row_zone(100.0, 40.0, 120.0), RowZone::Middle);
+    assert_eq!(row_zone(100.0, 40.0, 135.0), RowZone::After);
+}
+```
+
+- [ ] **Steps 2-5:** watch them fail, implement, watch them pass (`drag::`), then commit with
+  "Drag: what a session dropped on the Sessions list does".
+
+### Task 10: Dragging a session row onto the list
+
+**Files:**
+- Modify `crates/arkos/src/main.rs`:
+  - `Root` gains the transient `list_gap: motion::Transient<(Attention, usize)>` and a stored
+    `list_row_drop: drag::RowDrop`, both cleared wherever `hide_list_drops` and `list_drop` are.
+  - `Root::track_session_list_drag` and `Root::drop_session_on_list`.
+- Modify `crates/arkos/src/sidebar.rs`: the sessions block's `on_drag_move::<SessionDrag>` and
+  `on_drop::<SessionDrag>`.
+- Modify `crates/arkos/src/sessions_list.rs`: the ring on a merge target, as for a tab's join,
+  and the gap line.
+
+**Interfaces:**
+- Consumes `Tree::merge_into_page`, `RowOrder::place`, `grouped_in`, `drag::row_zone`,
+  `drag::row_drop`, `sessions_list::row_under`, and `attention::move_targets` for `allowed`,
+  mapping `MoveTo::To(g)` to `g`. It also reuses the existing `RowAction::Move` handling for
+  the cross-group move. Factor that arm into
+  `Root::move_page_to(page, to: attention::MoveTo)` so both use it.
+- **Tracking:** the session drag's move over the sessions block decides with `row_drop` at the
+  rows' resting positions (`row_under`, as the tab drag does).
+  - `Merge(p)` lights row `p` with `list_drop_row`.
+  - `Place` shows the gap line at that place. It is a 2 point line in `chrome.focus_ring`
+    across the row's width, faded by `list_gap`'s progress.
+  - `Nothing` shows nothing.
+  - The decision is stored. The drop acts on the stored decision only, as Task 5's fix does.
+- **The drop:**
+  - `Merge(p)`: call `merge_into_page(d.page, p)`, then remove `reminders` and `page_made` for
+    `d.page`. Clear `held`, `row_rename` and `session_cursor` when they name it. Clear `grids`
+    and focus the shown page's focused pane, as `settle_page` does. Save.
+  - `Place { group, at }`: if `group` is not the row's group, call `move_page_to` first. Then
+    call `row_order.place(group, &shown_without_dragged, d.page, at)`, and save.
+
+- [ ] **Step 1:** No headless test fits the glue. Its decisions are tested in Tasks 7 to 9.
+  Implement it.
+- [ ] **Step 2:** `nice -n 15 cargo check --workspace --all-targets` prints no warnings.
+- [ ] **Step 3:** Commit:
+  "Sessions: a session dropped on a row merges into it, and between rows it is reordered".
+
+### Task 11: Docs
+
+- `docs/guide.md`, in the Sessions list section, gets plain prose saying:
+  - A session row dropped on another row's middle merges into it.
+  - Between rows, a line shows where the row will land: within its group, and in another group
+    only where "Move to" would take it.
+  - The order stays until the row changes state, after which the row arrives at the top.
+- `docs/development.md`, in the "Session drag" Status row, gets the merge ring, the gap line,
+  cross-group placing, and order kept after a restart, wrapped like its neighbours.
+- Run `nice -n 15 cargo test --workspace --no-fail-fast` and
+  `nice -n 15 cargo check --workspace --all-targets`. Expected: only the two known `arkosd` pty
+  failures, and no warnings.
+- Commit "Docs: merging sessions and reordering rows".
