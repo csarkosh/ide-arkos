@@ -71,6 +71,15 @@ in its own shell again within the closed tab's minute and after that in a new ta
 with each session (seen, done, its reminder) is this window's own and is saved with it; another
 window on another folder keeps its own list.
 
+Drag a tab of any kind (a terminal, a file, a grid, a video, a web page) from the pane onto the
+Sessions list. Over another session's row, that row lights up and the tab joins that session, at
+the end of its focused pane, when you let go. Anywhere else in the list (between rows, on a
+heading or in the empty space), a dashed row opens under "+ New session" and the rows below slide
+down to make room; let go and the tab becomes a session of its own, named after the tab when you
+named the tab yourself. A pane dragged by its number does the same with all its tabs. Dropped on
+its own session's row, a tab does nothing, and nothing lights. A session that holds only files is
+listed under Quiet, and its menu has Rename and Close.
+
 No hook says a permission or a question was answered, so Enter or a digit typed into a session
 that needs you counts as the answer and shows it working again.
 
@@ -114,6 +123,10 @@ split as you left it, and coming back brings this one back the same way.
   sidebar shows "⌘0" at its top left. A pane moves by that number at the left end of its tab bar: drag it onto an edge of another pane to put it there, tabs and
   all, or into another pane's middle or tab bar to join its tabs to that pane's. A tab drags
   the same way.
+- Drag a session's row from the list onto a pane to bring all of its tabs into the session on
+  screen. The pane shows the same drop zones as for a tab: a tab bar, the middle (the tabs join
+  that pane's) and each edge (they make a new pane there). The row goes with its session, and a
+  drop onto the session you are already on does nothing.
 - A file you open from the Explorer joins the session you are on. A file a Claude Code session
   opens with `arkos open` joins that session's page, also while you are looking at another,
   whose page is left as it is.

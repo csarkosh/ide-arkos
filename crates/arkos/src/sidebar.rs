@@ -180,6 +180,14 @@ pub fn sidebar_split(total: f32, explorer_rows_h: f32, explorer_open: bool, work
 /// Inbox's whole column while it shows Sessions, and nothing in the Grid, whose sidebar is the
 /// Explorer and Worktrees alone (Cyrus, 2026-11-14: "Grid layout should not have the sessions
 /// view. That's for Inbox only").
+pub fn sessions_height(inbox: bool, files_view: bool, total: f32, switch_h: f32) -> f32 {
+    if inbox && !files_view {
+        (total - switch_h).max(0.0)
+    } else {
+        0.0
+    }
+}
+
 /// The Sessions list inside a frame that reports, each frame, the part of it that shows
 /// (`Root::list_view`), for a tab dragged over it. The frame does not scroll, so it stays put.
 fn list_with_bounds(list: Stateful<Div>, cx: &mut Context<Root>) -> Div {
@@ -199,14 +207,6 @@ fn list_with_bounds(list: Stateful<Div>, cx: &mut Context<Root>) -> Div {
         .absolute()
         .size_full())
         .child(list)
-}
-
-pub fn sessions_height(inbox: bool, files_view: bool, total: f32, switch_h: f32) -> f32 {
-    if inbox && !files_view {
-        (total - switch_h).max(0.0)
-    } else {
-        0.0
-    }
 }
 
 /// The column: the Sessions, Explorer and Worktrees sections, each under a header that opens and closes
