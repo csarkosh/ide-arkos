@@ -61,6 +61,11 @@ wait = { numbers = "waiting" }
 changed = { numbers = 1 }
 after_secs = 30
 timeout_secs = 300
+# The divider between the session and the report, from about two thirds across to 0.565, so the
+# report's table has room for its headers (Cyrus, 2026-11-21: they wrapped, "Chann el") and the
+# session keeps room for the table Claude Code prints. The Inbox shots below move the session's
+# pane by its number first, which makes a new split, so this ratio does not carry into them.
+drags = [[[0.6655, 0.72], [0.565, 0.72]]]
 
 # The same moment in the Inbox layout, for the apps page's Inbox and Grid switch: the sessions as a list
 # by what they ask of you, one shown at full size with the files it opened beside it.
