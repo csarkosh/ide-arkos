@@ -66,6 +66,8 @@ timeout_secs = 300
 # session keeps room for the table Claude Code prints. The Inbox shots below move the session's
 # pane by its number first, which makes a new split, so this ratio does not carry into them.
 drags = [[[0.6655, 0.72], [0.565, 0.72]]]
+# The pointer left in the title bar's empty middle, off the divider, so the divider is not lit.
+hover = [0.6, 0.03]
 
 # The same moment in the Inbox layout, for the apps page's Inbox and Grid switch: the sessions as a list
 # by what they ask of you, one shown at full size with the files it opened beside it.
