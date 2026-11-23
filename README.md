@@ -23,8 +23,11 @@ from you: needing your input → still at work → quiet or done.
 
 ## Install
 
+Arkos IDE needs a Mac with Apple silicon and macOS 14 Sonoma or later. Each release is signed and
+notarized; download it from [the latest release](https://github.com/csarkosh/ide-arkos/releases/latest)
+or install it with Homebrew, where the first command lets Homebrew load casks from this tap:
+
 ```sh
-# Or install through brew
 brew trust --cask csarkosh/tap/arkos-ide
 brew install --cask csarkosh/tap/arkos-ide
 ```
